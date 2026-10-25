@@ -12,7 +12,7 @@ import (
 
 func newTestProducer(t *testing.T, tun Tunables) *Producer {
 	t.Helper()
-	p, err := New(Config{SubjectPrefix: "tpk", ClaimBucket: "tpk-objects", Tunables: tun})
+	p, err := New(Config{SubjectPrefix: "tpk", ClaimBucket: "tpk-objects", Tunables: tun}, func(o *options) { o.noPublisher = true })
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}

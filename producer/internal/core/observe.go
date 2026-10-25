@@ -9,9 +9,12 @@ import (
 // Drop reasons the recorder counts (docs/specs/tracekeep/operations.md, records_dropped_total).
 const (
 	DropLaneFull DropReason = iota
+	DropBusDown
+	DropPublishFailed
+	DropClaimFailed
 	DropCaptureFault
 	DropAbandoned
-	numDropReasons
+	NumDropReasons
 )
 
 // Test hooks: points where a barrier-controlled test holds a callback.
@@ -48,9 +51,10 @@ type Observation struct {
 	Wall, Mono int64
 	// Socket is go-secs's socket identity; 0 for none.
 	Socket uint64
-	// Kind and Dir are the record's kind and direction.
-	Kind tracepack.Kind
-	Dir  tracepack.Dir
+	// Kind, Dir and Fidelity are the record's.
+	Kind     tracepack.Kind
+	Dir      tracepack.Dir
+	Fidelity tracepack.Fidelity
 	// Payload is the frame or the transport event's payload, borrowed for the call only.
 	Payload []byte
 }
@@ -58,23 +62,24 @@ type Observation struct {
 // Entry is one record in a lane, waiting for the publisher.
 // Every entry names its capture, so a queued record never takes another capture's identity.
 type Entry struct {
-	Cap     *Capture
-	Kind    EntryKind
-	Seq     uint64
-	Wall    int64
-	Mono    int64
-	Epoch   uint32
-	RecKind tracepack.Kind
-	Dir     tracepack.Dir
-	Quality tracepack.Quality
-	Drift   int64
-	Payload []byte
+	Cap      *Capture
+	Kind     EntryKind
+	Seq      uint64
+	Wall     int64
+	Mono     int64
+	Epoch    uint32
+	RecKind  tracepack.Kind
+	Dir      tracepack.Dir
+	Fidelity tracepack.Fidelity
+	Quality  tracepack.Quality
+	Drift    int64
+	Payload  []byte
 }
 
 // Counters is a snapshot of what the observers counted; the publisher reports it to Metrics.
 type Counters struct {
 	Observed     [256][4]uint64 // by kind and dir
-	Dropped      [numDropReasons]uint64
+	Dropped      [NumDropReasons]uint64
 	DroppedBytes uint64
 	AfterStop    uint64
 	Panics       uint64
@@ -103,8 +108,9 @@ type Recorder struct {
 	maxCount  int64
 	maxBytes  int64
 	faults    chan *Capture
+	busDown   atomic.Bool
 	observed  [256][4]atomic.Uint64
-	dropped   [numDropReasons]atomic.Uint64
+	dropped   [NumDropReasons]atomic.Uint64
 	dropBytes atomic.Uint64
 	afterStop atomic.Uint64
 	panics    atomic.Uint64
@@ -137,7 +143,7 @@ func (r *Recorder) Observe(o *Observation) {
 			}
 			if !allocated && c != nil {
 				c.Fault()
-				r.signalFault(c)
+				r.SignalFault(c)
 			}
 		}
 	}()
@@ -161,7 +167,7 @@ func (r *Recorder) Observe(o *Observation) {
 		step := Entry{Cap: c, Kind: EntryClockStep, Seq: a.StepSeq, Wall: o.Wall, Mono: o.Mono, Drift: a.StepDrift}
 		if !r.PushReserved(step) {
 			c.Fault()
-			r.signalFault(c)
+			r.SignalFault(c)
 			r.drop(DropCaptureFault, int64(len(o.Payload)))
 
 			return
@@ -171,21 +177,27 @@ func (r *Recorder) Observe(o *Observation) {
 
 	n := int64(len(o.Payload))
 	if !r.reserveOrdinary(n) {
-		r.drop(DropLaneFull, n)
+		r.drop(r.fullReason(), n)
 		return
 	}
 	e := Entry{
 		Cap: c, Kind: EntryObserved, Seq: a.Seq, Wall: o.Wall, Mono: o.Mono, Epoch: a.Epoch,
-		RecKind: o.Kind, Dir: o.Dir, Quality: q,
+		RecKind: o.Kind, Dir: o.Dir, Fidelity: o.Fidelity, Quality: q,
 		Payload: append(make([]byte, 0, n), o.Payload...),
 	}
 	select {
 	case r.ordinary <- e:
 	default:
 		r.returnBudget(n)
-		r.drop(DropLaneFull, n)
+		r.drop(r.fullReason(), n)
 	}
 }
+
+// SetBusDown records whether the publisher finds the bus unreachable, which names why a full lane drops.
+func (r *Recorder) SetBusDown(down bool) { r.busDown.Store(down) }
+
+// OrdinaryDepth returns the ordinary lane's reserved count and bytes, the records the publisher still holds included.
+func (r *Recorder) OrdinaryDepth() (count, bytes int64) { return r.ordCount.Load(), r.ordBytes.Load() }
 
 // PushReserved queues e in the reserved lane without blocking; false when the lane is full.
 func (r *Recorder) PushReserved(e Entry) bool {
@@ -245,7 +257,7 @@ func (r *Recorder) allocate(o *Observation, cp **Capture) (Allocation, bool) {
 		case Closed:
 			continue
 		case Faulted:
-			r.signalFault(c)
+			r.SignalFault(c)
 			r.drop(DropCaptureFault, int64(len(o.Payload)))
 
 			return a, false
@@ -273,6 +285,14 @@ func (r *Recorder) reserveOrdinary(n int64) bool {
 	return true
 }
 
+func (r *Recorder) fullReason() DropReason {
+	if r.busDown.Load() {
+		return DropBusDown
+	}
+
+	return DropLaneFull
+}
+
 func (r *Recorder) returnBudget(n int64) {
 	r.ordBytes.Add(-n)
 	r.ordCount.Add(-1)
@@ -283,7 +303,8 @@ func (r *Recorder) drop(reason DropReason, n int64) {
 	r.dropBytes.Add(uint64(n)) //nolint:gosec // a payload length is never negative
 }
 
-func (r *Recorder) signalFault(c *Capture) {
+// SignalFault tells the lifecycle goroutine that c faulted, without blocking.
+func (r *Recorder) SignalFault(c *Capture) {
 	select {
 	case r.faults <- c:
 	default:

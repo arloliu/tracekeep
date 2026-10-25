@@ -73,8 +73,10 @@ type Capture struct {
 	Generation uint64
 	// OriginWall and OriginMono are the clock reading of the capture's start; a record's mono_ns is measured from OriginMono.
 	OriginWall, OriginMono int64
-	// Descriptor is the start's Tpk-Capture-Descriptor value, set before the capture is rotated in.
+	// Descriptor is the start's Tpk-Capture-Descriptor value and Subject the capture's subject,
+	// both set before the capture is rotated in.
 	Descriptor string
+	Subject    string
 
 	start atomic.Uint32
 

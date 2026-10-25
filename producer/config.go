@@ -35,6 +35,8 @@ type Config struct {
 	TLS TLSConfig
 	// SubjectPrefix is the traffic stream's subject prefix.
 	SubjectPrefix string
+	// Stream is the traffic stream every publish expects; empty takes busconfig.DefaultTrafficStream.
+	Stream string
 	// ClaimBucket is the object store large records are put into.
 	ClaimBucket string
 	// Tunables bounds the lanes and the publisher; every zero field takes its default.

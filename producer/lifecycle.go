@@ -46,6 +46,10 @@ type Report struct {
 	// Abandoned reports that End passed its deadline and gave the capture up without its stop;
 	// the consumer closes it unclean.
 	Abandoned bool
+	// Drained reports that the publisher answered End's drain before the deadline;
+	// Dropped counts the records it gave up at the deadline.
+	Drained bool
+	Dropped uint64
 }
 
 // uuidV7 generates capture ids as UUIDv7 (RFC 9562 §5.7) that sort by creation,
@@ -125,8 +129,31 @@ func (p *Producer) End(ctx context.Context) Report {
 	p.last = &id
 	p.metrics.Add("capture_rotations_total", map[string]string{"reason": reasonStop}, 1)
 	p.setCurrentMetric(nil, nil)
+	rep.Drained, rep.Dropped = p.drain(deadline(ctx))
 
 	return rep
+}
+
+// drain gives the publisher until dl to publish what is queued, the stop included; what is left then is dropped and counted.
+// It never waits past dl, even for a publish in progress.
+func (p *Producer) drain(dl time.Time) (bool, uint64) {
+	if p.pub == nil {
+		return false, 0
+	}
+	req := drainReq{deadline: dl, reply: make(chan uint64, 1)}
+	select {
+	case p.pub.drainCh <- req:
+	default:
+		return false, 0
+	}
+	t := time.NewTimer(time.Until(dl))
+	defer t.Stop()
+	select {
+	case n := <-req.reply:
+		return true, n
+	case <-t.C:
+		return false, 0
+	}
 }
 
 // rotateLocked builds a capture for d and rotates to it; the caller holds the lifecycle lock.
@@ -151,6 +178,12 @@ func (p *Producer) rotateLocked(ctx context.Context, d *CaptureDescriptor, previ
 		OriginMono:  mono,
 	})
 	c.Descriptor = base64.StdEncoding.EncodeToString(desc)
+	if c.Subject, err = tracepack.BusSubject(p.prefix, d.ToolID, id); err != nil {
+		return fmt.Errorf("%w: %w", ErrInvalidDescriptor, err)
+	}
+	if err := p.checkStartFits(c); err != nil {
+		return err
+	}
 
 	res := p.rec.Rotate(c, deadline(ctx), p.stopping.Load, p.now)
 	if res.Abandoned {
@@ -160,6 +193,28 @@ func (p *Producer) rotateLocked(ctx context.Context, d *CaptureDescriptor, previ
 	p.metrics.Add("capture_rotations_total", map[string]string{"reason": reason}, 1)
 	p.setCurrentMetric(c, d)
 	p.log.Info("producer: capture rotated", "reason", reason, "capture_id", id.String())
+
+	return nil
+}
+
+// checkStartFits refuses a descriptor whose start message's header block exceeds tracepack's 4096-byte bound,
+// which no max_payload lifts.
+func (p *Producer) checkStartFits(c *core.Capture) error {
+	msgID, err := tracepack.BusMsgID(c.ID, 0)
+	if err != nil {
+		return err
+	}
+	m := Msg{
+		Header: map[string]string{
+			tracepack.BusHeaderLayout:     "1",
+			tracepack.BusHeaderDescriptor: c.Descriptor,
+		},
+		MsgID:        msgID,
+		ExpectStream: p.stream,
+	}
+	if n := headerBlockLen(&m); n > tracepack.BusHeaderBlockLimit {
+		return fmt.Errorf("%w: the start's header block is %d bytes, above %d", ErrInvalidDescriptor, n, tracepack.BusHeaderBlockLimit)
+	}
 
 	return nil
 }
