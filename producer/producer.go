@@ -66,6 +66,8 @@ type Producer struct {
 	metricsCur map[string]string
 	// rotateAt overrides the seq-limit rotation point; the package's tests lower it.
 	rotateAt uint64
+	// faultGap, set only by the package's tests, runs between a fault rotation's two lifecycle-lock sections.
+	faultGap func()
 
 	events    chan func()
 	quit      chan struct{}
