@@ -1,6 +1,6 @@
 # Repository bootstrap
 
-Status: active (2026-10-25) — phases 1 and 2 done; phase 3 next
+Status: active (2026-10-25) — phases 1 and 2 done; phase 3 in progress
 
 tracekeep (`github.com/arloliu/tracekeep`) is the traffic-log service of the Virtual Equipment project:
 it consumes the SECS/HSMS traffic records an equipment gateway publishes on NATS JetStream,
@@ -53,7 +53,7 @@ phase 2 carried them into `tracekeep-decisions.md` as T-13…T-21:
 |---|---|---|
 | 1 — conventions | the files in *Phase 1* below; `make docs-check data-check` green | done (4bd5ecc) |
 | 2 — documents | split the seed into the files in *Phase 2*, each subject file opening with an interface summary; proposal P1; `make docs-check` green; the seed deleted | done (4bd5ecc, reflow 24e6a1b) |
-| 3 — skeleton | `go.work`, the two `go.mod`, `producer/`, `cmd/tracekeep-sim/`, `internal/testbus/`, `cmd/tracekeep/` (`dev` and `migrate` as empty commands); `make ci` and `GOWORK=off go build ./...` green | pending |
+| 3 — skeleton | `go.work`, the two `go.mod`, `producer/`, `cmd/tracekeep-sim/`, `internal/testbus/`, `cmd/tracekeep/` (`dev` and `migrate` as empty commands); `make ci` and `GOWORK=off go build ./...` green | in-progress |
 | 4 — CI | GitHub Actions: lint, vet, test with the race detector, `docs-check`, `data-check`, both builds; the embedded nats-server in tests, no network | pending |
 | 5 — close | this plan closes (its outcome in the commit message); `docs/plans/phase-0-producer.md`, created `draft` in phase 2, becomes `active` | pending |
 
@@ -155,7 +155,28 @@ no file under `docs/`, `.agents/`, `AGENTS.md` or `CLAUDE.md` names the seed fil
 
 ## Phase 3 — skeleton
 
-Detailed when phase 2 closes.
+Create these files; no design code, the specification files hold the design:
+
+| File | Content |
+|---|---|
+| `go.work`, `go.work.sum` | `go 1.26.0`, `use (. ./producer)` |
+| `go.mod`, `go.sum` | the service module, `go 1.26.0`; nats-server `v2.15.1` and nats.go `v1.55.0`, which `internal/testbus` imports |
+| `producer/go.mod`, `producer/go.sum` | the SDK module, `go 1.26.0`; tracepack `v0.8.0` and nats.go `v1.55.0` |
+| `producer/doc.go`, `producer/secsobs/doc.go`, `producer/busconfig/doc.go`, `producer/producertest/doc.go` | the package godoc only; `producer/doc.go` blank-imports tracepack and nats.go, so `go mod tidy` keeps both requirements until the first code imports them |
+| `cmd/tracekeep/main.go` | the commands `dev` and `migrate`, which do nothing yet |
+| `cmd/tracekeep-sim/main.go` | an empty `main` |
+| `internal/testbus/` | `Start(t testing.TB) string`: nats-server with JetStream on `127.0.0.1` at a random port, file storage under `t.TempDir()`, shut down by `t.Cleanup`; one test creates a stream, publishes a message and reads it back |
+
+Deviation from the fixed points below, for the owner:
+the service `go.mod` does not require `github.com/arloliu/tracekeep/producer` yet.
+The SDK is neither tagged nor pushed, so under `GOWORK=off` no version resolves,
+and the service imports nothing from it;
+the requirement arrives with the SDK's first tag (`producer/vX.Y.Z`).
+Nor does it require tracepack yet, against the decision table's "in both modules":
+no service package imports it, and `go mod tidy` keeps only what a package imports.
+
+Gate: `make ci`, which ends with `GOWORK=off go build ./...`.
+
 Fixed points: `go.work` with `use (. ./producer)`;
 the service `go.mod` requires `github.com/arloliu/tracekeep/producer` at a version and carries no `replace`;
 `producer/go.mod` requires `github.com/arloliu/go-secs/tracepack v0.8.0` and `github.com/nats-io/nats.go v1.55.0`,
