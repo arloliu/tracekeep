@@ -684,3 +684,44 @@ func TestReportCountsLossesDuringTheDrain(t *testing.T) {
 		t.Errorf("End = %+v, want drained with the one record lost", rep)
 	}
 }
+
+// warnLog signals every Warn line on warned.
+type warnLog struct{ warned chan string }
+
+func (l warnLog) Info(string, ...any)  {}
+func (l warnLog) Error(string, ...any) {}
+func (l warnLog) Warn(msg string, _ ...any) {
+	select {
+	case l.warned <- msg:
+	default:
+	}
+}
+
+// A bus not yet connected knows no max_payload: the start waits for it as for a bus that is down,
+// and the capture neither faults nor publishes until the bus reports one.
+func TestStartWaitsForAKnownMaxPayload(t *testing.T) {
+	t.Parallel()
+	bus := producertest.NewBus()
+	bus.SetMaxPayload(0)
+	log := warnLog{warned: make(chan string, 1)}
+	p, err := producer.New(
+		producer.Config{SubjectPrefix: "tpk", ClaimBucket: bucket},
+		producer.WithBus(bus), producer.WithLogger(log),
+	)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	t.Cleanup(func() { _ = p.Close() })
+	h := &harness{t: t, p: p, bus: bus, rec: link.Recorder(p)}
+	c := h.begin()
+	h.observe(frame(8))
+	<-log.warned // the bus counts as unreachable
+
+	if n := len(bus.Messages()); n != 0 || c.Faulted() {
+		t.Fatalf("%d messages, faulted %v, before max_payload was known", n, c.Faulted())
+	}
+	bus.SetMaxPayload(producertest.DefaultMaxPayload)
+	if msgs := h.wait(2); !strings.HasSuffix(msgs[0].MsgID, ".0") {
+		t.Errorf("first message %s, want the start", msgs[0].MsgID)
+	}
+}

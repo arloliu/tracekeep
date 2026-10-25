@@ -23,7 +23,7 @@ jobs:
         go version
         golangci-lint version
 
-    # Lint, vet, docs-check, data-check, -race tests of both modules (the SDK with GOWORK=off),
+    # Lint, vet, docs-check, data-check, -race tests of every module (all but the service with GOWORK=off),
     # then the service built with GOWORK=off; tests use the embedded nats-server, no external service.
     - name: make ci
       run: make ci

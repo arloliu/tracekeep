@@ -2,9 +2,12 @@ package producer
 
 import (
 	"errors"
+	"fmt"
 	"runtime/debug"
 	"sync"
 	"sync/atomic"
+
+	"github.com/nats-io/nats.go"
 
 	"github.com/arloliu/go-secs/tracepack"
 	"github.com/arloliu/tracekeep/producer/busconfig"
@@ -19,7 +22,7 @@ const (
 	sinkEvents = 256
 )
 
-// ErrNoBus reports a New without a bus.
+// ErrNoBus reports a producer built without a publisher, which has no bus to check.
 var ErrNoBus = errors.New("producer: no bus")
 
 // Option adjusts New.
@@ -29,11 +32,13 @@ type Option func(*options)
 // (docs/specs/tracekeep/producer.md, producer-sdk.md §4.7).
 // Its lifecycle calls, Begin, Rotate and End, are the device's Start, HotReload and Stop.
 type Producer struct {
-	tun      Tunables
-	prefix   string
-	stream   string
-	bucket   string
-	pub      *publisher
+	tun    Tunables
+	prefix string
+	stream string
+	bucket string
+	pub    *publisher
+	// conn is the connection New dialed, closed by Close; nil with WithConn or WithBus.
+	conn     *natsBus
 	rec      *core.Recorder
 	log      Logger
 	metrics  Metrics
@@ -71,6 +76,7 @@ type options struct {
 	log     Logger
 	metrics Metrics
 	bus     Bus
+	conn    *nats.Conn
 	// noPublisher builds a producer without a bus or a publisher, for the package's own lifecycle tests.
 	noPublisher bool
 	// hooks and rotateAt are the package's test seams.
@@ -89,10 +95,12 @@ func init() {
 }
 
 // New builds a producer from cfg; it opens no capture until Begin.
+// By default it dials a dedicated connection to cfg.Servers and returns without waiting for it:
+// an unreachable cluster is retried in the background, and the bus counts as down until it answers (producer.md §4.3).
 //
 // Returns:
 //   - *Producer: the producer; Close releases it.
-//   - error: an error wrapping ErrInvalidConfig, or ErrNoBus.
+//   - error: an error wrapping ErrInvalidConfig.
 func New(cfg Config, opts ...Option) (*Producer, error) {
 	if err := cfg.validate(); err != nil {
 		return nil, err
@@ -101,11 +109,20 @@ func New(cfg Config, opts ...Option) (*Producer, error) {
 	for _, opt := range opts {
 		opt(&o)
 	}
-	// shortcut: the SDK does not dial the traffic cluster yet, so a bus must be injected; the default connection replaces this.
-	if o.bus == nil && !o.noPublisher {
-		return nil, ErrNoBus
-	}
 	tun := cfg.Tunables.withDefaults()
+	var conn *natsBus
+	if o.bus == nil && !o.noPublisher {
+		var err error
+		if conn, err = newNATSBus(&cfg, &tun, o.conn); err != nil {
+			return nil, err
+		}
+		o.bus = conn
+		if !conn.owned {
+			conn = nil
+		}
+	} else if o.conn != nil {
+		return nil, fmt.Errorf("%w: WithConn and WithBus both given", ErrInvalidConfig)
+	}
 	stream := cfg.Stream
 	if stream == "" {
 		stream = busconfig.DefaultTrafficStream
@@ -128,6 +145,7 @@ func New(cfg Config, opts ...Option) (*Producer, error) {
 		events:   make(chan func(), sinkEvents),
 		lifeSem:  make(chan struct{}, 1),
 		rotateAt: o.rotateAt,
+		conn:     conn,
 	}
 	p.wg.Go(p.faultLoop)
 	p.wg.Go(p.sinkLoop)
@@ -138,6 +156,15 @@ func New(cfg Config, opts ...Option) (*Producer, error) {
 	}
 
 	return p, nil
+}
+
+// WithConn publishes over nc, a connection the producer built itself, instead of one the SDK dials:
+// for a producer with its own TLS loader, credential rotation, dialer or connection event hooks.
+// New refuses nc when its reconnect buffer is enabled (nats.ReconnectBufSize(-1) disables it);
+// Preflight reports one without TLS (tracekeep-decisions.md T-35).
+// Close leaves nc open.
+func WithConn(nc *nats.Conn) Option {
+	return func(o *options) { o.conn = nc }
 }
 
 // WithBus publishes through b instead of a connection the SDK dials; producertest injects its in-memory bus this way.
@@ -156,10 +183,14 @@ func WithMetrics(m Metrics) Option {
 	return func(o *options) { o.metrics = m }
 }
 
-// Close stops the producer's goroutines; call it after End, whose drain it does not wait for.
+// Close stops the producer's goroutines and closes the connection New dialed;
+// call it after End, whose drain it does not wait for.
 func (p *Producer) Close() error {
 	p.closeOnce.Do(func() { close(p.quit) })
 	p.wg.Wait()
+	if p.conn != nil {
+		p.conn.close()
+	}
 
 	return nil
 }

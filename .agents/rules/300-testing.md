@@ -48,6 +48,6 @@ Table-driven only when there are multiple cases; a single case is a plain functi
 ## Running
 
 ```bash
-make test    # both modules, race, -short
+make test    # every module, race, -short
 make bench
 ```

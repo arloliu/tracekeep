@@ -412,8 +412,14 @@ func (o objects) Delete(_ context.Context, name string) error {
 	return nil
 }
 
-// Ok implements producer.AckFuture.
-func (f future) Ok() <-chan producer.Ack { return f.ok }
-
-// Err implements producer.AckFuture.
-func (f future) Err() <-chan error { return f.err }
+// Poll implements producer.AckFuture.
+func (f future) Poll() (producer.Ack, bool, error) {
+	select {
+	case ack := <-f.ok:
+		return ack, true, nil
+	case err := <-f.err:
+		return producer.Ack{}, true, err
+	default:
+		return producer.Ack{}, false, nil
+	}
+}

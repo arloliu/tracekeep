@@ -19,13 +19,10 @@ type recBus struct {
 	seen chan struct{}
 }
 
-type doneFuture struct {
-	ok  chan Ack
-	err chan error
-}
+// doneFuture is an asynchronous publish that resolved before PublishAsync returned.
+type doneFuture struct{ ack Ack }
 
-func (f doneFuture) Ok() <-chan Ack    { return f.ok }
-func (f doneFuture) Err() <-chan error { return f.err }
+func (f doneFuture) Poll() (Ack, bool, error) { return f.ack, true, nil }
 
 func newRecBus() *recBus { return &recBus{seen: make(chan struct{}, 1024)} }
 
@@ -41,11 +38,9 @@ func (b *recBus) Publish(_ context.Context, m *Msg) (Ack, error) {
 }
 
 func (b *recBus) PublishAsync(m *Msg) (AckFuture, error) {
-	f := doneFuture{ok: make(chan Ack, 1), err: make(chan error, 1)}
 	ack, err := b.Publish(context.Background(), m)
-	f.ok <- ack
 
-	return f, err
+	return doneFuture{ack: ack}, err
 }
 
 func (b *recBus) CheckConn() []Problem { return nil }
