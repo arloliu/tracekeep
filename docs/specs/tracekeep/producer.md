@@ -213,6 +213,10 @@ and this section is the contract between them.
   a capture a later `Start` opens is never stamped, so a drain that outlives its `Stop` cannot touch it;
   the whole trace shutdown, rotation and lock acquisition included, is bounded by that deadline:
   a `Stop` that cannot take the lifecycle lock in time returns, having changed nothing.
+  Overlapping calls (T-31): the first `End` to take the lock owns the capture and its `Report`;
+  a later `End` finds no capture and returns an empty `Report`, which says nothing about whether the first one's drain has finished;
+  a `Report`'s drain and drop figures are those at its return;
+  `Close` during an `End` stops the publisher, and the `End` still returns by its deadline, counting what is left as dropped.
   `Stop` **never returns a trace error**: eqp-hub's manager treats any non-nil `Stop` as an unsafe demotion.
 - **Publisher goroutine** (the only place that waits):
   pops, encodes with `tracepack.NewBusRecord` and `EncodeBusBody`, publishes on the dedicated connection under the barrier above.
@@ -294,7 +298,7 @@ so counting bus faults there would make the bus critical by the back door.
 |---|---|---|
 | connect, select, deselect, separate, linktest, T6, T7, socket close and its cause | socket and lifecycle observers | transport events per tracepack-go.md §5.1–§5.3 |
 | T3 of a send go-secs awaited (its own `S1F1`, `S1F13`, `S6F23`) | `TxEvent{Outcome: TxT3Timeout}` from `WithTransactionObserver` | transport event `timer-expiry`, timer 3, at the time the event is received (tracepack-go.md §5.4) |
-| T3 of a request forwarded for a channel peer | eqp-hub's response waiter: `ForwardDataMessage` opens no reply wait in go-secs (`TxSent`, `ReplyWaited=false`), so the waiter's **timer branch** in `waiterWorker` is the evidence. `responseT3Timeout` is **not** a usable hook: `responseHandler` reaches it for any error, including a worker-pool submission failure before the send | the same transport event, emitted from a typed timeout outcome the waiter exposes (an eqp-hub change: distinguish timeout, cancellation, submission failure and send failure, reported on the request's token as §4.6 *Send-path token protocol* states), by a non-blocking enqueue; its `epoch` is the socket recorded for the request when its outbound frame was observed: **every** forwarded W-bit primary is registered in the pending-request table of §4.6, not only polls; a request whose outbound frame was never observed produces no T3 event; the event's `detail` names the effective timeout. eqp-hub's HotReload today updates go-secs's T3 but not the waiter's stored timeout (`eqp_hsms.go` HotReload calls only `SetCapacity`), so phase G includes updating the waiter's timeout for new waits; existing waits keep theirs; phase 0 defines the `TimeoutSource` interface (`producer-sdk.md` §4.7 *Send path*) and exercises it with a fixture |
+| T3 of a request forwarded for a channel peer | eqp-hub's response waiter: `ForwardDataMessage` opens no reply wait in go-secs (`TxSent`, `ReplyWaited=false`), so the waiter's **timer branch** in `waiterWorker` is the evidence. `responseT3Timeout` is **not** a usable hook: `responseHandler` reaches it for any error, including a worker-pool submission failure before the send | the same transport event, emitted from a typed timeout outcome the waiter exposes (an eqp-hub change: distinguish timeout, cancellation, submission failure and send failure, reported on the request's token as §4.6 *Send-path token protocol* states), by a non-blocking enqueue; its `epoch` is the one the capture current at the timeout holds for the socket recorded when the request's outbound frame was observed, and an ambiguous or unmapped request emits nothing (§4.6, T-31): **every** forwarded W-bit primary is registered in the pending-request table of §4.6, not only polls; a request whose outbound frame was never observed produces no T3 event; the event's `detail` names the effective timeout. eqp-hub's HotReload today updates go-secs's T3 but not the waiter's stored timeout (`eqp_hsms.go` HotReload calls only `SetCapacity`), so phase G includes updating the waiter's timeout for new waits; existing waits keep theirs; phase 0 defines the `TimeoutSource` interface (`producer-sdk.md` §4.7 *Send path*) and exercises it with a fixture |
 | malformed frames | wire observer reports frames go-secs rejects | `wire-exact` data record, classifier marks it |
 
 A request is awaited by exactly one of the two mechanisms, so no timeout is recorded twice.
@@ -380,7 +384,7 @@ it also serves §4.4's T3 attribution):
   an immutable **token** (unique per send), the key `(session id, System Bytes)`, the capture reference, the sending channel,
   and, when the channel is in `pollChannels`, the **thin decision** for the pair taken right there from the sampling rule.
   A failed send removes the entry **by token**;
-  an entry expires at T3 plus a margin;
+  an entry expires at the end of its wait plus a reporting grace (default 5 s), or 30 s after its registration if no wait was opened on it (*Send-path token protocol* below, T-31);
   a completed entry is retained until its expiry so a late callback still finds it.
 - **Ambiguity rule, over the process's lifetime, decided at registration**:
   the table keeps one exact set of every key ever **registered** in this producer process, inserted at registration time, before the send and before any socket is known
@@ -430,24 +434,36 @@ it also serves §4.4's T3 attribution):
     `SendFailed`, it returned an error;
     `SubmissionFailed`, the request never reached `ForwardDataMessage` (a worker-pool submission failure).
     The three exclude each other, so a second progress report is a counted no-op.
-    Either failure removes the entry by token (above), whatever was reported before it, and its key stays in the ambiguity set.
+    A failure removes the entry by token (above) only while the entry is `live` and the failure is its first progress report;
+    its key stays in the ambiguity set.
     `Sent` decides nothing: the socket binding comes from the outbound observation alone.
+  - **The wait**: the waiter reports `Awaiting(timeout)` when it opens the wait, with the timeout it opens it with;
+    the entry then expires at that time plus the timeout plus the reporting grace,
+    and an entry on which no wait is opened is removed 30 s after its registration (T-31).
+    A second `Awaiting`, and one after a terminal outcome, are counted no-ops.
   - **Terminal outcomes**, reported by the waiter:
     `Replied`;
     `TimedOut`, only from the waiter's timer branch, carrying the effective timeout of that wait;
     `Cancelled`, the wait ended any other way (the device stopping, a cancelled context).
-    The first terminal outcome makes the entry *completed*, retained until its expiry (above);
-    every later terminal outcome is a counted no-op,
-    so a reply racing a timeout yields one T3 event or none, never a T3 event after a reply.
-  - **Competing reports**: a `Sent` after a terminal outcome, and any report on a token whose entry was removed or has expired, are counted no-ops.
+  - **One state machine** (T-31): an entry is `live`, `completed`, `removed` or `expired`.
+    The first terminal outcome moves `live → completed` and seals the entry, retained until its expiry (above):
+    every later report of either kind is a counted no-op,
+    so a reply racing a timeout yields one T3 event or none, never a T3 event after a reply,
+    and a failure reported after a reply removes nothing.
+    A failure moves `live → removed`; expiry moves `live` or `completed` to `expired`.
+  - **Competing reports**: any report on a token whose entry is `completed`, `removed` or `expired` is a counted no-op.
     A waiter that times out after a send failure or a submission failure therefore emits nothing:
     the entry is gone, which is the case `responseT3Timeout` cannot tell apart (§4.4).
-  - **Expiry is not an outcome**: a token that never receives a terminal outcome expires at T3 plus the margin and emits nothing,
+  - **Expiry is not an outcome**: a token that never receives a terminal outcome expires and emits nothing,
     so T3 of a forwarded request comes only from the waiter's typed timeout.
-  - **T3**: a `TimedOut` that is the token's first terminal outcome, on an entry the outbound observation has bound to a socket,
+  - **T3**: a `TimedOut` that is the token's first terminal outcome, on an entry the outbound observation has bound to a socket and that is not ambiguous,
     emits §4.4's `timer-expiry` event by a non-blocking enqueue,
-    with that socket's epoch and the effective timeout in `detail`;
-    one on an entry with no binding is counted and emits nothing.
+    with the effective timeout in `detail`.
+    The entry records the socket, never an epoch:
+    the event goes to the capture current when the timeout is reported, loaded as in any callback,
+    with the epoch that capture's socket map holds for the socket (§4.2).
+    A `TimedOut` on an entry with no binding, on an ambiguous entry, or whose socket is absent from the current capture's map is counted and emits nothing (T-31):
+    a missing T3 event is evidence lost, a misattributed one is evidence wrong.
     The binding precedes any timeout in practice,
     since the outbound wire observer runs on the writing goroutine under the connection's write lock (§4.2 *Capture object*),
     before the forwarding call returns.

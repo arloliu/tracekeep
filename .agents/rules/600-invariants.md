@@ -7,12 +7,13 @@ Section numbers are those of the specs in `docs/specs/tracekeep/`, whose `README
 
 ## The producer SDK
 
-- **The producer's five guarantees** are the whole of what an integrator owes; everything else is the SDK's:
+- **The producer's six guarantees** are the whole of what an integrator owes; everything else is the SDK's:
   the bus address, credentials and TLS in `Config` (or a connection through `WithConn`);
   every descriptor carrying the configured `toolID` and the configured device name;
   `secsobs`'s connection options and lifecycle attachment installed on the device's connection before it opens;
   `End` called on an orderly stop and never allowed to fail the device;
-  `Rotate` called on every descriptor change.
+  `Rotate` called on every descriptor change;
+  the send path: every forwarded W-bit primary registered before it is sent, its progress reported, and a `TimeoutSource` reporting the waiter's outcomes.
   The device's `Start`, `HotReload` and `Stop` map onto `Begin`, `Rotate` and `End` (`producer.md` §4.2 *Device verbs and SDK calls*).
   `producer-sdk.md` §4.7 *What the producer must guarantee*.
 - **A callback never blocks on anything external**: not the bus, the claim bucket, a log or go-secs.
@@ -23,8 +24,9 @@ Section numbers are those of the specs in `docs/specs/tracekeep/`, whose `README
   Every lock the rotation needs is taken before it, by a `TryLock` loop bounded by the operation's deadline;
   nothing is acquired after it, and a rotation abandoned before it installs nothing.
   `producer.md` §4.2 *Rotation* and *Lifecycle serialization*.
-- **A forwarded request's token takes one terminal outcome**: the first of reply, timeout and cancellation wins, and every later report is a counted no-op;
-  expiry is no outcome, so T3 of a forwarded request comes only from the waiter's typed timeout, on an entry its outbound observation bound to a socket.
+- **A forwarded request's token takes one terminal outcome**: the first of reply, timeout and cancellation seals the entry, and every later report of any kind is a counted no-op;
+  expiry follows the wait the waiter reports opening and is no outcome, so T3 of a forwarded request comes only from the waiter's typed timeout,
+  on an unambiguous entry its outbound observation bound to a socket, with the epoch the capture current at the timeout holds for that socket.
   `producer.md` §4.6 *Send-path token protocol*, §4.4.
 
 ## Ingest and parking

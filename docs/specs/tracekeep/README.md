@@ -10,7 +10,7 @@ The review reports, the owner's decision brief and the seed's last text (v21) ar
 | `positioning.md` | living | draft | what tracekeep is and is not, what rulings settle, the LS rows it answers |
 | `architecture.md` | living | draft | roles, consumer settings, data flow, deployment, transport scope |
 | `producer.md` | living | draft | the gateway producer: capture, seq and clock, critical-path rules, descriptor, thinning |
-| `producer-sdk.md` | living | draft | the producer SDK module: packages, construction, publication policy, the five guarantees |
+| `producer-sdk.md` | living | draft | the producer SDK module: packages, construction, publication policy, the six guarantees |
 | `storage.md` | living | draft | write and read seams, `ObjectStore`, the reconciler |
 | `ingest.md` | living | draft | message disposition, batching, the registration transaction |
 | `parking.md` | living | draft | parking, resolution, incarnations, termination, the parking tables |
