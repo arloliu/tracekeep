@@ -725,3 +725,33 @@ func TestStartWaitsForAKnownMaxPayload(t *testing.T) {
 		t.Errorf("first message %s, want the start", msgs[0].MsgID)
 	}
 }
+
+// An in-flight asynchronous publish that fails while its capture is live, as a reconnect or τ fails it,
+// is published again under the same message id, and End then drains.
+func TestFailedFlightIsRetriedWithItsMessageID(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t, producer.Tunables{})
+	c := h.begin()
+	h.wait(1)
+	h.bus.HoldAsync(true)
+	h.observe(frame(4)) // seq 1 goes out asynchronously and stays unresolved
+	id := c.ID.String() + ".1"
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	if err := h.bus.WaitAsync(ctx, id); err != nil {
+		t.Fatal(err)
+	}
+
+	h.bus.HoldAsync(false)
+	h.bus.ReleaseAsync(errDown) // the in-flight publish fails; its retry is not held
+	msgs := h.wait(2)
+	if msgs[1].MsgID != id {
+		t.Fatalf("second message %s, want %s", msgs[1].MsgID, id)
+	}
+	if got := h.bus.AsyncCalls(id); got != 2 {
+		t.Errorf("%d publishes of %s, want 2: the failed one and its retry", got, id)
+	}
+	if rep := h.p.End(ctx); !rep.Drained || rep.Dropped != 0 {
+		t.Errorf("End = %+v, want drained with nothing dropped", rep)
+	}
+}

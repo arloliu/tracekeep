@@ -2,6 +2,8 @@ package bustest_test
 
 import (
 	"context"
+	"net"
+	"strings"
 	"testing"
 	"time"
 
@@ -20,6 +22,19 @@ func TestDefaultConnectionRecoversFromAFailedFirstDial(t *testing.T) {
 
 	b := newBus(t)
 	b.srv.Stop()
+	// Barrier: a listener on the server's port takes the SDK's first dial and hangs up on it,
+	// so the first attempt has failed before the server comes back.
+	l, err := net.Listen("tcp", strings.TrimPrefix(b.url, "nats://"))
+	if err != nil {
+		t.Fatalf("listen on the server's port: %v", err)
+	}
+	refused := make(chan struct{})
+	go func() {
+		if c, err := l.Accept(); err == nil {
+			_ = c.Close()
+			close(refused)
+		}
+	}()
 	log := newLog()
 	p, err := producer.New(producer.Config{Servers: []string{b.url}, SubjectPrefix: prefix, ClaimBucket: bucket}, producer.WithLogger(log))
 	if err != nil {
@@ -33,6 +48,12 @@ func TestDefaultConnectionRecoversFromAFailedFirstDial(t *testing.T) {
 	c := rec.Current()
 	observe(rec, frame(64))
 
+	select {
+	case <-refused:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the first dial never reached the server's port")
+	}
+	_ = l.Close()
 	b.srv.Restart()
 	msgs := b.fetch(t, 2)
 	for i, m := range msgs {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net"
+	"strings"
 	"testing"
 	"time"
 
@@ -138,5 +139,26 @@ func TestStalledHandshakeDelaysNothing(t *testing.T) {
 	// nats.go waits two seconds for the server's INFO; all of the above ran inside that wait.
 	if took := time.Since(start); took > time.Second {
 		t.Fatalf("New, Begin and Close took %s against a stalled handshake", took)
+	}
+}
+
+// A malformed server URL or missing TLS material fails New rather than the background dial,
+// and the error never repeats the URL's credentials.
+func TestNewRefusesMalformedDialSettings(t *testing.T) {
+	t.Parallel()
+
+	for _, cfg := range []producer.Config{
+		{Servers: []string{"nats://producer:secret@host:bad"}},
+		{Servers: []string{"nats://"}},
+		{Servers: []string{"nats://127.0.0.1:4222"}, TLS: producer.TLSConfig{CAFile: t.TempDir() + "/missing.pem"}},
+	} {
+		cfg.SubjectPrefix, cfg.ClaimBucket = "tpk", bucket
+		_, err := producer.New(cfg)
+		if !errors.Is(err, producer.ErrInvalidConfig) {
+			t.Errorf("New(%q, %+v) = %v, want ErrInvalidConfig", cfg.Servers, cfg.TLS, err)
+		}
+		if err != nil && strings.Contains(err.Error(), "secret") {
+			t.Errorf("error %q repeats the URL's password", err)
+		}
 	}
 }
