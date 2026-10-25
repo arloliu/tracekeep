@@ -75,30 +75,44 @@ func TestFaultRotationRacingAHotReload(t *testing.T) {
 	}
 }
 
-// A late record of an abandoned capture that reached the publisher before End's drain request
-// is held with its capture, and the termination drops it as abandoned, like one that arrives after.
+// A late record of an abandoned capture that reached the publisher before End's drain request is held with its capture;
+// whatever then ends the capture, End's termination or the publisher stopping at Close, drops it as abandoned.
 func TestHeldRecordOfAnAbandonedCaptureIsDroppedAsAbandoned(t *testing.T) {
 	t.Parallel()
-	p := newTestProducer(t, Tunables{})
-	if err := p.Begin(t.Context(), testDescriptor()); err != nil {
-		t.Fatal(err)
-	}
-	c := p.rec.Current()
-	pb := newPublisher(p, newRecBus())
-	wall, mono := core.Now()
-	p.rec.Observe(&core.Observation{Wall: wall, Mono: mono, Socket: 1, Kind: tracepack.KindData, Payload: []byte{1}})
-	p.rec.Abandon(&p.gen) // End passed its deadline while the callback held the lock
+	for _, tt := range []struct {
+		name string
+		end  func(pb *publisher, c *core.Capture)
+	}{
+		{"End's termination", func(pb *publisher, c *core.Capture) {
+			pb.end([]*core.Capture{c})
+			pb.takeEnds()
+			pb.finishEnds()
+		}},
+		{"Close", func(pb *publisher, _ *core.Capture) { pb.stop() }},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			p := newTestProducer(t, Tunables{})
+			if err := p.Begin(t.Context(), testDescriptor()); err != nil {
+				t.Fatal(err)
+			}
+			c := p.rec.Current()
+			pb := newPublisher(p, newRecBus())
+			wall, mono := core.Now()
+			p.rec.Observe(&core.Observation{Wall: wall, Mono: mono, Socket: 1, Kind: tracepack.KindData, Payload: []byte{1}})
+			p.rec.Abandon(&p.gen) // End passed its deadline while the callback held the lock
 
-	pb.add(<-p.rec.Ordinary()) // the record, before End's request
-	pb.end([]*core.Capture{c})
-	pb.takeEnds()
-	pb.finishEnds()
-	if !c.Terminated() {
-		t.Fatalf("the abandoned capture is not terminated")
-	}
-	if pb.dropped[core.DropAbandoned] != 1 || pb.dropped[core.DropPublishFailed] != 0 {
-		t.Errorf("dropped abandoned %d, publish_failed %d; want the record as abandoned",
-			pb.dropped[core.DropAbandoned], pb.dropped[core.DropPublishFailed])
+			pb.add(<-p.rec.Ordinary()) // the record, before End's request
+			tt.end(pb, c)
+			if !c.Terminated() {
+				t.Fatalf("the abandoned capture is not terminated")
+			}
+			// Close also drops the capture's unpublished start, which is abandoned too.
+			if pb.dropped[core.DropAbandoned] == 0 || pb.dropped[core.DropPublishFailed] != 0 {
+				t.Errorf("dropped abandoned %d, publish_failed %d; want every loss as abandoned",
+					pb.dropped[core.DropAbandoned], pb.dropped[core.DropPublishFailed])
+			}
+		})
 	}
 }
 
