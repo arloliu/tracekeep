@@ -51,7 +51,7 @@ tracekeep api                                                        §10
   the traffic NATS cluster is a separate StatefulSet or an external cluster, never the gateway's.
 - **Standalone** (bare metal or VM): the same binary as `tracekeep all` under systemd,
   one YAML config, keys from Vault with AppRole or from files an agent renders (§9),
-  object storage any S3 endpoint (MinIO on the same host is enough for a pilot),
+  object storage any S3-compatible endpoint on or off the host (MinIO's open-source server is no longer maintained, T-34),
   MariaDB on the host, or SQLite for a single-host pilot with every writing role in the one `all` process (§7.4).
 - Both read one config schema; the difference is the key provider and the number of processes.
   The schema is one Go struct loaded with fuda (T-22).
