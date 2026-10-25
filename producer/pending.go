@@ -32,6 +32,18 @@ type Token interface {
 	Cancelled()
 }
 
+// TimeoutSource is the response waiter's side of the send path, which the gateway's waiter implements.
+// A TimeoutSource never blocks its caller,
+// reports exactly one terminal outcome per Await,
+// and calls TimedOut only from its timer branch, with the timeout the wait was opened with,
+// so a HotReload's new timeout applies to new waits only (producer.md §4.4).
+// producertest.CheckTimeoutSource checks an implementation against these rules.
+type TimeoutSource interface {
+	// Await opens the wait for a registered request, reports Awaiting on t as it opens it,
+	// and then reports exactly one terminal outcome on t.
+	Await(t Token, timeout time.Duration)
+}
+
 var _ Token = (*core.PendingEntry)(nil)
 
 // Pending returns the producer's send path.
