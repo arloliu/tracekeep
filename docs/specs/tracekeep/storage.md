@@ -22,7 +22,7 @@ Contract changes go through proposals, which the subject [README.md](README.md) 
   one shared conformance suite (§5.2).
 - **`Put` postconditions**: the object is visible only when complete; nil means durable;
   an error means nothing is visible, or the caller treats the key as unknown and the reconciler decides (§5.2).
-- **Keys**: exactly [STO §3], never overwritten;
+- **Keys**: exactly [STO §3] for packs, `exports/` for export bundles, never overwritten;
   bucket lifecycle rules may change the storage class under `archive/` and never expire anything (§5.2).
 - **Not this interface**: the claim bucket is a NATS object store on the traffic cluster (§5.2).
 - **Reconciler**: verifies an unknown key in full, quarantines one that is not `finalized-consistent` or has writer defects, and registers the rest with `ingest`'s transaction under the compactor lease;
@@ -76,7 +76,8 @@ a returned error means nothing is visible, or the caller treats the key as unkno
 - `fs` (standalone pilots, tests): write to `<root>/.partial/`, fsync the file, rename into place, fsync the directory.
 - `mem` (tests).
 
-Keys are exactly [STO §3];
+Keys of packs are exactly [STO §3];
+export bundles are tracekeep's own and live under `exports/` (`api.md` §10.1), outside [STO §3]'s key space;
 bucket lifecycle rules may change the storage class under `archive/` and must never expire anything.
 The claim bucket is a NATS object store on the traffic cluster, not this interface.
 

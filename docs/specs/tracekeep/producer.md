@@ -83,7 +83,7 @@ and this section is the contract between them.
   so the wait sits on the link itself);
   the wait depends on the holder being scheduled, not on the bus or any other system,
   and the design has no algorithm that removes it.
-  This is a **residual under LS-14 that the owner must accept or reject** (§13);
+  This is a **residual under LS-14**, which the owner accepted (T-9, §13);
   the design states it rather than claims a bound.
   The structures the section touches are preallocated at capture creation:
   the socket→epoch map holds 1024 sockets and the reservation set as many entries as the reserved lane;

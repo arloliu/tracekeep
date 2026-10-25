@@ -47,7 +47,8 @@ Section numbers are those of the specs in `docs/specs/tracekeep/`, whose `README
 
 ## Catalog transactions
 
-- **Lock order is capture row → `counters` row**, and nothing else is locked.
+- **Lock order is capture row → `leases` row → `counters` row**, and nothing else is locked;
+  the `leases` row is taken only by a transaction the compactor commits under its lease (merge, deletion, the reconciler's registration).
   One unexported helper of the catalog runs the prologue, so every transaction that admits, parks, registers, deletes, tombstones or evicts a pack of a capture,
   merges a scope of it or publishes its close starts with the update of the capture's row by construction;
   where the transaction allocates an event seq, the `counters` update is its last statement, and parking touches no counter.
