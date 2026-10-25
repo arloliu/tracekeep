@@ -62,6 +62,37 @@ func (o *Observer) ConnOptions() []hsms.ConnOption {
 	}
 }
 
+// AttachLifecycle subscribes the lifecycle observer to conn's state transitions;
+// call it before the connection opens, and the returned cancel after End.
+func (o *Observer) AttachLifecycle(conn hsms.Connection) (cancel func()) {
+	return conn.SubscribeLifecycle(o.lifecycle)
+}
+
+// lifecycle records one state transition (tracepack-go.md §5.1, §5.2), timed when it fired, in its generation's epoch.
+func (o *Observer) lifecycle(ev hsms.LifecycleEvent) {
+	c, ok := causes[ev.Cause]
+	if !ok {
+		c = causeMap{cause: tracepack.CauseUnknown}
+	}
+	o.event(ev.At.UnixNano(), core.Mono(ev.At), ev.Socket, &core.Event{
+		Kind: tracepack.EventStateTransition, Prev: state(ev.Previous), Cur: state(ev.Current),
+		Cause: c.cause, CauseRaw: c.raw, Timer: c.timer,
+	})
+}
+
+func state(s hsms.ConnState) tracepack.State {
+	switch s {
+	case hsms.NotConnectedState:
+		return tracepack.StateNotConnected
+	case hsms.NotSelectedState:
+		return tracepack.StateNotSelected
+	case hsms.SelectedState:
+		return tracepack.StateSelected
+	default:
+		return tracepack.StateUnknown
+	}
+}
+
 // wire records one frame (tracepack-go.md §5.5).
 // The gateway is the connection's host (vantage host), so an outbound frame travels host to equipment.
 func (o *Observer) wire(ev hsms.WireEvent) {

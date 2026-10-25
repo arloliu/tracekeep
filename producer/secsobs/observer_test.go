@@ -316,3 +316,93 @@ func TestCallbacksAllocateOnlyTheFrameCopy(t *testing.T) {
 		}
 	}
 }
+
+func TestLifecycleEvents(t *testing.T) {
+	t.Parallel()
+	transition := func(prev, cur tracepack.State, c tracepack.Cause, raw string) tracepack.TransportEvent {
+		return tracepack.TransportEvent{
+			Event: tracepack.EventStateTransition, PrevState: new(prev), CurState: new(cur), Cause: new(c), CauseRaw: new(raw),
+		}
+	}
+	timed := func(ev tracepack.TransportEvent, tm tracepack.Timer) tracepack.TransportEvent {
+		ev.Timer = new(tm)
+		return ev
+	}
+	tests := []struct {
+		name string
+		ev   hsms.LifecycleEvent
+		want tracepack.TransportEvent
+	}{
+		{
+			"selected", hsms.LifecycleEvent{Previous: hsms.NotSelectedState, Current: hsms.SelectedState, Cause: hsms.CauseSelectAccepted},
+			transition(tracepack.StateNotSelected, tracepack.StateSelected, tracepack.CauseSelectAccepted, "go-secs:CauseSelectAccepted"),
+		},
+		{
+			"T6", hsms.LifecycleEvent{Previous: hsms.NotSelectedState, Current: hsms.NotConnectedState, Cause: hsms.CauseT6Timeout},
+			timed(transition(tracepack.StateNotSelected, tracepack.StateNotConnected, tracepack.CauseTimerExpiry, "go-secs:CauseT6Timeout"), tracepack.TimerT6),
+		},
+		{
+			"linktest", hsms.LifecycleEvent{Previous: hsms.SelectedState, Current: hsms.NotConnectedState, Cause: hsms.CauseLinktestFail},
+			transition(tracepack.StateSelected, tracepack.StateNotConnected, tracepack.CauseLinktestFailure, "go-secs:CauseLinktestFail"),
+		},
+		{
+			"handler exit", hsms.LifecycleEvent{Previous: hsms.SelectedState, Current: hsms.NotConnectedState, Cause: hsms.CauseHandlerExit},
+			transition(tracepack.StateSelected, tracepack.StateNotConnected, tracepack.CauseImplementationFault, "go-secs:CauseHandlerExit"),
+		},
+		{
+			"unknown cause", hsms.LifecycleEvent{Previous: hsms.SelectedState, Current: hsms.NotConnectedState, Cause: 200},
+			tracepack.TransportEvent{
+				Event: tracepack.EventStateTransition, PrevState: new(tracepack.StateSelected), CurState: new(tracepack.StateNotConnected),
+				Cause: new(tracepack.CauseUnknown),
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			h := newHarness(t)
+			tt.ev.Socket, tt.ev.Generation, tt.ev.At = 3, 1, time.Now()
+			h.obs.lifecycle(tt.ev)
+			r := h.records(1)[0]
+			if r.Epoch != 1 || r.TSUTCNs != tt.ev.At.UnixNano() {
+				t.Errorf("record = %+v", r)
+			}
+			if got := event(t, &r); !reflect.DeepEqual(got, tt.want) {
+				t.Errorf("event = %+v, want %+v", got, tt.want)
+			}
+		})
+	}
+}
+
+// lifecycleConn is the one method of hsms.Connection that AttachLifecycle calls.
+type lifecycleConn struct {
+	hsms.Connection
+	fn        func(hsms.LifecycleEvent)
+	cancelled bool
+}
+
+func (c *lifecycleConn) SubscribeLifecycle(fn func(hsms.LifecycleEvent)) func() {
+	c.fn = fn
+	return func() { c.cancelled = true }
+}
+
+func TestAttachLifecycleSubscribes(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t)
+	conn := &lifecycleConn{}
+	cancel := h.obs.AttachLifecycle(conn)
+	conn.fn(hsms.LifecycleEvent{Previous: hsms.NotConnectedState, Current: hsms.NotSelectedState, Cause: hsms.CauseLocalOpen, Socket: 3, At: time.Now()})
+
+	want := tracepack.TransportEvent{
+		Event: tracepack.EventStateTransition, PrevState: new(tracepack.StateNotConnected), CurState: new(tracepack.StateNotSelected),
+		Cause: new(tracepack.CauseLocalOpen), CauseRaw: new("go-secs:CauseLocalOpen"),
+	}
+	r := h.records(1)[0]
+	if got := event(t, &r); !reflect.DeepEqual(got, want) {
+		t.Errorf("event = %+v, want %+v", got, want)
+	}
+	cancel()
+	if !conn.cancelled {
+		t.Errorf("cancel did not cancel the subscription")
+	}
+}
