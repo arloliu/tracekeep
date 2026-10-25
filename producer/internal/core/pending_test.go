@@ -276,3 +276,43 @@ func TestPendingReportsDoNotAllocate(t *testing.T) {
 		t.Fatalf("reports allocate %v times", n)
 	}
 }
+
+// Past the cap a new key cannot be remembered, so its entry is ambiguous from the start:
+// a reuse after the entry is gone could not be detected.
+func TestPendingKeyPastTheCapIsAmbiguous(t *testing.T) {
+	t.Parallel()
+	pt, clk := newTestPending(t, 1)
+	if a := pt.Register(1, 1, "c"); a.Ambiguous() {
+		t.Fatalf("a key within the cap is ambiguous")
+	}
+	b := pt.Register(1, 2, "c")
+	clk.advance(time.Hour)
+	pt.Sweep()
+	again := pt.Register(1, 2, "c")
+	if !b.Ambiguous() || !again.Ambiguous() {
+		t.Fatalf("ambiguous b=%v again=%v, want both", b.Ambiguous(), again.Ambiguous())
+	}
+	if n := pt.Counters().Ambiguous; n != 0 {
+		t.Fatalf("ambiguous count %d, want 0: no key was reused while remembered", n)
+	}
+}
+
+// A report that ends a live entry allocates nothing.
+func TestPendingLiveReportsDoNotAllocate(t *testing.T) {
+	pt, _ := newTestPending(t, 0)
+	toks := make([]*PendingEntry, 0, 101)
+	for i := range 101 {
+		toks = append(toks, pt.Register(1, uint32(i), "c")) //nolint:gosec // i < 101
+	}
+	i := 0
+	n := testing.AllocsPerRun(100, func() {
+		e := toks[i]
+		i++
+		e.Sent()
+		e.Awaiting(time.Minute)
+		e.Replied()
+	})
+	if n != 0 {
+		t.Fatalf("live reports allocate %v times", n)
+	}
+}

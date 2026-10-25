@@ -1,6 +1,7 @@
 package core
 
 import (
+	"runtime"
 	"testing"
 	"time"
 
@@ -136,10 +137,15 @@ func TestForwardedTimeoutDoesNotAllocate(t *testing.T) {
 // Bind runs in the wire observer, whose only allocation is the frame copy.
 func TestBindDoesNotAllocate(t *testing.T) {
 	pt, _ := newTestPending(t, 0)
-	pt.Register(0x0102, 0x0a0b0c0d, "c")
+	pt.SetSocket(5)
+	for i := range 101 {
+		pt.Register(0x0102, uint32(i), "c") //nolint:gosec // i < 101
+	}
+	i := 0
 	n := testing.AllocsPerRun(100, func() {
-		pt.Bind(0x0102, 0x0a0b0c0d, 1, 3, 5)
+		pt.Bind(0x0102, uint32(i), 1, 3, 5)  //nolint:gosec // i < 101
 		pt.Bind(0x0102, 0x0a0b0c0e, 1, 3, 5) // no entry
+		i++
 	})
 	if n != 0 {
 		t.Fatalf("Bind allocates %v times", n)
@@ -159,5 +165,75 @@ func TestBindKeepsTheFirstFrame(t *testing.T) {
 	e := <-r.Ordinary()
 	if e.Event.Stream != 1 || e.Event.Function != 3 {
 		t.Fatalf("T3 names S%dF%d, want S1F3", e.Event.Stream, e.Event.Function)
+	}
+}
+
+// An outbound frame observed on the old socket after a reconnect still leaves the entry ambiguous.
+func TestDelayedFrameOfTheOldSocketIsAmbiguous(t *testing.T) {
+	t.Parallel()
+	r, _ := newForwardRecorder(t)
+	r.Pending.SetSocket(5)
+	tok := r.Pending.Register(2, 77, "c")
+	r.Pending.SetSocket(6)
+	r.Pending.Bind(2, 77, 1, 3, 5)
+
+	tok.TimedOut(time.Second)
+	if n := len(r.Ordinary()); n != 0 {
+		t.Fatalf("%d records, want none", n)
+	}
+	if n := r.Pending.Counters().TimeoutsDropped[TimeoutAmbiguous]; n != 1 {
+		t.Fatalf("ambiguous timeouts %d, want 1", n)
+	}
+}
+
+// A timeout while Bind is held after it found the reconnect, before it records the socket, emits nothing:
+// the entry is ambiguous before it is bound.
+func TestTimeoutDuringAReconnectedBindEmitsNothing(t *testing.T) {
+	t.Parallel()
+	r, _ := newForwardRecorder(t)
+	r.Pending.SetSocket(5)
+	tok := r.Pending.Register(2, 77, "c")
+	r.Pending.SetSocket(6)
+	r.Pending.bindHook = func() {
+		tok.TimedOut(time.Second)
+		if n := len(r.Ordinary()); n != 0 {
+			t.Errorf("%d records from a timeout inside Bind, want none", n)
+		}
+	}
+	r.Pending.Bind(2, 77, 1, 3, 6)
+	if !tok.Ambiguous() {
+		t.Fatalf("a request registered before the reconnect is not ambiguous")
+	}
+}
+
+// The first lookup of a fresh table, which a go-secs request with no registration makes, allocates nothing.
+func TestFirstBindDoesNotAllocate(t *testing.T) {
+	pt, _ := newTestPending(t, 0)
+	var before, after runtime.MemStats
+	runtime.ReadMemStats(&before)
+	pt.Bind(1, 1, 1, 3, 5)
+	runtime.ReadMemStats(&after)
+	if n := after.Mallocs - before.Mallocs; n != 0 {
+		t.Fatalf("the first Bind allocates %d times", n)
+	}
+}
+
+// T3 takes the epoch the current capture's map holds for the bound socket, not a fixed one.
+func TestForwardedTimeoutTakesTheSocketsEpoch(t *testing.T) {
+	t.Parallel()
+	r, _ := newTestRecorder(t, RecorderParams{})
+	for _, s := range []uint64{4, 5} {
+		o := frameObs(1, []byte{1})
+		o.Socket = s
+		r.Observe(o)
+		popOrdinary(t, r)
+	}
+	r.Pending.SetSocket(5)
+	tok := r.Pending.Register(2, 77, "c")
+	r.Pending.Bind(2, 77, 1, 3, 5)
+
+	tok.TimedOut(time.Second)
+	if e := <-r.Ordinary(); e.Epoch != 2 {
+		t.Fatalf("T3 in epoch %d, want socket 5's epoch 2", e.Epoch)
 	}
 }

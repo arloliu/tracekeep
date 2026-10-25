@@ -122,6 +122,8 @@ type PendingTable struct {
 	socket atomic.Uint64
 	// emit records a forwarded request's T3; the recorder sets it.
 	emit func(e *PendingEntry, effective time.Duration)
+	// bindHook, set only by tests, holds Bind once the entry's ambiguity is decided and before its socket is recorded.
+	bindHook func()
 
 	ignored         [NumIgnoredReasons]atomic.Uint64
 	ambiguous       atomic.Uint64
@@ -158,7 +160,7 @@ func NewPendingTable(p PendingParams) *PendingTable {
 		now = func() int64 { return Mono(time.Now()) }
 	}
 
-	return &PendingTable{
+	t := &PendingTable{
 		grace:     int64(p.Grace),
 		unawaited: int64(p.Unawaited),
 		maxKeys:   p.MaxKeys,
@@ -166,6 +168,10 @@ func NewPendingTable(p PendingParams) *PendingTable {
 		seen:      make(map[uint64]struct{}),
 		live:      make(map[*PendingEntry]struct{}),
 	}
+	// A sync.Map allocates its root on first use; that use must not be an observer's callback.
+	t.latest.Load(uint64(0))
+
+	return t
 }
 
 // Register records a forwarded W-bit primary before it is sent and returns its entry, whose methods are its token.
@@ -182,7 +188,9 @@ func (t *PendingTable) Register(sessionID uint16, systemBytes uint32, channel st
 	} else if t.maxKeys == 0 || len(t.seen) < t.maxKeys {
 		t.seen[k] = struct{}{}
 	} else {
+		// The set cannot remember the key, so a later reuse of it would go unseen: no T3 is attributed to it.
 		t.capped = true
+		e.ambiguous.Store(true)
 	}
 	if old, ok := t.latest.Load(k); ok {
 		reused = true
@@ -220,17 +228,23 @@ func (t *PendingTable) SetSocket(socket uint64) {
 
 // Bind binds the newest entry of a key to the socket its outbound frame went out on, from the wire observer;
 // it takes no lock and allocates nothing.
-// Only the first frame binds, and a socket other than the newest at registration marks the entry ambiguous:
-// the connection was replaced between registration and send.
+// Only the first frame binds.
+// A reconnect between registration and this observation marks the entry ambiguous,
+// whether the frame went out on the new socket or is a delayed frame of the old one;
+// the mark precedes the binding, so a timeout that sees the binding sees the mark too.
 func (t *PendingTable) Bind(sessionID uint16, systemBytes uint32, stream, function uint8, socket uint64) {
 	e := t.Lookup(sessionID, systemBytes)
 	if e == nil || socket == 0 || e.bound.Load() != 0 {
 		return
 	}
-	e.hdr.Store(uint32(stream)<<8 | uint32(function))
-	if e.bound.CompareAndSwap(0, socket) && socket != e.regSocket {
+	if socket != e.regSocket || t.socket.Load() != e.regSocket {
 		t.markAmbiguous(e)
 	}
+	if t.bindHook != nil {
+		t.bindHook()
+	}
+	e.hdr.Store(uint32(stream)<<8 | uint32(function))
+	e.bound.CompareAndSwap(0, socket)
 }
 
 // Sweep expires every entry past its expiry.
