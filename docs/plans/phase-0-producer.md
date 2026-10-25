@@ -36,7 +36,7 @@ What needs a real server is tested in `producer/internal/bustest` (T-35), which 
 
 | Step | Scope | State |
 |---|---|---|
-| 1 | `busconfig`: the traffic stream's and the claim bucket's settings of [STO §4] *Stream settings* and T-28, the bucket's stream name, the duplicate window | pending |
-| 2 | `Preflight` over `Bus` (`StreamInfo`, `CheckConn`), against `producertest`'s bus: stream and bucket settings, `max_payload`, TLS, the reconnect buffer, the current capture's `start` and descriptor | pending |
-| 3 | the default connection: `New` dials in the background with the correctness-bearing options, the two publish option sets, chunked claim objects; `WithConn`; a bus not yet connected counts as down; the `bustest` module; removes the `shortcut:` in `producer.go` | pending |
-| 4 | against `internal/testbus`: the synchronous `start` with the production option set, a publish while disconnected fails at once, a multi-chunk claim object at `max_payload` 4140, `Preflight` naming each misconfiguration, and its background run once connected | pending |
+| 1 | `busconfig`: the traffic stream's and the claim bucket's settings of [STO §4] *Stream settings* and T-28, the bucket's stream name, the duplicate window | done (d8d1004) |
+| 2 | `Preflight` over `Bus` (`StreamInfo`, `CheckConn`), against `producertest`'s bus: stream and bucket settings, `max_payload`, TLS, the reconnect buffer, the current capture's `start` and descriptor | done (827758c) |
+| 3 | the default connection: `New` dials in the background with the correctness-bearing options, the two publish option sets, chunked claim objects; `WithConn`; a bus not yet connected counts as down; the `bustest` module; removes the `shortcut:` in `producer.go` | done (aa99d56, 69f0806) |
+| 4 | against `internal/testbus`: the synchronous `start` with the production option set, a publish while disconnected fails at once, a multi-chunk claim object at `max_payload` 4140, `Preflight` naming each misconfiguration, and its background run once connected | done (0fc7f7c) |
