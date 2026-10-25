@@ -29,6 +29,10 @@ func TestTunablesDefaults(t *testing.T) {
 	if got.ClockStepTolerance != time.Second {
 		t.Errorf("ClockStepTolerance = %v, want 1s (T-29)", got.ClockStepTolerance)
 	}
+	// The send path's bounds (T-31, producer.md §4.6).
+	if got.ReportingGrace != 5*time.Second || got.UnawaitedExpiry != 30*time.Second || got.AmbiguityKeys != 4_000_000 {
+		t.Errorf("send path defaults = %v, %v, %d; want 5s, 30s, 4000000", got.ReportingGrace, got.UnawaitedExpiry, got.AmbiguityKeys)
+	}
 	if got.OrdinaryLaneRecords <= 0 || got.OrdinaryLaneBytes <= 0 || got.FaultBackoff <= 0 {
 		t.Errorf("unset defaults: %+v", got)
 	}

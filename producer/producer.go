@@ -134,6 +134,9 @@ func New(cfg Config, opts ...Option) (*Producer, error) {
 			ReservedCap:     tun.ReservedLaneRecords,
 			OrdinaryRecords: tun.OrdinaryLaneRecords,
 			OrdinaryBytes:   tun.OrdinaryLaneBytes,
+			Pending: core.PendingParams{
+				Grace: tun.ReportingGrace, Unawaited: tun.UnawaitedExpiry, MaxKeys: tun.AmbiguityKeys,
+			},
 		}),
 		log:      o.log,
 		metrics:  o.metrics,

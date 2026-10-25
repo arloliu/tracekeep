@@ -46,7 +46,11 @@ func (m *metrics) Add(name string, labels map[string]string, delta float64) {
 	defer m.mu.Unlock()
 	m.counts[m.key(name, labels)] += delta
 }
-func (m *metrics) Set(string, map[string]string, float64)     {}
+func (m *metrics) Set(name string, labels map[string]string, value float64) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.counts[m.key(name, labels)] = value
+}
 func (m *metrics) Observe(string, map[string]string, float64) {}
 func (m *metrics) Delete(string, map[string]string)           {}
 

@@ -28,6 +28,12 @@ const (
 	DefaultFaultBackoff = 30 * time.Second
 	// DefaultClockStepTolerance is ε (T-29).
 	DefaultClockStepTolerance = tracepack.DefaultClockStepTolerance
+	// DefaultReportingGrace is the send path's reporting grace past a wait (T-31).
+	DefaultReportingGrace = 5 * time.Second
+	// DefaultUnawaitedExpiry is how long a registered request no wait was opened on is kept (T-31).
+	DefaultUnawaitedExpiry = 30 * time.Second
+	// DefaultAmbiguityKeys caps the set of every key registered in the process (producer.md §4.6).
+	DefaultAmbiguityKeys = 4_000_000
 )
 
 // ErrInvalidConfig reports a Config New refuses.
@@ -95,6 +101,12 @@ type Tunables struct {
 	// ClockStepTolerance is ε, the wall-against-monotonic drift a capture tolerates before it records a clock step (T-29);
 	// every capture's descriptor carries it as clock_step_tolerance_ns.
 	ClockStepTolerance time.Duration
+	// ReportingGrace is how long past the end of its wait a forwarded request is kept for late reports (T-31).
+	ReportingGrace time.Duration
+	// UnawaitedExpiry is how long after its registration a forwarded request no wait was opened on is kept (T-31).
+	UnawaitedExpiry time.Duration
+	// AmbiguityKeys caps the set of every (session id, System Bytes) registered in the process (producer.md §4.6).
+	AmbiguityKeys int
 }
 
 func (c *Config) validate() error {
@@ -134,7 +146,7 @@ func (a *AuthConfig) validate() error {
 func (t Tunables) validate() error {
 	if t.ReservedLaneRecords < 0 || t.OrdinaryLaneRecords < 0 || t.OrdinaryLaneBytes < 0 ||
 		t.ReservationTimeout < 0 || t.RetryHorizon < 0 || t.PublishTimeout < 0 || t.StallWait < 0 || t.FaultBackoff < 0 ||
-		t.ClockStepTolerance < 0 {
+		t.ClockStepTolerance < 0 || t.ReportingGrace < 0 || t.UnawaitedExpiry < 0 || t.AmbiguityKeys < 0 {
 		return fmt.Errorf("%w: negative tunable in %+v", ErrInvalidConfig, t)
 	}
 
@@ -151,6 +163,9 @@ func (t Tunables) withDefaults() Tunables {
 	orDefault(&t.StallWait, DefaultStallWait)
 	orDefault(&t.FaultBackoff, DefaultFaultBackoff)
 	orDefault(&t.ClockStepTolerance, DefaultClockStepTolerance)
+	orDefault(&t.ReportingGrace, DefaultReportingGrace)
+	orDefault(&t.UnawaitedExpiry, DefaultUnawaitedExpiry)
+	orDefault(&t.AmbiguityKeys, DefaultAmbiguityKeys)
 
 	return t
 }

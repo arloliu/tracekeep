@@ -21,6 +21,15 @@ const (
 	metricsInterval = time.Second
 )
 
+// ignoredReasons labels pending_reports_ignored_total.
+var ignoredReasons = [core.NumIgnoredReasons]string{
+	core.IgnoredDuplicateProgress: "duplicate_progress",
+	core.IgnoredDuplicateAwaiting: "duplicate_awaiting",
+	core.IgnoredSealed:            "sealed",
+	core.IgnoredRemoved:           "removed",
+	core.IgnoredExpired:           "expired",
+}
+
 // dropReasons labels records_dropped_total.
 var dropReasons = [core.NumDropReasons]string{
 	core.DropLaneFull:      "lane_full",
@@ -117,6 +126,7 @@ type reported struct {
 	dropped   [core.NumDropReasons]uint64
 	dropBytes uint64
 	claimPuts map[string]uint64
+	pending   core.PendingCounters
 }
 
 func newPublisher(p *Producer, bus Bus) *publisher {
@@ -141,6 +151,7 @@ func (pb *publisher) run(quit <-chan struct{}) {
 		pb.finishEnds()
 		pb.pass()
 		pb.finishEnds()
+		rec.Pending.Sweep()
 		pb.report(false)
 
 		// Idle, it still wakes every half reservation timeout: a reservation can go stale with nothing else moving.
@@ -732,6 +743,17 @@ func (pb *publisher) report(force bool) {
 		connected = 0
 	}
 	m.Set("bus_connected", nil, connected)
+	pc := rec.Pending.Counters()
+	for i := range core.NumIgnoredReasons {
+		if delta := pc.Ignored[i] - last.pending.Ignored[i]; delta > 0 {
+			m.Add("pending_reports_ignored_total", map[string]string{"reason": ignoredReasons[i]}, float64(delta))
+		}
+	}
+	if delta := pc.Ambiguous - last.pending.Ambiguous; delta > 0 {
+		m.Add("ambiguous_total", nil, float64(delta))
+	}
+	m.Set("pending_requests", nil, float64(pc.Live))
+	last.pending = pc
 
 	last.core, last.published, last.steps, last.dropped, last.dropBytes = c, pb.published, pb.clockSteps, pb.dropped, pb.dropBytes
 }
