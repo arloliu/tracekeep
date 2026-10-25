@@ -1,10 +1,14 @@
 // Command tracekeep-sim is the reference producer on the SDK:
 // it drives the SDK exactly as an equipment gateway does, from a go-secs HSMS-SS loopback pair with the SDK's observers,
 // and publishes the captures to a traffic bus (docs/ROADMAP.md, phase 0).
+//
+// In loopback mode the host forwards requests at a steady rate and the equipment answers them;
+// in replay mode the pair carries a synthetic or masked tracepack pack's frames, each from the side that sent it.
 package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"log/slog"
@@ -21,6 +25,9 @@ import (
 const stopTimeout = 10 * time.Second
 
 type config struct {
+	mode     string
+	pack     string
+	speed    float64
 	servers  string
 	prefix   string
 	bucket   string
@@ -32,6 +39,9 @@ type config struct {
 
 func main() {
 	var c config
+	flag.StringVar(&c.mode, "mode", "loopback", "loopback, or replay of -pack")
+	flag.StringVar(&c.pack, "pack", "", "the tracepack pack replay mode sends; synthetic or masked data only")
+	flag.Float64Var(&c.speed, "speed", 1, "replay at the pack's pace times speed; 0 sends as fast as the pair takes it")
 	flag.StringVar(&c.servers, "servers", "nats://127.0.0.1:4222", "comma-separated NATS URLs of the traffic bus")
 	flag.StringVar(&c.prefix, "prefix", "tpk", "the traffic stream's subject prefix")
 	flag.StringVar(&c.bucket, "bucket", "tpk-objects", "the claim bucket")
@@ -55,9 +65,16 @@ func main() {
 }
 
 func run(ctx context.Context, c *config) error {
-	if c.rate <= 0 {
+	switch {
+	case c.mode == "loopback" && c.rate <= 0:
 		return fmt.Errorf("rate %v: must be positive", c.rate)
+	case c.mode == "replay" && (c.pack == "" || c.speed < 0):
+		return errors.New("replay needs -pack and a speed of 0 or more")
+	case c.mode != "loopback" && c.mode != "replay":
+		return fmt.Errorf("mode %q: want loopback or replay", c.mode)
+	default:
 	}
+	c.opts.Replay = c.mode == "replay"
 	log := slog.New(slog.NewTextHandler(os.Stderr, nil))
 	p, err := producer.New(producer.Config{
 		Servers: strings.Split(c.servers, ","), SubjectPrefix: c.prefix, Stream: c.stream, ClaimBucket: c.bucket,
@@ -79,21 +96,35 @@ func run(ctx context.Context, c *config) error {
 		ctx, cancel = context.WithTimeout(ctx, c.duration)
 		defer cancel()
 	}
-	tick := time.NewTicker(time.Duration(float64(time.Second) / c.rate))
+	var runErr error
+	if c.opts.Replay {
+		var n int
+		n, runErr = replayPack(ctx, l, c.pack, c.speed)
+		log.Info("tracekeep-sim: replayed", "frames", n)
+		// The pack's last requests get their waits before the device stops.
+		_ = sleepUntil(ctx, time.Now().Add(c.opts.T3))
+	} else {
+		forward(ctx, l, c.rate, log)
+	}
+	sctx, cancel := context.WithTimeout(context.Background(), stopTimeout)
+	defer cancel()
+	l.Stop(sctx)
+
+	return runErr
+}
+
+// forward relays requests at rate per second until ctx ends.
+func forward(ctx context.Context, l *Loopback, rate float64, log *slog.Logger) {
+	tick := time.NewTicker(time.Duration(float64(time.Second) / rate))
 	defer tick.Stop()
-	for done := false; !done; {
+	for {
 		select {
 		case <-ctx.Done():
-			done = true
+			return
 		case <-tick.C:
 			if err := l.Forward(ctx); err != nil && ctx.Err() == nil {
 				log.Warn("tracekeep-sim: forward failed", "error", err)
 			}
 		}
 	}
-	sctx, cancel := context.WithTimeout(context.Background(), stopTimeout)
-	defer cancel()
-	l.Stop(sctx)
-
-	return nil
 }
