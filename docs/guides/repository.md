@@ -35,14 +35,14 @@ tracekeep/
 
 
 The service module requires the SDK module by version (no `replace`:
-the committed `go.work` joins the two modules for development, T-17);
+a local, gitignored `go.work` joins the two modules for development, T-27);
 the SDK requires tracepack (which itself requires go-secs/v2) and nats.go, nothing else;
 a Prometheus `Metrics` adapter is the producer's own few lines, not an SDK package.
 Conventions (rules, doc lifecycle, semantic linefeeds, lint) are copied from veq so the two repositories read alike.
 
 The layout is the target; a directory is created when its first code lands (`.agents/rules/100-overview.md`).
 The layout's one correction to the seed is the sentence on `replace`:
-an owner decision (T-17) replaced it with the committed workspace.
+an owner decision replaced it with a workspace, now a local one (T-27).
 
 ## The two modules
 
@@ -50,10 +50,11 @@ an owner decision (T-17) replaced it with the committed workspace.
 - `github.com/arloliu/tracekeep/producer` in `producer/`:
   the SDK, its own `go.mod`, depending only on tracepack and nats.go (T-16).
 
-`go.work` names both and is committed with `go.work.sum`.
+`go.work` names both; `make work` creates it, and it stays out of the repository with `go.work.sum` (T-27),
+as in go-secs, so a committed workspace never hides a broken `go.mod` or overrides a developer's own.
 The service requires the SDK by version and carries no `replace`, so it also builds with `GOWORK=off`;
 until the SDK's first tag the service imports nothing from it and does not require it, since no version resolves without the workspace;
-the SDK resolves its own `go.mod`, never the service's graph, so the Makefile runs it with `GOWORK=off` (T-17).
+the SDK resolves its own `go.mod`, never the service's graph, so the Makefile runs it with `GOWORK=off` (T-27).
 
 ## Setup and checks
 

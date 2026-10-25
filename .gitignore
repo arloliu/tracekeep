@@ -6,6 +6,10 @@
 !/data/README.md
 !/data/.gitignore
 
+# Local Go workspace (make work), never committed (T-27).
+/go.work
+/go.work.sum
+
 # Build and test outputs.
 /dist/
 coverage.out

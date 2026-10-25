@@ -163,7 +163,7 @@ golangci-lint 2.15.0, the latest release, built for Go 1.26.
 
 Two modules: the service (`github.com/arloliu/tracekeep`) and the SDK (`github.com/arloliu/tracekeep/producer`, its own `go.mod`, depending only on tracepack and nats.go).
 
-### T-17 — workspace
+### T-17 — workspace (superseded by T-27)
 
 `go.work` at the root names both modules and is committed, with `go.work.sum`;
 the service's `go.mod` requires the SDK by version and carries no `replace`;
@@ -247,3 +247,13 @@ each of its six items is applied as its own change to the spec files it names, i
 For item 4 the SDK's lifecycle vocabulary is `Begin`, `Rotate` and `End`:
 the SDK does not take the gateway's verbs, and `producer.md` maps the device's `Start`, `Stop` and `HotReload` onto them once.
 Item 5's token protocol is reviewed with the eqp-hub maintainers before phase G.
+
+### T-27 — local workspace (2026-10-25)
+
+`go.work` and `go.work.sum` are not committed; they are gitignored, and `make work` creates `go.work` with both modules, as in go-secs.
+A committed workspace can make a build pass against local modules that a consumer's `go get` would not see,
+and it overrides a workspace a developer sets up for wider work, such as one that adds go-secs.
+The rest of T-17 stands:
+the service's `go.mod` requires the SDK by version and carries no `replace`,
+CI builds the service with `GOWORK=off`, and the SDK is never built through a workspace.
+When the service starts importing the SDK, a CI leg that creates the workspace can verify a change spanning both modules.

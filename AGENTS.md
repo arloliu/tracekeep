@@ -10,7 +10,7 @@ it consumes the SECS/HSMS traffic records an equipment gateway publishes on NATS
 writes them as tracepack captures into S3-compatible storage,
 and serves them to the VE generation service and to people troubleshooting tools.
 
-Two Go modules live here, joined by the committed `go.work`:
+Two Go modules live here, joined for local development by a gitignored `go.work` that `make work` creates:
 
 - `github.com/arloliu/tracekeep` — the service, one binary (`cmd/tracekeep`);
 - `github.com/arloliu/tracekeep/producer` — the producer SDK an equipment gateway links, its own `go.mod`.

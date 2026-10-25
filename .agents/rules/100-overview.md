@@ -13,7 +13,7 @@ The design is in `docs/specs/tracekeep/`; the roadmap is `docs/ROADMAP.md`.
 | `github.com/arloliu/tracekeep` | `.` | the service: `cmd/`, `internal/`, migrations, `web/`, `deploy/` |
 | `github.com/arloliu/tracekeep/producer` | `producer/` | the producer SDK, tagged `producer/vX.Y.Z` |
 
-`go.work` joins the two for development and is committed with `go.work.sum`.
+`go.work` joins the two for local development; `make work` creates it, and it is gitignored with `go.work.sum` (T-27).
 The service requires the SDK by version and carries no `replace`, so it also builds with `GOWORK=off`;
 until the SDK's first tag it does not require the SDK at all.
 

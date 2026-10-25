@@ -41,6 +41,9 @@ docs-check: ## Check docs/ against .agents/rules/450-doc-lifecycle.md
 data-check: ## Check that git tracks nothing under data/ but its README.md and .gitignore
 	@python3 scripts/data-check.py
 
+work: ## Create the local go.work joining the service and the SDK (gitignored, T-27)
+	@go work init . ./producer
+
 hooks: ## Enable the repository's git hooks (data-check before every commit); once per clone
 	@git config core.hooksPath scripts/hooks
 
@@ -57,4 +60,4 @@ bench: ## Run benchmarks in both modules
 ci: check docs-check data-check test ## Every gate, plus the service built without the workspace
 	@GOWORK=off go build ./...
 
-.PHONY: help lint fmt vet check docs-check data-check hooks test bench ci
+.PHONY: help lint fmt vet check docs-check data-check work hooks test bench ci
