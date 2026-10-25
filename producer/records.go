@@ -2,6 +2,7 @@ package producer
 
 import (
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"fmt"
 	"strconv"
@@ -38,20 +39,23 @@ func materialize(e *core.Entry) (tracepack.Record, error) {
 	if r.Epoch == 0 {
 		r.Quality |= tracepack.QualityCorrelationIncomplete
 	}
-	if e.Kind == core.EntryObserved {
-		r.Kind, r.Dir, r.Fidelity, r.Payload = e.RecKind, e.Dir, e.Fidelity, e.Payload
-		return r, nil
-	}
-
-	ev := tracepack.TransportEvent{Event: tracepack.EventCaptureBoundary}
+	var ev tracepack.TransportEvent
 	switch e.Kind {
+	case core.EntryObserved:
+		if e.RecKind != tracepack.KindTransportEvent {
+			r.Kind, r.Dir, r.Fidelity, r.Payload = e.RecKind, e.Dir, e.Fidelity, e.Payload
+			return r, nil
+		}
+		var err error
+		if ev, err = observedEvent(&e.Event); err != nil {
+			return r, err
+		}
 	case core.EntryStart:
-		ev.BoundaryKind = new(tracepack.BoundaryKindStart)
+		ev = tracepack.TransportEvent{Event: tracepack.EventCaptureBoundary, BoundaryKind: new(tracepack.BoundaryKindStart)}
 	case core.EntryStop:
-		ev.BoundaryKind = new(tracepack.BoundaryKindStop)
+		ev = tracepack.TransportEvent{Event: tracepack.EventCaptureBoundary, BoundaryKind: new(tracepack.BoundaryKindStop)}
 	case core.EntryClockStep:
 		ev = tracepack.TransportEvent{Event: tracepack.EventClockStep, ClockStepNs: new(e.Drift)}
-	case core.EntryObserved:
 	default:
 		return r, fmt.Errorf("producer: unknown entry kind %d", e.Kind)
 	}
@@ -62,6 +66,43 @@ func materialize(e *core.Entry) (tracepack.Record, error) {
 	r.Kind, r.Dir, r.Fidelity, r.Payload = tracepack.KindTransportEvent, tracepack.DirLocal, tracepack.FidelityNotApplicable, payload
 
 	return r, nil
+}
+
+// observedEvent builds the transport event an observer reported, with the tags its kind carries (tracepack-go.md §5);
+// an observer never reports a capture boundary or a clock step, which the SDK writes itself.
+func observedEvent(o *core.Event) (tracepack.TransportEvent, error) {
+	ev := tracepack.TransportEvent{Event: o.Kind}
+	switch o.Kind {
+	case tracepack.EventSocketConnect, tracepack.EventSocketAccept:
+		ev.SocketRole = new(o.Role)
+	case tracepack.EventSocketClose:
+		ev.Cause = new(o.Cause)
+		if o.Role != tracepack.SocketRoleUnknown {
+			ev.SocketRole = new(o.Role)
+		}
+	case tracepack.EventStateTransition:
+		ev.PrevState, ev.CurState, ev.Cause = new(o.Prev), new(o.Cur), new(o.Cause)
+		if o.Timer != tracepack.TimerNone {
+			ev.Timer = new(o.Timer)
+		}
+	case tracepack.EventTimerExpiry:
+		ev.Timer = new(o.Timer)
+		if o.Timer != tracepack.TimerT3 {
+			break
+		}
+		ev.PrimarySessionID = new(uint64(o.SessionID))
+		ev.PrimaryStream, ev.PrimaryFunction = new(uint64(o.Stream)), new(uint64(o.Function))
+		binary.BigEndian.PutUint32(ev.PrimarySystemBytes[:], o.SystemBytes)
+		ev.PrimarySystemBytesPresent = true
+	case tracepack.EventUnknown, tracepack.EventCaptureBoundary, tracepack.EventClockStep:
+		return ev, fmt.Errorf("producer: an observer reported a %v event", o.Kind)
+	default:
+	}
+	if o.CauseRaw != "" {
+		ev.CauseRaw = new(o.CauseRaw)
+	}
+
+	return ev, nil
 }
 
 // buildMessage encodes e as its bus message: inline when its body fits max_payload − 4096, else by claim-check.
