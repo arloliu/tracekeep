@@ -105,9 +105,6 @@ func trafficProblems(s *StreamInfo, want *jetstream.StreamConfig) []string {
 	if !slices.Contains(s.Subjects, want.Subjects[0]) {
 		out = append(out, fmt.Sprintf("stream %s takes subjects %q, not %s", s.Name, s.Subjects, want.Subjects[0]))
 	}
-	if s.MaxMsgsPerSubject > 0 {
-		out = append(out, fmt.Sprintf("stream %s keeps at most %d messages per subject, want no limit", s.Name, s.MaxMsgsPerSubject))
-	}
 	if s.Derived {
 		out = append(out, fmt.Sprintf("stream %s has a mirror or sources, whose sequences are not its own", s.Name))
 	}
@@ -115,18 +112,25 @@ func trafficProblems(s *StreamInfo, want *jetstream.StreamConfig) []string {
 	return append(out, sharedProblems(s)...)
 }
 
-// claimProblems checks the claim bucket's stream: file storage, no limit, no direct reads (T-28).
+// claimProblems checks the claim bucket's stream: limits retention and file storage, no limit, no direct reads (T-28).
+// Another retention can drop a chunk the put was acknowledged for: interest retention stores nothing without a consumer.
 func claimProblems(s *StreamInfo) []string {
 	var out []string
-	if want := jetstream.FileStorage.String(); s.Storage != want {
-		out = append(out, fmt.Sprintf("stream %s has storage %s, want %s", s.Name, s.Storage, want))
+	for _, f := range []struct{ name, got, want string }{
+		{"retention", s.Retention, jetstream.LimitsPolicy.String()},
+		{"storage", s.Storage, jetstream.FileStorage.String()},
+	} {
+		if f.got != f.want {
+			out = append(out, fmt.Sprintf("stream %s has %s %s, want %s", s.Name, f.name, f.got, f.want))
+		}
 	}
 
 	return append(out, sharedProblems(s)...)
 }
 
 // sharedProblems checks what the traffic stream and the claim bucket share:
-// no age, size or count limit, and AllowDirect off, so every read is the stream leader's.
+// no age, size, count or per-subject limit, since an object's chunks share one subject and a limit would evict them,
+// and AllowDirect off, so every read is the stream leader's.
 func sharedProblems(s *StreamInfo) []string {
 	var out []string
 	if s.MaxAge > 0 {
@@ -137,6 +141,9 @@ func sharedProblems(s *StreamInfo) []string {
 	}
 	if s.MaxMsgs > 0 {
 		out = append(out, fmt.Sprintf("stream %s holds at most %d messages, want no count limit", s.Name, s.MaxMsgs))
+	}
+	if s.MaxMsgsPerSubject > 0 {
+		out = append(out, fmt.Sprintf("stream %s keeps at most %d messages per subject, want no limit", s.Name, s.MaxMsgsPerSubject))
 	}
 	if s.AllowDirect {
 		out = append(out, fmt.Sprintf("stream %s allows direct reads, which a lagging replica can answer", s.Name))

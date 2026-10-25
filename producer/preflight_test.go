@@ -92,6 +92,8 @@ func TestPreflightNamesEachMisconfiguration(t *testing.T) {
 		{"claim age limit", claim(func(c *jetstream.StreamConfig) { c.MaxAge = time.Hour }), "bucket"},
 		{"claim size limit", claim(func(c *jetstream.StreamConfig) { c.MaxBytes = 1 << 30 }), "bucket"},
 		{"claim memory storage", claim(func(c *jetstream.StreamConfig) { c.Storage = jetstream.MemoryStorage }), "bucket"},
+		{"claim interest retention", claim(func(c *jetstream.StreamConfig) { c.Retention = jetstream.InterestPolicy }), "bucket"},
+		{"claim per-subject limit", claim(func(c *jetstream.StreamConfig) { c.MaxMsgsPerSubject = 1 }), "bucket"},
 		{"small max_payload", func(b *producertest.Bus) { b.SetMaxPayload(4000) }, "max_payload"},
 		{"connection", func(b *producertest.Bus) {
 			b.SetConnProblems([]producer.Problem{{Check: "tls", Detail: "not in use"}})
