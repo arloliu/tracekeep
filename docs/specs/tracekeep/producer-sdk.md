@@ -79,9 +79,10 @@ type Config struct {
     Servers            []string          // NATS URLs of the traffic cluster
     Auth               AuthConfig        // one of: credentials file, NKey seed, user and password, token
     TLS                TLSConfig         // CA, client certificate and key, server name
-    SubjectPrefix      string            // the traffic stream's prefix (busconfig knows the stream)
+    SubjectPrefix      string            // the traffic stream's prefix
+    Stream             string            // the traffic stream every publish expects; empty takes busconfig's default
     ClaimBucket        string
-    Tunables           Tunables          // lanes, H, τ, sampler; every field has a default
+    Tunables           Tunables          // lanes, H, τ, ε, sampler; every field has a default
 }
 
 func New(cfg Config, opts ...Option) (*Producer, error)
@@ -165,7 +166,8 @@ tracepack's own `go.mod` sets a go-secs floor in the same way,
 which the SDK's changelog states on every tracepack upgrade.
 The header-block length is computed by the SDK from the NATS header wire format, as the spec asks the producer to do.
 
-**Producer-side API** (sketch): `Begin(ctx, CaptureDescriptor)`, `Rotate(ctx, CaptureDescriptor)`, `End(ctx) Report` (bounded, never an error the device must act on),
+**Producer-side API** (sketch): `Begin(ctx, CaptureDescriptor)`, `Rotate(ctx, CaptureDescriptor)`, `End(ctx) Report` (bounded, never an error the device must act on;
+the `Report` says which capture it closed, whether its `stop` was queued, whether it was abandoned, whether the drain finished in time and how many records it dropped, and whether another lifecycle call held the lock past the deadline),
 which the device's `Start`, `HotReload` and `Stop` map onto (`producer.md` §4.2 *Device verbs and SDK calls*, T-26);
 `Pending()` and `TimeoutSource` (*Send path*, below), `Sampler{N, T}`, and:
 

@@ -107,7 +107,7 @@ the object is removed only after that commit.
 Registration and deletion of one key therefore serialize on the capture row before either reads its predicates, on both engines, and have mutually exclusive durable outcomes:
 either the tombstone commits first and the registration's predicate aborts it,
 or the registration commits first and the deletion finds a `packs` row and aborts.
-The lock order is capture row → `counters` row, nothing else is locked.
+The lock order is capture row → `leases` row → `counters` row, nothing else is locked.
 Retention deletes whole hours older than the retention period:
 in one transaction per hour it copies the hour's `pack_ranges` union into `evicted_ranges`, deletes the packs, ranges, receipts, the hour's `claim_objects` rows **except survivors** (§8.4) and the scope row, and writes the tombstones;
 then it deletes the hour's claim objects, survivors excepted, from the bucket;

@@ -83,7 +83,7 @@ and this section is the contract between them.
   so the wait sits on the link itself);
   the wait depends on the holder being scheduled, not on the bus or any other system,
   and the design has no algorithm that removes it.
-  This is a **residual under LS-14 that the owner must accept or reject** (§13);
+  This is a **residual under LS-14**, which the owner accepted (T-9, §13);
   the design states it rather than claims a bound.
   The structures the section touches are preallocated at capture creation:
   the socket→epoch map holds 1024 sockets and the reservation set as many entries as the reserved lane;
@@ -129,7 +129,8 @@ and this section is the contract between them.
   so the loss is bounded by the fault window instead of being invisible.
 - **Lanes.**
   The ordinary lane is bounded by record count and by bytes (frames can be MiBs) and drops the newest arrival on overflow.
-  The reserved lane holds `start`, `stop` and `clock-step` records, is bounded by count (default 4096; the records are tens of bytes), and **never drops**.
+  The reserved lane holds `start`, `stop` and `clock-step` records, is bounded by count (default 4096; the records are tens of bytes), and **never drops**;
+  its bound counts a reserved record until the publisher has it accepted, so the publisher's backlog cannot grow past it.
   **Fault handling**: when the reserved lane is full, a reservation stays unqueued longer than a bound (default 1 s),
   the publisher cannot materialize a reserved record, a preallocated structure is exhausted, or a callback panics before allocation,
   the capture is marked `closed` + `faulted` under its lock, an alert is raised, and the publisher **signals the lifecycle goroutine**,
@@ -169,7 +170,10 @@ and this section is the contract between them.
   1. build the new capture, with a fresh `capture_id` the SDK generates as a UUIDv7 (RFC 9562), so capture ids sort by creation time;
      under its own lock, which nothing else can hold before it is installed, take seq 0 for its `start`, reserve it, and push the `start` into the reserved lane
      (the lane is the producer's, not the capture's, and a push never blocks), then unlock;
-  2. take the **old** capture's lock with a `TryLock` loop bounded by the operation's deadline;
+  2. take two places in the reserved lane's bound for the old capture's `clock-step` and `stop`, so a rotation that commits never loses a boundary
+     (no room abandons the rotation as a timeout does);
+     take the **old** capture's lock with a `TryLock` loop bounded by the operation's deadline,
+     and check the deadline and cancellation once more before step 3;
      a timeout here **abandons the rotation with nothing installed**:
      the prepared capture is discarded and its queued `start` is withdrawn from the lane by the publisher,
      which skips records of a capture that was never installed;
@@ -191,7 +195,9 @@ and this section is the contract between them.
   A callback that takes the lock after the generation advanced finds the mismatch and returns without allocating.
   A prepared `start` has three terminal states, **pending** (queued, its capture not yet installed: the publisher waits), **installed** (publish) and **discarded** (the rotation was abandoned before the commit point: the publisher skips it);
   discard is recorded on the capture object, never inferred from the pointer.
-  Seq 2^63 − 4 is the last ordinary seq; the producer rotates before passing it (G5-231).
+  Seq 2^63 − 4 is the last ordinary seq; the producer rotates before passing it (G5-231):
+  a capture whose seq passes a margin below it asks the lifecycle goroutine once for a rotation with the same descriptor,
+  and only a capture that reaches it anyway faults.
 - **Device verbs and SDK calls** (T-26).
   This section names the device's verbs; the SDK's API (`producer-sdk.md` §4.7) names its own, and the integrator maps them once:
   `Start` → `Begin(ctx, descriptor)`;
@@ -201,8 +207,12 @@ and this section is the contract between them.
   Every rule stated here for a device verb holds for the SDK call it maps to.
 - **`Start` is idempotent**: a `Start` on an already-open connection does not open a second capture.
 - **`Stop`** rotates to nil, then gives the publisher a bounded deadline (a fraction of `closeConnTimeout`) to drain and publish the `stop`;
-  what is left is dropped and counted;
-  the whole trace shutdown, rotation and lock acquisition included, is bounded by that deadline.
+  the drain covers the capture it closed and every capture a rotation closed since the previous `Stop`,
+  each stamped with the deadline, after which no attempt at it starts;
+  what is left is dropped and counted, and the capture is then terminated for good, so a record a late callback queues is dropped too;
+  a capture a later `Start` opens is never stamped, so a drain that outlives its `Stop` cannot touch it;
+  the whole trace shutdown, rotation and lock acquisition included, is bounded by that deadline:
+  a `Stop` that cannot take the lifecycle lock in time returns, having changed nothing.
   `Stop` **never returns a trace error**: eqp-hub's manager treats any non-nil `Stop` as an unsafe demotion.
 - **Publisher goroutine** (the only place that waits):
   pops, encodes with `tracepack.NewBusRecord` and `EncodeBusBody`, publishes on the dedicated connection under the barrier above.
@@ -241,7 +251,7 @@ and this section is the contract between them.
   nats.go creates every object store with `AllowDirect` on (v1.55.0 `jetstream/object.go`) and routes a read by the handle's cached setting (`jetstream/stream.go`),
   so a direct read could reach a lagging replica, and a stale "not found" would let a put replace an existing object;
   an existing object with the same payload digest and the same record header
-  (the SDK stores the 44-byte header and the record's `ts_utc_ns`, hex, in `ObjectMeta.Metadata`) is a candidate for reuse;
+  (the SDK stores the 44-byte header and the record's `ts_utc_ns`, hex, in `ObjectMeta.Metadata` under `tpk-record-header` and `tpk-ts-utc-ns`) is a candidate for reuse;
   one with another digest or header is a producer fault:
   the record is dropped as a gap with alert `claim-conflict`.
   **Uncertain uploads** (`Put` returned an error or timed out):
@@ -296,7 +306,7 @@ A request is awaited by exactly one of the two mechanisms, so no timeout is reco
 `recorder_instance_name` = the `eqp-hsms` device name (`devices[].name`), unchanged and never empty
 (tracepack G5-270, tag 0x0034; it counts toward the 4096-byte header block of the `start` message);
 `recorder_instance_id` = UUIDv5 (RFC 9562), under one fixed namespace UUID the SDK defines,
-of `tool_id` and the device name, each prefixed by its byte length, so no choice of characters can make two pairs collide;
+of `tool_id` and the device name, each prefixed by its byte length as a 4-byte big-endian integer, so no choice of characters can make two pairs collide;
 the SDK derives it from each descriptor it starts or rotates to and refuses a descriptor that sets it;
 the gateway's `AppID` is not part of it, so a deployment rename does not break a device's series;
 nothing in eqp-hub stops two hubs, under one `AppID` or two, from serving one `toolID` at once
@@ -306,6 +316,14 @@ so such hubs write overlapping captures of one device, which `catalog.md` §7.3 
 `hsms_timers` from the go-secs properties (a timer HotReload therefore rotates the capture, §4.2);
 `equipment_connect_mode` from `mode`; `equipment_endpoint` from `hostPort`; `host_software` = eqp-hub version;
 `equipment_model` and `equipment_sw_rev` only if configured; `thinning` entries per §4.6.
+The SDK fixes the values its way of observing decides (G5-274):
+transport HSMS-SS, capture method `raw-stream`, time source capture clock, lifecycle coverage subscribed,
+vantage **host**, since the gateway is the host endpoint of the connection it records,
+and `quality_evaluated` true:
+the SDK sets correlation-incomplete on a record of epoch 0, ordering-uncertain on one observed before its predecessor in the capture,
+and never direction-inferred, since the wire observer reports the direction;
+`recorder` is `tracekeep-producer/<module version> go-secs/<version>`,
+and `clock_step_tolerance_ns` is ε, an operator tunable (T-29) the SDK writes into every descriptor.
 One hub has one `toolID` and several `eqp-hsms` devices
 (fourteen in eqp-hub's `examples/tfdc_common_parallel.yaml`:
 `eqp`, `tlp`, the sensor connections `dpm`, `fac`, `lsc`, `sgs`, each with its own `hostPort`, and in parallel mode the `pdf_*` connections to the legacy host system),

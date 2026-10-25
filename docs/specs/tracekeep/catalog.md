@@ -22,6 +22,7 @@ Contract changes go through proposals, which the subject [README.md](README.md) 
   no `SELECT … FOR UPDATE` (§7.2).
 - **Lock order**: one unexported helper runs the prologue, so the capture row is first by construction;
   the `counters` row is last only in a transaction that allocates an event seq, and parking touches no counter;
+  a transaction committed under the compactor lease updates the `leases` row between the two, so the order is capture → `leases` → `counters`;
   nothing else is locked (§7.2; `ingest.md` §6.3; `compactor.md` §8.3).
 - **Aborts**: a failed scope-revision or lease check rolls back the whole transaction, which returns the outcome unretried;
   a tombstone commits before its object is deleted (§7.2; `compactor.md` §8.1, §8.3).
@@ -82,9 +83,11 @@ Admit a capture (the prologue of §6.3 inserts-or-finds the row; `pending → op
 list packs and ranges by tool and hour range, pick scopes to merge, commit a merge (§8.1), insert and publish a close (§8.2), pick deletable packs (§8.3),
 take or renew a lease, allocate an event seq (the last statement of the emitting transaction, below), append `audit_log`.
 About forty statements;
-point lookups, range scans on one index, inserts, and four multi-statement transactions guarded by **compare-and-swap predicates with affected-row checks** and unique constraints;
+point lookups, range scans on one index, inserts, and the multi-statement domain transactions below, guarded by **compare-and-swap predicates with affected-row checks** and unique constraints;
 no `SELECT … FOR UPDATE`, so the same statements mean the same on both engines;
-the two intentional row locks are the capture row, first in every pack-changing transaction (§6.3), and the `counters` row, last (§7.3).
+the intentional row locks are the capture row, first in every pack-changing transaction (§6.3),
+the `leases` row, taken by a transaction the compactor commits under its lease after the capture row,
+and the `counters` row, last (§7.3).
 
 **Domain transactions.**
 The catalog's callable interface is the transactions below and the domain reads of §7.3;
