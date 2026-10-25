@@ -25,7 +25,7 @@ It holds no design; the seed and, after phase 2, the specification files do.
   a divergence is a decision, recorded in the decision log.
 - The eqp-hub repository: its `AGENTS.md` shape (tool-agnostic entry, `CLAUDE.md` importing it),
   `600-perf-sec.md`, and the memex idea of `150-memex.md`.
-- tracepack `v0.7.1` (spec v2.36, requires go-secs v2.8.0 and Go 1.26),
+- tracepack `v0.8.0` (spec v2.37, format 1.2, requires go-secs v2.8.0 and Go 1.26; T-23 replaced `v0.7.1`),
   nats.go `v1.55.0` (the latest release that builds with Go 1.26),
   nats-server `v2.15.1` for `internal/testbus`.
 
@@ -41,7 +41,7 @@ phase 2 carried them into `tracekeep-decisions.md` as T-13…T-21:
 | Lint | golangci-lint 2.15.0, the latest release, built for Go 1.26 |
 | Modules | two modules: the service (`github.com/arloliu/tracekeep`) and the SDK (`github.com/arloliu/tracekeep/producer`, its own `go.mod`, depending only on tracepack and nats.go) |
 | Workspace | `go.work` at the root names both modules and is committed, with `go.work.sum`; CI also builds the service with `GOWORK=off` so its pinned requirement on the SDK stays buildable; the SDK is never built through the workspace in CI |
-| tracepack | `v0.7.1` in both modules |
+| tracepack | `v0.8.0` in both modules (T-23, replacing T-18's `v0.7.1`) |
 | nats.go | `v1.55.0` in both modules, nats-server `v2.15.1` for `internal/testbus` (owner, 2026-10-25); this raises the SDK's floor above the gateway's v1.40.1 and so revises `producer-sdk.md` §4.7 *Versions*, see *Open items* |
 | Repository name | `github.com/arloliu/tracekeep` (T-8) |
 | Stack | sqlx + hand-written SQL + Atlas CLI; connect-go, with its overhead measured against plain gRPC before phase 2's API is implemented; OIDC BFF; Vite + React + TypeScript (T-7) |
@@ -151,7 +151,7 @@ no file under `docs/`, `.agents/`, `AGENTS.md` or `CLAUDE.md` names the seed fil
 Detailed when phase 2 closes.
 Fixed points: `go.work` with `use (. ./producer)`;
 the service `go.mod` requires `github.com/arloliu/tracekeep/producer` at a version and carries no `replace`;
-`producer/go.mod` requires `github.com/arloliu/go-secs/tracepack v0.7.1` and `github.com/nats-io/nats.go v1.55.0`,
+`producer/go.mod` requires `github.com/arloliu/go-secs/tracepack v0.8.0` and `github.com/nats-io/nats.go v1.55.0`,
 nothing else (go-secs `hsms`, which `secsobs` imports, comes with tracepack's requirement);
 `internal/testbus` embeds nats-server with JetStream on a random port and file storage under `t.TempDir()`.
 
@@ -163,7 +163,7 @@ nothing else (go-secs `hsms`, which `secsobs` imports, comes with tracepack's re
   the result goes to the decision log.
 - The veq branch `docs/ve/log-service-decisions` (commit 7b8a019) carries the LS-row amendments and V-35;
   it is not merged yet.
-- The go-secs `main` with spec v2.36 is pushed; tracepack `v0.7.1` is released.
+- The go-secs `main` with spec v2.37 is pushed; tracepack `v0.8.0` is released.
 - nats.go `v1.55.0` in the SDK (owner, 2026-10-25) contradicts `producer-sdk.md` §4.7 *Versions*,
   which keeps the SDK's floor at or below the gateway's v1.40.1:
   importing the SDK raises the gateway to v1.55.0 (phase G).

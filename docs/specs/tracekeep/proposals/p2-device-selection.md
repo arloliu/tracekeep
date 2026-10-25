@@ -1,6 +1,6 @@
 # P2 — device selection
 
-Status: draft (2026-10-25) — awaiting the owner and a tracepack tag
+Status: draft (2026-10-25) — awaiting the owner; the tracepack tag is ratified (G5-270)
 
 Covers how a person or the VE service names the connection it wants, and how every read operation selects by it.
 Read before changing the descriptor, the producer SDK's `Config`, the `captures` table or any read operation of `api.md`.
@@ -52,15 +52,24 @@ The other descriptor fields do not serve:
 
 ## 2. Carrying the name
 
-Proposal: tracepack adds an optional producer-owned descriptor tag, `recorder_instance_name` (utf8),
-the human-readable name of the deployment whose stable UUID `recorder_instance_id` is.
-tracekeep's producer writes the device name, unchanged;
-`tool_id` already names the tool, so the tag needs no separator and puts no constraint on the name.
-This is a request to the tracepack maintainers, in the manner of T-10, and a format minor change on their side.
+tracepack ratified the tag as G5-270 (spec v2.37, format 1.2, released in tracepack v0.8.0):
+`recorder_instance_name`, tag 0x0034, utf8, optional, a producer-owned descriptor value that the consumer copies into every segment as decoded.
+tracepack never interprets it, checks no relation to `recorder_instance_id` and requires no uniqueness;
+merge inputs carry the same value or none.
+In Go it is `CaptureDescriptor.RecorderInstanceName` and `PackMeta.RecorderInstanceName`, both `*string`.
 
-If tracepack declines, the fallback is a tracekeep header on the `start` message, kept only in the catalog;
-it must first be verified that `CheckBusMessage` accepts a header outside its own set,
-and a pack read on its own (through `PackURL`) would not name its device.
+tracekeep's producer writes the device name, unchanged;
+`tool_id` already names the tool, so the value needs no separator.
+The SDK refuses an empty name, which tracepack accepts.
+The value counts toward the 4096-byte header block of the `start` message.
+
+What the tag brings with it:
+- A pack carrying it is format minor 2, and its canonical export is `tracepack-jsonl/3`;
+  the format features of `rollouts.md` §6.4 and the export schemas of `positioning.md` §2 and `api.md` §10.1 gain that minor.
+- Consumers and mergers upgrade before producers:
+  a v0.7.x consumer refuses the descriptor and leaves the `start` deferred (G5-252), and a v0.7.x merger refuses a minor-2 input.
+  T-23 adopts v0.8.0 in both modules before any code exists,
+  and the SDK release that eqp-hub links, writing the tag, follows the service's.
 
 ## 3. Deriving `recorder_instance_id`
 
@@ -145,10 +154,9 @@ and needs no knowledge of capture ids beyond what `ListPacks` returns.
 
 - How the successor lookup chooses between two overlapping captures of one device (§4a).
 - Whether the gateway's `AppID` belongs in the identity: the election name is `<AppID>-<toolID>`, so two deployments with different `AppID`s could serve one tool.
-- Whether tracepack adds `recorder_instance_name` (§2).
 - How this meets P1 item 4, which also reshapes the SDK's `Config` and lifecycle vocabulary.
 
 ## Applying it
 
-Items amend `producer.md` §4.5, `producer-sdk.md` §4.7, `catalog.md` §7.1, `api.md` §10.1, `glossary.md`
+Items amend `producer.md` §4.5, `producer-sdk.md` §4.7, `catalog.md` §7.1, `api.md` §10.1, `rollouts.md` §6.4, `positioning.md` §2, `glossary.md`
 and `.agents/rules/600-invariants.md` (guarantee 2), each with its interface section, in one change per accepted item.

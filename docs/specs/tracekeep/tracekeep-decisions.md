@@ -170,7 +170,7 @@ the service's `go.mod` requires the SDK by version and carries no `replace`;
 CI also builds the service with `GOWORK=off` so its pinned requirement on the SDK stays buildable;
 the SDK is never built through the workspace in CI.
 
-### T-18 — tracepack
+### T-18 — tracepack (superseded by T-23)
 
 `v0.7.1` in both modules.
 
@@ -201,3 +201,13 @@ it is resolved by the `KeyProvider` at the version a binding pins (`masking-keys
 The configuration is read once at start; live reload is not used,
 since a capture's processing configuration is immutable once bound (`rollouts.md` §6.4).
 The version is pinned when the service's `go.mod` first requires it.
+
+### T-23 — tracepack v0.8.0
+
+`v0.8.0` (spec v2.37, format 1.2, requiring go-secs v2.8.0) in both modules, replacing T-18's `v0.7.1`.
+It carries G5-270's `recorder_instance_name`, which [P2](proposals/p2-device-selection.md) uses for the device name,
+and still reads and writes everything v0.7.1 does: a descriptor without the tag decodes as before.
+A pack holding the tag is format minor 2 and exports as `tracepack-jsonl/3`.
+Consumers and mergers must run v0.8.0 before any producer writes the tag,
+so the SDK release that writes it follows the service's upgrade.
+Taken before any `go.mod` exists, so nothing is built against v0.7.1.
