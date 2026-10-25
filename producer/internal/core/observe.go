@@ -243,6 +243,18 @@ func (r *Recorder) Observe(o *Observation) {
 	}
 }
 
+// Recover, deferred at an observer's entry, contains a panic raised before the observer reached Observe:
+// it is counted and faults the current capture, since a loss with no seq is otherwise invisible.
+func (r *Recorder) Recover() {
+	if p := recover(); p != nil { //nolint:revive // Recover is only ever deferred, where recover stops the panic
+		r.panics.Add(1)
+		if c := r.cur.Load(); c != nil {
+			c.Fault()
+			r.SignalFault(c)
+		}
+	}
+}
+
 // SetBusDown records whether the publisher finds the bus unreachable, which names why a full lane drops.
 func (r *Recorder) SetBusDown(down bool) { r.busDown.Store(down) }
 
