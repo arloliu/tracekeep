@@ -34,16 +34,21 @@ tracekeep/
 ```
 
 
-The service module requires the SDK module by version (no `replace`: the committed `go.work` joins the two modules for development, T-17); the SDK requires tracepack (which itself requires go-secs/v2) and nats.go, nothing else; a Prometheus `Metrics` adapter is the producer's own few lines, not an SDK package.
+The service module requires the SDK module by version (no `replace`:
+the committed `go.work` joins the two modules for development, T-17);
+the SDK requires tracepack (which itself requires go-secs/v2) and nats.go, nothing else;
+a Prometheus `Metrics` adapter is the producer's own few lines, not an SDK package.
 Conventions (rules, doc lifecycle, semantic linefeeds, lint) are copied from veq so the two repositories read alike.
 
 The layout is the target; a directory is created when its first code lands (`.agents/rules/100-overview.md`).
-The layout's one correction to the seed is the sentence on `replace`: an owner decision (T-17) replaced it with the committed workspace.
+The layout's one correction to the seed is the sentence on `replace`:
+an owner decision (T-17) replaced it with the committed workspace.
 
 ## The two modules
 
 - `github.com/arloliu/tracekeep` at the root: the service, one binary.
-- `github.com/arloliu/tracekeep/producer` in `producer/`: the SDK, its own `go.mod`, depending only on tracepack and nats.go (T-16).
+- `github.com/arloliu/tracekeep/producer` in `producer/`:
+  the SDK, its own `go.mod`, depending only on tracepack and nats.go (T-16).
 
 `go.work` names both and is committed with `go.work.sum`.
 The service requires the SDK by version and carries no `replace`, so it also builds with `GOWORK=off`;
@@ -60,4 +65,5 @@ the SDK resolves its own `go.mod`, never the service's graph, so the Makefile ru
 ## Releases
 
 - **The SDK**: tag `producer/vX.Y.Z` on a commit where the `producer/` module passes its tests with `GOWORK=off`.
-- **The service**: raise its requirement on the SDK to a tagged version first; `GOWORK=off go build ./...` must pass (`make ci` runs it), so the release never depends on the workspace.
+- **The service**: raise its requirement on the SDK to a tagged version first;
+  `GOWORK=off go build ./...` must pass (`make ci` runs it), so the release never depends on the workspace.

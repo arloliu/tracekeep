@@ -15,9 +15,12 @@ Contract changes under discussion are in [P1](proposals/p1-interfaces.md).
 - **Contract**: protobuf served by connect-go, gRPC for Go clients and JSON over HTTP for the browser, from one definition (§10.1).
 - **Operations**: `ListCaptures`, `ListPacks`, `ListScopeChanges`, `PackURL`, `QueryRecords`, `FindTransaction`, `Export`, `Restore`, `Digest`, admin (§10.1 table).
 - **`PackURL`**: a presigned read with a lifetime below D; it makes the VE service a privileged reader of packs (T-5).
-- **Exports**: an asynchronous job producing a bundle with one JSONL file per source pack, by that pack's `format_minor`; a filtered `.tpk` is not offered (§10.1).
-- **People**: OIDC authorization code with PKCE in a backend-for-frontend; a signed, encrypted session cookie any replica validates (§10.2).
-- **Services**: OAuth2 client credentials validated against the IdP's JWKS, or mTLS in the cluster; startup never blocks on the IdP (§10.2).
+- **Exports**: an asynchronous job producing a bundle with one JSONL file per source pack, by that pack's `format_minor`;
+  a filtered `.tpk` is not offered (§10.1).
+- **People**: OIDC authorization code with PKCE in a backend-for-frontend;
+  a signed, encrypted session cookie any replica validates (§10.2).
+- **Services**: OAuth2 client credentials validated against the IdP's JWKS, or mTLS in the cluster;
+  startup never blocks on the IdP (§10.2).
 - **Roles**: `pack-reader`, `scorer`, `viewer`, `exporter`, `restorer`, `admin`, granted separately (§10.2).
 - **Frontend**: `web/` built into the binary and served at `/`; no pages in the first version (§10.3).
 - **Gate**: connect-go's overhead against plain gRPC is measured before the API is implemented (T-7).
@@ -26,7 +29,8 @@ Contract changes under discussion are in [P1](proposals/p1-interfaces.md).
 
 ### 10.1 Machine API first
 
-The VE service is the main client, so the contract is protobuf served by connect-go: gRPC for Go clients, JSON over HTTP for the browser, one definition.
+The VE service is the main client, so the contract is protobuf served by connect-go:
+gRPC for Go clients, JSON over HTTP for the browser, one definition.
 
 | Operation | Answers |
 |---|---|
@@ -43,18 +47,25 @@ The VE service is the main client, so the contract is protobuf served by connect
 ### 10.2 Auth
 
 - **People**: OIDC authorization code with PKCE, handled by the Go backend as a backend-for-frontend (`coreos/go-oidc`, `golang.org/x/oauth2`).
-  The session is a **signed, encrypted cookie** (key from the `KeyProvider`) holding subject, roles and expiry, so any replica validates it without shared state;
+  The session is a **signed, encrypted cookie** (key from the `KeyProvider`) holding subject, roles and expiry,
+  so any replica validates it without shared state;
   roles map from IdP groups or claims in configuration.
-- **Services** (the VE generation service, the scorer): OAuth2 client credentials from the same IdP, validated against its JWKS; mTLS is the in-cluster alternative.
-- **IdP outage**: discovery and JWKS are fetched lazily with retry and cached with a TTL; startup never blocks on the IdP;
-  an unknown `kid` triggers one refresh, then rejection; existing sessions and cached keys keep working until expiry; new logins fail.
+- **Services** (the VE generation service, the scorer): OAuth2 client credentials from the same IdP, validated against its JWKS;
+  mTLS is the in-cluster alternative.
+- **IdP outage**: discovery and JWKS are fetched lazily with retry and cached with a TTL;
+  startup never blocks on the IdP;
+  an unknown `kid` triggers one refresh, then rejection;
+  existing sessions and cached keys keep working until expiry; new logins fail.
   The **static-token provider** for a standalone host without an IdP is an explicit flag and is never activated by a failure.
-- **Roles**: `pack-reader` (ListPacks, PackURL), `scorer` (Digest), `viewer`, `exporter`, `restorer`, `admin`; separately granted.
+- **Roles**: `pack-reader` (ListPacks, PackURL), `scorer` (Digest), `viewer`, `exporter`, `restorer`, `admin`;
+  separately granted.
 
 ### 10.3 Frontend
 
 `web/` is Vite + React + TypeScript with a connect-web client generated from the same protos;
-`make web` builds `web/dist`, which the binary embeds with `go:embed` and `api` serves at `/`, so a standalone host ships one file;
+`make web` builds `web/dist`, which the binary embeds with `go:embed` and `api` serves at `/`,
+so a standalone host ships one file;
 in development Vite proxies `/api` to the Go server.
 The PoC and the first version ship no pages; the layout, the auth flow and the embedding exist from day one.
-First pages, when they come: tool and time browser with scope completeness, record viewer with SML rendering, export, restore, admin.
+First pages, when they come:
+tool and time browser with scope completeness, record viewer with SML rendering, export, restore, admin.

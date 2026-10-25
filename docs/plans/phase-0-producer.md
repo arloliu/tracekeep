@@ -2,14 +2,17 @@
 
 Status: draft (2026-10-25) — becomes active when the repository bootstrap closes
 
-Milestone 0 of the [roadmap](../ROADMAP.md): the producer SDK, in this repository only, with the simulator and the embedded bus that prove it.
-Its scope and gate are the roadmap's phase 0 row; the design is `docs/specs/tracekeep/producer.md`, `producer-sdk.md` and `architecture.md` §3.4.
+Milestone 0 of the [roadmap](../ROADMAP.md):
+the producer SDK, in this repository only, with the simulator and the embedded bus that prove it.
+Its scope and gate are the roadmap's phase 0 row;
+the design is `docs/specs/tracekeep/producer.md`, `producer-sdk.md` and `architecture.md` §3.4.
 This plan only orders the work.
 
 ## Before it starts
 
 - `producer-sdk.md` §4.7 amended for nats.go v1.55.0 and the nats.go and nats-server facts the specs cite re-verified (T-19).
-- The owner's decision on items 4 and 5 of [P1](../specs/tracekeep/proposals/p1-interfaces.md), which shape the SDK's public interface.
+- The owner's decision on items 4 and 5 of [P1](../specs/tracekeep/proposals/p1-interfaces.md),
+  which shape the SDK's public interface.
 
 ## Phases
 

@@ -10,7 +10,8 @@ Read second, after `positioning.md`, and before working on any role or on deploy
 
 ### 3.1 Components
 
-One Go module for the service, one binary, four roles selected by subcommand; `all` runs every role in one process for standalone hosts.
+One Go module for the service, one binary, four roles selected by subcommand;
+`all` runs every role in one process for standalone hosts.
 A second module, the producer SDK, is published for producers (§4.7).
 
 | Role | Does | Scaling |
@@ -21,7 +22,8 @@ A second module, the producer SDK, is published for producers (§4.7).
 | `migrate` | applies the catalog's versioned migrations; ensures the traffic stream and claim bucket | once per release |
 
 JetStream consumer settings `ingest` depends on:
-`ack_wait` longer than the flush interval F plus the upload, and in-progress acks every `ack_wait/3` while a batch is held ([STO §4] *Stream settings*);
+`ack_wait` longer than the flush interval F plus the upload, and in-progress acks every `ack_wait/3`
+while a batch is held ([STO §4] *Stream settings*);
 `max_deliver` unlimited; `max_ack_pending` above the peak rate × (F + upload);
 **per-message acks only** (`AckExplicit`, never `AckAll`, since a cumulative ack would cover unrelated unstaged deliveries),
 and a confirmed ack (`DoubleAck`) for a claim-check message, because the object's deletion depends on it (§8.4).
@@ -56,5 +58,7 @@ tracekeep api                                                        §10
 ### 3.4 Transport scope
 
 Phase 0 records **HSMS-SS connections only**:
-go-secs's wire and socket observers report HSMS-SS, and `eqp-hsms` wraps SECS-I into an HSMS connection whose wire the observers do not see.
-A SECS-I tool gets no capture and the producer logs that once at `Start`; the SECS-I path is designed when a SECS-I tool needs one.
+go-secs's wire and socket observers report HSMS-SS,
+and `eqp-hsms` wraps SECS-I into an HSMS connection whose wire the observers do not see.
+A SECS-I tool gets no capture and the producer logs that once at `Start`;
+the SECS-I path is designed when a SECS-I tool needs one.

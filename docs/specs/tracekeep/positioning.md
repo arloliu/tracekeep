@@ -18,14 +18,19 @@ and serves it back for VE learning and for troubleshooting.
 - **Keeps** them as tracepack segments and hourly archives under [STO §3] keys, one month by default (G5-200), masked at write under a policy (G5-207).
 - **Serves** two readers:
   the VE generation service, which reads the packs of a tool and a time window with their completeness (LS-10, LS-11),
-  and people troubleshooting a tool, who query, filter and export records and, with privilege, restore an encrypted original.
-- **Provides** the producer side as a Go module, so eqp-hub and any later producer publish correctly without reimplementing the bus (§4.7).
-- **Is not** on any tool's critical path: a dead tracekeep or a dead traffic bus costs records, never a tool's conversation (LS-14, §4).
+  and people troubleshooting a tool,
+  who query, filter and export records and, with privilege, restore an encrypted original.
+- **Provides** the producer side as a Go module,
+  so eqp-hub and any later producer publish correctly without reimplementing the bus (§4.7).
+- **Is not** on any tool's critical path:
+  a dead tracekeep or a dead traffic bus costs records, never a tool's conversation (LS-14, §4).
 - **Is designed to four operational goals**, checked in every section:
   *producer-friendly* (one SDK, a short list of guarantees the producer keeps, a preflight that says what is wrong before traffic flows, §4.7);
   *operation-friendly* (one binary, named incidents each with a runbook and an admin command, few tunables in one table, §10.4);
-  *never stuck* (a producer fault, a disconnect or a seq gap costs that capture's records and nothing else: dispositions are per message, isolation is per capture, no component waits for a missing seq, §6);
-  *transparent* (every state machine exports its counters, ages and last success; data-level loss is a metric, not only a catalog fact, §10.4).
+  *never stuck* (a producer fault, a disconnect or a seq gap costs that capture's records and nothing else:
+  dispositions are per message, isolation is per capture, no component waits for a missing seq, §6);
+  *transparent* (every state machine exports its counters, ages and last success;
+  data-level loss is a metric, not only a catalog fact, §10.4).
 - **Is not** a general log platform: no free-text logs, no metrics, no alerting beyond its own health.
 
 ## 2. What is already settled

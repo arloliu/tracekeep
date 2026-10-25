@@ -3,7 +3,8 @@
 Status: current (2026-10-25) — milestones from seed v21 §12
 
 Where tracekeep's work stands, and the single index of active plans (`.agents/rules/450-doc-lifecycle.md`).
-The milestones and their gates are seed v21 §12, moved unchanged; section numbers are the seed's, and `docs/specs/tracekeep/README.md` maps each to its file.
+The milestones and their gates are seed v21 §12, moved unchanged;
+section numbers are the seed's, and `docs/specs/tracekeep/README.md` maps each to its file.
 
 ## Milestones
 
@@ -16,22 +17,38 @@ The milestones and their gates are seed v21 §12, moved unchanged; section numbe
 | G — eqp-hub integration (after phase 1 has proven the SDK; in parallel with phases 2–3) | one thin eqp-hub change: wire the SDK's observers into `eqp-hsms` behind a flag, pass `toolID` as a device property, expose the waiter's typed timeout through `TimeoutSource`, update the waiter's timeout on HotReload; validated with eqp-hub's existing e2e harness against `tracekeep dev` | the pilot gateway's capture readable with the tracepack CLI; eqp-hub's chaos test with the traffic bus down and up shows no tool-side change; the SDK pin in eqp-hub is the only cross-repository artefact |
 | 4 — people | OIDC BFF, first pages, `QueryRecords`, `Export` bundles, holds, Helm and systemd packaging | a troubleshooting session end to end on a standalone host and on a cluster; IdP down before and after start; export of a capture spanning two hours with a conflict |
 
-**Implementation checklist** (from external review rounds 18–20, kept outside the repository; schedules the gates above imply but do not enumerate; each is a barrier-controlled test on both catalog engines where the catalog is involved):
-1. restore both stream roles from snapshots that contain the old `tk-ingest`/`tk-parked` durables with pending messages; `bus adopt-stream` deletes and verifies; after restart the pending bytes reach the new consumers; a retained-consumer rewind; stale buffered acknowledgements, naks and pulls from a process that missed the stop;
-2. resolution-input failures: terminated, staged and order-covered `start`s with missing or invalid descriptors; a missing or malformed claim digest; a digest without a reference (G5-258); a malformed `Nats-Msg-Id`; an inline body of exactly 44 bytes; the malformed row never fabricates a version or admits a capture;
-3. reconciliation boundaries: the acknowledged copy at N with nothing published after, with N+1 published, and with N still present; no advancement on a failed refresh, `AllowDirect` on, an incarnation mismatch, an unrelated error or a retired identity;
-4. termination-order boundaries: a publish sent before and accepted after the `Info` snapshot; `staged` precedence below the cut-off; a terminated-version message above the cut-off; `spent` by `FirstSeq` and by retirement;
-5. the combined lifecycle: V1 parked, V2 never parked below the cut-off, V3 an evicted-hour survivor, V4 above the cut-off; a copy row inserted immediately before and immediately after the termination transaction; a late same-version message after the object's deletion, acknowledged under the termination;
-6. confirmation failures: zero and malformed 10071 descriptions, 10164, a timeout and a lost `PubAck`, converging, asserted on the stored messages and not only on the responses.
+**Implementation checklist** (from external review rounds 18–20, kept outside the repository;
+schedules the gates above imply but do not enumerate;
+each is a barrier-controlled test on both catalog engines where the catalog is involved):
+1. restore both stream roles from snapshots that contain the old `tk-ingest`/`tk-parked` durables with pending messages;
+   `bus adopt-stream` deletes and verifies; after restart the pending bytes reach the new consumers;
+   a retained-consumer rewind; stale buffered acknowledgements, naks and pulls from a process that missed the stop;
+2. resolution-input failures: terminated, staged and order-covered `start`s with missing or invalid descriptors;
+   a missing or malformed claim digest; a digest without a reference (G5-258); a malformed `Nats-Msg-Id`;
+   an inline body of exactly 44 bytes; the malformed row never fabricates a version or admits a capture;
+3. reconciliation boundaries:
+   the acknowledged copy at N with nothing published after, with N+1 published, and with N still present;
+   no advancement on a failed refresh, `AllowDirect` on, an incarnation mismatch, an unrelated error or a retired identity;
+4. termination-order boundaries: a publish sent before and accepted after the `Info` snapshot;
+   `staged` precedence below the cut-off; a terminated-version message above the cut-off;
+   `spent` by `FirstSeq` and by retirement;
+5. the combined lifecycle: V1 parked, V2 never parked below the cut-off, V3 an evicted-hour survivor, V4 above the cut-off;
+   a copy row inserted immediately before and immediately after the termination transaction;
+   a late same-version message after the object's deletion, acknowledged under the termination;
+6. confirmation failures:
+   zero and malformed 10071 descriptions, 10164, a timeout and a lost `PubAck`, converging, asserted on the stored messages and not only on the responses.
 
 Phase 1 may run without a policy only on data that holds nothing sensitive; production traffic waits for phase 3.
-Phases 0–3 run in one repository with one CI matrix (embedded bus, `fs` or `gofakes3`, SQLite and MariaDB in containers), so every chaos and race test is a barrier-controlled in-process test;
+Phases 0–3 run in one repository with one CI matrix (embedded bus, `fs` or `gofakes3`, SQLite and MariaDB in containers),
+so every chaos and race test is a barrier-controlled in-process test;
 eqp-hub reviews the SDK's API (`Bus`, `Preflight`, the five guarantees, `Observe`'s contract) during phase 0 without changing any code.
 
 ## Active plans
 
-- [Repository bootstrap](plans/repo-bootstrap.md) — conventions, documents, module skeleton and CI for the new repository.
+- [Repository bootstrap](plans/repo-bootstrap.md) —
+  conventions, documents, module skeleton and CI for the new repository.
 
 ## Draft plans
 
-- [Phase 0 — producer](plans/phase-0-producer.md) — the producer SDK and its proving ground; becomes active when the bootstrap closes.
+- [Phase 0 — producer](plans/phase-0-producer.md) — the producer SDK and its proving ground;
+  becomes active when the bootstrap closes.

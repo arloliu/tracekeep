@@ -59,6 +59,7 @@ Rulings cited as `G5-n` are in go-secs `docs/specs/tracepack/tracepack-decisions
 `[STO §n]` is the tracepack storage profile, `[FMT §n]` the format, `[SEM §n]` the semantics,
 `LS-n` a row of `ve-log-service.md`, and `V-n` a VE decision.
 Where a ruling already settles a point, the specs apply it and do not re-derive it.
-Facts about eqp-hub are as of its `develop` branch at fc67e5f; facts about nats.go are as of v1.40.1, the version eqp-hub pins.
+Facts about eqp-hub are as of its `develop` branch at fc67e5f;
+facts about nats.go are as of v1.40.1, the version eqp-hub pins.
 
 Next free proposal ID: P2.

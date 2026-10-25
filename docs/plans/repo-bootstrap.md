@@ -14,7 +14,8 @@ It holds no design; the seed and, after phase 2, the specification files do.
 
 ## Inputs
 
-- The design seed v21, split by phase 2 into `docs/specs/tracekeep/`: its §11 became `docs/guides/repository.md`, §12 `docs/ROADMAP.md`, §13 `tracekeep-decisions.md`.
+- The design seed v21, split by phase 2 into `docs/specs/tracekeep/`:
+  its §11 became `docs/guides/repository.md`, §12 `docs/ROADMAP.md`, §13 `tracekeep-decisions.md`.
 - `tmp/handoff/` (gitignored) — the owner's decision brief, the review reports of rounds 1–20,
   and the v20 text the last round approved.
   Named in plain text wherever a document needs them; never linked, never committed.
@@ -124,9 +125,11 @@ opening with three lines: what the file covers, which seed sections it came from
 Rules for the split: text moves, it is not rewritten;
 a sentence that cites a review round is reworded to state the fact and name the round in plain text;
 the seed's Status line becomes each file's own; the seed is deleted in the same commit and `README.md` lists every file.
-Section numbers stay as the seed had them, so a `§N` in moved text keeps its meaning; `README.md` maps each number to its file,
+Section numbers stay as the seed had them, so a `§N` in moved text keeps its meaning;
+`README.md` maps each number to its file,
 and `tracekeep-decisions.md` keeps §13's numbering (T-N is §13 item N).
-Line breaking is unchanged by the move; reflowing the long seed paragraphs to semantic linefeeds is a later, separate change.
+Line breaking is unchanged by the move;
+reflowing the long seed paragraphs to semantic linefeeds is a later, separate change.
 One correction is applied in the move, because an owner decision already supersedes the text:
 §11's "a `replace` to `./producer` for local development" becomes the committed `go.work` (`docs/guides/repository.md`).
 The section pointers of `AGENTS.md`, `600-invariants.md` and `650-perf-sec.md` are rewritten to the split files.
@@ -139,7 +142,8 @@ The summary states what the seed fixes and what it leaves open; it changes no co
 Contract changes go to `proposals/p1-interfaces.md`, reviewed and applied separately.
 Positioning, architecture, glossary and the decision log get no interface section.
 
-Gate: `make docs-check` passes; each spec file's moved text is byte-identical to its seed lines (a script compares them before the seed is deleted);
+Gate: `make docs-check` passes;
+each spec file's moved text is byte-identical to its seed lines (a script compares them before the seed is deleted);
 no file under `docs/`, `.agents/`, `AGENTS.md` or `CLAUDE.md` names the seed file or points at a seed section (`grep -rE "design-se[e]d|Seed[ ]§"` finds nothing).
 
 ## Phase 3 — skeleton

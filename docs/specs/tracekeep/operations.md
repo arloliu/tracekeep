@@ -2,7 +2,8 @@
 
 Status: draft (2026-10-25) — split from seed v21
 
-Covers the admin commands, the runbook's shape, the tunables, metrics, health and logs; the source the runbook and configuration guides are written from.
+Covers the admin commands, the runbook's shape, the tunables, metrics, health and logs;
+the source the runbook and configuration guides are written from.
 From seed v21 §10.4; section numbers are the seed's, and [README.md](README.md) maps each to its file.
 Read before adding an admin command, an alert, a metric or a tunable, or writing `docs/guides/runbook.md` or `docs/guides/configuration.md`.
 
@@ -14,8 +15,10 @@ Contract changes under discussion are in [P1](proposals/p1-interfaces.md).
 
 - **Admin commands**: `tracekeep admin …`, every one audited (§10.4 table).
 - **Runbook**: one section per named incident, each with its alert, metric, recovery command and terminal alternative, shipped as `docs/guides/runbook.md`.
-- **Tunables**: one table in `docs/guides/configuration.md`, with defaults and the consequence of moving each; the defaults are T-12 in `tracekeep-decisions.md`.
-- **Metrics**: `tracekeep_` and `tracepub_` prefixes; `tool_id` is a label, `capture_id` never is, except on one info gauge per producer.
+- **Tunables**: one table in `docs/guides/configuration.md`, with defaults and the consequence of moving each;
+  the defaults are T-12 in `tracekeep-decisions.md`.
+- **Metrics**: `tracekeep_` and `tracepub_` prefixes;
+  `tool_id` is a label, `capture_id` never is, except on one info gauge per producer.
 - **Health**: `/healthz`, `/readyz`, and `tracekeep status` per tool.
 - **Logs**: one structured line per state change, never one per record.
 
@@ -38,11 +41,23 @@ Contract changes under discussion are in [P1](proposals/p1-interfaces.md).
 | `config list --blocking-retirement` | the captures that keep a configuration alive (§6.4) |
 | `deferred list [--capture]` | what is waiting, since when, why |
 
-**Runbook**: one section per named incident (`capture-rejected`, `descriptor-conflict`, `claim-conflict`, `write-failure`, `incompatible-configuration`, `seq-conflict`, `beyond-retention`, `capture_fault`, `key-binding-mismatch`, `cannot-screen`, `damaged-input`, `parked`, `bus-incarnation-changed`), each row of a compact table incident → metric → recovery command → terminal alternative (for example `cannot-screen`: `cannot_screen_total` → fix the consumer or the policy, then `parked replay` → `capture terminate`), each with the alert that raises it, the metric to look at, the admin command that resolves it, and what is lost if it is ignored; shipped in `docs/guides/runbook.md` and referenced by the alert annotations.
+**Runbook**: one section per named incident
+(`capture-rejected`, `descriptor-conflict`, `claim-conflict`, `write-failure`, `incompatible-configuration`, `seq-conflict`, `beyond-retention`, `capture_fault`, `key-binding-mismatch`, `cannot-screen`, `damaged-input`, `parked`, `bus-incarnation-changed`),
+each row of a compact table incident → metric → recovery command → terminal alternative
+(for example `cannot-screen`: `cannot_screen_total` → fix the consumer or the policy, then `parked replay` → `capture terminate`),
+each with the alert that raises it, the metric to look at, the admin command that resolves it, and what is lost if it is ignored;
+shipped in `docs/guides/runbook.md` and referenced by the alert annotations.
 
-**Tunables**, all in one table in `docs/guides/configuration.md` with their defaults and the consequence of moving each: Q, I, L, D, H, τ, ε, the lane sizes, the key-set cap, `parking.enabled` (default true; false documents the service-wide stall it allows) and `parking.redelivery_delay` (default 60 s, the parked consumer's scheduled nak delay; how soon a termination or a cleared blocker takes effect follows from it only while that consumer is up and has delivery capacity, and the completion signal is `parked list`, §6.1) (§13 lists the defaults).
+**Tunables**, all in one table in `docs/guides/configuration.md` with their defaults and the consequence of moving each:
+Q, I, L, D, H, τ, ε, the lane sizes, the key-set cap, `parking.enabled` (default true; false documents the service-wide stall it allows)
+and `parking.redelivery_delay` (default 60 s, the parked consumer's scheduled nak delay;
+how soon a termination or a cleared blocker takes effect follows from it only while that consumer is up and has delivery capacity,
+and the completion signal is `parked list`, §6.1) (§13 lists the defaults).
 
-**Metrics** (Prometheus names, `tracekeep_` and `tracepub_` prefixes; `tool_id` is a label where it is bounded, about 1,500 values; `capture_id` is never a label except on one info gauge per producer; everything per capture is served by `tracekeep status` and the admin commands, not by metrics):
+**Metrics** (Prometheus names, `tracekeep_` and `tracepub_` prefixes;
+`tool_id` is a label where it is bounded, about 1,500 values;
+`capture_id` is never a label except on one info gauge per producer;
+everything per capture is served by `tracekeep status` and the admin commands, not by metrics):
 
 | Component | Metrics |
 |---|---|
@@ -52,6 +67,9 @@ Contract changes under discussion are in [P1](proposals/p1-interfaces.md).
 | api | request rate, errors and duration per operation; `export_jobs{state}`; `restores_total{role}`, `digests_total{role}`; `auth_failures_total{reason}`; `presigned_urls_total` |
 | catalog | pool usage, transaction retries (`busy`, `deadlock`), migration version |
 
-Health: `/healthz` (process) and `/readyz` (catalog reachable, lease state for `compact`, consumer bound for `ingest`); `tracekeep status` lists `pending` captures by capture id first, outside any per-tool grouping (they have no tool yet), then prints per tool the last record time, open captures, deferred messages and backlog.
-The Helm chart ships alert rules: deferred age above an hour, backlog bytes above a threshold, a tool with a connected gateway and no records for ten minutes, producer drop rate, lease lost, no successful merge for two hours, `open_gaps` or `declared_losses_total` increasing on a tool, `preflight_ok` false.
+Health: `/healthz` (process) and `/readyz` (catalog reachable, lease state for `compact`, consumer bound for `ingest`);
+`tracekeep status` lists `pending` captures by capture id first, outside any per-tool grouping
+(they have no tool yet), then prints per tool the last record time, open captures, deferred messages and backlog.
+The Helm chart ships alert rules:
+deferred age above an hour, backlog bytes above a threshold, a tool with a connected gateway and no records for ten minutes, producer drop rate, lease lost, no successful merge for two hours, `open_gaps` or `declared_losses_total` increasing on a tool, `preflight_ok` false.
 Logs are structured, one line per state change with `capture_id`, `tool_id` and `seq` where they apply, never one line per record.
