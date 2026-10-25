@@ -222,7 +222,9 @@ func (c *chaos) traffic(n int) {
 	c.verb(fmt.Sprintf("Traffic(%d)", n), verbTimeout, func(ctx context.Context) error { return c.d.Traffic(ctx, n) })
 }
 
-// trafficSeen runs Traffic(n) and waits until at least n more frames are on the bus, so the traffic is the device's own.
+// trafficSeen runs Traffic(n) and waits until at least n more frames are on the bus.
+// It tells the frames apart by count only: a device whose other frames reach the bus meanwhile in such number
+// can stand in for a Traffic that does nothing.
 func (c *chaos) trafficSeen(n int) {
 	c.t.Helper()
 	ctx, cancel := context.WithTimeout(c.t.Context(), settleTimeout)

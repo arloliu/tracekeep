@@ -122,8 +122,8 @@ type PendingTable struct {
 	socket atomic.Uint64
 	// emit records a forwarded request's T3; the recorder sets it.
 	emit func(e *PendingEntry, effective time.Duration)
-	// bindHook, set only by tests, holds Bind once it has recorded the socket.
-	bindHook func()
+	// bindHooks, set only by tests, hold Bind just before and just after it records the socket.
+	bindHooks [2]func()
 
 	ignored         [NumIgnoredReasons]atomic.Uint64
 	ambiguous       atomic.Uint64
@@ -240,10 +240,15 @@ func (t *PendingTable) Bind(sessionID uint16, systemBytes uint32, stream, functi
 	if socket != e.regSocket || t.socket.Load() != e.regSocket {
 		t.markAmbiguous(e)
 	}
+	t.bindHook(0)
 	e.hdr.Store(uint32(stream)<<8 | uint32(function))
 	e.bound.CompareAndSwap(0, socket)
-	if t.bindHook != nil {
-		t.bindHook()
+	t.bindHook(1)
+}
+
+func (t *PendingTable) bindHook(i int) {
+	if h := t.bindHooks[i]; h != nil {
+		h()
 	}
 }
 
