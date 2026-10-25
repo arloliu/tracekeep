@@ -11,7 +11,7 @@ Read before adding an admin command, an alert, a metric or a tunable, or writing
 
 Non-normative summary of what a caller must know.
 The sections below are authoritative; a disagreement is a defect in this summary.
-Contract changes under discussion are in [P1](proposals/p1-interfaces.md).
+Contract changes go through proposals, which the subject [README.md](README.md) lists.
 
 - **Admin commands**: `tracekeep admin …`, every one audited (§10.4 table).
 - **Runbook**: one section per named incident, each with its alert, metric, recovery command and terminal alternative, shipped as `docs/guides/runbook.md`.
@@ -61,10 +61,10 @@ everything per capture is served by `tracekeep status` and the admin commands, n
 
 | Component | Metrics |
 |---|---|
-| producer (SDK, through the `Metrics` interface the producer wires to its own registry; `current_capture` is one series per producer: the SDK deletes the previous label set when it rotates) | `records_observed_total{kind,dir}`, `records_published_total`, `records_dropped_total{reason=lane_full,bus_down,publish_failed,claim_failed,capture_fault,after_stop}`, `dropped_bytes_total`, `ring_depth`, `ring_bytes`, `reserved_lane_depth`, `publish_ack_seconds` (histogram), `bus_connected`, `capture_rotations_total{reason=start,hotreload,fault,stop}`, `clock_steps_total`, `claim_puts_total{outcome}`, `pending_requests`, `thinned_total`, `ambiguous_total`, `thinning_enabled`, `current_capture` (info gauge: `capture_id`, `tool_id`, `recorder_instance_id`), `preflight_ok` |
+| producer (SDK, through the `Metrics` interface the producer wires to its own registry; `current_capture` is one series per producer: the SDK deletes the previous label set when it rotates) | `records_observed_total{kind,dir}`, `records_published_total`, `records_dropped_total{reason=lane_full,bus_down,publish_failed,claim_failed,capture_fault,after_stop}`, `dropped_bytes_total`, `ring_depth`, `ring_bytes`, `reserved_lane_depth`, `publish_ack_seconds` (histogram), `bus_connected`, `capture_rotations_total{reason=start,hotreload,fault,stop}`, `clock_steps_total`, `claim_puts_total{outcome}`, `pending_requests`, `pending_reports_ignored_total{reason=duplicate_progress,late_terminal,removed,expired}`, `pending_timeouts_unbound_total`, `thinned_total`, `ambiguous_total`, `thinning_enabled`, `current_capture` (info gauge: `capture_id`, `tool_id`, `recorder_instance_id`), `preflight_ok` |
 | ingest | `messages_total{disposition}`, `deferred_messages{reason}`, `deferred_oldest_age_seconds{reason}`, `quarantined_total`, `segments_total{tool_id}`, `segment_bytes_total{tool_id}`, `put_seconds`, `registration_seconds`, `mask_seconds`, `in_progress_acks_total`, `captures_open{tool_id}`, `conflicts_total{tool_id}`, `gap_observations_total{tool_id}` (a hole first seen at registration; it may be filled later, so it is an event count, not a loss count), `open_gaps{tool_id}` (gauge: holes currently unfilled), `declared_losses_total{tool_id}`, `captures_with_unknown_tail{tool_id}` (gauge), `parked_messages{reason}`, `key_binding_mismatches_total`, `cannot_screen_total`, `damaged_inputs`, `stream_backlog_messages`, `stream_backlog_bytes`, `consumer_ack_pending`, `redelivered_total` |
 | compact | `cycle_seconds{task=merge,close,delete,retention,reconcile}`, `last_success_timestamp{task}`, `lease_held`, `scopes{state}`, `merges_total{outcome}`, `closes_total{trigger}`, `deletions_total`, `tombstones_total`, `orphans_adopted_total`, `orphans_quarantined_total`, `claim_objects`, `claim_object_bytes`, `conflicts_open`, `oldest_unmerged_scope_age_seconds`, `retirement_blockers` |
-| api | request rate, errors and duration per operation; `export_jobs{state}`; `restores_total{role}`, `digests_total{role}`; `auth_failures_total{reason}`; `presigned_urls_total` |
+| api | request rate, errors and duration per operation; `export_jobs{state}`; `restores_total{role}`, `digests_total{role}`; `auth_failures_total{reason}`; `download_urls_total{kind=presigned,api}` |
 | catalog | pool usage, transaction retries (`busy`, `deadlock`), migration version |
 
 Health: `/healthz` (process) and `/readyz` (catalog reachable, lease state for `compact`, consumer bound for `ingest`);

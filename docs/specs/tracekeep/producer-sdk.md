@@ -11,7 +11,7 @@ Read before designing the SDK's API or changing anything under `producer/`, and 
 
 Non-normative summary of what a caller must know.
 The sections below are authoritative; a disagreement is a defect in this summary.
-Contract changes under discussion are in [P1](proposals/p1-interfaces.md).
+Contract changes go through proposals, which the subject [README.md](README.md) lists.
 
 - **Module**: `github.com/arloliu/tracekeep/producer`, its own `go.mod`, tagged `producer/vX.Y.Z`;
   it imports tracepack, nats.go and, in `secsobs`, go-secs `hsms`, and never the service module (§4.7 *Why a module*, *No import cycle*).
@@ -29,13 +29,16 @@ Contract changes under discussion are in [P1](proposals/p1-interfaces.md).
 - **Lifecycle**: `Begin`, `Rotate` and `End`, onto which the device's `Start`, `HotReload` and `Stop` map once (`producer.md` §4.2, T-26).
 - **Observers**: the integrator installs `secsobs`'s connection options and lifecycle attachment before the connection opens;
   no record enters the SDK any other way (§4.7 *Producer-side API*).
+- **Send path**: `Pending().Register` returns a `Token` on which eqp-hub reports send progress (`Sent`, `SendFailed`, `SubmissionFailed`)
+  and the waiter one terminal outcome (`Replied`, `TimedOut` with the effective timeout, `Cancelled`), the first winning;
+  eqp-hub's waiter implements `TimeoutSource`, and `producertest` fakes it (§4.7 *Send path*, `producer.md` §4.6).
 - **`Bus`**: a narrow seam of the SDK's own types that a connection-free fake implements; NATS details stay private (§4.7).
 - **`Preflight`**: runs on the producer's own bus, in the background after the connection is up, never delaying the device's `Start`;
   returns a readable list of what is wrong.
 - **What the producer must guarantee**: five items, the whole of an integrator's obligations (§4.7, last paragraph; `.agents/rules/600-invariants.md`).
 - **Versions**: the SDK requires nats.go v1.55.0, which raises a producer's nats.go and Go floor (Go 1.26) when it imports the SDK (§4.7 *Versions*, T-19).
 - **Open**: the producer-side API is a sketch and fixes no signatures beyond the names above;
-  the send-path token protocol behind `Pending()` is P1 item 5.
+  the send-path token protocol behind `Pending()` (`producer.md` §4.6 *Send-path token protocol*) is reviewed with eqp-hub's maintainers before phase G (T-26).
 
 ### 4.7 The producer SDK: a separate Go module
 
@@ -164,7 +167,36 @@ The header-block length is computed by the SDK from the NATS header wire format,
 
 **Producer-side API** (sketch): `Begin(ctx, CaptureDescriptor)`, `Rotate(ctx, CaptureDescriptor)`, `End(ctx) Report` (bounded, never an error the device must act on),
 which the device's `Start`, `HotReload` and `Stop` map onto (`producer.md` §4.2 *Device verbs and SDK calls*, T-26);
-`Pending().Register/Complete/Fail(token)`, `Sampler{N, T}`, and:
+`Pending()` and `TimeoutSource` (*Send path*, below), `Sampler{N, T}`, and:
+
+- **Send path** (sketch; the protocol is `producer.md` §4.6 *Send-path token protocol*,
+  **reviewed with the eqp-hub maintainers before phase G**, which may reshape these signatures):
+
+  ```go
+  // Register records a forwarded W-bit primary before it is sent and returns its token;
+  // the capture reference and the thin decision are the SDK's, taken inside Register.
+  func (p *Pending) Register(sessionID uint16, systemBytes uint32, channel string) Token
+
+  // Token is one registration's handle: safe from any goroutine, never blocking on anything external.
+  type Token interface {
+      Sent()                            // progress, from the forwarding call; the three exclude each other
+      SendFailed()                      // removes the entry by token
+      SubmissionFailed()                // removes the entry by token
+      Replied()                         // terminal outcomes, from the waiter; the first wins
+      TimedOut(effective time.Duration) // the effective timeout of that wait; the only source of T3
+      Cancelled()
+  }
+
+  // TimeoutSource is the response waiter's side, which eqp-hub's waiter implements.
+  type TimeoutSource interface {
+      // Await opens the wait for a registered request and reports exactly one terminal outcome on t.
+      Await(t Token, timeout time.Duration)
+  }
+  ```
+
+  A `TimeoutSource` reports exactly one terminal outcome per `Await` and never blocks its caller;
+  it calls `TimedOut` only from its timer branch, with the timeout the wait was opened with,
+  so a HotReload's new timeout applies to new waits only (`producer.md` §4.4).
 
 - **Observers**, from `secsobs` (go-secs v2.8.0, the version tracepack v0.8.0 requires):
   `ConnOptions() []hsms.ConnOption` returns the wire, socket and transaction observers
@@ -189,7 +221,9 @@ which the device's `Start`, `HotReload` and `Stop` map onto (`producer.md` §4.2
   it is also an admin-triggered check.
 - `producer/producertest`: an in-memory `Bus` and a harness
   that drives disconnects, HotReload, `Stop` under a stalled publisher and fault injection against the integrator's wiring,
-  so each producer gets phase 0's chaos tests without rewriting them.
+  so each producer gets phase 0's chaos tests without rewriting them;
+  it also holds the `TimeoutSource` fixture, a fake waiter on a controllable clock that produces a reply, a timeout, a cancellation and the competing reports of `producer.md` §4.6,
+  and a conformance check an integrator's `TimeoutSource` runs.
 
 **What the producer must guarantee**, the whole list (everything else is the SDK's):
 (1) the traffic cluster's address, credentials and TLS material in `Config`, or a dedicated connection through `WithConn`;

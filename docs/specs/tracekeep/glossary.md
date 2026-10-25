@@ -44,6 +44,10 @@ Read when a spec file uses a term you cannot place; the cited section is authori
 | resolution | a version's final state, `staged` or `terminated`; every later message of the version is acknowledged under it | §6.1 *Parking* |
 | incarnation | one life of a traffic or parking stream, a `bus_streams` row; durable consumers are named for it | §6.1 *Parking* |
 | termination order | a record of `capture terminate` that covers the capture's never-parked deferred originals at or below a cut-off sequence of one incarnation | §6.1 *Parking* |
+| disposition classifier | the pure function that returns a delivery's final disposition or the next step it needs (evidence or a transactional operation); not the record classifier of a processing configuration | §6.1 |
+| parking coordinator | the one owner of the parking protocol's steps: begin under the capture row, publish, confirm, advance, acknowledge | §6.1 *Parking* |
+| pending request | a forwarded W-bit primary registered before it is sent: token, key (session id, System Bytes), capture, channel, thin decision | §4.6 |
+| token | a pending request's handle, on which eqp-hub reports send progress and one terminal outcome | §4.6 |
 | survivor | a claim object retention skipped in an evicted hour, because an unresolved parked version still needs it | §8.4 |
 
 ## Tunables
@@ -56,7 +60,7 @@ Defaults are T-12 and T-25 in [tracekeep-decisions.md](tracekeep-decisions.md).
 | Q | quiet period: a scope becomes a merge candidate at hour end + Q; also the adjacency delay and the silence a successor close requires | 15 min | §7.3, §8.2 |
 | I | inactivity close: a capture with no registration for I is closed | 2 h | §8.2 |
 | L | retirement inactivity bound for a processing configuration | 7 days | §6.4 |
-| D | deletion delay of a merged pack; exceeds any presigned URL's lifetime | 1 h | §8.3 |
+| D | deletion delay of a merged pack; exceeds any download URL's lifetime | 1 h | §8.3 |
 | H | the producer's retry horizon for a put or publish | 5 min | §4.2 |
 | τ | the producer's publish deadline | 10 s | §4.2 |
-| ε | listed among the tunables in §10.4 but not defined in the seed; presumably §4.2's clock-step tolerance | open | §10.4 |
+| ε | the producer's clock-step tolerance: the wall-clock drift against the clock anchor tolerated before a `clock-step` is recorded, carried in the descriptor as `clock_step_tolerance_ns` ([SEM §4]) | 1 s, tracepack's `DefaultClockStepTolerance` (T-29) | §4.2, §10.4 |

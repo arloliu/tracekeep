@@ -24,6 +24,7 @@ Everywhere:
 
 - **Key material** is held in memory only: the service never writes it to disk, a log or a temporary object.
   The `file` key provider only reads files an operator or a Vault Agent places, mode 0600.
+  It is resolved, checked against its binding and cached only by `internal/keys`.
 - **Clear text** exists only on the traffic and parking streams, in the claim bucket (TLS and encryption at rest)
   and in a consumer's memory before masking.
   Storage holds masked packs only.
@@ -34,5 +35,8 @@ Everywhere:
   bus messages in the order of `ingest.md` §6.1, layout and length first,
   API requests at the handler, configuration at load.
 - **Secrets** (NATS credentials, S3 keys, OIDC client secrets, Vault tokens) are never logged.
+- **Download URLs**, presigned or carrying an API download token, are bearer credentials until they expire:
+  issued only after the role check, living less than the deletion delay D, never logged.
+  `api.md` §10.1 *Downloads*.
 - **Transport**: TLS for NATS, S3, Vault and the API.
 - **gosec** is enabled; suppress a finding only with `//nolint:gosec // <specific reason>`.

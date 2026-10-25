@@ -10,7 +10,7 @@ Read before touching `internal/policy` or `internal/keys`, or anything that hand
 
 Non-normative summary of what a caller must know.
 The sections below are authoritative; a disagreement is a defect in this summary.
-Contract changes under discussion are in [P1](proposals/p1-interfaces.md).
+Contract changes go through proposals, which the subject [README.md](README.md) lists.
 
 - **Policy**: a `redact.Policy`, versioned with a content hash, compiled once and bound to each capture;
   the default is every row of the baseline table of [SEM §8];
@@ -20,13 +20,16 @@ Contract changes under discussion are in [P1](proposals/p1-interfaces.md).
   `EncryptionKey(capture, keyID)` is derived by the HKDF recipe of §9, so nothing per capture is stored.
 - **Bindings**: before a consumer derives or writes with a key it resolves the material and runs an insert-or-compare of its fingerprint;
   a mismatch fails closed, defers every record needing the key and alerts.
+- **`keys` module**: `internal/keys` owns HKDF, the fingerprint, the insert-or-compare and the cache;
+  a provider only returns material at a reference and version,
+  and a bound key id is requested at its pinned version, never as "latest".
+  The binding check completes before any derivation or use, and only then is a cache entry published (§9).
+- **Purposes**: digest, master, session-cookie and download-token keys are distinct key ids, told apart by the binding's kind (§9).
 - **Providers**: `vault` (KV v2, version pinned in the binding), `file` (mode 0600), `env` (development only, refused in production);
   material is held in memory only.
 - **Originals**: restored only into an API response, after the audit row is written;
   an export never contains them;
   `Digest` is rate-limited and audited, and the scorer never holds the key.
-- **Open**: whether derivation and bindings sit above the providers is not fixed by §9;
-  the repository layout (§11, `docs/guides/repository.md`) places bindings and `redact.Keys` in `internal/keys`.
 
 ## 9. Masking, encryption and keys (requirement 7)
 
@@ -52,8 +55,27 @@ Contract changes under discussion are in [P1](proposals/p1-interfaces.md).
     Two consumers resolving one id for the first time therefore agree or one of them stops.
     A `keyID`, like a processing configuration, is retired only under §6.4's condition,
     never merely because its captures are stopped.
+  - **The `keys` module** (`internal/keys`) owns the HKDF derivation, the fingerprint, the insert-or-compare and the in-memory cache,
+    for every role that uses a key;
+    a `KeyProvider` only returns the material at a provider reference and version, and derives, compares and caches nothing.
+    A key id's provider reference comes from its declaration in configuration;
+    the declared version, or the provider's current one when none is declared, applies only while the key id is unbound.
+    The binding row records the reference and the version the provider returned and is never updated,
+    so it is the key id's immutable mapping:
+    a bound key id is always requested at the binding's reference and pinned version, never as "latest".
+    `file` and `env` have no versions; for them the fingerprint alone detects changed material.
+  - **Order of a resolution**: read the binding;
+    resolve the material at the binding's version, or, for an unbound key id, at the declared or current one;
+    compute the fingerprint; insert-or-compare.
+    Only after the check succeeds does the module derive a capture key, hand out the material or publish a cache entry;
+    a failed check caches nothing.
+    The order holds for every use: a consumer's write, and the API's restore, digest, session cookie and download tokens.
+  - **Key purposes stay distinct**: each key id has one purpose, recorded as its binding's kind:
+    `digest` (`DigestKey`), `master` (the IKM of `EncryptionKey`), `session` (the session cookie of `api.md` §10.2) and `download` (the download tokens of `api.md` §10.1).
+    A request for a key id under another kind fails closed,
+    and no key of one purpose is derived from a key of another.
 - `KeyProvider` implementations:
-  `vault` (KV v2 with the version pinned in the binding; Kubernetes auth in the cluster, AppRole on a host; keys cached in memory, never on disk),
+  `vault` (KV v2 with the version pinned in the binding; Kubernetes auth in the cluster, AppRole on a host; material held in memory only, never on disk, and cached by the `keys` module),
   `file` (files a Vault Agent or an operator places, mode 0600, for standalone), `env` (development only, refused in production mode).
   Vault Transit does not fit: the derivation and AES-SIV need the raw master key in process.
 - Where the data lives:

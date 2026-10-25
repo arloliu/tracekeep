@@ -10,13 +10,15 @@ Read before touching `proto/`, `internal/api`, `internal/auth` or `web/`.
 
 Non-normative summary of what a caller must know.
 The sections below are authoritative; a disagreement is a defect in this summary.
-Contract changes under discussion are in [P1](proposals/p1-interfaces.md).
+Contract changes go through proposals, which the subject [README.md](README.md) lists.
 
 - **Contract**: protobuf served by connect-go, gRPC for Go clients and JSON over HTTP for the browser, from one definition (§10.1).
 - **Operations**: `ListDevices`, `ListCaptures`, `ListPacks`, `ListScopeChanges`, `PackURL`, `QueryRecords`, `FindTransaction`, `Export`, `Restore`, `Digest`, admin (§10.1 table).
 - **Selector**: reads name (`tool_id`, devices, window), the device being the gateway's `eqp-hsms` device name;
   omitting the devices selects every device of the tool (§10.1 *Selector*).
-- **`PackURL`**: a presigned read with a lifetime below D; it makes the VE service a privileged reader of packs (T-5).
+- **`PackURL`**: a download URL with a lifetime below D; it makes the VE service a privileged reader of packs (T-5).
+- **Downloads**: a presigned URL where the store presigns, otherwise a URL on the API carrying a signed download token;
+  either is issued only after the role check, expires below D and serves ranged reads (§10.1 *Downloads*).
 - **Exports**: an asynchronous job producing a bundle with one JSONL file per source pack, by that pack's `format_minor`;
   a filtered `.tpk` is not offered (§10.1).
 - **People**: OIDC authorization code with PKCE in a backend-for-frontend;
@@ -40,10 +42,10 @@ gRPC for Go clients, JSON over HTTP for the browser, one definition.
 | `ListCaptures(selector)` | captures with state, device, `recorder_instance_id`, `previous_capture_id`, unregistered intervals and the `overlap` flag (§7.3), thinning parameters, processing configuration ids |
 | `ListPacks(selector)` | per hour and scope: state, revision, packs with their ranges, gaps with time intervals, declared losses, crash gaps, conflicts, unknown tail, `no-data` hours (§7.3) — LS-10 |
 | `ListScopeChanges(after seq, selector)` | `scope_events` after a cursor, paginated, with the epoch — LS-11; one global cursor, returning only the selected tool's and devices' events |
-| `PackURL(pack_id)` | a presigned read (lifetime < D) so the VE reads packs with tracepack's own reader; this makes the VE service a privileged reader of packs that hold ciphertext in place (§13) |
+| `PackURL(pack_id)` | a download URL (lifetime < D, *Downloads* below) so the VE reads packs with tracepack's own reader; this makes the VE service a privileged reader of packs that hold ciphertext in place (§13) |
 | `QueryRecords(selector, predicates)` | streamed masked records, via `MergeIterate`; the predicates below, plus capture, seq range and epoch |
 | `FindTransaction(capture, seq, hour)` | tracepack's lookup |
-| `Export(filter, kind)` | an asynchronous job producing a **bundle** (tar) under `exports/`, fetched by presigned URL: one JSONL file **per source pack**, `tracepack-jsonl/1`, `/2` or `/3` by that pack's `format_minor` 0, 1 or 2 (G5-233, G5-270), plus `manifest.json` naming packs, captures, hours, each pack's incompleteness from its read, conflicts, and the filter. `kind=canonical` uses the canonical exporter unfiltered; `kind=filtered` writes the same record schema with the filter applied and is declared non-canonical in the manifest. A filtered `.tpk` is an extract, a v1.0 non-goal, and is not offered. A cancelled or failed job deletes its partial objects |
+| `Export(filter, kind)` | an asynchronous job producing a **bundle** (tar) under `exports/`, fetched by a download URL (*Downloads* below): one JSONL file **per source pack**, `tracepack-jsonl/1`, `/2` or `/3` by that pack's `format_minor` 0, 1 or 2 (G5-233, G5-270), plus `manifest.json` naming packs, captures, hours, each pack's incompleteness from its read, conflicts, and the filter. `kind=canonical` uses the canonical exporter unfiltered; `kind=filtered` writes the same record schema with the filter applied and is declared non-canonical in the manifest. A filtered `.tpk` is an extract, a v1.0 non-goal, and is not offered. A cancelled or failed job deletes its partial objects |
 | `Restore`, `Digest` | §9 |
 | admin | policies, processing configurations, key ids (no material), retention, thinning status, holds if LS-13 (a) is chosen |
 
@@ -93,10 +95,26 @@ The VE service's configuration names (`tool_id`, device) pairs;
 it lists packs, follows scope changes and fetches `PackURL`s through the selector,
 and needs no knowledge of capture ids beyond what `ListPacks` returns.
 
+**Downloads.**
+`PackURL` and an export's fetch return a download URL whose lifetime is below the deletion delay D (§8.3).
+Where the store presigns (`storage.md` §5.2 *Downloads*), it is a presigned GET of the object;
+otherwise it is a URL on the API itself carrying a download token, and the API serves the object:
+
+- The token is issued only after the issuing operation's role check (`pack-reader` for `PackURL`, `exporter` for an export);
+  it names exactly one object key and an expiry, and authorizes nothing else.
+- It is signed with the download-token key, a key purpose of its own (`masking-keys.md` §9),
+  so any replica validates it without shared state.
+- A request after the expiry is refused;
+  the lifetime is the presigned URL's,
+  so a merged pack's object outlives every token issued for it as it outlives every presigned URL.
+- The API answers `HEAD` and ranged `GET` (`Range`, `206 Partial Content`) as S3 does, reading through `ObjectStore.Open`'s `io.ReaderAt`,
+  so tracepack's reader works over either kind of URL unchanged.
+- A download URL, presigned or not, is a bearer credential until it expires and is never logged.
+
 ### 10.2 Auth
 
 - **People**: OIDC authorization code with PKCE, handled by the Go backend as a backend-for-frontend (`coreos/go-oidc`, `golang.org/x/oauth2`).
-  The session is a **signed, encrypted cookie** (key from the `KeyProvider`) holding subject, roles and expiry,
+  The session is a **signed, encrypted cookie** (a `session` key from the `keys` module, `masking-keys.md` §9) holding subject, roles and expiry,
   so any replica validates it without shared state;
   roles map from IdP groups or claims in configuration.
 - **Services** (the VE generation service, the scorer): OAuth2 client credentials from the same IdP, validated against its JWKS;

@@ -10,7 +10,7 @@ Read before changing a classifier, the masker, the policy or key binding, or the
 
 Non-normative summary of what a caller must know.
 The sections below are authoritative; a disagreement is a defect in this summary.
-Contract changes under discussion are in [P1](proposals/p1-interfaces.md).
+Contract changes go through proposals, which the subject [README.md](README.md) lists.
 
 - **Binding**: a capture binds one immutable processing configuration at registration:
   classifier implementation, version and settings, policy id, version and hash, key ids with fingerprints, the format features it needs;

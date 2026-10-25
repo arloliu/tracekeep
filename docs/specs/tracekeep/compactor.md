@@ -10,7 +10,7 @@ Read before touching `internal/compact` (with `.agents/rules/600-invariants.md`)
 
 Non-normative summary of what a caller must know.
 The sections below are authoritative; a disagreement is a defect in this summary.
-Contract changes under discussion are in [P1](proposals/p1-interfaces.md).
+Contract changes go through proposals, which the subject [README.md](README.md) lists.
 
 - **Singleton**: one active compactor under a catalog lease with a fence token;
   every commit checks the lease, and a worker that lost it does nothing further (§8.1).
@@ -21,12 +21,14 @@ Contract changes under discussion are in [P1](proposals/p1-interfaces.md).
   a capture is closed by a later capture of its device only once it has itself been silent for Q,
   so an overlapping live capture is never closed (§8.2).
 - **Deletion**: a pack that is an input of a successful merge whose output is retained is deleted after delay D,
-  which exceeds any presigned URL's lifetime;
+  which exceeds any download URL's lifetime;
   the tombstone commits, in a transaction that starts with the capture row, before the object is removed (§8.3).
 - **Retention**: whole hours, from each record's own `ts_utc_ns`; ranges move to `evicted_ranges`;
   claim objects go with their hour, survivors excepted (§8.3, §8.4).
 - **Claim objects**: no early sweep;
-  one deletion predicate, for an hour's eviction and for survivor cleanup alike, evaluated under the capture row;
+  one deletion predicate, for an hour's eviction and for survivor cleanup alike, evaluated under the capture row:
+  one function called inside both deletion transactions, with the current incarnation an explicit input,
+  never sufficient alone (an admitted capture, an evicted hour and an attributable hour remain prerequisites);
   an object without the SDK's metadata is never deleted automatically (§8.4).
 
 ## 8. Compactor state machines
@@ -43,6 +45,7 @@ Contract changes under discussion are in [P1](proposals/p1-interfaces.md).
    insert `merges` and `merge_inputs`; mark inputs `merged`;
    `UPDATE scopes SET state='settled', archive_pack_id=?, revision=revision+1 WHERE … AND revision=r`;
    `UPDATE leases … WHERE holder=? AND fence_token=?`;
+   the `counters` update that allocates the `settled` event's seq is the last statement (§7.3);
    zero affected rows on either update **rolls back the whole transaction**.
    A rolled-back merge **never deletes its uploaded archive directly**:
    deletion is owned by the tombstone protocol of §8.3, under the lease, and only for a key no `packs` row names;
@@ -94,7 +97,7 @@ and a read whose range meets the gap reports `incomplete` ([STO §4]).
 
 A pack is deletable when it is an input of a successful merge
 whose output pack is in state `staged` or `merged` (the relation in `merges`/`merge_inputs`, never a flag or lineage tag);
-it is deleted after a delay D (default 1 hour) that exceeds the lifetime of any presigned URL (§10.1) and any read in flight,
+it is deleted after a delay D (default 1 hour) that exceeds the lifetime of any download URL, presigned or served by the API (§5.2 *Downloads*, §10.1), and any read in flight,
 and a `tombstones` row is written in the same transaction as the `deleted` state.
 Every deletion, by this rule or by retention, runs a transaction
 whose **first statement updates the capture's row** (the same row every registration updates first, §6.3),
@@ -153,6 +156,13 @@ no proof about acceptance times, drained subjects or object incarnations is need
   and an object named by several versions (claim-check objects are named `<capture_id>.<seq>`) is needed until the last of them satisfies this;
   the known-copies clause for a terminated version is the service's own caution (G5-269 does not require it),
   so that the common case, every message of the version already delivered, releases the object only after the server confirmed their acknowledgements;
+  the predicate is **one function**, called inside both deletion transactions
+  (the retention transaction of §8.3, where false makes the object a survivor, and the reconciler's `deletable` mark below, where false leaves the survivor in place),
+  whose inputs are the `parked` version rows of (capture, seq) with their copy rows and, **explicitly**, the current incarnation of each stream (the unretired `bus_streams` row of each role, `parking.md`);
+  it keeps the asymmetry above (`staged` needs no copy-acknowledgement gate, `terminated` does)
+  and **does not by itself authorize deletion**:
+  it decides only whether a parked version still needs the object,
+  and an admitted capture, an evicted hour and an attributable hour (the `claim_objects` row, or for an object without a receipt the SDK's `Metadata`, below) remain prerequisites the caller checks;
   the resolution of a parked message changes nothing about its object **inside** retention:
   staged or terminated while its hour is still retained, the object stays until §8.3 evicts the hour, like any other (no early sweep);
   a survivor is deleted only once that predicate holds, by the compactor's reconciler in a durable, retried step:

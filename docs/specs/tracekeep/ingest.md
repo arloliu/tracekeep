@@ -11,7 +11,7 @@ Read before touching `internal/bus` or `internal/ingest` (with `.agents/rules/60
 
 Non-normative summary of what a caller must know.
 The sections below are authoritative; a disagreement is a defect in this summary.
-Contract changes under discussion are in [P1](proposals/p1-interfaces.md).
+Contract changes go through proposals, which the subject [README.md](README.md) lists.
 
 - **Order of checks** for every delivery:
   layout and length, retention candidate, resolution of the version against `parked` rows and termination orders, framing (`CheckBusMessage`), admission before any age decision, then waits on catalog state or a claim object (§6.1).
@@ -28,7 +28,11 @@ Contract changes under discussion are in [P1](proposals/p1-interfaces.md).
 - **Registration transaction**: idempotent on `pack_id`, the same for `ingest` and the reconciler;
   its prologue updates the capture row, its guards abort it, and the `counters` update is its last statement (§6.3).
 - **Crash points**: every crash leaves a state the §6.3 table recovers by redelivery or the reconciler.
-- **Open**: the seed fixes the order and the outcomes, not the shape of the code that decides them.
+- **Decision shape**: a pure disposition classifier decides from the facts gathered so far and returns a final disposition or the next step:
+  evidence (framing, a claim object's fetch, descriptor validation) or a transactional operation (admission, rejection, parking)
+  that re-reads its facts under the capture row and returns the actual outcome;
+  a snapshot decision never authorizes an effect on its own,
+  and the table is also a table-driven test beside the barrier schedules, never instead of them (§6.1).
 
 ## 6. Ingest protocol
 
@@ -65,6 +69,34 @@ Only after this does any wait on catalog state or on a claim object begin → **
 a claim-check message of an unknown capture is fetched first,
 because `CheckBusMessage` recognizes a claim-check `start` only in `CheckBusPayload`) → capture known → claim payload → processing configuration executable → classify and mask → batch.
 
+**The disposition classifier.**
+The order of checks and the table below are one decision procedure, kept apart from its effects.
+A **disposition classifier**, a pure function that performs no I/O and holds no lock
+(not the record classifier of the capture's processing configuration),
+takes the facts gathered so far for one delivery and returns either a **final disposition**, a row of the table,
+or the **next step** it needs:
+more **evidence**, gathered without a durable effect (framing by `CheckBusMessage`, the fetch and check of a claim object, start recognition and descriptor validation),
+or a **transactional operation**: the admission transaction, the durable write of `rejected`, step (1) of the parking protocol, or the termination of an unresolved version under an active order (`parking.md`).
+The step runs, what it returns joins the facts, and the classifier decides again, until it returns a final disposition.
+Before resolution the facts are only those read from the raw message (layout and length, `ts_utc_ns`, the version)
+and the lookups of the version in `parked` and of an active termination order;
+nothing calls `CheckBusMessage`, fetches an object or validates a descriptor before the classifier has found the version unresolved,
+so a resolved or order-covered delivery reaches its disposition from the raw message alone.
+A transactional operation starts with the prologue of §6.3, **re-reads under the capture row** the mutable facts its outcome depends on, and returns the **actual outcome**,
+which may differ from the one the classifier expected from its snapshot:
+the admission transaction returns `open`, nothing changed (equal bytes) or `descriptor-conflict`;
+parking's step (1) returns a version already resolved (acknowledged, nothing published),
+a new row of an admitted capture whose hour is past the retention horizon (terminated as `beyond-retention`),
+or a row in `parking` or `parked` to publish.
+A **snapshot decision never authorizes an effect on its own**:
+admission, rejection and parking take effect only as the outcome a transactional operation returns;
+a final disposition is acted on directly only when what its facts prove cannot be undone
+(a resolved version, a receipt, an admitted capture, a record past the horizon),
+or when it is a nak, which changes nothing durable and leaves the redelivery to be decided again.
+Admission is an **intermediate step**, never a final disposition:
+its outcome changes the facts the age decision reads,
+so an expired `start` that admission has just admitted terminates as beyond-retention, and one it rejected is deferred.
+
 | Condition | Disposition | Visible as |
 |---|---|---|
 | `ErrBusMalformed` (unknown layout, body length, bad `Nats-Msg-Id`, bad claim headers) | terminate on the bus, alert, count | seq gap |
@@ -89,6 +121,11 @@ it holds its own capture's messages on the stream and nothing else.
 and `tracekeep status` and `deferred list` show them per capture;
 the admin command of §10.4 lets an operator terminate a capture's deferred messages,
 which is the operator action G5-251 names.
+
+The table stays the normative list of dispositions.
+It is also the fixture of a table-driven test of the disposition classifier, each row a case,
+which **supplements, never replaces**, the barrier-controlled bus and database schedules (§7.4 *Tests*, `.agents/rules/300-testing.md`):
+the cases prove the decision, the schedules prove the re-reads under the capture row.
 
 ### 6.2 Batching and placement
 

@@ -11,7 +11,7 @@ Read before touching parking, resolution, termination or stream replacement, in 
 
 Non-normative summary of what a caller must know.
 The sections below are authoritative; a disagreement is a defect in this summary.
-Contract changes under discussion are in [P1](proposals/p1-interfaces.md).
+Contract changes go through proposals, which the subject [README.md](README.md) lists.
 
 - **Why**: a nak-delayed message stays in the consumer's pending set,
   so indefinite deferrals would fill `max_ack_pending` and stop delivery for every capture;
@@ -23,6 +23,9 @@ Contract changes under discussion are in [P1](proposals/p1-interfaces.md).
   (3) CAS `parking → parked`;
   (4) `DoubleAck` the original and mark its copy row `acked`.
   A crash re-runs from (1).
+- **Coordinator**: one parking coordinator owns those steps, so no caller holds half of them:
+  begin under the capture row and return the version's state, publish only for a version in `parking` or `parked`, confirm by the two outcomes below only, advance by CAS, `DoubleAck` then mark the copy row `acked`;
+  no catalog transaction is open across the publish or the acknowledgement (§6.1 *The parking coordinator*).
 - **Confirmation**: only a `PubAck` with `Duplicate` false, or error 10071 with a strictly positive stored sequence;
   anything else leaves the original unacknowledged and retried.
 - **Resolution**: durable before any acknowledgement;
@@ -122,6 +125,36 @@ the registration transaction that stages a parked record sets its `parked` row t
 and the copy is acknowledged only after that commit;
 `parked terminate` and `capture terminate` write the row `terminated`, the declared loss and the audit row first, then acknowledge the copies;
 a crash between either commit and the acknowledgement redelivers a copy whose row is already resolved.
+
+**The parking coordinator.**
+One coordinator owns the steps of the parking protocol, so no caller holds half of them.
+It adds no step and changes no outcome:
+each of its operations is a step above, whose text and proofs stay where they are.
+`ingest` enters at *begin* with an original;
+the parked consumer enters at *advance* with the copy it holds (a crash between (2) and (3), below) and at *acknowledge* for every acknowledgement of a copy.
+
+- **Begin** is the whole of (1), under the capture row:
+  the `pending` row when the catalog has none, the re-read of the capture's state, the branch it chooses (the horizon guard included),
+  and the insert-or-find of the version's `parked` row and the delivery's `parked_copies` row;
+  it returns the version's current state.
+  A resolved state publishes nothing, and the message is acknowledged under *resolution* below, through *acknowledge*.
+- **Publish** is (2), for a version in `parking` or `parked` only.
+- **Confirm** is *Confirmation* above:
+  a `PubAck` with `Duplicate` false, or error 10071 whose description parses to a strictly positive sequence, and nothing else;
+  a `PubAck` with `Duplicate` true, error 10164, a timeout, a zero or malformed description and any other code leave the original unacknowledged and retried as (2) says.
+- **Advance** is (3), a compare-and-set that moves states forward only (below),
+  so a handler that wakes after the version moved past `parking` changes nothing.
+- **Acknowledge** is (4) for whichever delivery the caller holds:
+  `DoubleAck`, then that delivery's copy row marked `acked` once the server confirmed the acknowledgement.
+
+No catalog transaction is open across the publish or the acknowledgement:
+*begin* commits before the publish, since the committed row, not the copy, is the protection point,
+and *advance* and the `acked` update are each a transaction of their own.
+A crash before an acknowledgement redelivers the message to its consumer, which runs its steps again (an original from *begin*, as above);
+an acknowledgement the server did not confirm leaves the message to be redelivered and acknowledged again (*resolution* below);
+an acknowledgement the server confirmed whose catalog update was lost leaves the copy row `waiting` for a message the work-queue stream removed,
+which the reconciler's per-sequence check marks `acked` once the version is resolved (below), never before.
+
 **Two tables, two lifetimes.**
 The `parked` row is the **version's resolution**, immutable once `staged` or `terminated` (a termination records the operator action's id in `terminated_by`) and kept for the capture's lifetime (§7.1).
 Every **message** of a version, the original on the traffic stream and each copy on the parking stream, has its own row in `parked_copies`, keyed by (**stream incarnation**, stream sequence) and carrying the version key and a state `waiting → acked`,
@@ -158,6 +191,8 @@ that writes every named unresolved version `terminated` with the declared loss a
 that covers the capture's deferred originals that were never parked:
 a consumer that later receives a message of that capture **on that incarnation** with a stream sequence at or below the cut-off and an unresolved version inserts the version `terminated` under the order's action id, with its copy row, the declared loss and the audit row, and acknowledges it
 (a message whose version is already `staged` is acknowledged as already staged, the order never undoes a resolution);
+that insertion is a transaction that starts with the prologue of §6.3 and re-reads the version under the capture row,
+so a version staged meanwhile is acknowledged as already staged;
 a message above the cut-off, or on another incarnation, is new traffic (a partitioned producer, [STO §4], or a replaced stream) and is handled normally,
 since G5-269 covers versions the operator decided about, never a version the operator has not seen;
 a publish accepted after the `Info` carries a sequence above the cut-off by construction, so the order's edge is exact.

@@ -46,8 +46,6 @@ eqp-hub reviews the SDK's API (`Bus`, `Preflight`, the five guarantees, the `sec
 ## Active plans
 
 - [Phase 0 — producer](plans/phase-0-producer.md) — the producer SDK and its proving ground.
-- [P1 — module interfaces](specs/tracekeep/proposals/p1-interfaces.md) —
-  six interface changes, accepted (T-26), each applied as its own change; item 4 (the SDK) before phase 0's code.
 
 ## Open items
 
@@ -57,5 +55,17 @@ eqp-hub reviews the SDK's API (`Bus`, `Preflight`, the five guarantees, the `sec
   the result goes to the decision log.
 - The veq branch `docs/ve/log-service-decisions` (commit 7b8a019) carries the LS-row amendments and V-35;
   it is not merged yet.
+- The tracepack release after v0.8.0 makes `WriteClose` always write an uncompressed close segment (G5-272, announced by the tracepack maintainers);
+  when tracekeep adopts it, the close intent of `compactor.md` §8.2 drops the codec and keeps the serialized `PackMeta`, `writer_time` and the fixed `pack_id`.
+- Spec gaps found while applying P1 (T-30), each needing an owner decision before the code it concerns:
+  an original whose version is `evicted-hour` and is redelivered is neither published nor acknowledged under a resolution (`parking.md`);
+  what the durable `rejected` write does when its re-read finds the capture already `open` (`ingest.md` §6.1);
+  whether parking's *advance*, the `acked` update and operator termination take the capture row (`parking.md`);
+  what `RegisterPack` does when the `parked → staged` CAS finds the version `terminated` by an operator (`catalog.md` §7.2);
+  whether a close's publication shares one transaction with its registration (`compactor.md` §8.2);
+  merge, deletion and the reconciler's registration also update the `leases` row, always capture → `leases` → `counters`,
+  which "nothing else is locked" (`catalog.md` §7.2, `compactor.md` §8.3, `.agents/rules/600-invariants.md`) does not say;
+  `catalog.md` §7.2 still counts "four" multi-statement transactions beside a table of eleven;
+  `storage.md` says object keys are exactly [STO §3], but export bundles live under `exports/`.
 - The service's `go.mod` requires the SDK from its first tag (`producer/vX.Y.Z`) on;
   `producer/doc.go` blank-imports tracepack and nats.go only to keep the SDK's requirements until code imports them.

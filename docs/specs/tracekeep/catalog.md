@@ -11,14 +11,22 @@ Read before touching `internal/catalog`, the schema or migrations, or anything t
 
 Non-normative summary of what a caller must know.
 The sections below are authoritative; a disagreement is a defect in this summary.
-Contract changes under discussion are in [P1](proposals/p1-interfaces.md).
+Contract changes go through proposals, which the subject [README.md](README.md) lists.
 
 - **Role**: the catalog is the service's database; tracepack defines no view of it (`positioning.md` §2).
-- **Operations**: admit a capture, look one up, register a pack, list packs and ranges, pick and commit merges, insert and publish a close, pick deletable packs, take or renew a lease, allocate an event seq, append the audit log (§7.2).
-- **Transactions**: about forty statements;
-  four multi-statement transactions guarded by compare-and-swap predicates with affected-row checks and unique constraints;
+- **Operations**: domain transactions, never statements:
+  admit or reject a capture, register a pack, commit a merge, record a conflict, insert and publish a close, delete a pack, evict an hour, release a survivor, begin parking;
+  besides them, take or renew a lease, prune events, append the audit log, and the reads (§7.2, §7.3).
+- **Contracts**: each transaction states its preconditions, guard reads, affected-row checks, durable outcome and `counters` use (§7.2 table);
+  about forty statements, the multi-statement transactions guarded by compare-and-swap predicates with affected-row checks and unique constraints;
   no `SELECT … FOR UPDATE` (§7.2).
-- **Lock order**: the capture row first in every pack-changing transaction, the `counters` row last, nothing else locked (§7.2; `ingest.md` §6.3; `compactor.md` §8.3).
+- **Lock order**: one unexported helper runs the prologue, so the capture row is first by construction;
+  the `counters` row is last only in a transaction that allocates an event seq, and parking touches no counter;
+  nothing else is locked (§7.2; `ingest.md` §6.3; `compactor.md` §8.3).
+- **Aborts**: a failed scope-revision or lease check rolls back the whole transaction, which returns the outcome unretried;
+  a tombstone commits before its object is deleted (§7.2; `compactor.md` §8.1, §8.3).
+- **Reads**: domain results;
+  `ListPacks` returns completeness and the watermark read before the listing, and the module owns cursor recovery (§7.3).
 - **Completeness**: producer coverage is the union of `pack_ranges` and `evicted_ranges`;
   a hole is a gap, evicted, or the unknown tail;
   an hour with no scope is `no-data`;
@@ -30,9 +38,11 @@ Contract changes under discussion are in [P1](proposals/p1-interfaces.md).
   pruning removes a seq prefix only;
   a stale cursor re-lists from `ListPacks` (§7.3).
 - **Engines**: MariaDB at `READ COMMITTED` with whole-transaction retries;
-  SQLite with one writer, `BEGIN IMMEDIATE`, and only the `all` process writing (§7.4).
+  SQLite with one writer, `BEGIN IMMEDIATE`, and only the `all` process writing;
+  all of it inside the module, never a caller's (§7.2, §7.4).
+- **Tests**: the barrier schedules run against the transactions on both engines (§7.4).
 - **Migrations**: Atlas, versioned per engine, expand-then-contract across two releases (§7.4).
-- **Open**: the seed names the operations and the lock order but fixes no signatures.
+- **Open**: signatures are a sketch.
 
 ## 7. Catalog (requirements 3 and 4)
 
@@ -70,11 +80,53 @@ so their indexes are the design.
 
 Admit a capture (the prologue of §6.3 inserts-or-finds the row; `pending → open`, or descriptor bytes compared on an admitted one), look a capture up by id (cached in `ingest`), register a pack (§6.3, idempotent on `pack_id`),
 list packs and ranges by tool and hour range, pick scopes to merge, commit a merge (§8.1), insert and publish a close (§8.2), pick deletable packs (§8.3),
-take or renew a lease, allocate an event seq, append `audit_log`.
+take or renew a lease, allocate an event seq (the last statement of the emitting transaction, below), append `audit_log`.
 About forty statements;
 point lookups, range scans on one index, inserts, and four multi-statement transactions guarded by **compare-and-swap predicates with affected-row checks** and unique constraints;
 no `SELECT … FOR UPDATE`, so the same statements mean the same on both engines;
 the two intentional row locks are the capture row, first in every pack-changing transaction (§6.3), and the `counters` row, last (§7.3).
+
+**Domain transactions.**
+The catalog's callable interface is the transactions below and the domain reads of §7.3;
+no caller issues a statement, opens a transaction or chooses a lock.
+One unexported helper runs the prologue of §6.3:
+an insert-ignore of a `pending` capture row when the catalog has none for the capture, then the update of the capture's row (`data_revision + 1`);
+it returns the capture row as read under that lock, which is where the transaction's guard reads begin.
+Every transaction of the table starts with that helper,
+so the capture row is first by construction and no caller restates the lock order.
+A second unexported step allocates an event seq from the `counters` row as the transaction's last statement (§7.3);
+only a transaction that emits one of the events of §7.3 calls it, and the last column shows which.
+Signatures are a sketch.
+
+| Transaction (caller) | Preconditions | Guards after the prologue; affected-row checks | Durable outcome | `counters` |
+|---|---|---|---|---|
+| `Admit` (`ingest`, §6.1) | an accepted descriptor | the capture's state re-read under the row; a `rejected` capture's retained bytes re-validated against the delivery's | no row or `pending` → `open`, the processing configuration bound; `rejected` → `open`; equal bytes on an admitted capture: nothing; different bytes: `descriptor-conflict`, nothing written | none |
+| `Reject` (`ingest`, §6.1) | a descriptor that is not accepted | the capture's state re-read under the row; an admitted capture is never overwritten | `captures.state = rejected` with its descriptor bytes, durably; the `start` stays deferred whatever its age | none |
+| `RegisterPack` (`ingest`; the reconciler under the compactor lease, §5.4; a close's publication, §8.2) | the object is put (put → register → ack); the reconciler's is verified and its exact seq set read (§5.4) | `pack_id` already registered: nothing more (idempotent); a `tombstones` row for the key: abort; the hour beyond the retention horizon: abort, and the key is tombstoned before the object is deleted; for the reconciler, the lease, and a `pending` capture leaves the pack unregistered (§5.4) | the rows of §6.3: `packs`, `pack_ranges`, `pack_losses`, `conflicts` with `revision + 1` on every other scope they touch, receipts, a parked record's version `staged` (`parking.md`), the capture's highest seq and stop, the scope upserted with `revision + 1` | last, when it emits `created`, `reopened` or `conflict` |
+| `CommitMerge` (the compactor under its lease, §8.1) | the archive put; the snapshot's revision r and `staged` inputs | `scopes … WHERE … AND revision = r` and `leases … WHERE holder = ? AND fence_token = ?`: zero affected rows on either rolls back the whole transaction, and the archive is never deleted directly (the reconciler adopts it) | the archive's `packs` row with its ranges and losses, `merges`, `merge_inputs`, the inputs `merged`, the scope `settled` with `revision + 1` | last: `settled` |
+| `RecordConflict` (`compact`: a suspect confirmed or cleared, a merge that fails on a conflict, §6.2) | the overlapping records compared, or the merge failed | — | the `conflicts` row written or cleared; `revision + 1` on every scope it touches | last: `conflict` for each touched scope |
+| `CloseIntent` (the compactor, §8.2) | a candidate of the trigger scan | re-read inside: `state = 'open'`, not `stop_seen`, `last_registered_at` older than I or Q by trigger; `captures … WHERE state = 'open' AND data_revision = d`: zero rows aborts, retried next cycle | the `capture_closes` row fixing every byte-affecting input; the capture `closed` | none |
+| `PublishClose` (the compactor, §8.2) | a `pending` intent; the close written from the stored options and put, a lost put checked by `Stat` | those of `RegisterPack`, on the intent's fixed `pack_id` | the close's pack registered, then the intent `published`; a `pending` intent is retried every cycle | as `RegisterPack` |
+| `DeletePack` (the compactor after delay D, §8.3) | an input of a successful merge whose output is `staged` or `merged` | the lease; no `packs` row other than this one names the key; either fails: abort | the pack `deleted` and its `tombstones` row; the object removed only after that commit | none |
+| `EvictHour` (retention, one hour of one capture, §8.3) | the hour older than the retention period and not held | the lease and the key check of §8.3; survivors chosen by the predicate of §8.4 under the row | the hour's `pack_ranges` union in `evicted_ranges` (coalesced); its packs, ranges, receipts, scope row and `claim_objects` rows deleted, survivors kept and marked with the hour; tombstones written; the objects, survivors excepted, removed only after that commit | none |
+| `MarkSurvivorDeletable` (the compactor's reconciler, §8.4) | a `survivor` row | the predicate of §8.4 | the row `deletable`; the object is then deleted and the row removed, a step that resumes and never skips | none |
+| `BeginParking` (`ingest`, step (1) of `parking.md`) | a deferral indefinite by its nature | the capture's state re-read: for an admitted capture, a new version whose hour is beyond the horizon is terminated as `beyond-retention` instead; a `pending` or `rejected` capture has no guard | the version's `parked` row inserted or found (`parking`), and the original's `parked_copies` row; returns the version's resolution, and a resolved version publishes nothing | none |
+
+The parking protocol's later steps (`parking → parked`, a copy marked `acked`, a version moved to `evicted-hour`), operator termination and a termination order's application are specified in `parking.md`, which states which of them run the helper;
+they change rows forward only by compare-and-set, and parking touches no counter.
+Outside the table, without the helper:
+taking or renewing the compactor lease (`leases`; a worker that lost it does nothing further, §8.1);
+pruning `scope_events` by seq prefix, which sets `counters.low_water` in the same transaction and allocates no seq (§7.3);
+appending `audit_log` for the API's actions (other audit rows are written inside their own transaction);
+and the reads (look a capture up, list packs and ranges, pick scopes to merge, pick deletable packs),
+whose answers each transaction above re-validates instead of trusting.
+
+**Retries stay inside the module.**
+A MariaDB deadlock or an `SQLITE_BUSY` re-runs the whole transaction from the helper (§7.4), so its guards are read again;
+the write pool's one connection, `BEGIN IMMEDIATE` and the second writer's refusal to start are the module's, never a caller's.
+A failed scope-revision or lease check rolls back the whole transaction (§8.1), as does every other guard that aborts;
+the transaction returns that outcome and is not retried,
+and the caller acts on it: the merge and the close at the next cycle (§8.1, §8.2).
 
 ### 7.3 Completeness (LS-10) and the change cursor (LS-11)
 
@@ -102,6 +154,13 @@ the two intentional row locks are the capture row, first in every pack-changing 
   when a capture starts more than Q after the latest `highest_seq_ts` of every earlier capture of its (`tool_id`, `recorder_instance_id`),
   not after the end of one predecessor, so two overlapping captures are never reported as missing traffic;
   or when its `previous_capture_id` names no registered capture.
+- **Domain results**: the read side returns results, never rows for a caller to classify.
+  `ListPacks` returns the watermark it read before the listing (*Cursor* below) with each capture's completeness:
+  gaps with their time intervals, evicted and unknown-tail seqs, `no-data` hours, unregistered intervals, declared losses, crash gaps and conflicts, an unresolved suspect reported as a conflict (§6.2);
+  `ListCaptures` and `ListDevices` return the `overlap` flag;
+  `ListScopeChanges` (`api.md` §10.1) returns the events after a cursor, or reports the cursor stale when it is below `low_water` or carries another epoch,
+  so the module detects a stale cursor and `ListPacks` returns the watermark to continue from:
+  the client re-lists the window and continues from that watermark.
 - **Overlap**: two leaders running at once write two captures of one (`tool_id`, `recorder_instance_id`), which [STO §4] allows.
   When the spans of two such captures intersect, each from `capture_origin_utc_ns` to `highest_seq_ts`,
   both are flagged `overlap` in `ListCaptures` and `ListDevices`;
@@ -137,7 +196,8 @@ the two intentional row locks are the capture row, first in every pack-changing 
   the capture row and the `counters` row are the intended lock waits, always in that order.
 - **SQLite**: one writer connection (`MaxOpenConns = 1` on the write pool), `BEGIN IMMEDIATE` for every write transaction, `busy_timeout` set, retry whole on `SQLITE_BUSY`;
   only the `all` process writes, enforced by deployment and checked at start (a second writer refuses to start on SQLite).
-- **Tests**: the repository tests run the same adversarial schedules on both engines with barriers, not timing:
+- **Tests**: the repository tests run the same adversarial schedules on both engines with barriers, not timing,
+  against the transactions of §7.2:
   registration during a merge snapshot, lease takeover between statements, close intent versus a late registration, event allocation with an uncommitted earlier transaction, two first uses of one key id.
 - **ent** rejected for now (code generation and a graph model for forty flat statements; its migration opinions beside Atlas);
   **sqlc** rejected (per-engine query sets);

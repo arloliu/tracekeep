@@ -23,6 +23,9 @@ Section numbers are those of the specs in `docs/specs/tracekeep/`, whose `README
   Every lock the rotation needs is taken before it, by a `TryLock` loop bounded by the operation's deadline;
   nothing is acquired after it, and a rotation abandoned before it installs nothing.
   `producer.md` §4.2 *Rotation* and *Lifecycle serialization*.
+- **A forwarded request's token takes one terminal outcome**: the first of reply, timeout and cancellation wins, and every later report is a counted no-op;
+  expiry is no outcome, so T3 of a forwarded request comes only from the waiter's typed timeout, on an entry its outbound observation bound to a socket.
+  `producer.md` §4.6 *Send-path token protocol*, §4.4.
 
 ## Ingest and parking
 
@@ -35,14 +38,20 @@ Section numbers are those of the specs in `docs/specs/tracekeep/`, whose `README
   a parked version `parking → parked → staged | terminated`, with `evicted-hour` between `parked` and `terminated`;
   a copy row `waiting → acked`, or `lost` for a copy of a retired stream incarnation.
   `parking.md` (§6.1 *Parking*).
+- **One parking coordinator owns the parking protocol's steps**, so no caller holds half of them:
+  begin under the capture row, publish only for a version in `parking` or `parked`,
+  confirm only by a `PubAck` with `Duplicate` false or error 10071 with a strictly positive parsed sequence,
+  advance by compare-and-set, then `DoubleAck` and mark that delivery's copy row `acked`;
+  no catalog transaction is open across the publish or the acknowledgement.
+  `parking.md` (§6.1 *The parking coordinator*).
 
 ## Catalog transactions
 
 - **Lock order is capture row → `counters` row**, and nothing else is locked.
-  Every transaction that admits, parks, registers, deletes, tombstones or evicts a pack of a capture,
-  merges a scope of it or publishes its close starts with the update of the capture's row;
-  the `counters` update is the last statement.
-  `ingest.md` §6.3 (the prologue), `compactor.md` §8.3.
+  One unexported helper of the catalog runs the prologue, so every transaction that admits, parks, registers, deletes, tombstones or evicts a pack of a capture,
+  merges a scope of it or publishes its close starts with the update of the capture's row by construction;
+  where the transaction allocates an event seq, the `counters` update is its last statement, and parking touches no counter.
+  `catalog.md` §7.2 *Domain transactions*, `ingest.md` §6.3 (the prologue), `compactor.md` §8.3.
 
 ## Deletion
 
@@ -50,6 +59,13 @@ Section numbers are those of the specs in `docs/specs/tracekeep/`, whose `README
   the claim object of (capture, seq) is deletable only when every `parked` version row of that (capture, seq) is `staged`,
   or `terminated` with every known copy row of the current incarnation `acked`.
   `compactor.md` §8.4 *Objects without a receipt*.
+
+## Keys
+
+- **A key is used only after its binding check**: resolved at its binding's pinned version, never "latest",
+  fingerprinted and compared before any derivation or use, and cached only after the check succeeds;
+  each key id has one kind, and a request under another kind fails closed.
+  `masking-keys.md` §9 *Order of a resolution* and *Key purposes stay distinct*.
 
 ## The bus
 

@@ -188,7 +188,7 @@ The veq document lifecycle (living and finite documents, the Status line, subjec
 
 Each subject spec file opens with an *Interface* section:
 a non-normative summary of what a caller must know, traceable to the text below it, which stays authoritative.
-Contract changes go through proposals, starting with [P1](proposals/p1-interfaces.md).
+Contract changes go through proposals, starting with P1 (module interfaces, applied by T-30).
 
 ### T-22 — configuration
 
@@ -267,3 +267,23 @@ The claim bucket's stream has `AllowDirect` off:
 nats.go creates object stores with it on, so `tracekeep migrate` turns it off after creating the bucket,
 `busconfig` records the setting and `Preflight` refuses a bucket that has it on,
 so the SDK's never-overwrite check reads the stream's leader and never a lagging replica (`producer.md` §4.2 *Large records*).
+
+### T-29 — clock-step tolerance (2026-10-25)
+
+The tunable ε that the operations table lists is the producer's clock-step tolerance of `producer.md` §4.2,
+written into each descriptor as `clock_step_tolerance_ns` ([SEM §4]).
+Its default is tracepack's `DefaultClockStepTolerance`, one second (tracepack v0.8.0):
+it keeps the operating system's slewed corrections from being recorded as steps,
+and a larger value would widen the gap by which a consumer closes a capture its producer left open ([STO §4]).
+
+### T-30 — module interfaces applied (2026-10-25)
+
+P1 (module interfaces) is applied in full and closed; its last text is at commit a9ae497.
+Its six items now live in the specs:
+the catalog's domain transactions (`catalog.md` §7.2–§7.3),
+ingest's disposition classifier and the one deletion predicate (`ingest.md` §6.1, `compactor.md` §8.4),
+the parking coordinator (`parking.md`),
+the SDK's lifecycle, observer options and narrow `Bus` (`producer.md` §4.2, `producer-sdk.md` §4.7),
+the send-path token protocol and `TimeoutSource` (`producer.md` §4.4, §4.6, `producer-sdk.md` §4.7),
+and optional presigning with an API download fallback and the `keys` module (`storage.md` §5.2, `api.md` §10.1, `masking-keys.md` §9).
+The token protocol is still reviewed with the eqp-hub maintainers before phase G (T-26).

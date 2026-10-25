@@ -41,7 +41,7 @@ tracekeep ingest                                                     §6
 tracekeep compact                                                    §8
   snapshot scope (revision r) → tracepack.Merge over ReaderAt → archive/ → one catalog txn guarded by r and the lease → delayed delete
 tracekeep api                                                        §10
-  catalog (packs, ranges, gaps, scope events) + presigned pack reads + MergeIterate queries + export bundles + restore
+  catalog (packs, ranges, gaps, scope events) + pack downloads + MergeIterate queries + export bundles + restore
 ```
 
 ### 3.3 Deployment
@@ -55,6 +55,10 @@ tracekeep api                                                        §10
   MariaDB on the host, or SQLite for a single-host pilot with every writing role in the one `all` process (§7.4).
 - Both read one config schema; the difference is the key provider and the number of processes.
   The schema is one Go struct loaded with fuda (T-22).
+- **Traffic cluster connections**: every producer holds one dedicated connection (`producer-sdk.md` §4.7),
+  and a gateway runs one producer per recorded `eqp-hsms` device process,
+  so the cluster serves up to the devices per gateway (fourteen in eqp-hub's `examples/tfdc_common_parallel.yaml`) times the gateways, plus tracekeep's own consumers;
+  the cluster's connection limits and file descriptors are sized for that count, not for the number of tools.
 
 ### 3.4 Transport scope
 

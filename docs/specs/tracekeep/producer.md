@@ -11,7 +11,7 @@ Read before touching `producer/` (with `.agents/rules/600-invariants.md`) or the
 
 Non-normative summary of what a caller must know.
 The sections below are authoritative; a disagreement is a defect in this summary.
-Contract changes under discussion are in [P1](proposals/p1-interfaces.md).
+Contract changes go through proposals, which the subject [README.md](README.md) lists.
 
 - **Placement and inputs**: the producer runs inside the `eqp-hsms` plugin process;
   its inputs are go-secs observers on the tool's connection: wire, socket and lifecycle, and transaction (§4.1).
@@ -35,6 +35,9 @@ Contract changes under discussion are in [P1](proposals/p1-interfaces.md).
   one capture series per device, which a reader selects by (`tool_id`, device) (§4.5).
 - **Send path**: every forwarded W-bit primary is registered as a pending request before it is sent (§4.6 *Association protocol*);
   T3 of a forwarded request comes from eqp-hub's waiter through `TimeoutSource` (§4.4);
+  eqp-hub reports each request's fate on its token:
+  send progress from the forwarding call and one terminal outcome (reply, timeout, cancellation) from the waiter,
+  where the first terminal outcome wins and expiry is no outcome (§4.6 *Send-path token protocol*, reviewed with eqp-hub's maintainers before phase G);
   thinning is off by default and touches only positively identified FDC interval polls (§4.6).
 - **Device verbs and SDK calls**: this file states the rules under the device's verbs (`Start`, `Stop`, `HotReload`);
   the SDK's calls are `Begin`, `Rotate` and `End`, and each rule holds for the call its verb maps to (§4.2 *Device verbs and SDK calls*, T-26).
@@ -104,7 +107,7 @@ and this section is the contract between them.
      a socket seen for the first time, by a wire or a socket callback alike, takes the next epoch number
      (go-secs may deliver a wire event before the socket event that opened its socket);
   3. **clock check** ([SEM §4]) inside the lock: drift = (wall − anchor_wall) − (mono − anchor_mono);
-     when |drift| exceeds the tolerance, take the next seq for a `clock-step`, **add it to the reservation set**,
+     when |drift| exceeds the tolerance ε (the descriptor's `clock_step_tolerance_ns`, default one second, T-29), take the next seq for a `clock-step`, **add it to the reservation set**,
      then set the anchor to (wall, mono);
   4. take the record's seq from the counter, inside the same lock,
      so no record under the new anchor can precede the step and no record can follow a `stop` (G5-218, [SEM §4]);
@@ -163,7 +166,7 @@ and this section is the contract between them.
   `Stop` waits at most one bounded rotation plus its own bounded step.
   Only a later `Start` installs a capture again.
 - **Rotation** (at `Start`, at `Stop`, at a `HotReload` that changes any descriptor value, `hsms_timers` and thinning parameters included, and after a fault):
-  1. build the new capture;
+  1. build the new capture, with a fresh `capture_id` the SDK generates as a UUIDv7 (RFC 9562), so capture ids sort by creation time;
      under its own lock, which nothing else can hold before it is installed, take seq 0 for its `start`, reserve it, and push the `start` into the reserved lane
      (the lane is the producer's, not the capture's, and a push never blocks), then unlock;
   2. take the **old** capture's lock with a `TryLock` loop bounded by the operation's deadline;
@@ -281,7 +284,7 @@ so counting bus faults there would make the bus critical by the back door.
 |---|---|---|
 | connect, select, deselect, separate, linktest, T6, T7, socket close and its cause | socket and lifecycle observers | transport events per tracepack-go.md §5.1–§5.3 |
 | T3 of a send go-secs awaited (its own `S1F1`, `S1F13`, `S6F23`) | `TxEvent{Outcome: TxT3Timeout}` from `WithTransactionObserver` | transport event `timer-expiry`, timer 3, at the time the event is received (tracepack-go.md §5.4) |
-| T3 of a request forwarded for a channel peer | eqp-hub's response waiter: `ForwardDataMessage` opens no reply wait in go-secs (`TxSent`, `ReplyWaited=false`), so the waiter's **timer branch** in `waiterWorker` is the evidence. `responseT3Timeout` is **not** a usable hook: `responseHandler` reaches it for any error, including a worker-pool submission failure before the send | the same transport event, emitted from a typed timeout outcome the waiter exposes (an eqp-hub change: distinguish timeout, cancellation, submission failure and send failure), by a non-blocking enqueue; its `epoch` is the socket recorded for the request when its outbound frame was observed: **every** forwarded W-bit primary is registered in the pending-request table of §4.6, not only polls; a request whose outbound frame was never observed produces no T3 event; the event's `detail` names the effective timeout. eqp-hub's HotReload today updates go-secs's T3 but not the waiter's stored timeout (`eqp_hsms.go` HotReload calls only `SetCapacity`), so phase G includes updating the waiter's timeout for new waits; existing waits keep theirs; phase 0 defines the `TimeoutSource` interface and exercises it with a fixture |
+| T3 of a request forwarded for a channel peer | eqp-hub's response waiter: `ForwardDataMessage` opens no reply wait in go-secs (`TxSent`, `ReplyWaited=false`), so the waiter's **timer branch** in `waiterWorker` is the evidence. `responseT3Timeout` is **not** a usable hook: `responseHandler` reaches it for any error, including a worker-pool submission failure before the send | the same transport event, emitted from a typed timeout outcome the waiter exposes (an eqp-hub change: distinguish timeout, cancellation, submission failure and send failure, reported on the request's token as §4.6 *Send-path token protocol* states), by a non-blocking enqueue; its `epoch` is the socket recorded for the request when its outbound frame was observed: **every** forwarded W-bit primary is registered in the pending-request table of §4.6, not only polls; a request whose outbound frame was never observed produces no T3 event; the event's `detail` names the effective timeout. eqp-hub's HotReload today updates go-secs's T3 but not the waiter's stored timeout (`eqp_hsms.go` HotReload calls only `SetCapacity`), so phase G includes updating the waiter's timeout for new waits; existing waits keep theirs; phase 0 defines the `TimeoutSource` interface (`producer-sdk.md` §4.7 *Send path*) and exercises it with a fixture |
 | malformed frames | wire observer reports frames go-secs rejects | `wire-exact` data record, classifier marks it |
 
 A request is awaited by exactly one of the two mechanisms, so no timeout is recorded twice.
@@ -296,6 +299,9 @@ A request is awaited by exactly one of the two mechanisms, so no timeout is reco
 of `tool_id` and the device name, each prefixed by its byte length, so no choice of characters can make two pairs collide;
 the SDK derives it from each descriptor it starts or rotates to and refuses a descriptor that sets it;
 the gateway's `AppID` is not part of it, so a deployment rename does not break a device's series;
+nothing in eqp-hub stops two hubs, under one `AppID` or two, from serving one `toolID` at once
+(leader election is off by default and `AppID` only names its lease, `develop` at fc67e5f),
+so such hubs write overlapping captures of one device, which `catalog.md` §7.3 *Overlap* reports;
 `device_id` from `deviceID`;
 `hsms_timers` from the go-secs properties (a timer HotReload therefore rotates the capture, §4.2);
 `equipment_connect_mode` from `mode`; `equipment_endpoint` from `hostPort`; `host_software` = eqp-hub version;
@@ -392,6 +398,44 @@ it also serves §4.4's T3 attribution):
   `WireEvent.Frame` holds the 4-byte length prefix, the 10-byte header and the message text,
   so the zero-fill covers bytes 14 onward;
   phase 0 keeps a regression test on that offset.
+- **Send-path token protocol** (P1 item 5; **reviewed with the eqp-hub maintainers before phase G**, T-26, so its shape may change there while the rules above do not):
+  one protocol serves the two places in eqp-hub that learn a forwarded request's fate,
+  the forwarding call in `doSendToTarget` and the response waiter in `waiterWorker`.
+  The token registration returns is the only handle either holds;
+  `doSendToTarget` hands it to the waiter with the wait it opens.
+  The SDK's calls are in `producer-sdk.md` §4.7 *Send path*.
+  - **Registration** is unconditional:
+    every forwarded W-bit primary is registered, whether or not its channel is a poll channel and past the ambiguity set's cap as well,
+    because §4.4's T3 attribution needs the entry even where nothing is thinned.
+  - **Send progress**, reported once per token by whichever eqp-hub code learns it:
+    `Sent`, the forwarding call returned without error;
+    `SendFailed`, it returned an error;
+    `SubmissionFailed`, the request never reached `ForwardDataMessage` (a worker-pool submission failure).
+    The three exclude each other, so a second progress report is a counted no-op.
+    Either failure removes the entry by token (above), whatever was reported before it, and its key stays in the ambiguity set.
+    `Sent` decides nothing: the socket binding comes from the outbound observation alone.
+  - **Terminal outcomes**, reported by the waiter:
+    `Replied`;
+    `TimedOut`, only from the waiter's timer branch, carrying the effective timeout of that wait;
+    `Cancelled`, the wait ended any other way (the device stopping, a cancelled context).
+    The first terminal outcome makes the entry *completed*, retained until its expiry (above);
+    every later terminal outcome is a counted no-op,
+    so a reply racing a timeout yields one T3 event or none, never a T3 event after a reply.
+  - **Competing reports**: a `Sent` after a terminal outcome, and any report on a token whose entry was removed or has expired, are counted no-ops.
+    A waiter that times out after a send failure or a submission failure therefore emits nothing:
+    the entry is gone, which is the case `responseT3Timeout` cannot tell apart (§4.4).
+  - **Expiry is not an outcome**: a token that never receives a terminal outcome expires at T3 plus the margin and emits nothing,
+    so T3 of a forwarded request comes only from the waiter's typed timeout.
+  - **T3**: a `TimedOut` that is the token's first terminal outcome, on an entry the outbound observation has bound to a socket,
+    emits §4.4's `timer-expiry` event by a non-blocking enqueue,
+    with that socket's epoch and the effective timeout in `detail`;
+    one on an entry with no binding is counted and emits nothing.
+    The binding precedes any timeout in practice,
+    since the outbound wire observer runs on the writing goroutine under the connection's write lock (§4.2 *Capture object*),
+    before the forwarding call returns.
+  - **Calls**: every report is safe from any goroutine and never blocks on anything external (§4.3).
+    Reports add no thinning condition:
+    a record is zero-filled only under the publisher's conditions above.
 - **Sampling rule** (LS-7, decided 2026-10-25): a poll keeps its bodies when `count mod N == 0` or `now − last_kept ≥ T`;
   defaults `N = 60`, `T = 60 s`, **configurable per poll channel** in the producer's configuration (`pollChannels[].keep_every_n`, `keep_interval`), never compiled in;
   a change rotates the capture, since the declaration lives in the descriptor.

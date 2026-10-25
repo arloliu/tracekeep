@@ -10,7 +10,7 @@ Read before touching `internal/store` or the reconciler, or anything that puts, 
 
 Non-normative summary of what a caller must know.
 The sections below are authoritative; a disagreement is a defect in this summary.
-Contract changes under discussion are in [P1](proposals/p1-interfaces.md).
+Contract changes go through proposals, which the subject [README.md](README.md) lists.
 
 - **Write seam**: a consumer masks its batch, then writes with `tracepack.NewWriter` over an `io.Writer` with a `Syncer` on a temporary file;
   after `Close` the file is uploaded whole, with one put under its [STO §3] key (§5.1).
@@ -28,8 +28,9 @@ Contract changes under discussion are in [P1](proposals/p1-interfaces.md).
 - **Reconciler**: verifies an unknown key in full, quarantines one that is not `finalized-consistent` or has writer defects, and registers the rest with `ingest`'s transaction under the compactor lease;
   only an admitted capture's orphan is adopted;
   a tombstoned or beyond-retention key is deleted again (§5.4).
-- **Open**: presigned URLs (§5.3, `api.md` §10.1) are not an operation of `ObjectStore`,
-  and `fs` and `mem` cannot issue them.
+- **Downloads**: presigning is an optional capability, `Presigner`, that `s3` implements and `fs` and `mem` do not;
+  without it the API serves the download itself (`api.md` §10.1 *Downloads*).
+  Either way a download URL lives less than the deletion delay D (§5.2 *Downloads*).
 
 ## 5. Storage (requirement 3)
 
@@ -79,11 +80,29 @@ Keys are exactly [STO §3];
 bucket lifecycle rules may change the storage class under `archive/` and must never expire anything.
 The claim bucket is a NATS object store on the traffic cluster, not this interface.
 
+**Downloads.**
+`PackURL` and export bundles hand a reader a URL (§10.1), which `ObjectStore` cannot produce;
+presigning is therefore an optional capability of a store:
+
+```go
+type Presigner interface {
+    PresignGet(ctx context.Context, key string, lifetime time.Duration) (string, error)
+}
+```
+
+- `s3` implements it with a presigned GET;
+  `fs` and `mem` do not, so a standalone pilot has no presigned URLs.
+- The `api` role finds the capability once at start, by type assertion on its store;
+  without it, the API serves downloads itself (§10.1 *Downloads*).
+  No configuration chooses between the two.
+- A presigned URL, like an API download token, lives less than the deletion delay D (§8.3).
+
 ### 5.3 ReaderAt
 
 Ranged GETs with a small read-ahead;
 tracepack's reader keeps its bootstrap bytes and reads packs below a few MiB in one request (G5-211).
-Presigned URLs (§10.1) give the VE service the same objects without tracekeep in the data path.
+Presigned URLs (§10.1) give the VE service the same objects without tracekeep in the data path;
+on a store without presigning the API is in that path, serving ranged reads through `Open` (§10.1 *Downloads*).
 
 ### 5.4 Reconciler
 
