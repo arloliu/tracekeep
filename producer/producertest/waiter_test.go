@@ -40,10 +40,11 @@ func (c *calls) Cancelled()               { c.add("cancelled") }
 
 func waiterHarness(w *producertest.Waiter, clk *producertest.Clock) producertest.TimeoutSourceHarness {
 	return producertest.TimeoutSourceHarness{
-		Source: w,
-		Reply:  func(t producer.Token) { w.Reply(t) },
-		Cancel: func(t producer.Token) { w.Cancel(t) },
-		Expire: func(d time.Duration) { clk.Advance(d) },
+		Source:  w,
+		Reply:   func(t producer.Token) { w.Reply(t) },
+		Cancel:  func(t producer.Token) { w.Cancel(t) },
+		Expire:  func(d time.Duration) { clk.Advance(d) },
+		Quiesce: func() {}, // the waiter reports synchronously
 	}
 }
 
@@ -111,6 +112,59 @@ func TestCheckTimeoutSourceCatchesAViolation(t *testing.T) {
 	})
 	if err == nil || !strings.Contains(err.Error(), "timed-out") {
 		t.Fatalf("CheckTimeoutSource = %v, want a timeout violation", err)
+	}
+}
+
+// moving moves every open wait to the newest wait's deadline, though each reports the timeout it opened with.
+type moving struct {
+	mu            sync.Mutex
+	now, deadline time.Duration
+	waits         map[producer.Token]time.Duration
+}
+
+func (m *moving) Await(t producer.Token, timeout time.Duration) {
+	t.Awaiting(timeout)
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.deadline = m.now + timeout
+	m.waits[t] = timeout
+}
+
+func (m *moving) end(t producer.Token, report func()) {
+	m.mu.Lock()
+	_, ok := m.waits[t]
+	delete(m.waits, t)
+	m.mu.Unlock()
+	if ok {
+		report()
+	}
+}
+
+func (m *moving) advance(d time.Duration) {
+	m.mu.Lock()
+	m.now += d
+	var due map[producer.Token]time.Duration
+	if m.now >= m.deadline {
+		due, m.waits = m.waits, map[producer.Token]time.Duration{}
+	}
+	m.mu.Unlock()
+	for t, timeout := range due {
+		t.TimedOut(timeout)
+	}
+}
+
+func TestCheckTimeoutSourceCatchesAMovedWait(t *testing.T) {
+	t.Parallel()
+	m := &moving{waits: map[producer.Token]time.Duration{}}
+	err := producertest.CheckTimeoutSource(producertest.TimeoutSourceHarness{
+		Source:  m,
+		Reply:   func(t producer.Token) { m.end(t, t.Replied) },
+		Cancel:  func(t producer.Token) { m.end(t, t.Cancelled) },
+		Expire:  m.advance,
+		Quiesce: func() {},
+	})
+	if err == nil || !strings.Contains(err.Error(), "the 30s wait reports") {
+		t.Fatalf("CheckTimeoutSource = %v, want the moved wait found", err)
 	}
 }
 

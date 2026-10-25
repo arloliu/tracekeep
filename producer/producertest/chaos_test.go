@@ -2,6 +2,10 @@ package producertest_test
 
 import (
 	"context"
+	"fmt"
+	"path"
+	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 
@@ -82,5 +86,77 @@ func TestCheckCapturesFindsAMissingStart(t *testing.T) {
 	}
 	if err := producertest.CheckCaptures(msgs[1:]); err == nil {
 		t.Fatalf("CheckCaptures passed a record without its start")
+	}
+}
+
+// failures records what a scenario reports instead of failing the test.
+type failures struct {
+	testing.TB
+	mu     sync.Mutex
+	errors []string
+}
+
+func (f *failures) Helper() {}
+
+func (f *failures) Error(args ...any) { f.add(fmt.Sprint(args...)) }
+
+func (f *failures) Errorf(format string, args ...any) { f.add(fmt.Sprintf(format, args...)) }
+
+func (f *failures) add(s string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.errors = append(f.errors, s)
+}
+
+// brokenDevice wires the SDK wrongly: hotReload and traffic say whether those verbs reach it.
+type brokenDevice struct {
+	producertest.Device
+	hotReload, traffic bool
+}
+
+func (d *brokenDevice) HotReload(ctx context.Context) error {
+	if d.hotReload {
+		return d.Device.HotReload(ctx)
+	}
+	return nil
+}
+
+func (d *brokenDevice) Traffic(ctx context.Context, n int) error {
+	if d.traffic {
+		return d.Device.Traffic(ctx, n)
+	}
+	return nil
+}
+
+// The harness fails a device whose HotReload or traffic never reaches the SDK.
+func TestRunChaosFailsBrokenWiring(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name               string
+		hotReload, traffic bool
+		failing            []string
+	}{
+		{"no hot reload", false, true, []string{"bus down and up", "hot reload under traffic", "injected faults"}},
+		{"no traffic", true, false, []string{"bus down and up", "hot reload under traffic", "stop under a stalled publisher", "injected faults"}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			var mu sync.Mutex
+			got := map[string]*failures{}
+			producertest.RunChaosReporting(t, func(t *testing.T, bus *producertest.Bus, tun producer.Tunables) producertest.Device {
+				return &brokenDevice{Device: newRecDevice(t, bus, tun), hotReload: tt.hotReload, traffic: tt.traffic}
+			}, func(st *testing.T) testing.TB {
+				f := &failures{TB: st}
+				mu.Lock()
+				got[path.Base(st.Name())] = f
+				mu.Unlock()
+				return f
+			})
+			for _, sc := range tt.failing {
+				if f := got[strings.ReplaceAll(sc, " ", "_")]; f == nil || len(f.errors) == 0 {
+					t.Errorf("scenario %q passed", sc)
+				}
+			}
+		})
 	}
 }

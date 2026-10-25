@@ -15,7 +15,7 @@ const (
 	awaitBound = time.Second
 	// outcomeBound is how long the check waits for a terminal outcome.
 	outcomeBound = 5 * time.Second
-	// quiet is how long the check watches an ended wait for a report it must not make.
+	// quiet is how long the check watches for a report a source must not make, when the harness has no Quiesce.
 	quiet = 100 * time.Millisecond
 )
 
@@ -29,6 +29,9 @@ type TimeoutSourceHarness struct {
 	Cancel func(t producer.Token)
 	// Expire lets d pass on the waiter's clock, so every wait opened with a timeout of at most d times out.
 	Expire func(d time.Duration)
+	// Quiesce, if set, returns once the source has made every report the harness's calls so far cause.
+	// Without it the check watches for 100 ms, so a source that reports later than that can pass a duplicate.
+	Quiesce func()
 }
 
 // CheckTimeoutSource checks a TimeoutSource against the send-path rules (producer-sdk.md §4.7, the sixth guarantee):
@@ -40,42 +43,70 @@ func CheckTimeoutSource(h TimeoutSourceHarness) error {
 	if h.Source == nil || h.Reply == nil || h.Cancel == nil || h.Expire == nil {
 		return errors.New("producertest: the harness needs Source, Reply, Cancel and Expire")
 	}
+	quiesce := h.Quiesce
+	if quiesce == nil {
+		quiesce = func() { time.Sleep(quiet) }
+	}
 	var errs []error
-	check := func(name string, want []string, end func(toks []*recorder)) {
-		toks := []*recorder{newRecorder()}
-		if len(want) > 1 {
-			toks = append(toks, newRecorder())
-		}
-		timeouts := []time.Duration{30 * time.Second, 10 * time.Second}
-		for i, t := range toks {
+	timeouts := []time.Duration{30 * time.Second, 10 * time.Second}
+	// open opens n waits, the second with a shorter timeout, as after a HotReload.
+	open := func(name string, n int) []*recorder {
+		toks := make([]*recorder, 0, n)
+		for i := range n {
+			t := newRecorder()
 			if err := awaitPromptly(h.Source, t, timeouts[i]); err != nil {
 				errs = append(errs, fmt.Errorf("%s: %w", name, err))
-				return
+				return nil
 			}
+			toks = append(toks, t)
 		}
-		end(toks)
-		for i, t := range toks {
-			if err := t.settle(); err != nil {
-				errs = append(errs, fmt.Errorf("%s: %w", name, err))
-				continue
-			}
-			// A conforming source reports nothing more on an ended wait, whatever happens to it.
-			h.Reply(t)
-			h.Cancel(t)
-			h.Expire(time.Minute)
-			time.Sleep(quiet)
-			exp := []string{fmt.Sprintf("awaiting %v", timeouts[i]), want[i]}
-			if got := t.calls(); !slices.Equal(got, exp) {
-				errs = append(errs, fmt.Errorf("%s: reports %q, want %q", name, got, exp))
-			}
+
+		return toks
+	}
+	// ended checks that t's wait ended in want and that nothing more is reported on it, whatever happens to it.
+	ended := func(name string, t *recorder, timeout time.Duration, want string) {
+		if err := t.settle(); err != nil {
+			errs = append(errs, fmt.Errorf("%s: %w", name, err))
+			return
+		}
+		h.Reply(t)
+		h.Cancel(t)
+		h.Expire(time.Minute)
+		quiesce()
+		if got, exp := t.calls(), []string{fmt.Sprintf("awaiting %v", timeout), want}; !slices.Equal(got, exp) {
+			errs = append(errs, fmt.Errorf("%s: reports %q, want %q", name, got, exp))
 		}
 	}
 
-	check("reply", []string{"replied"}, func(toks []*recorder) { h.Reply(toks[0]) })
-	check("cancel", []string{"cancelled"}, func(toks []*recorder) { h.Cancel(toks[0]) })
-	check("timeout", []string{"timed-out 30s"}, func([]*recorder) { h.Expire(30 * time.Second) })
-	// The second wait opened with a shorter timeout, as after a HotReload: each times out with its own.
-	check("timeouts of two waits", []string{"timed-out 30s", "timed-out 10s"}, func([]*recorder) { h.Expire(30 * time.Second) })
+	for _, sc := range []struct {
+		name, want string
+		end        func(t *recorder)
+	}{
+		{"reply", "replied", func(t *recorder) { h.Reply(t) }},
+		{"cancel", "cancelled", func(t *recorder) { h.Cancel(t) }},
+		{"timeout", "timed-out 30s", func(*recorder) { h.Expire(30 * time.Second) }},
+	} {
+		if toks := open(sc.name, 1); toks != nil {
+			sc.end(toks[0])
+			ended(sc.name, toks[0], timeouts[0], sc.want)
+		}
+	}
+
+	// Each of two waits times out with its own timeout, the shorter first: a new timeout never moves an open wait.
+	const two = "timeouts of two waits"
+	if toks := open(two, 2); toks != nil {
+		h.Expire(10 * time.Second)
+		if err := toks[1].settle(); err != nil {
+			errs = append(errs, fmt.Errorf("%s: %w", two, err))
+		}
+		quiesce()
+		if got := toks[0].calls(); len(got) != 1 {
+			errs = append(errs, fmt.Errorf("%s: the 30s wait reports %q at 10s, want only Awaiting", two, got))
+		}
+		h.Expire(20 * time.Second)
+		ended(two, toks[0], timeouts[0], "timed-out 30s")
+		ended(two, toks[1], timeouts[1], "timed-out 10s")
+	}
 
 	return errors.Join(errs...)
 }

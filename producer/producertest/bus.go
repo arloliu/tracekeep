@@ -177,6 +177,23 @@ func (b *Bus) WaitAsync(ctx context.Context, msgID string) error {
 	}
 }
 
+// waitHeld waits until an asynchronous publish is held.
+func (b *Bus) waitHeld(ctx context.Context) error {
+	for {
+		b.mu.Lock()
+		n, ch := len(b.held), b.changed
+		b.mu.Unlock()
+		if n > 0 {
+			return nil
+		}
+		select {
+		case <-ch:
+		case <-ctx.Done():
+			return fmt.Errorf("producertest: waiting for a held publish: %w", ctx.Err())
+		}
+	}
+}
+
 // AsyncCalls returns how many asynchronous publishes named msgID.
 func (b *Bus) AsyncCalls(msgID string) int {
 	b.mu.Lock()
