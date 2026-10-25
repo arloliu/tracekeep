@@ -32,6 +32,7 @@ type Bus struct {
 	hold       bool
 	held       []heldPublish
 	asyncCalls map[string]int
+	ops        []string
 	changed    chan struct{}
 	streams    map[string]producer.StreamInfo
 	connProbs  []producer.Problem
@@ -194,6 +195,15 @@ func (b *Bus) waitHeld(ctx context.Context) error {
 	}
 }
 
+// Ops returns every publish and object operation made on the bus, in order:
+// "publish <msg id>", "publish-async <msg id>", and "info", "put", "get" or "delete" with the object's name.
+func (b *Bus) Ops() []string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	return slices.Clone(b.ops)
+}
+
 // AsyncCalls returns how many asynchronous publishes named msgID.
 func (b *Bus) AsyncCalls(msgID string) int {
 	b.mu.Lock()
@@ -259,6 +269,9 @@ func (b *Bus) Publish(ctx context.Context, m *producer.Msg) (producer.Ack, error
 	if err := ctx.Err(); err != nil {
 		return producer.Ack{}, err
 	}
+	b.mu.Lock()
+	b.ops = append(b.ops, "publish "+m.MsgID)
+	b.mu.Unlock()
 
 	return b.store(m)
 }
@@ -267,6 +280,7 @@ func (b *Bus) Publish(ctx context.Context, m *producer.Msg) (producer.Ack, error
 func (b *Bus) PublishAsync(m *producer.Msg) (producer.AckFuture, error) {
 	f := future{ok: make(chan producer.Ack, 1), err: make(chan error, 1)}
 	b.mu.Lock()
+	b.ops = append(b.ops, "publish-async "+m.MsgID)
 	b.asyncCalls[m.MsgID]++
 	b.notifyLocked()
 	if b.hold {
@@ -357,7 +371,9 @@ func (b *Bus) bucketLocked(bucket string) map[string]object {
 	return objs
 }
 
+// fail records op on name and returns the error the test injects for it; the caller holds the bus's lock.
 func (o objects) fail(op, name string) error {
+	o.b.ops = append(o.b.ops, op+" "+name)
 	if o.b.failObj == nil {
 		return nil
 	}
