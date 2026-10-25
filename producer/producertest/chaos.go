@@ -123,6 +123,7 @@ type chaos struct {
 type capture struct {
 	desc    *tracepack.PackMeta
 	frames  int // data and control records
+	seqs    map[uint64]bool
 	maxSeq  uint64
 	stopped bool
 	stopSeq uint64
@@ -144,7 +145,20 @@ func busDownAndUp(c *chaos) {
 	c.bus.FailPublish(nil)
 	c.traffic(20)
 	c.stop(stopTimeout)
-	c.settle(2)
+	// The outage overflows the small lane and outlasts the horizon: its losses must show as seq holes.
+	if holes(c.settle(2)) == 0 {
+		c.t.Errorf("no seq hole on the bus: the outage's drops are invisible")
+	}
+}
+
+// holes counts the seqs missing below each capture's highest.
+func holes(caps map[tracepack.UUID]*capture) int {
+	n := 0
+	for _, cp := range caps {
+		n += int(cp.maxSeq) + 1 - len(cp.seqs) //nolint:gosec // a test capture's seqs are few
+	}
+
+	return n
 }
 
 func hotReloadUnderTraffic(c *chaos) {
@@ -277,7 +291,8 @@ func (c *chaos) stop(d time.Duration) {
 
 // settle waits until the last capture's stop is on the bus, then checks everything published:
 // the device's captures, one per Start or HotReload, and its traffic among them.
-func (c *chaos) settle(captures int) {
+// It returns what the bus holds of each capture.
+func (c *chaos) settle(captures int) map[tracepack.UUID]*capture {
 	c.t.Helper()
 	ctx, cancel := context.WithTimeout(c.t.Context(), settleTimeout)
 	defer cancel()
@@ -287,14 +302,14 @@ func (c *chaos) settle(captures int) {
 		var err error
 		if caps, err = decode(msgs); err != nil {
 			c.t.Error(err)
-			return
+			return nil
 		}
 		if lastStopped(caps) {
 			break
 		}
 		if msgs, err = c.bus.WaitMessages(ctx, len(msgs)+1); err != nil {
 			c.t.Errorf("the last capture's stop never reached the bus: %v", err)
-			return
+			return nil
 		}
 	}
 	c.check(msgs)
@@ -311,6 +326,8 @@ func (c *chaos) settle(captures int) {
 	if frames == 0 {
 		c.t.Errorf("no traffic on the bus")
 	}
+
+	return caps
 }
 
 func (c *chaos) check(msgs []producer.Msg) {
@@ -362,6 +379,10 @@ func decode(msgs []producer.Msg) (map[tracepack.UUID]*capture, error) {
 		}
 		r := &br.Record
 		c.maxSeq = max(c.maxSeq, r.Seq)
+		if c.seqs == nil {
+			c.seqs = make(map[uint64]bool)
+		}
+		c.seqs[r.Seq] = true
 		if r.Kind == tracepack.KindData || r.Kind == tracepack.KindControl {
 			c.frames++
 		}
