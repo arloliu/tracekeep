@@ -65,4 +65,3 @@ eqp-hub reviews the SDK's API (`Bus`, `Preflight`, the five guarantees, the `sec
   and §4.7 is amended, before the SDK's first code.
 - The service's `go.mod` requires the SDK from its first tag (`producer/vX.Y.Z`) on;
   `producer/doc.go` blank-imports tracepack and nats.go only to keep the SDK's requirements until code imports them.
-- The CI workflow has not run yet; its first run follows the first push.
