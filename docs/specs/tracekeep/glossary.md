@@ -11,7 +11,9 @@ Read when a spec file uses a term you cannot place; the cited section is authori
 | Term | Meaning | Defined in |
 |---|---|---|
 | capture | the records of one tool connection and gateway leadership term, written by one producer under one descriptor; its catalog `state` is `pending`, `open`, `stopped`, `closed` or `rejected` | §1 (G5-200), §7.1 |
-| descriptor | the capture's identity and settings, carried by its `start` record: `tool_id`, `recorder_instance_id`, `device_id`, timers, endpoint, `thinning` | §4.5 |
+| descriptor | the capture's identity and settings, carried by its `start` record: `tool_id`, `recorder_instance_name`, `recorder_instance_id`, `device_id`, timers, endpoint, `thinning` | §4.5 |
+| device | the gateway's configured `eqp-hsms` device name, carried as `recorder_instance_name`; with `tool_id`, the unit a reader selects by | §4.5, §10.1 |
+| overlap | two captures of one device whose spans intersect, as when two leaders run at once; both are flagged, neither is closed while live | §7.3, §8.2 |
 | seq | a record's position in its capture, from 0, assigned by the producer in capture order; 2^63 − 4 is the last ordinary seq and 2^63 − 1 the close sentinel | §2, §4.2 |
 | gap | a hole in a capture's producer coverage between seq 0 and `highest_seq` | §7.3 |
 | unknown tail | the seqs above `highest_seq`, whatever the capture's state | §7.3 |
@@ -51,7 +53,7 @@ Defaults are T-12 in [tracekeep-decisions.md](tracekeep-decisions.md).
 | Symbol | Meaning | Default | Defined in |
 |---|---|---|---|
 | F | `ingest`'s flush interval | not set in the seed | §3.1, §6.2 |
-| Q | quiet period: a scope becomes a merge candidate at hour end + Q; also the adjacency delay of a close | 15 min | §7.3, §8.2 |
+| Q | quiet period: a scope becomes a merge candidate at hour end + Q; also the adjacency delay and the silence a successor close requires | 15 min | §7.3, §8.2 |
 | I | inactivity close: a capture with no registration for I is closed | 2 h | §8.2 |
 | L | retirement inactivity bound for a processing configuration | 7 days | §6.4 |
 | D | deletion delay of a merged pack; exceeds any presigned URL's lifetime | 1 h | §8.3 |

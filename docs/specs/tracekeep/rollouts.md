@@ -36,7 +36,7 @@ A capture binds, at registration, one immutable **processing configuration**:
 `classifier` = implementation name and version (the go-secs classifier the binary links) and every setting
 that changes its result, `max_frame_len` included (G5-250);
 `policy` = id, version and content hash; `digest_key_id` and `enc_key_id` with their material fingerprints (§9);
-and the **format features** the capture needs (`format_minor` 1 for masking or thinning).
+and the **format features** the capture needs (`format_minor` 1 for masking or thinning, 2 for a descriptor carrying `recorder_instance_name`, G5-270).
 A consumer advertises the configurations it can execute at start;
 a record of a capture bound to one it cannot execute is deferred (§6.1), never processed with a fallback.
 

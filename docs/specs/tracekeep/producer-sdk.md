@@ -18,6 +18,8 @@ Contract changes under discussion are in [P1](proposals/p1-interfaces.md).
 - **Packages**: `producer` (the algorithm of §4.2–§4.6, `Metrics` and `Logger` interfaces), `producer/secsobs` (go-secs events to records), `producer/busconfig` (the one definition of the stream, bucket and consumer settings), `producer/producertest` (§4.7 *Packages*, *Producer-side API*).
 - **Construction**: `New(cfg Config, opts ...Option)`; `Config` names the bus and nothing about driving it;
   every tunable has a default (§4.7 *The SDK owns the NATS client*).
+- **Identity**: carried by each capture's descriptor, never by `Config`:
+  the SDK derives `recorder_instance_id` from the descriptor's `tool_id` and `recorder_instance_name` (`producer.md` §4.5).
 - **Connection**: by default the SDK dials a dedicated connection with every correctness-bearing option applied;
   `WithConn` brings a producer's own connection, which `New` verifies and refuses if it fails;
   `WithBus` brings any `Bus`, which is how `producertest` injects its in-memory bus;
@@ -73,8 +75,6 @@ type Config struct {
     TLS                TLSConfig         // CA, client certificate and key, server name
     SubjectPrefix      string            // the traffic stream's prefix (busconfig knows the stream)
     ClaimBucket        string
-    ToolID             string
-    RecorderInstanceID string
     Tunables           Tunables          // lanes, H, τ, sampler; every field has a default
 }
 
@@ -82,6 +82,12 @@ func New(cfg Config, opts ...Option) (*Producer, error)
 // Options: WithConn(*nats.Conn) brings a connection the producer built itself;
 // WithBus(Bus) brings any implementation, which is how producertest injects its in-memory bus.
 ```
+
+`Config` holds no identity:
+it is fixed at `New`, while `toolID` can change through a configuration update,
+and every capture's descriptor already carries `tool_id`.
+The SDK derives `recorder_instance_id` from the descriptor of each capture it starts or rotates to (`producer.md` §4.5),
+so the identity follows whichever lifecycle call starts or rotates a capture.
 
 By default `New` dials a **dedicated connection** to the traffic cluster with every correctness-bearing option applied by the SDK itself:
 the reconnect buffer disabled (§4.2), unlimited reconnects, TLS, the publish deadline τ, `WithPublishAsyncMaxPending` and `WithPublishAsyncTimeout` on the JetStream context, the synchronous and asynchronous publish option sets,
@@ -142,7 +148,7 @@ The header-block length is computed by the SDK from the NATS header wire format,
   (retention, storage, limits, compression;
   encryption at rest is a deployment assurance it only reports as unverifiable), `max_payload ≥ 4140`, TLS, the reconnect buffer disabled,
   the capture's `start` message within the header-block and `max_payload` limits
-  (through `CheckBusStart` with the real header block), `toolID` and `recorder_instance_id` set;
+  (through `CheckBusStart` with the real header block), `tool_id` and `recorder_instance_name` set in the descriptor;
   it returns a readable list of what is wrong.
   At startup it runs in the background after the connection is up and never delays the device's `Start` (§4.3);
   it is also an admin-triggered check.
@@ -152,7 +158,7 @@ The header-block length is computed by the SDK from the NATS header wire format,
 
 **What the producer must guarantee**, the whole list (everything else is the SDK's):
 (1) the traffic cluster's address, credentials and TLS material in `Config`, or a dedicated connection through `WithConn`;
-(2) a stable `recorder_instance_id` and the configured `toolID`;
+(2) every descriptor carries the configured `toolID` and the configured device name;
 (3) `Observe` called from the observers and nowhere else;
 (4) `End` called on an orderly stop and never allowed to fail the device;
 (5) a rotation on every descriptor change.

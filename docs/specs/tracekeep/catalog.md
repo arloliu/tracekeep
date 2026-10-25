@@ -22,7 +22,9 @@ Contract changes under discussion are in [P1](proposals/p1-interfaces.md).
 - **Completeness**: producer coverage is the union of `pack_ranges` and `evicted_ranges`;
   a hole is a gap, evicted, or the unknown tail;
   an hour with no scope is `no-data`;
-  unregistered intervals are reported (§7.3).
+  unregistered intervals are reported against every earlier capture of the device,
+  and overlapping captures of one device are flagged, never merged into one series (§7.3).
+- **Device**: `captures.device` is the descriptor's `recorder_instance_name`, indexed with `tool_id` for selection (§7.1).
 - **Cursor**: an event's seq is allocated from the `counters` row as the last statement, so allocation order is commit order;
   the watermark is read before the listing;
   pruning removes a seq prefix only;
@@ -38,7 +40,7 @@ Contract changes under discussion are in [P1](proposals/p1-interfaces.md).
 
 | Table | Holds | Key facts |
 |---|---|---|
-| `captures` | descriptor bytes and decoded fields; the processing configuration ids; `state` `pending`/`open`/`stopped`/`closed`/`rejected` (`pending`: a placeholder without descriptor, inserted by parking before any `start`, §6.1) (a rejected `start`'s descriptor bytes kept for the operator); `data_revision`; `highest_seq`, `highest_seq_ts` (producer seqs only); `stop_seen`; `last_registered_at`; thinning parameters | one row per capture; indexed by (`tool_id`, `recorder_instance_id`, start time) for successor lookup |
+| `captures` | descriptor bytes and decoded fields; the processing configuration ids; `state` `pending`/`open`/`stopped`/`closed`/`rejected` (`pending`: a placeholder without descriptor, inserted by parking before any `start`, §6.1) (a rejected `start`'s descriptor bytes kept for the operator); `data_revision`; `highest_seq`, `highest_seq_ts` (producer seqs only); `stop_seen`; `last_registered_at`; thinning parameters; `device`, decoded from the descriptor's `recorder_instance_name` at admission (none on a `pending` row) | one row per capture; indexed by (`tool_id`, `recorder_instance_id`, start time) for successor lookup and by (`tool_id`, `device`, start time) for device selection |
 | `capture_closes` | the close intent: trigger time, `highest_seq`, `highest_seq_ts`, bounds, fixed `pack_id`, `writer_time`, the serialized `PackMeta` and codec, `state` `pending`/`published` | one row per capture; inserted before the close is written (§8.2) |
 | `packs` | `pack_id`, capture, `hour`, role, object key, size, `seq_start`, `format_minor`, `state` `staged`/`merged`/`excluded`/`deleted` | index `(tool_id, hour)`, `(capture_id, hour, state)`; `excluded` packs are read, never merged, never deleted by the merge relation |
 | `pack_ranges` | `(pack_id, seq_from, seq_to, ts_from, ts_to)`: the exact seq runs a pack holds with their endpoint times | the completeness evidence of §7.3; the close sentinel is never a range |
@@ -97,8 +99,14 @@ the two intentional row locks are the capture row, first in every pack-changing 
   an hour with no scope is reported as `no-data` together with whether a capture of the tool was open then,
   so a missing whole hour is a result, not an absence.
   An **unregistered interval** is reported
-  when a capture's predecessor by (`tool_id`, `recorder_instance_id`) ended more than Q before it started,
+  when a capture starts more than Q after the latest `highest_seq_ts` of every earlier capture of its (`tool_id`, `recorder_instance_id`),
+  not after the end of one predecessor, so two overlapping captures are never reported as missing traffic;
   or when its `previous_capture_id` names no registered capture.
+- **Overlap**: two leaders running at once write two captures of one (`tool_id`, `recorder_instance_id`), which [STO §4] allows.
+  When the spans of two such captures intersect, each from `capture_origin_utc_ns` to `highest_seq_ts`,
+  both are flagged `overlap` in `ListCaptures` and `ListDevices`;
+  the flag is computed from the spans, not from the `open` state, so it survives the close of either capture.
+  A read by device returns both, each with its own completeness, and never interleaves them into one series.
 - **Settled** means "merged, and nothing more is expected on the normal path":
   a scope becomes a merge candidate at hour end + quiet period Q (default 15 minutes, above F + `ack_wait` + redelivery slack),
   and `settled` when the merge commits; a registration afterwards sets `reopened`; a re-merge sets `settled` again.

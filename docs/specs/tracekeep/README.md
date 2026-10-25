@@ -23,7 +23,6 @@ The review reports, the owner's decision brief and the seed's last text (v21) ar
 | `glossary.md` | living | draft | terms and tunables, with their defining sections |
 | `tracekeep-decisions.md` | living | draft | rulings relied on, the owner's decisions T-1 onward, service defaults |
 | `proposals/p1-interfaces.md` | finite | draft | module interface changes from the deep-module review |
-| `proposals/p2-device-selection.md` | finite | draft | selecting traffic by tool and device name in every read operation |
 
 ## Read order
 

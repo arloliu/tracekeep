@@ -31,7 +31,8 @@ Contract changes under discussion are in [P1](proposals/p1-interfaces.md).
 - **Off the critical path**: bus, bucket and consumer faults become counted drops, never a stalled send;
   the producer never creates or alters the stream or bucket and never touches device health (§4.3).
 - **Descriptor**: `tool_id` is the hub's `toolID`;
-  one capture series per `eqp-hsms` device, told apart by `recorder_instance_id`, `device_id` and `equipment_endpoint` (§4.5).
+  `recorder_instance_name` is the `eqp-hsms` device name, and `recorder_instance_id` is derived from the two;
+  one capture series per device, which a reader selects by (`tool_id`, device) (§4.5).
 - **Send path**: every forwarded W-bit primary is registered as a pending request before it is sent (§4.6 *Association protocol*);
   T3 of a forwarded request comes from eqp-hub's waiter through `TimeoutSource` (§4.4);
   thinning is off by default and touches only positively identified FDC interval polls (§4.6).
@@ -243,8 +244,8 @@ and this section is the contract between them.
   so a late reference within retention, and a conflicting one from an SDK producer, always finds its payload
   (a non-SDK producer's conflicting version in another hour is outside the guarantee, §13).
   The traffic cluster raises `max_payload` toward 8 MiB so that few records take this path.
-- `recorder_instance_id` is derived from configuration (hub name and device name), never from a hostname or pod name,
-  so it is stable across restarts ([FMT I-7]).
+- `recorder_instance_id` is derived from configuration (`toolID` and the device name, §4.5), never from a hostname or pod name,
+  so it is stable across restarts and leadership changes ([FMT I-7]).
   `previous_capture_id` is known within one process lifetime and absent after a restart,
   since the gateway keeps no durable state (G5-200).
 
@@ -280,7 +281,12 @@ A request is awaited by exactly one of the two mechanisms, so no timeout is reco
 
 `tool_id` = the hub's configured **`toolID`** (top-level config, the identity FDC also receives), passed to the plugin as a device property;
 **not** the device name, which the templates set to `eqp` for every tool;
-`recorder_instance_id` = hub name and device name;
+`recorder_instance_name` = the `eqp-hsms` device name (`devices[].name`), unchanged and never empty
+(tracepack G5-270, tag 0x0034; it counts toward the 4096-byte header block of the `start` message);
+`recorder_instance_id` = UUIDv5 (RFC 9562), under one fixed namespace UUID the SDK defines,
+of `tool_id` and the device name, each prefixed by its byte length, so no choice of characters can make two pairs collide;
+the SDK derives it from each descriptor it starts or rotates to and refuses a descriptor that sets it;
+the gateway's `AppID` is not part of it, so a deployment rename does not break a device's series;
 `device_id` from `deviceID`;
 `hsms_timers` from the go-secs properties (a timer HotReload therefore rotates the capture, §4.2);
 `equipment_connect_mode` from `mode`; `equipment_endpoint` from `hostPort`; `host_software` = eqp-hub version;
@@ -288,7 +294,8 @@ A request is awaited by exactly one of the two mechanisms, so no timeout is reco
 One hub has one `toolID` and several `eqp-hsms` devices
 (fourteen in eqp-hub's `examples/tfdc_common_parallel.yaml`:
 `eqp`, `tlp`, the sensor connections `dpm`, `fac`, `lsc`, `sgs`, each with its own `hostPort`, and in parallel mode the `pdf_*` connections to the legacy host system),
-so a tool has **one capture series per device**, told apart by `recorder_instance_id`, `device_id` and `equipment_endpoint`;
+so a tool has **one capture series per device**, told apart by `recorder_instance_name` and the `recorder_instance_id` derived from it;
+`device_id` (which two connections may share) and `equipment_endpoint` (which an address change alters) do not identify a device;
 the producer is enabled **per device**,
 so a connection whose peer is a host-side system is captured only if its operators want it,
 and the VE's reader selects the device it plays.

@@ -9,7 +9,7 @@ Section numbers are those of the specs in `docs/specs/tracekeep/`, whose `README
 
 - **The producer's five guarantees** are the whole of what an integrator owes; everything else is the SDK's:
   the bus address, credentials and TLS in `Config` (or a connection through `WithConn`);
-  a stable `recorder_instance_id` and the configured `toolID`;
+  every descriptor carrying the configured `toolID` and the configured device name;
   `Observe` called from the observers and nowhere else;
   `End` called on an orderly stop and never allowed to fail the device;
   a rotation on every descriptor change.

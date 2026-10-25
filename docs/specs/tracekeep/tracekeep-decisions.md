@@ -20,7 +20,7 @@ the log service holds the keys (G5-207); the digest key spans captures and rotat
 export schema by `format_minor` (G5-233); conflicts are kept, never resolved by a writer ([FMT I-12]); seq starts at 0.
 
 The tracepack rulings the specs cite, by number (go-secs `docs/specs/tracepack/tracepack-decisions.md`):
-G5-198, G5-200, G5-201, G5-207, G5-208, G5-211, G5-213, G5-214, G5-216, G5-217, G5-218, G5-220, G5-222, G5-224, G5-225, G5-227, G5-231, G5-233, G5-236, G5-250, G5-251, G5-252, G5-257, G5-258, G5-262, G5-267, G5-268, G5-269.
+G5-198, G5-200, G5-201, G5-207, G5-208, G5-211, G5-213, G5-214, G5-216, G5-217, G5-218, G5-220, G5-222, G5-224, G5-225, G5-227, G5-231, G5-233, G5-236, G5-250, G5-251, G5-252, G5-257, G5-258, G5-262, G5-267, G5-268, G5-269, G5-270.
 The VE decisions they cite are V-8, V-12, V-26, V-27, V-29 and V-30 (veq `docs/specs/ve/`).
 
 ## Owner decisions
@@ -205,9 +205,27 @@ The version is pinned when the service's `go.mod` first requires it.
 ### T-23 — tracepack v0.8.0
 
 `v0.8.0` (spec v2.37, format 1.2, requiring go-secs v2.8.0) in both modules, replacing T-18's `v0.7.1`.
-It carries G5-270's `recorder_instance_name`, which [P2](proposals/p2-device-selection.md) uses for the device name,
+It carries G5-270's `recorder_instance_name`, which P2 (device selection, applied by T-24) uses for the device name,
 and still reads and writes everything v0.7.1 does: a descriptor without the tag decodes as before.
 A pack holding the tag is format minor 2 and exports as `tracepack-jsonl/3`.
 Consumers and mergers must run v0.8.0 before any producer writes the tag,
 so the SDK release that writes it follows the service's upgrade.
 Taken before any `go.mod` exists, so nothing is built against v0.7.1.
+
+## Later owner decisions
+
+Taken by the owner after the repository bootstrap began, each dated.
+
+### T-24 — device selection (2026-10-25)
+
+P2 (device selection) is accepted and applied; its last text is at commit 024516d.
+A reader selects traffic by (`tool_id`, device), the device being the gateway's configured `eqp-hsms` device name,
+carried in the descriptor as `recorder_instance_name` (G5-270).
+`recorder_instance_id` is a UUIDv5 of `tool_id` and the device name, derived by the SDK from each capture's descriptor,
+so the SDK's `Config` holds no identity and the gateway's `AppID` is not part of it.
+Overlapping captures of one device are flagged and never closed while live.
+Applied to `producer.md` §4.2 and §4.5, `producer-sdk.md` §4.7, `catalog.md` §7.1 and §7.3, `compactor.md` §8.2, `api.md` §10.1,
+`rollouts.md` §6.4, `positioning.md` §2, `glossary.md` and `.agents/rules/600-invariants.md`.
+Not verified: whether two deployments with different `AppID`s serve one tool in practice;
+if they do, they are reported as overlapping captures.
+

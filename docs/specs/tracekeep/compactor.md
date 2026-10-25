@@ -17,7 +17,9 @@ Contract changes under discussion are in [P1](proposals/p1-interfaces.md).
 - **Merge**: snapshot a scope's revision r and its `staged` inputs, merge, put the archive, then commit in one transaction guarded by r and the lease;
   zero affected rows rolls back the whole transaction, and a rolled-back merge never deletes its archive directly (§8.1).
 - **Close**: an intent transaction fixes every byte-affecting input, then `tracepack.WriteClose` writes the same bytes on every retry;
-  pending intents are retried each cycle (§8.2).
+  pending intents are retried each cycle;
+  a capture is closed by a later capture of its device only once it has itself been silent for Q,
+  so an overlapping live capture is never closed (§8.2).
 - **Deletion**: a pack that is an input of a successful merge whose output is retained is deleted after delay D,
   which exceeds any presigned URL's lifetime;
   the tombstone commits, in a transaction that starts with the capture row, before the object is removed (§8.3).
@@ -57,13 +59,22 @@ the operator acts ([STO §4] *Merge*).
 
 ### 8.2 Close a capture left open
 
-Trigger: the next capture of the same (`tool_id`, `recorder_instance_id`) has been registered for at least Q (a handover's orderly `stop` has had time to be flushed), or no registration for an inactivity period I (default 2 hours).
+Trigger: a later capture of the same (`tool_id`, `recorder_instance_id`) has been registered for at least Q (a handover's orderly `stop` has had time to be flushed)
+**and** the capture itself has had no registration for Q;
+or no registration for an inactivity period I (default 2 hours).
 `previous_capture_id` is absent after a gateway restart (§4.2), so adjacency, not that field, is the trigger.
+The successor trigger looks at every later capture of the key and never chooses between candidates.
+Its second condition keeps two overlapping leaders (§7.3 *Overlap*) from closing each other's live captures:
+a capture that is still receiving records registers a segment at least every F, and Q exceeds F plus `ack_wait`,
+so only a capture whose leader stopped writing is closed this way.
+A capture with no records for Q is closed although its leader lives;
+records that arrive later are staged as below, and the inactivity trigger would close it at I anyway.
 
 1. Intent, one transaction starting with the capture row update of §6.3:
    read `captures` (`state`, `data_revision` = d, `highest_seq`, `highest_seq_ts`, `stop_seen`, `last_registered_at`);
    abort unless `state = 'open'` and not `stop_seen`;
-   for the inactivity trigger abort unless `last_registered_at < now − I` **inside this transaction** (eligibility is re-validated, not carried from the candidate scan);
+   for the inactivity trigger abort unless `last_registered_at < now − I`, and for the successor trigger unless `last_registered_at < now − Q`,
+   **inside this transaction** (eligibility is re-validated, not carried from the candidate scan);
    `INSERT INTO capture_closes` with trigger time, those values, the bounds, a fixed `pack_id` and `writer_time`, and the **serialized `PackMeta` and codec** the close will be written with;
    `UPDATE captures SET state='closed' WHERE capture_id=? AND state='open' AND data_revision=d`;
    zero rows aborts (a registration raced the snapshot; retry next cycle).
