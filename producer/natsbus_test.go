@@ -150,6 +150,8 @@ func TestNewRefusesMalformedDialSettings(t *testing.T) {
 	for _, cfg := range []producer.Config{
 		{Servers: []string{"nats://producer:secret@host:bad"}},
 		{Servers: []string{"nats://"}},
+		{Servers: []string{"nats://127.0.0.1:4222", "ws://127.0.0.1:8080"}},
+		{Servers: []string{"wss://127.0.0.1:8443", "127.0.0.1:4222"}}, // a bare address takes the plain scheme
 		{Servers: []string{"nats://127.0.0.1:4222"}, TLS: producer.TLSConfig{CAFile: t.TempDir() + "/missing.pem"}},
 	} {
 		cfg.SubjectPrefix, cfg.ClaimBucket = "tpk", bucket
