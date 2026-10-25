@@ -48,6 +48,10 @@ func (b *recBus) PublishAsync(m *Msg) (AckFuture, error) {
 	return f, err
 }
 
+func (b *recBus) CheckConn() []Problem { return nil }
+
+func (b *recBus) StreamInfo(context.Context, string) (StreamInfo, error) { return StreamInfo{}, nil }
+
 func (b *recBus) Objects(context.Context, string) (Objects, error) {
 	return nil, errors.New("recBus: no objects")
 }
