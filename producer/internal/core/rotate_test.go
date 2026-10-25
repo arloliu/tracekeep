@@ -330,3 +330,46 @@ func TestFaultAfterRotationKeepsClosed(t *testing.T) {
 		t.Errorf("rotated-then-faulted capture reads %v, want Closed", st)
 	}
 }
+
+// A panic before allocation whose fault loaded a capture that a rotation then closed faults the successor instead:
+// the loss has no seq, so only a fault window can show it.
+func TestPanicFaultRacingARotationFaultsTheSuccessor(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name  string
+		panic func(r *Recorder)
+	}{
+		{"before Observe", func(r *Recorder) {
+			defer r.Recover()
+			panic("injected")
+		}},
+		{"inside Observe", func(r *Recorder) {
+			r.hooks[hookBeforeAllocate] = func() { panic("injected") }
+			r.Observe(frameObs(1, []byte{1}))
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			r, gen, clk := newRotateRecorder(t)
+			a := prepared(gen, clk, 1)
+			r.Rotate(a, time.Now().Add(time.Second), never, clk.now)
+			b := prepared(gen, clk, 2)
+			var once atomic.Bool
+			r.hooks[hookFaultLoaded] = func() {
+				if once.CompareAndSwap(false, true) {
+					r.Rotate(b, time.Now().Add(time.Second), never, clk.now)
+				}
+			}
+
+			tt.panic(r)
+
+			if a.Faulted() || !b.Faulted() {
+				t.Errorf("faulted: old %v, successor %v; want only the successor", a.Faulted(), b.Faulted())
+			}
+			if got := r.Counters().Panics; got != 1 {
+				t.Errorf("panics = %d, want 1", got)
+			}
+		})
+	}
+}
