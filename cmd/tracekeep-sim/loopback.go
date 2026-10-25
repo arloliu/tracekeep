@@ -11,6 +11,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/arloliu/go-secs/tracepack"
 	"github.com/arloliu/go-secs/v2/hsms"
 	"github.com/arloliu/go-secs/v2/hsmsss"
 	"github.com/arloliu/go-secs/v2/secs2"
@@ -34,6 +35,8 @@ type Options struct {
 	T3 time.Duration
 	// WithholdEvery makes the equipment leave every n-th forwarded primary unanswered, so its wait times out; 0 answers all.
 	WithholdEvery uint64
+	// Replay makes the equipment answer nothing itself: a replayed pack's own replies cross the pair instead.
+	Replay bool
 }
 
 // Loopback is the simulator's device: a go-secs HSMS-SS pair on localhost,
@@ -148,8 +151,7 @@ func (l *Loopback) Traffic(ctx context.Context, n int) error {
 	return nil
 }
 
-// Forward relays one S1F3 to the equipment the way the gateway does:
-// register, send, report the send, then open the wait.
+// Forward relays one S1F3 to the equipment the way the gateway does.
 func (l *Loopback) Forward(ctx context.Context) error {
 	sb := l.sb.Add(1)
 	var sys [4]byte
@@ -158,6 +160,42 @@ func (l *Loopback) Forward(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+
+	return l.relay(ctx, msg)
+}
+
+// Replay sends one recorded HSMS frame through the pair from the side that sent it:
+// a W-bit primary from the host goes through the send path as Forward's does, anything else is written as it is.
+// A control frame is go-secs's own business and is skipped.
+func (l *Loopback) Replay(ctx context.Context, dir tracepack.Dir, frame []byte) error {
+	m, err := hsms.DecodeHSMSMessage(frame)
+	if err != nil {
+		return fmt.Errorf("replayed frame: %w", err)
+	}
+	msg, ok := m.ToDataMessage()
+	if !ok {
+		return nil
+	}
+	msg = msg.WithSessionID(l.opts.SessionID)
+	switch dir {
+	case tracepack.DirHostToEquipment:
+		if msg.WaitBit() && msg.Function()%2 == 1 {
+			return l.relay(ctx, msg)
+		}
+		return l.host.ForwardDataMessage(ctx, msg)
+	case tracepack.DirEquipmentToHost:
+		return l.eqp.ForwardDataMessage(ctx, msg)
+	case tracepack.DirUnknown, tracepack.DirLocal:
+		return nil // no side sent it
+	default:
+		return fmt.Errorf("replayed frame: direction %v", dir)
+	}
+}
+
+// relay relays a W-bit primary the way the gateway does: register, send, report the send, then open the wait.
+func (l *Loopback) relay(ctx context.Context, msg *hsms.DataMessage) error {
+	sys := msg.SystemBytes()
+	sb := binary.BigEndian.Uint32(sys[:])
 	tok := l.p.Pending().Register(l.opts.SessionID, sb, channel)
 	l.mu.Lock()
 	l.inflight[sb] = tok
@@ -188,7 +226,7 @@ func (l *Loopback) descriptor() producer.CaptureDescriptor {
 
 // equipment answers a primary with its own item, unless it withholds the answer.
 func (l *Loopback) equipment(msg *hsms.DataMessage, ep hsms.SECS2Endpoint) {
-	if msg.Function()%2 == 0 || !msg.WaitBit() {
+	if l.opts.Replay || msg.Function()%2 == 0 || !msg.WaitBit() {
 		return
 	}
 	if n := l.answered.Add(1); l.opts.WithholdEvery != 0 && n%l.opts.WithholdEvery == 0 {

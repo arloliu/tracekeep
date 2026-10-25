@@ -78,12 +78,17 @@ func testOptions() Options {
 
 func newTestLoopback(t *testing.T, cfg producer.Config, opts ...producer.Option) *Loopback {
 	t.Helper()
+	return newTestLoopbackWith(t, cfg, testOptions(), opts...)
+}
+
+func newTestLoopbackWith(t *testing.T, cfg producer.Config, lo Options, opts ...producer.Option) *Loopback {
+	t.Helper()
 	cfg.SubjectPrefix, cfg.ClaimBucket = "tpk", "tpk-objects"
 	p, err := producer.New(cfg, opts...)
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	l, err := NewLoopback(p, testOptions())
+	l, err := NewLoopback(p, lo)
 	if err != nil {
 		t.Fatalf("NewLoopback: %v", err)
 	}
