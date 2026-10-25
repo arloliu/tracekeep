@@ -459,8 +459,8 @@ it also serves §4.4's T3 attribution):
   - **T3**: a `TimedOut` that is the token's first terminal outcome, on an entry the outbound observation has bound to a socket and that is not ambiguous,
     emits §4.4's `timer-expiry` event, with the effective timeout in `detail`, by a non-blocking enqueue.
     The entry records the socket, never an epoch:
-    the event goes to the capture current when the timeout is reported, loaded as in any callback,
-    with the epoch that capture's socket map holds for the socket (§4.2).
+    the event goes to the capture current when the timeout is reported, loaded as in any callback;
+    its epoch is the one that capture's socket map holds for the socket (§4.2).
     A `TimedOut` on an entry with no binding, on an ambiguous entry, or whose socket is absent from the current capture's map is counted and emits nothing (T-31):
     a missing T3 event is evidence lost, a misattributed one is evidence wrong.
     The binding precedes any timeout in practice,

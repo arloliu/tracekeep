@@ -15,7 +15,7 @@ Read when a spec file uses a term you cannot place; the cited section is authori
 | device | the gateway's configured `eqp-hsms` device name, carried as `recorder_instance_name`; with `tool_id`, the unit a reader selects by | §4.5, §10.1 |
 | overlap | two captures of one device whose spans intersect, as when two leaders run at once; both are flagged, neither is closed while live | §7.3, §8.2 |
 | seq | a record's position in its capture, from 0, assigned by the producer in capture order; 2^63 − 4 is the last ordinary seq and 2^63 − 1 the close sentinel | §2, §4.2 |
-| gap | a hole in a capture's producer coverage between seq 0 and `highest_seq` | §7.3 |
+| gap | a hole in a capture's producer coverage between seq 0 and the frontier, the higher of `highest_seq` and the highest parked seq, that no deferred or terminated seq explains | §7.3 |
 | unknown tail | the seqs above the frontier, the higher of `highest_seq` and the highest parked seq, whatever the capture's state | §7.3 |
 | evicted | seqs whose packs retention deleted, reported as their own class, never as a gap | §7.3 |
 | deferred | seqs of unresolved parked versions, reported as their own class until staged or terminated, never as a gap | §7.3 |
