@@ -50,7 +50,7 @@ the rest of the gate is phase 0.5's.
 
 | Step | Scope | State |
 |---|---|---|
-| 1 | the simulator module: `cmd/tracekeep-sim` with its own `go.mod` (the SDK and the service through `replace`), the Makefile's `MODULES`, and `100-overview.md`'s module table and workspace sentence | pending |
+| 1 | the simulator module: `cmd/tracekeep-sim` with its own `go.mod` (the SDK and the service through `replace`), the Makefile's `MODULES`, and `100-overview.md`'s module table and workspace sentence | in-progress |
 | 2 | the pending-request table: `Pending().Register`, `Token`'s state machine (first-wins progress, a failure removes only a live entry, the first terminal outcome seals it), expiry after `Awaiting` plus the grace and removal of an entry never awaited, the ambiguity set with its cap, on an injectable clock, with counters for every no-op | pending |
 | 3 | binding and T3: the outbound wire observation binds an entry to its socket by session id and System Bytes, a reconnect before it marks the entry ambiguous; a `TimedOut` emits `timer-expiry` to the current capture with that capture's epoch for the socket, the effective timeout carried as a duration and formatted into `detail` by the publisher, so the call allocates nothing | pending |
 | 4 | `producertest`: the `TimeoutSource` fixture, a fake waiter on a controllable clock that produces a reply, a timeout, a cancellation and the competing reports, and the conformance check an integrator's `TimeoutSource` runs | pending |

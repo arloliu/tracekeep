@@ -228,6 +228,10 @@ linters:
       - linters:
           - gomoddirectives
         path: producer/internal/bustest/go\.mod
+      # Nor is the simulator's module until the SDK's first tag (T-38).
+      - linters:
+          - gomoddirectives
+        path: cmd/tracekeep-sim/go\.mod
     paths:
       - third_party$
       - builtin$

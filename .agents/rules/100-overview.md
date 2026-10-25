@@ -13,11 +13,12 @@ The design is in `docs/specs/tracekeep/`; the roadmap is `docs/ROADMAP.md`.
 | `github.com/arloliu/tracekeep` | `.` | the service: `cmd/`, `internal/`, migrations, `web/`, `deploy/` |
 | `github.com/arloliu/tracekeep/producer` | `producer/` | the producer SDK, tagged `producer/vX.Y.Z` |
 | `github.com/arloliu/tracekeep/producer/internal/bustest` | `producer/internal/bustest/` | the SDK's tests against a real JetStream; test-only, never tagged or published (T-35) |
+| `github.com/arloliu/tracekeep/cmd/tracekeep-sim` | `cmd/tracekeep-sim/` | the simulator, until the SDK's first tag; never tagged or published (T-38) |
 
 `go.work` joins the two for local development; `make work` creates it, and it is gitignored with `go.work.sum` (T-27).
 The service requires the SDK by version and carries no `replace`, so it also builds with `GOWORK=off`;
 until the SDK's first tag it does not require the SDK at all.
-The bus-test module requires the SDK and the service through `replace` directives to this repository, which only a module nothing requires may carry.
+The bus-test and simulator modules require the SDK and the service through `replace` directives to this repository, which only a module nothing requires may carry.
 
 The dependency direction is fixed and one-way: `go-secs/tracepack ← tracekeep/producer ← tracekeep`.
 **The SDK's boundary**:
@@ -30,7 +31,7 @@ a header or convention both sides need goes into the SDK, never into the service
 | Path | Scope |
 |---|---|
 | `cmd/tracekeep` | the one binary: `ingest`, `compact`, `api`, `migrate`, `all`, `dev` (embedded bus, fake S3, SQLite, simulated producer) |
-| `cmd/tracekeep-sim` | the reference producer on the SDK: a go-secs loopback pair with the observers, or replay of tracepack packs |
+| `cmd/tracekeep-sim` | the reference producer on the SDK: a go-secs loopback pair with the observers, or replay of tracepack packs; a module of its own until the SDK's first tag (T-38) |
 | `internal/testbus` | embedded nats-server with JetStream for tests and `dev`; service module only, never the SDK |
 | `internal/bus` | JetStream pull consumers, claim-check fetch, message disposition |
 | `internal/ingest` | per-scope batches, sort, dedupe, conflicts, mask, write, register, acknowledge |
