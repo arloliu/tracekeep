@@ -1,6 +1,7 @@
 package producer
 
 import (
+	"context"
 	"encoding/base64"
 	"errors"
 	"testing"
@@ -249,5 +250,28 @@ func TestFailedFaultRotationBacksOff(t *testing.T) {
 	p.handleFault(c) // the same capture faults on: this attempt waits for the backoff
 	if waited := time.Since(start); waited < backoff {
 		t.Errorf("second attempt after %v, want at least the %v backoff", waited, backoff)
+	}
+}
+
+// End returns by its deadline when another lifecycle call holds the lock, and changes nothing.
+func TestEndKeepsItsDeadlineUnderContention(t *testing.T) {
+	t.Parallel()
+	p := newTestProducer(t, Tunables{})
+	if err := p.Begin(t.Context(), testDescriptor()); err != nil {
+		t.Fatal(err)
+	}
+	c := p.rec.Current()
+	p.lifeSem <- struct{}{} // another lifecycle call holds the lock
+	defer func() { <-p.lifeSem }()
+
+	ctx, cancel := context.WithTimeout(t.Context(), 100*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	rep := p.End(ctx)
+	if took := time.Since(start); took > 500*time.Millisecond {
+		t.Errorf("End took %v with a 100ms deadline", took)
+	}
+	if !rep.Contended || p.rec.Current() != c {
+		t.Errorf("End = %+v, current changed: %v; want contended and nothing changed", rep, p.rec.Current() != c)
 	}
 }

@@ -266,3 +266,37 @@ func TestSendOrdinaryUsesThePresent(t *testing.T) {
 		t.Errorf("dropped{publish_failed} = %d, want 1", pb.dropped[core.DropPublishFailed])
 	}
 }
+
+// No attempt at a capture starts once End's deadline for it has passed, whatever the pass's clock says.
+func TestSendOrdinaryStopsAtEndDeadline(t *testing.T) {
+	t.Parallel()
+	bus := newRecBus()
+	p, err := New(Config{SubjectPrefix: "tpk", ClaimBucket: "b"}, func(o *options) { o.noPublisher = true })
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = p.Close() })
+	pb := newPublisher(p, bus)
+	if err := p.Begin(t.Context(), testDescriptor()); err != nil {
+		t.Fatal(err)
+	}
+	c := p.rec.Current()
+	c.SetEndBy(time.Now().Add(-time.Millisecond))
+	st := &capState{cap: c, subject: c.Subject}
+	pd := &pending{e: core.Entry{Cap: c, Kind: core.EntryObserved, Seq: 1, Payload: []byte{1}}}
+
+	if pb.sendOrdinary(st, pd) {
+		t.Errorf("sendOrdinary let the record leave the held list past End's deadline")
+	}
+	if got := bus.published(); len(got) != 0 {
+		t.Errorf("published %v past End's deadline", got)
+	}
+
+	// The same holds for a reserved record at the head of the capture.
+	pb.epoch = 1 // the entry below was taken in before the last snapshot
+	st.reserved = []*pending{{e: core.Entry{Cap: c, Kind: core.EntryStop, Seq: 2}}}
+	pb.progress(st, time.Now().Add(-time.Hour))
+	if got := bus.published(); len(got) != 0 {
+		t.Errorf("published %v past End's deadline", got)
+	}
+}

@@ -8,6 +8,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"slices"
 	"time"
 
 	"github.com/arloliu/go-secs/tracepack"
@@ -48,10 +49,12 @@ type Report struct {
 	// Abandoned reports that End passed its deadline and gave the capture up without its stop;
 	// the consumer closes it unclean.
 	Abandoned bool
-	// Drained reports that the publisher answered End's drain before the deadline;
-	// Dropped counts the records it gave up at the deadline.
+	// Drained reports that every capture End stopped was published, or given up, before the deadline;
+	// Dropped counts the records given up.
 	Drained bool
 	Dropped uint64
+	// Contended reports that another lifecycle call held the lifecycle lock past the deadline: End did nothing.
+	Contended bool
 }
 
 // uuidV7 generates capture ids as UUIDv7 (RFC 9562 §5.7) that sort by creation,
@@ -71,8 +74,10 @@ func (p *Producer) Begin(ctx context.Context, d CaptureDescriptor) error {
 	if err := d.Validate(); err != nil {
 		return err
 	}
-	p.lifeMu.Lock()
-	defer p.lifeMu.Unlock()
+	if !p.lockLife(deadline(ctx)) {
+		return ErrRotationAbandoned
+	}
+	defer p.unlockLife()
 	p.stopping.Store(false)
 	if p.rec.Current() != nil {
 		return nil
@@ -90,8 +95,10 @@ func (p *Producer) Rotate(ctx context.Context, d CaptureDescriptor) error {
 	if err := d.Validate(); err != nil {
 		return err
 	}
-	p.lifeMu.Lock()
-	defer p.lifeMu.Unlock()
+	if !p.lockLife(deadline(ctx)) {
+		return ErrRotationAbandoned
+	}
+	defer p.unlockLife()
 	cur := p.rec.Current()
 	if cur == nil {
 		return ErrNotStarted
@@ -110,55 +117,83 @@ func (p *Producer) Rotate(ctx context.Context, d CaptureDescriptor) error {
 
 // End closes the open capture: the device's Stop.
 // It rotates to no capture within ctx's deadline, and past it abandons the capture without its stop;
-// it never returns an error.
+// then it gives the publisher until the same deadline to publish what is queued of the capture, its stop included,
+// and of every capture a rotation closed since the previous End; what is left then is dropped and counted.
+// It never returns an error, and returns by the deadline.
 func (p *Producer) End(ctx context.Context) Report {
+	dl := deadline(ctx)
 	p.stopping.Store(true)
-	p.lifeMu.Lock()
+	if !p.lockLife(dl) {
+		return Report{Contended: true}
+	}
 	cur := p.rec.Current()
 	if cur == nil {
-		p.lifeMu.Unlock()
+		p.unlockLife()
 		return Report{}
 	}
-	res := p.rec.Rotate(nil, deadline(ctx), func() bool { return ctx.Err() != nil }, p.now)
+	res := p.rec.Rotate(nil, dl, func() bool { return ctx.Err() != nil }, p.now)
 	rep := Report{CaptureID: cur.ID, StopQueued: res.StopQueued}
 	if res.Abandoned {
 		p.rec.Abandon(&p.gen)
 		rep.Abandoned = true
 		p.emit(func() { p.log.Warn("producer: stop deadline passed, capture abandoned", "capture_id", cur.ID.String()) })
 	}
+	targets := p.retired
+	targets = append(targets, cur)
+	p.retired = nil
+	for _, c := range targets {
+		c.SetEndBy(dl)
+	}
 	id := cur.ID
 	p.last = &id
 	p.emit(func() { p.metrics.Add("capture_rotations_total", map[string]string{"reason": reasonStop}, 1) })
 	p.setCurrentMetric(nil, nil)
-	// The drain is waited for outside the lifecycle lock, which only bounded steps then hold,
-	// so a second End or a Begin is not held behind this one's drain.
-	p.lifeMu.Unlock()
-	rep.Drained, rep.Dropped = p.drain(cur, deadline(ctx))
+	// The publisher is waited for outside the lifecycle lock, so a second End or a Begin is not held behind it.
+	p.unlockLife()
+	if p.pub == nil {
+		return rep
+	}
+	p.pub.end(targets)
+	rep.Drained, rep.Dropped = waitEnded(targets, dl)
 
 	return rep
 }
 
-// drain gives the publisher until dl to publish what is queued of c, its stop included; what is left then is dropped and counted.
-// It never waits past dl, even for a publish in progress.
-func (p *Producer) drain(c *core.Capture, dl time.Time) (bool, uint64) {
-	if p.pub == nil {
-		return false, 0
+// waitEnded waits until every capture is terminated or dl passes.
+func waitEnded(caps []*core.Capture, dl time.Time) (bool, uint64) {
+	t := time.NewTimer(time.Until(dl))
+	defer t.Stop()
+	var dropped uint64
+	for _, c := range caps {
+		select {
+		case <-c.Done():
+			dropped += c.Dropped()
+		case <-t.C:
+			return false, dropped
+		}
 	}
-	req := drainReq{cap: c, deadline: dl, reply: make(chan uint64, 1)}
+
+	return true, dropped
+}
+
+// lockLife takes the lifecycle lock, giving up at dl.
+func (p *Producer) lockLife(dl time.Time) bool {
 	select {
-	case p.pub.drainCh <- req:
+	case p.lifeSem <- struct{}{}:
+		return true
 	default:
-		return false, 0
 	}
 	t := time.NewTimer(time.Until(dl))
 	defer t.Stop()
 	select {
-	case n := <-req.reply:
-		return true, n
+	case p.lifeSem <- struct{}{}:
+		return true
 	case <-t.C:
-		return false, 0
+		return false
 	}
 }
+
+func (p *Producer) unlockLife() { <-p.lifeSem }
 
 // rotateLocked builds a capture for d and rotates to it; the caller holds the lifecycle lock.
 func (p *Producer) rotateLocked(ctx context.Context, d *CaptureDescriptor, previous *tracepack.UUID, reason string) error {
@@ -195,6 +230,11 @@ func (p *Producer) rotateLocked(ctx context.Context, d *CaptureDescriptor, previ
 		return ErrRotationAbandoned
 	}
 	p.desc, p.descKey, p.last = *d, key, &id
+	// A settled capture has nothing left for End to wait for.
+	p.retired = slices.DeleteFunc(p.retired, (*core.Capture).Settled)
+	if res.Old != nil {
+		p.retired = append(p.retired, res.Old)
+	}
 	p.setCurrentMetric(c, d)
 	p.emit(func() {
 		p.metrics.Add("capture_rotations_total", map[string]string{"reason": reason}, 1)
@@ -296,14 +336,16 @@ func (p *Producer) faultLoop() {
 // so a fault rotation prepared before an End or a Rotate never installs a capture after them.
 // A fresh capture that faults again within a minute waits for the backoff first, outside both locks.
 func (p *Producer) handleFault(c *core.Capture) {
-	p.lifeMu.Lock()
+	if !p.lockLife(time.Now().Add(defaultLifecycleTimeout)) {
+		return
+	}
 	if !p.faultCurrentLocked(c) {
-		p.lifeMu.Unlock()
+		p.unlockLife()
 		return
 	}
 	_, mono := p.now()
 	repeat := c.ID == p.faultFresh && time.Duration(mono-p.faultedAt) < faultRepeatWindow
-	p.lifeMu.Unlock()
+	p.unlockLife()
 
 	if repeat {
 		select {
@@ -313,8 +355,10 @@ func (p *Producer) handleFault(c *core.Capture) {
 		}
 	}
 
-	p.lifeMu.Lock()
-	defer p.lifeMu.Unlock()
+	if !p.lockLife(time.Now().Add(defaultLifecycleTimeout)) {
+		return
+	}
+	defer p.unlockLife()
 	if !p.faultCurrentLocked(c) {
 		return
 	}
@@ -338,8 +382,10 @@ func (p *Producer) handleFault(c *core.Capture) {
 
 // handleSeqLimit rotates away from a capture whose seq neared its end, with the same descriptor (G5-231).
 func (p *Producer) handleSeqLimit(c *core.Capture) {
-	p.lifeMu.Lock()
-	defer p.lifeMu.Unlock()
+	if !p.lockLife(time.Now().Add(defaultLifecycleTimeout)) {
+		return
+	}
+	defer p.unlockLife()
 	if p.stopping.Load() || p.rec.Current() != c || c.Faulted() {
 		return
 	}

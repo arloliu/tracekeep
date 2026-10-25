@@ -551,3 +551,115 @@ func TestNoAttemptPastTheHorizon(t *testing.T) {
 		t.Errorf("%d attempts at seq 1, want 1: its retry would fall past the horizon", got)
 	}
 }
+
+// No attempt at a stopped capture starts after End's deadline, even when a blocking publish crossed it inside a pass.
+func TestNoAttemptAfterEndDeadline(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t, producer.Tunables{})
+	c := h.begin()
+	h.wait(1) // the start
+	release := make(chan struct{})
+	t.Cleanup(func() {
+		select {
+		case <-release:
+		default:
+			close(release)
+		}
+	})
+	stopTried := make(chan struct{})
+	var once sync.Once
+	h.bus.FailPublish(func(m *producer.Msg) error {
+		switch m.MsgID {
+		case c.ID.String() + ".1":
+			return errDown // the record fails and waits for its retry
+		case c.ID.String() + ".2":
+			once.Do(func() { close(stopTried) })
+			<-release // the stop's publish blocks past End's deadline
+
+			return errDown
+		default:
+			return nil
+		}
+	})
+	h.observe(frame(4))
+	wctx, wcancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer wcancel()
+	if err := h.bus.WaitAsync(wctx, c.ID.String()+".1"); err != nil { // its first attempt failed; the retry is 100ms out
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithTimeout(t.Context(), 150*time.Millisecond)
+	defer cancel()
+	h.p.End(ctx)
+	select {
+	case <-stopTried:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the stop was never attempted")
+	}
+	close(release) // the pass resumes after the deadline, with the record's retry due
+	select {
+	case <-c.Done():
+	case <-time.After(10 * time.Second):
+		t.Fatal("the capture was not terminated")
+	}
+	if got := h.bus.AsyncCalls(c.ID.String() + ".1"); got != 1 {
+		t.Errorf("%d attempts at seq 1, want 1: none may start after End's deadline", got)
+	}
+}
+
+// End stops every capture a rotation closed since the previous End, not only the current one.
+func TestEndCoversRotatedCaptures(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t, producer.Tunables{})
+	a := h.begin()
+	h.wait(1)
+	h.bus.FailPublish(func(m *producer.Msg) error {
+		if m.MsgID == a.ID.String()+".1" {
+			return errDown // A's stop is never accepted
+		}
+
+		return nil
+	})
+	sw := "v2"
+	if err := h.p.Rotate(t.Context(), producer.CaptureDescriptor{ToolID: "T1", DeviceName: "eqp", HostSoftware: &sw}); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithTimeout(t.Context(), 200*time.Millisecond)
+	defer cancel()
+	h.p.End(ctx)
+	select {
+	case <-a.Done():
+	case <-time.After(10 * time.Second):
+		t.Fatal("the rotated capture was not stopped by End")
+	}
+	if got := a.Dropped(); got != 1 {
+		t.Errorf("rotated capture dropped %d records at End, want its stop", got)
+	}
+}
+
+// Close counts a publish still unresolved and returns its lane budget.
+func TestCloseSettlesUnresolvedPublishes(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t, producer.Tunables{})
+	c := h.begin()
+	h.wait(1)
+	h.bus.HoldAsync(true)
+	h.observe(frame(4))
+	wctx, wcancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer wcancel()
+	if err := h.bus.WaitAsync(wctx, c.ID.String()+".1"); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 100*time.Millisecond)
+	defer cancel()
+	h.p.End(ctx)
+	_ = h.p.Close() // the publish is never resolved
+
+	if got := h.m.get("records_dropped_total{reason=publish_failed}"); got < 1 {
+		t.Errorf("dropped{publish_failed} = %v, want the unresolved publish counted", got)
+	}
+	if n, b := h.rec.OrdinaryDepth(); n != 0 || b != 0 {
+		t.Errorf("ordinary lane budget %d records, %d bytes after Close, want 0", n, b)
+	}
+}

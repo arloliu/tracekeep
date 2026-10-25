@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/arloliu/go-secs/tracepack"
 )
@@ -89,6 +90,16 @@ type Capture struct {
 	start atomic.Uint32
 	// terminated is set once End's drain of the capture finished: nothing of it is published afterwards.
 	terminated atomic.Bool
+	done       chan struct{}
+	doneOnce   sync.Once
+	// endBy is End's deadline for publishing the capture, Unix ns; zero until End stamps it.
+	endBy atomic.Int64
+	// queued counts the capture's records in the lanes, between their send and the publisher taking them in.
+	queued atomic.Int64
+	// dropped counts what the publisher gave up of the capture when it terminated it.
+	dropped atomic.Uint64
+	// settled is set when the publisher, the capture no longer current, had nothing of it left.
+	settled atomic.Bool
 
 	lifecycle *atomic.Uint64
 	tolerance int64
@@ -133,6 +144,7 @@ func NewCapture(p CaptureParams) *Capture {
 		anchorMono:   p.OriginMono,
 		lastMono:     p.OriginMono,
 		reservations: make([]reservation, 1, max(p.ReservedCap, 1)),
+		done:         make(chan struct{}),
 	}
 	c.reservations[0] = reservation{seq: 0, mono: p.OriginMono}
 
@@ -247,7 +259,41 @@ func (c *Capture) Fault() {
 }
 
 // Terminate marks the capture finished for the publisher: a record of it queued later is dropped, never published.
-func (c *Capture) Terminate() { c.terminated.Store(true) }
+// It closes Done.
+func (c *Capture) Terminate() {
+	c.terminated.Store(true)
+	c.doneOnce.Do(func() { close(c.done) })
+}
+
+// Done is closed once the capture is terminated.
+func (c *Capture) Done() <-chan struct{} { return c.done }
+
+// SetEndBy stamps End's deadline for publishing the capture.
+func (c *Capture) SetEndBy(t time.Time) { c.endBy.Store(t.UnixNano()) }
+
+// EndBy returns End's deadline for the capture, false until End stamps it.
+func (c *Capture) EndBy() (time.Time, bool) {
+	ns := c.endBy.Load()
+	return time.Unix(0, ns), ns != 0
+}
+
+// Settle records that the publisher finished with the capture; Settled reports it.
+func (c *Capture) Settle() { c.settled.Store(true) }
+
+// Settled reports whether Settle was called.
+func (c *Capture) Settled() bool { return c.settled.Load() }
+
+// Queued returns how many of the capture's records are in the lanes.
+func (c *Capture) Queued() int64 { return c.queued.Load() }
+
+// Dequeued records that the publisher took one of the capture's records in.
+func (c *Capture) Dequeued() { c.queued.Add(-1) }
+
+// AddDropped counts records of the capture the publisher gave up at its termination; Dropped reads the count.
+func (c *Capture) AddDropped(n uint64) { c.dropped.Add(n) }
+
+// Dropped returns what AddDropped counted.
+func (c *Capture) Dropped() uint64 { return c.dropped.Load() }
 
 // Terminated reports whether Terminate was called.
 func (c *Capture) Terminated() bool { return c.terminated.Load() }

@@ -207,8 +207,12 @@ and this section is the contract between them.
   Every rule stated here for a device verb holds for the SDK call it maps to.
 - **`Start` is idempotent**: a `Start` on an already-open connection does not open a second capture.
 - **`Stop`** rotates to nil, then gives the publisher a bounded deadline (a fraction of `closeConnTimeout`) to drain and publish the `stop`;
-  what is left is dropped and counted;
-  the whole trace shutdown, rotation and lock acquisition included, is bounded by that deadline.
+  the drain covers the capture it closed and every capture a rotation closed since the previous `Stop`,
+  each stamped with the deadline, after which no attempt at it starts;
+  what is left is dropped and counted, and the capture is then terminated for good, so a record a late callback queues is dropped too;
+  a capture a later `Start` opens is never stamped, so a drain that outlives its `Stop` cannot touch it;
+  the whole trace shutdown, rotation and lock acquisition included, is bounded by that deadline:
+  a `Stop` that cannot take the lifecycle lock in time returns, having changed nothing.
   `Stop` **never returns a trace error**: eqp-hub's manager treats any non-nil `Stop` as an unsafe demotion.
 - **Publisher goroutine** (the only place that waits):
   pops, encodes with `tracepack.NewBusRecord` and `EncodeBusBody`, publishes on the dedicated connection under the barrier above.

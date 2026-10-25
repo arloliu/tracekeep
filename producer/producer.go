@@ -40,16 +40,18 @@ type Producer struct {
 	recorder string
 	now      func() (wall, mono int64)
 
-	// The lifecycle lock serializes every rotation, whatever its cause.
-	lifeMu sync.Mutex
+	// lifeSem is the lifecycle lock, which serializes every rotation, whatever its cause;
+	// a one-slot semaphore, so a caller can give up at its deadline.
+	lifeSem chan struct{}
 	// gen is the lifecycle generation; only abandonment advances it.
 	gen atomic.Uint64
 	// stopping is set by End before it takes the lifecycle lock, so a rotation inside the lock abandons.
 	stopping atomic.Bool
-	// Guarded by lifeMu.
+	// Guarded by the lifecycle lock.
 	desc       CaptureDescriptor
 	descKey    []byte
 	last       *tracepack.UUID
+	retired    []*core.Capture // captures rotations closed since the last End
 	ids        uuidV7
 	faultedAt  int64          // when the last fault rotation ran, mono ns
 	faultFresh tracepack.UUID // the capture it installed, or the faulted one when it failed
@@ -122,6 +124,7 @@ func New(cfg Config, opts ...Option) (*Producer, error) {
 		now:      core.Now,
 		quit:     make(chan struct{}),
 		events:   make(chan func(), sinkEvents),
+		lifeSem:  make(chan struct{}, 1),
 		rotateAt: o.rotateAt,
 	}
 	p.wg.Go(p.faultLoop)

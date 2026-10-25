@@ -198,9 +198,11 @@ func (r *Recorder) Observe(o *Observation) {
 		RecKind: o.Kind, Dir: o.Dir, Fidelity: o.Fidelity, Quality: q,
 		Payload: append(make([]byte, 0, n), o.Payload...),
 	}
+	c.queued.Add(1)
 	select {
 	case r.ordinary <- e:
 	default:
+		c.queued.Add(-1)
 		r.returnBudget(n)
 		r.drop(r.fullReason(), n)
 	}
@@ -319,10 +321,17 @@ func (r *Recorder) takeReserved(n int64) bool {
 
 // sendReserved puts e in the channel; the bound keeps the channel from filling, so this fails only on a bug.
 func (r *Recorder) sendReserved(e Entry) bool {
+	if e.Cap != nil {
+		e.Cap.queued.Add(1)
+	}
 	select {
 	case r.reserved <- e:
 		return true
 	default:
+		if e.Cap != nil {
+			e.Cap.queued.Add(-1)
+		}
+
 		return false
 	}
 }
