@@ -219,7 +219,7 @@ which the device's `Start`, `HotReload` and `Stop` map onto (`producer.md` §4.2
   (`Bus` carries `StreamInfo`, `Objects`, `MaxPayload` and `CheckConn` for it; `producertest`'s fake implements them):
   checks the stream and bucket exist with the [STO §4] settings that the API exposes
   (retention, storage, limits, compression, `AllowDirect` off on the claim bucket's stream;
-  encryption at rest is a deployment assurance it only reports as unverifiable), `max_payload ≥ 4140`, TLS, the reconnect buffer disabled,
+  encryption at rest is a deployment assurance no client can see, so it is left out rather than reported on every run), `max_payload ≥ 4140`, TLS, the reconnect buffer disabled,
   the capture's `start` message within the header-block and `max_payload` limits
   (through `CheckBusStart` with the real header block), `tool_id` and `recorder_instance_name` set in the descriptor;
   it returns a readable list of what is wrong.

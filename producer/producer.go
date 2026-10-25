@@ -38,7 +38,7 @@ type Producer struct {
 	stream string
 	bucket string
 	pub    *publisher
-	// conn is the connection New dialed, closed by Close; nil with WithConn or WithBus.
+	// conn is the default bus, on the connection New dialed or WithConn brought, which Close cleans up; nil with WithBus.
 	conn     *natsBus
 	rec      *core.Recorder
 	log      Logger
@@ -114,7 +114,7 @@ func New(cfg Config, opts ...Option) (*Producer, error) {
 	var nb *natsBus
 	if o.bus == nil && !o.noPublisher {
 		var err error
-		if nb, err = newNATSBus(&cfg, &tun, o.conn); err != nil {
+		if nb, err = newNATSBus(&cfg, &tun, o.conn, o.log); err != nil {
 			return nil, err
 		}
 		o.bus = nb
@@ -144,9 +144,7 @@ func New(cfg Config, opts ...Option) (*Producer, error) {
 		lifeSem:  make(chan struct{}, 1),
 		rotateAt: o.rotateAt,
 	}
-	if nb != nil && nb.owned {
-		p.conn = nb
-	}
+	p.conn = nb
 	p.wg.Go(p.faultLoop)
 	p.wg.Go(p.sinkLoop)
 	if !o.noPublisher {

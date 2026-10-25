@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -213,4 +214,38 @@ func TestPreflightRunsOnceConnected(t *testing.T) {
 	if !bytes.Contains([]byte(line), []byte(busconfig.ClaimStreamName(bucket))) {
 		t.Errorf("preflight line %q does not name the claim stream", line)
 	}
+}
+
+// A claim bucket whose stream allows direct reads is refused until it is fixed (T-28):
+// a direct read could reach a lagging replica, so the never-overwrite check would not hold.
+func TestClaimBucketWithDirectReadsIsRefused(t *testing.T) {
+	t.Parallel()
+
+	b := newBusWith(t, testbus.Options{MaxPayload: tracepack.BusMinMaxPayload}, nil, true)
+	log := newLog()
+	p, err := producer.New(producer.Config{Servers: []string{b.url}, SubjectPrefix: prefix, ClaimBucket: bucket}, producer.WithLogger(log))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	t.Cleanup(func() { _ = p.Close() })
+	if err := p.Begin(t.Context(), producer.CaptureDescriptor{ToolID: "T1", DeviceName: "eqp"}); err != nil {
+		t.Fatalf("Begin: %v", err)
+	}
+	// At the minimum max_payload the start itself goes by claim-check.
+	line := log.wait(t, "producer: reserved record not accepted")
+	if !strings.Contains(line, "direct reads") {
+		t.Fatalf("retry logged %q, want the direct-read refusal", line)
+	}
+
+	ctx := t.Context()
+	s, err := b.js.Stream(ctx, busconfig.ClaimStreamName(bucket))
+	if err != nil {
+		t.Fatalf("claim stream: %v", err)
+	}
+	cfg := s.CachedInfo().Config
+	cfg.AllowDirect = false
+	if _, err := b.js.UpdateStream(ctx, cfg); err != nil {
+		t.Fatalf("turn direct reads off: %v", err)
+	}
+	b.fetch(t, 1) // the start, once the bucket is fixed
 }

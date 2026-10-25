@@ -11,6 +11,8 @@ import (
 
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
+
+	"github.com/arloliu/tracekeep/producer/busconfig"
 )
 
 // asyncMaxPending bounds the asynchronous publishes awaiting their ack;
@@ -38,11 +40,11 @@ type natsObjects struct{ os jetstream.ObjectStore }
 // newNATSBus builds the default bus over nc, or over a connection it dials from cfg when nc is nil.
 // The dial never waits for the cluster: an unreachable cluster is retried in the background,
 // and until it answers the bus reports no max_payload, so the publisher counts it as down (producer.md §4.3).
-func newNATSBus(cfg *Config, tun *Tunables, nc *nats.Conn) (*natsBus, error) {
+func newNATSBus(cfg *Config, tun *Tunables, nc *nats.Conn, log Logger) (*natsBus, error) {
 	owned := nc == nil
 	if owned {
 		var err error
-		if nc, err = dial(cfg); err != nil {
+		if nc, err = dial(cfg, log); err != nil {
 			return nil, err
 		}
 	} else if nc.Opts.ReconnectBufSize >= 0 {
@@ -65,8 +67,10 @@ func newNATSBus(cfg *Config, tun *Tunables, nc *nats.Conn) (*natsBus, error) {
 
 // dial connects to the traffic cluster with every correctness-bearing option the SDK owns:
 // the reconnect buffer disabled, so a publish while disconnected fails at once (producer.md §4.2 *Large records*),
-// unlimited reconnects, and the first connection retried in the background instead of failing New.
-func dial(cfg *Config) (*nats.Conn, error) {
+// unlimited reconnects, even past a repeated authentication error, which nats.go would otherwise take as final,
+// and the first connection retried in the background instead of failing New.
+// The connection's state changes and errors go to log, from nats.go's callback goroutine.
+func dial(cfg *Config, log Logger) (*nats.Conn, error) {
 	if len(cfg.Servers) == 0 {
 		return nil, fmt.Errorf("%w: no servers, and neither WithConn nor WithBus", ErrInvalidConfig)
 	}
@@ -79,6 +83,21 @@ func dial(cfg *Config) (*nats.Conn, error) {
 		nats.ReconnectBufSize(-1),
 		nats.MaxReconnects(-1),
 		nats.RetryOnFailedConnect(true),
+		nats.IgnoreAuthErrorAbort(),
+		nats.DisconnectErrHandler(func(_ *nats.Conn, err error) {
+			log.Warn("producer: traffic connection lost", "error", err)
+		}),
+		nats.ReconnectHandler(func(nc *nats.Conn) {
+			log.Info("producer: traffic connection restored", "server", nc.ConnectedUrlRedacted())
+		}),
+		nats.ErrorHandler(func(_ *nats.Conn, _ *nats.Subscription, err error) {
+			log.Warn("producer: traffic connection error", "error", err)
+		}),
+		nats.ClosedHandler(func(nc *nats.Conn) {
+			if err := nc.LastError(); err != nil {
+				log.Error("producer: traffic connection closed", "error", err)
+			}
+		}),
 	}, auth...)
 	opts = append(opts, tlsOptions(&cfg.TLS)...)
 	nc, err := nats.Connect(strings.Join(cfg.Servers, ","), opts...)
@@ -127,7 +146,7 @@ func tlsOptions(t *TLSConfig) []nats.Option {
 	return opts
 }
 
-// natsMsg copies m's headers as written: nats.Header.Set would canonicalize their keys.
+// natsMsg copies m's headers into a nats.Msg.
 func natsMsg(m *Msg) *nats.Msg {
 	h := make(nats.Header, len(m.Header))
 	for k, v := range m.Header {
@@ -164,7 +183,19 @@ func (b *natsBus) PublishAsync(m *Msg) (AckFuture, error) {
 }
 
 // Objects implements Bus.
+// It refuses a bucket whose stream allows direct reads (T-28): the handle routes reads by the setting it reads now,
+// so a direct read could reach a lagging replica and a stale "not found" would let a put replace another version.
+// The setting is read before the handle binds, and only tracekeep migrate changes it, turning it off,
+// so the handle never holds it on once the check passed; a refused bucket is tried again at the next attempt.
 func (b *natsBus) Objects(ctx context.Context, bucket string) (Objects, error) {
+	stream := busconfig.ClaimStreamName(bucket)
+	s, err := b.js.Stream(ctx, stream)
+	if err != nil {
+		return nil, fmt.Errorf("producer: claim bucket %s: %w", bucket, err)
+	}
+	if s.CachedInfo().Config.AllowDirect {
+		return nil, fmt.Errorf("producer: claim bucket %s: its stream %s allows direct reads, which a lagging replica can answer", bucket, stream)
+	}
 	os, err := b.js.ObjectStore(ctx, bucket)
 	if err != nil {
 		return nil, fmt.Errorf("producer: claim bucket %s: %w", bucket, err)
@@ -179,8 +210,12 @@ func (b *natsBus) CheckConn() []Problem {
 	if b.nc.Opts.ReconnectBufSize >= 0 {
 		out = append(out, Problem{Check: "reconnect_buffer", Detail: "the reconnect buffer is enabled, so a publish while disconnected is flushed later instead of failing"})
 	}
-	if _, err := b.nc.TLSConnectionState(); err != nil {
-		out = append(out, Problem{Check: "tls", Detail: fmt.Sprintf("the connection to the traffic cluster does not use TLS: %v", err)})
+	switch _, err := b.nc.TLSConnectionState(); {
+	case errors.Is(err, nats.ErrConnectionNotTLS):
+		out = append(out, Problem{Check: "tls", Detail: "the connection to the traffic cluster does not use TLS"})
+	case err != nil:
+		out = append(out, Problem{Check: "tls", Detail: fmt.Sprintf("TLS not verified: %v", err)})
+	default:
 	}
 
 	return out
@@ -199,8 +234,10 @@ func (b *natsBus) StreamInfo(ctx context.Context, name string) (StreamInfo, erro
 	return StreamInfoOf(&s.CachedInfo().Config), nil
 }
 
-// close closes the connection when New dialed it.
+// close stops the JetStream publisher, whose reply subscription would outlive the producer on a connection WithConn brought,
+// and closes the connection when New dialed it.
 func (b *natsBus) close() {
+	b.js.CleanupPublisher()
 	if b.owned {
 		b.nc.Close()
 	}
