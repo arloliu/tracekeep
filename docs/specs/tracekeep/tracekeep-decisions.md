@@ -409,3 +409,10 @@ a close begun by v0.8.0 and retried by v0.9.0 would therefore write other bytes.
 tracekeep has written no close yet, so the compactor is built on v0.9.0 from its first close and never meets that case.
 It also adds `FindTransactions`, which pairs every primary of a time range in one pass (G5-271, G5-273); the API may adopt it, and nothing requires it.
 Only the SDK requires tracepack today; the service takes the same version when its first package needs it.
+
+### T-37 — the vantage of a `pdf_*` device (2026-10-26)
+
+`producer.md` §4.5 fixes vantage host for every capture, yet lets an operator capture a device whose peer is a host-side system,
+which would invert vantage and every `dir` if the gateway were the equipment endpoint there.
+It is not: the legacy host system's `pdf` endpoint runs in passive mode, and eqp-hub's `eqp-hsms` device holds the host role on that connection.
+A `pdf_*` capture therefore keeps vantage host with no per-device option, and capturing it needs no restriction.
