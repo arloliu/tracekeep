@@ -276,3 +276,29 @@ func TestObserveDoesNotAllocateBeyondTheCopy(t *testing.T) {
 		t.Errorf("Observe allocates %v times per call, want only the frame copy", allocs)
 	}
 }
+
+func TestObserveEventAllocatesNothing(t *testing.T) {
+	r, _ := newTestRecorder(t, RecorderParams{OrdinaryRecords: 4096})
+	ev := Event{Kind: tracepack.EventSocketClose, Cause: tracepack.CausePeerClose, CauseRaw: "go-secs:CauseIOError"}
+	var mono int64
+	var e Entry
+	allocs := testing.AllocsPerRun(1000, func() {
+		mono++
+		r.Observe(&Observation{
+			Wall: origin + mono, Mono: mono, Socket: 1,
+			Kind: tracepack.KindTransportEvent, Dir: tracepack.DirLocal, Fidelity: tracepack.FidelityNotApplicable,
+			Event: ev,
+		})
+		e = <-r.Ordinary()
+		r.ReleaseOrdinary(&e)
+	})
+	if allocs != 0 {
+		t.Errorf("Observe allocates %v times per event, want 0", allocs)
+	}
+	if e.Event != ev || e.RecKind != tracepack.KindTransportEvent || len(e.Payload) != 0 {
+		t.Errorf("entry = %+v", e)
+	}
+	if count, bytes := r.OrdinaryDepth(); count != 0 || bytes != 0 {
+		t.Errorf("ordinary lane depth = %d records, %d bytes after release, want 0", count, bytes)
+	}
+}

@@ -45,6 +45,26 @@ const (
 	EntryClockStep
 )
 
+// Event is a transport event as plain fields:
+// the publisher encodes it with tracepack, so the callback that reports it allocates nothing for it.
+// Kind decides which other fields the encoding carries.
+type Event struct {
+	Kind tracepack.Event
+	// Prev and Cur are a state transition's states.
+	Prev, Cur tracepack.State
+	// Cause and CauseRaw are a state transition's or socket close's cause; CauseRaw is empty when there is none.
+	Cause    tracepack.Cause
+	CauseRaw string
+	// Timer is the timer a timer expiry names, or the one that drove a state transition.
+	Timer tracepack.Timer
+	// Role is a socket connect's or accept's role.
+	Role tracepack.SocketRole
+	// SessionID, Stream, Function and SystemBytes name the primary a timer expiry ended the wait of.
+	SessionID        uint16
+	Stream, Function uint8
+	SystemBytes      uint32
+}
+
 // Observation is one go-secs event as the observers hand it to Observe.
 type Observation struct {
 	// Wall and Mono are the event's clock reading in nanoseconds.
@@ -55,8 +75,10 @@ type Observation struct {
 	Kind     tracepack.Kind
 	Dir      tracepack.Dir
 	Fidelity tracepack.Fidelity
-	// Payload is the frame or the transport event's payload, borrowed for the call only.
+	// Payload is the frame, borrowed for the call only; a transport event has none.
 	Payload []byte
+	// Event is the transport event of an observation of kind transport-event.
+	Event Event
 }
 
 // Entry is one record in a lane, waiting for the publisher.
@@ -74,6 +96,7 @@ type Entry struct {
 	Quality  tracepack.Quality
 	Drift    int64
 	Payload  []byte
+	Event    Event
 }
 
 // Counters is a snapshot of what the observers counted; the publisher reports it to Metrics.
@@ -206,7 +229,10 @@ func (r *Recorder) Observe(o *Observation) {
 	e := Entry{
 		Cap: c, Kind: EntryObserved, Seq: a.Seq, Wall: o.Wall, Mono: o.Mono, Epoch: a.Epoch,
 		RecKind: o.Kind, Dir: o.Dir, Fidelity: o.Fidelity, Quality: q,
-		Payload: append(make([]byte, 0, n), o.Payload...),
+		Event: o.Event,
+	}
+	if n > 0 {
+		e.Payload = append(make([]byte, 0, n), o.Payload...)
 	}
 	select {
 	case r.ordinary <- e:
