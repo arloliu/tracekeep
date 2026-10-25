@@ -457,8 +457,7 @@ it also serves §4.4's T3 attribution):
   - **Expiry is not an outcome**: a token that never receives a terminal outcome expires and emits nothing,
     so T3 of a forwarded request comes only from the waiter's typed timeout.
   - **T3**: a `TimedOut` that is the token's first terminal outcome, on an entry the outbound observation has bound to a socket and that is not ambiguous,
-    emits §4.4's `timer-expiry` event by a non-blocking enqueue,
-    with the effective timeout in `detail`.
+    emits §4.4's `timer-expiry` event, with the effective timeout in `detail`, by a non-blocking enqueue.
     The entry records the socket, never an epoch:
     the event goes to the capture current when the timeout is reported, loaded as in any callback,
     with the epoch that capture's socket map holds for the socket (§4.2).

@@ -336,7 +336,8 @@ The roadmap's open parking and catalog items and the findings of an external rev
 - `RegisterPack` takes delivery evidence (each record's version key, bus incarnation and stream seq) as an input;
   the reconciler and a close's publication pass none and write coverage only;
   the reconciler refuses, tombstones and deletes an orphan that holds a terminated seq or belongs to a capture with a termination order;
-  an adopted pack never gains evidence later, because a redelivery writes another segment under its own pack id;
+  an adopted pack never gains evidence later, because a redelivery writes another segment under its own pack id,
+  and an `ingest` registration that finds its own key already adopted leaves its batch unacknowledged so that redelivery happens;
 - `Reject` on an admitted capture writes nothing:
   different bytes return `descriptor-conflict`;
   equal bytes return the admitted state and its processing configuration, and the classifier decides again;
@@ -345,7 +346,7 @@ The roadmap's open parking and catalog items and the findings of an external rev
   the lock order is capture → `leases` → `counters('membership')` → `counters('scope_events')`, each step optional;
 - `RecordConflict` takes the pack ids it compared and clears only while the row names exactly those, otherwise it returns `changed`;
 - a close's registration and its publication are one transaction, the event seq allocated last;
-  a close the horizon guard refuses leaves its intent `abandoned` and its key tombstoned;
+  a close the horizon guard refuses, or whose key retention already tombstoned, leaves its intent `abandoned` and its key tombstoned;
 - every compactor transaction that changes domain state checks the lease.
 
 ### T-33 — deferred and terminated seqs, change events and download lifetimes (2026-10-25)
@@ -356,12 +357,12 @@ The roadmap's open parking and catalog items and the findings of an external rev
   an hour holding only parked seqs reports them instead of `no-data`,
   and classification runs up to the higher of `highest_seq` and the highest parked seq.
   `ListPacks` and its proto gain the class.
-- A termination emits a scope event of a new kind, `terminated`, on the scope of each terminated seq's hour, upserting the scope when it is missing,
-  with `revision + 1` and the counter last, except in an hour retention has evicted, whose scope is gone;
+- A termination emits a scope event of a new kind, `terminated`, with `revision + 1` and the counter last:
+  the event goes on the scope of each terminated seq's hour, which is upserted when missing, except in an hour retention has evicted, whose scope is gone;
   entering parking emits nothing, and parking touches no counter except there.
 - A download URL, presigned or served by the API, expires at the earlier of now plus its lifetime and its object's deadline minus a margin.
   The deadline is the earliest time the object may be deleted:
-  `merged_at + D` for a merged input, the hour's earliest eviction for retention, staged and excluded packs included,
+  the hour's earliest eviction for every pack, staged and excluded packs included, or `merged_at + D` for a merged input when that is earlier,
   and for a completed export bundle the end of its own retention.
   Issuance whose clamped lifetime falls below a floor is refused with `pack-superseded`, and the VE client re-lists.
   The margin is 2 min, the floor 1 min and an export bundle's retention 24 h, all tunable;

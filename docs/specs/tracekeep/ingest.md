@@ -173,7 +173,7 @@ the cases prove the decision, the schedules prove the re-reads under the capture
 | Crash | State left | Recovery |
 |---|---|---|
 | before the put | nothing | redelivery rewrites the batch, byte-identical (G5-214) |
-| after the put, before registration | orphan in `staging/` | reconciler registers it, coverage only; redelivery writes a second segment with the same records under its own pack id, which writes the receipts and `parked` states the adopted pack never gains (T-32); [FMT I-12] deduplicates |
+| after the put, before registration | orphan in `staging/` | reconciler registers it, coverage only, and marks it `adopted`, so an `ingest` registration still in flight for it leaves its batch unacknowledged; redelivery writes a second segment with the same records under its own pack id, which writes the receipts and `parked` states the adopted pack never gains (T-32); [FMT I-12] deduplicates |
 | after registration, during the per-message acks | registered segment, some messages acked | the unacked remainder is redelivered and written again; duplicates are harmless |
 | after a confirmed ack | nothing left to recover: the receipt, the `claim_objects` row and, for a parked record, the `staged` state of its `parked` row were written at registration; a crash between that commit and the acknowledgement redelivers a message whose row is resolved (§6.1 *resolution*) | — |
 

@@ -139,7 +139,8 @@ For a key the catalog does not know and that has no **tombstone** (§8.3):
 No receipt is reconstructed for an orphan:
 a masked pack holds neither the bus header nor the original payload, and none is needed.
 The reconciler passes no delivery evidence, so its registration writes coverage only, never a receipt or a `parked` state (`catalog.md` §7.2),
-and an adopted pack never gains them later (T-32).
+and an adopted pack never gains them later (T-32):
+when the adoption wins against `ingest`'s own registration of the same key, that registration finds the pack `adopted` and leaves its batch unacknowledged, so the redelivery writes the evidence into another segment.
 A claim object without a receipt is deleted only with its record's hour (§8.4),
 so a redelivered claim-check message of an orphan's record fetches its object, is staged again, byte-identical, and writes the receipt then.
 A key with a tombstone, or whose hour is beyond the retention horizon, is deleted again
