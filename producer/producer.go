@@ -114,7 +114,7 @@ func New(cfg Config, opts ...Option) (*Producer, error) {
 	var nb *natsBus
 	if o.bus == nil && !o.noPublisher {
 		var err error
-		if nb, err = newNATSBus(&cfg, &tun, o.conn, o.log); err != nil {
+		if nb, err = newNATSBus(&cfg, &tun, o.conn); err != nil {
 			return nil, err
 		}
 		o.bus = nb
@@ -145,6 +145,13 @@ func New(cfg Config, opts ...Option) (*Producer, error) {
 		rotateAt: o.rotateAt,
 	}
 	p.conn = nb
+	if nb != nil {
+		// nats.go calls back on its own goroutine; the sink keeps a slow Logger from stalling it.
+		nb.log = sinkLogger{p}
+		if nb.owned {
+			go nb.dial(&p.tun) // not joined: Close closes the connection whenever the dial returns
+		}
+	}
 	p.wg.Go(p.faultLoop)
 	p.wg.Go(p.sinkLoop)
 	if !o.noPublisher {
@@ -153,7 +160,7 @@ func New(cfg Config, opts ...Option) (*Producer, error) {
 		p.wg.Go(func() { p.pub.run(p.quit) })
 	}
 	if nb != nil {
-		p.wg.Go(func() { p.preflightOnConnect(nb.nc) })
+		p.wg.Go(func() { p.preflightOnConnect(nb) })
 	}
 
 	return p, nil
@@ -198,7 +205,11 @@ func (p *Producer) Close() error {
 
 // preflightOnConnect runs Preflight once the connection first comes up and logs what it finds,
 // so a misconfigured bus is reported at startup without delaying Begin (docs/specs/tracekeep/producer-sdk.md §4.7).
-func (p *Producer) preflightOnConnect(nc *nats.Conn) {
+func (p *Producer) preflightOnConnect(nb *natsBus) {
+	nc := nb.waitUp(p.quit)
+	if nc == nil {
+		return
+	}
 	up := nc.StatusChanged(nats.CONNECTED)
 	defer nc.RemoveStatusListener(up)
 	if !nc.IsConnected() {
@@ -218,13 +229,23 @@ func (p *Producer) preflightOnConnect(nc *nats.Conn) {
 		}
 	}()
 	problems, err := p.Preflight(ctx)
+	log := sinkLogger{p}
 	if err != nil {
-		p.log.Warn("producer: preflight could not finish", "error", err)
+		log.Warn("producer: preflight could not finish", "error", err)
 	}
 	for _, pr := range problems {
-		p.log.Warn("producer: preflight", "check", pr.Check, "problem", pr.Detail)
+		log.Warn("producer: preflight", "check", pr.Check, "problem", pr.Detail)
 	}
 }
+
+// sinkLogger hands each line to the producer's sink goroutine without waiting,
+// so the SDK's own goroutines and nats.go's callbacks never wait on the integrator's Logger,
+// and no line reaches it after Close.
+type sinkLogger struct{ p *Producer }
+
+func (l sinkLogger) Info(msg string, args ...any)  { l.p.emit(func() { l.p.log.Info(msg, args...) }) }
+func (l sinkLogger) Warn(msg string, args ...any)  { l.p.emit(func() { l.p.log.Warn(msg, args...) }) }
+func (l sinkLogger) Error(msg string, args ...any) { l.p.emit(func() { l.p.log.Error(msg, args...) }) }
 
 // recorderName names the SDK and the go-secs that delivers its observations (the descriptor's recorder).
 func recorderName() string {

@@ -156,21 +156,34 @@ func TestPreflightOnALiveBus(t *testing.T) {
 		opts    testbus.Options
 		traffic func(*jetstream.StreamConfig)
 		raw     bool
+		claim   func(*jetstream.StreamConfig)
 		want    []string
 	}{
-		{"correct", testbus.Options{}, nil, false, []string{"tls"}},
-		{"traffic stream missing", testbus.Options{}, func(c *jetstream.StreamConfig) { c.Name = "OTHER" }, false, []string{"stream", "tls"}},
+		{"correct", testbus.Options{}, nil, false, nil, []string{"tls"}},
+		{"traffic stream missing", testbus.Options{}, func(c *jetstream.StreamConfig) { c.Name = "OTHER" }, false, nil, []string{"stream", "tls"}},
 		{"limits and an age", testbus.Options{}, func(c *jetstream.StreamConfig) {
 			c.Retention, c.MaxAge = jetstream.LimitsPolicy, time.Hour
-		}, false, []string{"stream", "stream", "tls"}},
-		{"claim stream with direct reads", testbus.Options{}, nil, true, []string{"bucket", "tls"}},
-		{"small max_payload", testbus.Options{MaxPayload: 4000}, nil, false, []string{"max_payload", "tls"}},
+		}, false, nil, []string{"stream", "stream", "tls"}},
+		{"claim stream with direct reads", testbus.Options{}, nil, true, nil, []string{"bucket", "tls"}},
+		{"claim per-subject limit", testbus.Options{}, nil, false, func(c *jetstream.StreamConfig) { c.MaxMsgsPerSubject = 1 }, []string{"bucket", "tls"}},
+		{"small max_payload", testbus.Options{MaxPayload: 4000}, nil, false, nil, []string{"max_payload", "tls"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
 			b := newBusWith(t, tt.opts, tt.traffic, tt.raw)
+			if tt.claim != nil {
+				s, err := b.js.Stream(t.Context(), busconfig.ClaimStreamName(bucket))
+				if err != nil {
+					t.Fatalf("claim stream: %v", err)
+				}
+				cfg := s.CachedInfo().Config
+				tt.claim(&cfg)
+				if _, err := b.js.UpdateStream(t.Context(), cfg); err != nil {
+					t.Fatalf("update claim stream: %v", err)
+				}
+			}
 			// A connection already up, so Preflight need not wait for the background dial.
 			nc, err := nats.Connect(b.url, nats.ReconnectBufSize(-1))
 			if err != nil {
@@ -228,6 +241,7 @@ func TestClaimBucketWithDirectReadsIsRefused(t *testing.T) {
 		t.Fatalf("New: %v", err)
 	}
 	t.Cleanup(func() { _ = p.Close() })
+	log.wait(t, "producer: preflight [check bucket") // connected, and the bucket reported
 	if err := p.Begin(t.Context(), producer.CaptureDescriptor{ToolID: "T1", DeviceName: "eqp"}); err != nil {
 		t.Fatalf("Begin: %v", err)
 	}

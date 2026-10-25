@@ -19,6 +19,8 @@ const readyTimeout = 10 * time.Second
 type Options struct {
 	// MaxPayload is the server's max_payload.
 	MaxPayload int32
+	// User and Password, when set, are the one account a client must authenticate as.
+	User, Password string
 }
 
 // Server is an embedded server that a test can stop and start again on the same address and storage,
@@ -65,6 +67,8 @@ func StartServer(t testing.TB, o Options) *Server {
 		JetStream:  true,
 		StoreDir:   t.TempDir(),
 		MaxPayload: o.MaxPayload,
+		Username:   o.User,
+		Password:   o.Password,
 		NoLog:      true,
 		NoSigs:     true,
 	}}
@@ -102,6 +106,14 @@ func (s *Server) Restart() {
 		s.t.Fatal("testbus: restart of a running server")
 	}
 	s.start()
+}
+
+// RestartWith starts a stopped server again on the same address with the same storage, adjusted by o,
+// as a deployment changes its credentials or limits.
+func (s *Server) RestartWith(o Options) {
+	s.t.Helper()
+	s.opts.MaxPayload, s.opts.Username, s.opts.Password = o.MaxPayload, o.User, o.Password
+	s.Restart()
 }
 
 func (s *Server) start() {

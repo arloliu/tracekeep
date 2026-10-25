@@ -41,7 +41,10 @@ func newBusWith(t *testing.T, o testbus.Options, traffic func(*jetstream.StreamC
 	t.Helper()
 	srv := testbus.StartServer(t, o)
 	url := srv.URL()
-	nc, err := nats.Connect(url, nats.MaxReconnects(-1), nats.ReconnectWait(10*time.Millisecond))
+	// The helper's own connection outlives a credential change the test makes on the server.
+	nc, err := nats.Connect(url, nats.MaxReconnects(-1), nats.ReconnectWait(10*time.Millisecond),
+		nats.UserInfo(o.User, o.Password), nats.IgnoreAuthErrorAbort(),
+		nats.ErrorHandler(func(*nats.Conn, *nats.Subscription, error) {})) // nats.go prints them otherwise
 	if err != nil {
 		t.Fatalf("connect: %v", err)
 	}
