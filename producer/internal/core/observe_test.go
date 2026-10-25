@@ -190,6 +190,14 @@ func TestObservePanicBeforeAllocationFaults(t *testing.T) {
 	if r.Counters().Panics != 1 {
 		t.Errorf("panics = %d, want 1", r.Counters().Panics)
 	}
+	select {
+	case got := <-r.Faults():
+		if got != c {
+			t.Errorf("fault signal for another capture")
+		}
+	default:
+		t.Errorf("no fault signal after a panic before allocation")
+	}
 }
 
 func TestObservePanicAfterAllocationLeavesAGap(t *testing.T) {

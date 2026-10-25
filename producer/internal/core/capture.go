@@ -71,6 +71,12 @@ type Capture struct {
 	ID tracepack.UUID
 	// Generation is the lifecycle generation the capture was created in.
 	Generation uint64
+	// OriginWall and OriginMono are the clock reading of the capture's start; a record's mono_ns is measured from OriginMono.
+	OriginWall, OriginMono int64
+	// Descriptor is the start's Tpk-Capture-Descriptor value, set before the capture is rotated in.
+	Descriptor string
+
+	start atomic.Uint32
 
 	lifecycle *atomic.Uint64
 	tolerance int64
@@ -100,6 +106,8 @@ func NewCapture(p CaptureParams) *Capture {
 	c := &Capture{
 		ID:           p.ID,
 		Generation:   p.Generation,
+		OriginWall:   p.OriginWall,
+		OriginMono:   p.OriginMono,
 		lifecycle:    p.Lifecycle,
 		tolerance:    p.Tolerance,
 		nextSeq:      1,
@@ -225,7 +233,13 @@ func (c *Capture) Faulted() bool {
 	return c.faulted
 }
 
+// faultLocked faults an open capture.
+// A capture a rotation already closed is left closed:
+// callbacks that loaded it must retry on its successor, not drop, and its stop or its absence is already decided.
 func (c *Capture) faultLocked() {
+	if c.closed {
+		return
+	}
 	c.closed, c.faulted = true, true
 }
 

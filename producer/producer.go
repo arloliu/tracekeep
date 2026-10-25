@@ -1,0 +1,125 @@
+package producer
+
+import (
+	"runtime/debug"
+	"sync"
+	"sync/atomic"
+
+	"github.com/arloliu/go-secs/tracepack"
+	"github.com/arloliu/tracekeep/producer/internal/core"
+)
+
+const (
+	modulePath = "github.com/arloliu/tracekeep/producer"
+	goSecsPath = "github.com/arloliu/go-secs/v2"
+)
+
+// Option adjusts New.
+type Option func(*options)
+
+// Producer records one device's traffic as captures on the traffic bus
+// (docs/specs/tracekeep/producer.md, producer-sdk.md §4.7).
+// Its lifecycle calls, Begin, Rotate and End, are the device's Start, HotReload and Stop.
+type Producer struct {
+	tun      Tunables
+	rec      *core.Recorder
+	log      Logger
+	metrics  Metrics
+	recorder string
+	now      func() (wall, mono int64)
+
+	// The lifecycle lock serializes every rotation, whatever its cause.
+	lifeMu sync.Mutex
+	// gen is the lifecycle generation; only abandonment advances it.
+	gen atomic.Uint64
+	// stopping is set by End before it takes the lifecycle lock, so a rotation inside the lock abandons.
+	stopping atomic.Bool
+	// Guarded by lifeMu.
+	desc       CaptureDescriptor
+	descKey    []byte
+	last       *tracepack.UUID
+	ids        uuidV7
+	faultedAt  int64          // when the last fault rotation installed its capture, wall ns
+	faultFresh tracepack.UUID // the capture that rotation installed
+	metricsCur map[string]string
+
+	quit      chan struct{}
+	wg        sync.WaitGroup
+	closeOnce sync.Once
+}
+
+type options struct {
+	log     Logger
+	metrics Metrics
+}
+
+// New builds a producer from cfg; it opens no capture until Begin.
+//
+// Returns:
+//   - *Producer: the producer; Close releases it.
+//   - error: an error wrapping ErrInvalidConfig.
+func New(cfg Config, opts ...Option) (*Producer, error) {
+	if err := cfg.validate(); err != nil {
+		return nil, err
+	}
+	o := options{log: nopLogger{}, metrics: nopMetrics{}}
+	for _, opt := range opts {
+		opt(&o)
+	}
+	tun := cfg.Tunables.withDefaults()
+	p := &Producer{
+		tun: tun,
+		rec: core.NewRecorder(core.RecorderParams{
+			ReservedCap:     tun.ReservedLaneRecords,
+			OrdinaryRecords: tun.OrdinaryLaneRecords,
+			OrdinaryBytes:   tun.OrdinaryLaneBytes,
+		}),
+		log:      o.log,
+		metrics:  o.metrics,
+		recorder: recorderName(),
+		now:      core.Now,
+		quit:     make(chan struct{}),
+	}
+	p.wg.Go(p.faultLoop)
+
+	return p, nil
+}
+
+// WithLogger sends the producer's log lines to l.
+func WithLogger(l Logger) Option {
+	return func(o *options) { o.log = l }
+}
+
+// WithMetrics sends the producer's measurements to m.
+func WithMetrics(m Metrics) Option {
+	return func(o *options) { o.metrics = m }
+}
+
+// Close stops the producer's goroutines; call it after End.
+func (p *Producer) Close() error {
+	p.closeOnce.Do(func() { close(p.quit) })
+	p.wg.Wait()
+
+	return nil
+}
+
+// recorderName names the SDK and the go-secs that delivers its observations (the descriptor's recorder).
+func recorderName() string {
+	sdk, goSecs := "(devel)", "(unknown)"
+	if bi, ok := debug.ReadBuildInfo(); ok {
+		if bi.Main.Path == modulePath {
+			sdk = bi.Main.Version
+		}
+		for _, m := range bi.Deps {
+			switch m.Path {
+			case modulePath:
+				sdk = m.Version
+			case goSecsPath:
+				goSecs = m.Version
+			default:
+			}
+		}
+	}
+
+	return "tracekeep-producer/" + sdk + " go-secs/" + goSecs
+}

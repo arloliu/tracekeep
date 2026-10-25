@@ -17,6 +17,7 @@ const (
 // Test hooks: points where a barrier-controlled test holds a callback.
 const (
 	hookBeforeAllocate = iota
+	hookLoaded         // the callback holds a capture pointer and has not taken its lock
 	hookAfterUnlock
 	numHooks
 )
@@ -125,8 +126,6 @@ func NewRecorder(p RecorderParams) *Recorder {
 // Observe records one observation: the observer callback of producer.md §4.2, steps 1–8.
 // It never blocks on anything but another callback inside a capture's critical section.
 func (r *Recorder) Observe(o *Observation) {
-	r.observed[o.Kind][o.Dir&3].Add(1)
-
 	var c *Capture
 	allocated := false
 	defer func() {
@@ -142,6 +141,7 @@ func (r *Recorder) Observe(o *Observation) {
 			}
 		}
 	}()
+	r.observed[o.Kind][o.Dir&3].Add(1)
 	r.hook(hookBeforeAllocate)
 
 	a, ok := r.allocate(o, &c)
@@ -162,7 +162,7 @@ func (r *Recorder) Observe(o *Observation) {
 		if !r.PushReserved(step) {
 			c.Fault()
 			r.signalFault(c)
-			r.dropped[DropCaptureFault].Add(1)
+			r.drop(DropCaptureFault, int64(len(o.Payload)))
 
 			return
 		}
@@ -237,6 +237,7 @@ func (r *Recorder) allocate(o *Observation, cp **Capture) (Allocation, bool) {
 			r.afterStop.Add(1)
 			return Allocation{}, false
 		}
+		r.hook(hookLoaded)
 		a, st := c.Allocate(o.Wall, o.Mono, o.Socket)
 		switch st {
 		case Allocated:
