@@ -357,6 +357,9 @@ func (p *Producer) handleFault(c *core.Capture) {
 	_, mono := p.now()
 	repeat := c.ID == p.faultFresh && time.Duration(mono-p.faultedAt) < faultRepeatWindow
 	p.unlockLife()
+	if p.faultGap != nil {
+		p.faultGap()
+	}
 
 	if repeat {
 		select {
