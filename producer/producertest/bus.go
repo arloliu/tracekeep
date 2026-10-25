@@ -7,6 +7,8 @@ import (
 	"slices"
 	"sync"
 
+	"github.com/nats-io/nats.go/jetstream"
+
 	"github.com/arloliu/go-secs/tracepack"
 	"github.com/arloliu/tracekeep/producer"
 )
@@ -15,7 +17,8 @@ import (
 const DefaultMaxPayload = 1 << 20
 
 // Bus is an in-memory producer.Bus: it stores what a stream would, deduplicating by message id,
-// keeps claim objects per bucket, and lets a test fail publishes and object operations.
+// keeps claim objects per bucket and the stream settings Preflight reads,
+// and lets a test fail publishes and object operations.
 // Asynchronous publishes resolve before PublishAsync returns.
 type Bus struct {
 	mu         sync.Mutex
@@ -30,6 +33,9 @@ type Bus struct {
 	held       []heldPublish
 	asyncCalls map[string]int
 	changed    chan struct{}
+	streams    map[string]producer.StreamInfo
+	connProbs  []producer.Problem
+	failInfo   error
 }
 
 type heldPublish struct {
@@ -66,6 +72,7 @@ func NewBus() *Bus {
 		buckets:    make(map[string]map[string]object),
 		asyncCalls: make(map[string]int),
 		changed:    make(chan struct{}),
+		streams:    make(map[string]producer.StreamInfo),
 	}
 }
 
@@ -74,6 +81,34 @@ func (b *Bus) SetMaxPayload(n int) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.maxPayload = n
+}
+
+// SetStream makes the bus report a stream with the settings c, replacing any of the same name.
+func (b *Bus) SetStream(c jetstream.StreamConfig) { //nolint:gocritic // a test passes busconfig's value as it comes
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.streams[c.Name] = producer.StreamInfoOf(&c)
+}
+
+// DeleteStream makes the bus report the named stream as missing.
+func (b *Bus) DeleteStream(name string) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	delete(b.streams, name)
+}
+
+// FailStreamInfo makes every StreamInfo fail with err; nil restores success.
+func (b *Bus) FailStreamInfo(err error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.failInfo = err
+}
+
+// SetConnProblems sets what CheckConn reports; the bus reports none until then.
+func (b *Bus) SetConnProblems(problems []producer.Problem) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.connProbs = slices.Clone(problems)
 }
 
 // FailPublish makes every publish for which f returns an error fail with it; nil restores success.
@@ -235,6 +270,32 @@ func (b *Bus) PublishAsync(m *producer.Msg) (producer.AckFuture, error) {
 	}
 
 	return f, nil
+}
+
+// CheckConn implements producer.Bus.
+func (b *Bus) CheckConn() []producer.Problem {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	return slices.Clone(b.connProbs)
+}
+
+// StreamInfo implements producer.Bus.
+func (b *Bus) StreamInfo(ctx context.Context, name string) (producer.StreamInfo, error) {
+	if err := ctx.Err(); err != nil {
+		return producer.StreamInfo{}, err
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.failInfo != nil {
+		return producer.StreamInfo{}, b.failInfo
+	}
+	s, ok := b.streams[name]
+	if !ok {
+		return producer.StreamInfo{}, fmt.Errorf("%s: %w", name, producer.ErrStreamNotFound)
+	}
+
+	return s, nil
 }
 
 // Objects implements producer.Bus.

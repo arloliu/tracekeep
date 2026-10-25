@@ -3,6 +3,9 @@ package producer
 import (
 	"context"
 	"errors"
+	"time"
+
+	"github.com/nats-io/nats.go/jetstream"
 )
 
 // Headers of a bus message beyond tracepack's, as the bus implementation writes them.
@@ -23,6 +26,9 @@ const (
 // ErrObjectNotFound reports a claim object that does not exist.
 var ErrObjectNotFound = errors.New("producer: object not found")
 
+// ErrStreamNotFound reports a stream that does not exist.
+var ErrStreamNotFound = errors.New("producer: stream not found")
+
 // Bus is the narrow seam the core publishes through (docs/specs/tracekeep/producer-sdk.md §4.7).
 // Its types are the SDK's own: the default implementation wraps nats.go,
 // and producertest's fake implements it without a connection.
@@ -37,6 +43,10 @@ type Bus interface {
 	PublishAsync(m *Msg) (AckFuture, error)
 	// Objects returns the claim bucket's object store.
 	Objects(ctx context.Context, bucket string) (Objects, error)
+	// CheckConn reports what is wrong with the connection for Preflight: TLS not in use, the reconnect buffer enabled.
+	CheckConn() []Problem
+	// StreamInfo returns the named stream's settings, or an error wrapping ErrStreamNotFound.
+	StreamInfo(ctx context.Context, name string) (StreamInfo, error)
 }
 
 // Msg is one bus message.
@@ -97,6 +107,36 @@ type ObjectInfo struct {
 	// Digest is "SHA-256=<padded base64url>", as tracepack.BusPayloadDigest writes it.
 	Digest   string
 	Metadata map[string]string
+}
+
+// StreamInfo is a stream's settings as Preflight checks them;
+// the enumerations are spelled as nats.go's String methods spell them, e.g. "WorkQueue", "File", "s2".
+type StreamInfo struct {
+	Name                                 string
+	Subjects                             []string
+	Retention, Storage, Compression      string
+	MaxAge                               time.Duration
+	MaxBytes, MaxMsgs, MaxMsgsPerSubject int64
+	AllowDirect                          bool
+	// Derived reports a mirror or sources, whose sequences are not the stream's own.
+	Derived bool
+}
+
+// StreamInfoOf returns the settings of c as a Bus reports them.
+func StreamInfoOf(c *jetstream.StreamConfig) StreamInfo {
+	return StreamInfo{
+		Name:              c.Name,
+		Subjects:          c.Subjects,
+		Retention:         c.Retention.String(),
+		Storage:           c.Storage.String(),
+		Compression:       c.Compression.String(),
+		MaxAge:            c.MaxAge,
+		MaxBytes:          c.MaxBytes,
+		MaxMsgs:           c.MaxMsgs,
+		MaxMsgsPerSubject: c.MaxMsgsPerSubject,
+		AllowDirect:       c.AllowDirect,
+		Derived:           c.Mirror != nil || len(c.Sources) > 0,
+	}
 }
 
 // headerBlockLen returns the length of m's encoded NATS header block, Nats-Msg-Id and Nats-Expected-Stream included:
