@@ -1,0 +1,29 @@
+name: CI
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v7
+
+    # Go and golangci-lint at the versions mise.toml pins; Atlas is not needed until migrations exist.
+    - name: Setup Go and golangci-lint from mise.toml
+      uses: jdx/mise-action@v4
+      with:
+        install_args: go golangci-lint
+    - name: Display tool versions
+      run: |
+        go version
+        golangci-lint version
+
+    # Lint, vet, docs-check, data-check, -race tests of both modules (the SDK with GOWORK=off),
+    # then the service built with GOWORK=off; tests use the embedded nats-server, no external service.
+    - name: make ci
+      run: make ci

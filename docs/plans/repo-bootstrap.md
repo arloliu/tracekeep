@@ -1,6 +1,6 @@
 # Repository bootstrap
 
-Status: active (2026-10-25) — phases 1 and 2 done; phase 3 in progress
+Status: active (2026-10-25) — phases 1 to 3 done; phase 4 in progress
 
 tracekeep (`github.com/arloliu/tracekeep`) is the traffic-log service of the Virtual Equipment project:
 it consumes the SECS/HSMS traffic records an equipment gateway publishes on NATS JetStream,
@@ -53,8 +53,8 @@ phase 2 carried them into `tracekeep-decisions.md` as T-13…T-21:
 |---|---|---|
 | 1 — conventions | the files in *Phase 1* below; `make docs-check data-check` green | done (4bd5ecc) |
 | 2 — documents | split the seed into the files in *Phase 2*, each subject file opening with an interface summary; proposal P1; `make docs-check` green; the seed deleted | done (4bd5ecc, reflow 24e6a1b) |
-| 3 — skeleton | `go.work`, the two `go.mod`, `producer/`, `cmd/tracekeep-sim/`, `internal/testbus/`, `cmd/tracekeep/` (`dev` and `migrate` as empty commands); `make ci` and `GOWORK=off go build ./...` green | in-progress |
-| 4 — CI | GitHub Actions: lint, vet, test with the race detector, `docs-check`, `data-check`, both builds; the embedded nats-server in tests, no network | pending |
+| 3 — skeleton | `go.work`, the two `go.mod`, `producer/`, `cmd/tracekeep-sim/`, `internal/testbus/`, `cmd/tracekeep/` (`dev` and `migrate` as empty commands); `make ci` and `GOWORK=off go build ./...` green | done (bcd8163) |
+| 4 — CI | GitHub Actions: lint, vet, test with the race detector, `docs-check`, `data-check`, both builds; the embedded nats-server in tests, no network | in-progress |
 | 5 — close | this plan closes (its outcome in the commit message); `docs/plans/phase-0-producer.md`, created `draft` in phase 2, becomes `active` | pending |
 
 Phases run in order; each is one or two commits.
@@ -182,6 +182,19 @@ the service `go.mod` requires `github.com/arloliu/tracekeep/producer` at a versi
 `producer/go.mod` requires `github.com/arloliu/go-secs/tracepack v0.8.0` and `github.com/nats-io/nats.go v1.55.0`,
 nothing else (go-secs `hsms`, which `secsobs` imports, comes with tracepack's requirement);
 `internal/testbus` embeds nats-server with JetStream on a random port and file storage under `t.TempDir()`.
+
+## Phase 4 — CI
+
+`.github/workflows/ci.yaml`: one job on `ubuntu-latest`, on every push to `main` and every pull request,
+with read-only repository permissions.
+It installs Go and golangci-lint from `mise.toml` through `jdx/mise-action` (Atlas waits for the first migration)
+and runs `make ci`:
+lint and vet of both modules, `docs-check`, `data-check`, the race-detector tests of both modules (the SDK with `GOWORK=off`),
+then the service built with `GOWORK=off`.
+Tests reach only the embedded nats-server of `internal/testbus`.
+The action versions are those go-secs uses (`actions/checkout@v7`, `jdx/mise-action@v4`).
+
+Gate: `make ci` green locally; the workflow's first run on GitHub follows the first push, which is the owner's.
 
 ## Open items the new session inherits
 
