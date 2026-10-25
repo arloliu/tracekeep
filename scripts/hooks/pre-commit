@@ -1,0 +1,4 @@
+#!/bin/sh
+# Refuse a commit whose index holds anything under data/ but its README.md and .gitignore.
+# Enable once per clone: make hooks
+exec python3 "$(git rev-parse --show-toplevel)/scripts/data-check.py"

@@ -1,0 +1,6 @@
+# Everything under data/ is sensitive and stays local (.agents/rules/100-overview.md, prime directive 1).
+# Only this file and README.md are tracked; the local index is LOCAL.md.
+# Re-include only files anchored at this level: an unanchored pattern would match in every subdirectory.
+*
+!/.gitignore
+!/README.md

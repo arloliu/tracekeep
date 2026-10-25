@@ -1,0 +1,4 @@
+[tools]
+go = "1.26.10"
+golangci-lint = "2.15.0"
+atlas = "1.3.0"

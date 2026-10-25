@@ -1,0 +1,21 @@
+# Local working area (handoff material, scratch); never committed.
+/tmp/
+
+# Sensitive inputs, owner-only; only data/README.md and data/.gitignore are tracked.
+/data/*
+!/data/README.md
+!/data/.gitignore
+
+# Build and test outputs.
+/dist/
+coverage.out
+
+# Editor settings, kept per machine.
+/.vscode/
+/.idea/
+
+# Codegraph
+/.codegraph/
+
+# Personal Claude Code overrides, kept per machine.
+/.claude/settings.local.json
