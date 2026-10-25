@@ -3,7 +3,7 @@
 Status: draft (2026-10-25) — split from seed v21
 
 Covers the producer SDK module:
-why it is a separate module, its packages, `Config` and `New`, the publication policy, `Bus`, versions, the producer-side API, `Preflight`, `producertest` and the five guarantees.
+why it is a separate module, its packages, `Config` and `New`, the publication policy, `Bus`, versions, the producer-side API, `Preflight`, `producertest` and the six guarantees.
 From seed v21 §4.7; section numbers are the seed's, and [README.md](README.md) maps each to its file.
 Read before designing the SDK's API or changing anything under `producer/`, and before integrating a producer such as eqp-hub.
 
@@ -35,7 +35,7 @@ Contract changes go through proposals, which the subject [README.md](README.md) 
 - **`Bus`**: a narrow seam of the SDK's own types that a connection-free fake implements; NATS details stay private (§4.7).
 - **`Preflight`**: runs on the producer's own bus, in the background after the connection is up, never delaying the device's `Start`;
   returns a readable list of what is wrong.
-- **What the producer must guarantee**: five items, the whole of an integrator's obligations (§4.7, last paragraph; `.agents/rules/600-invariants.md`).
+- **What the producer must guarantee**: six items, the whole of an integrator's obligations (§4.7, last paragraph; `.agents/rules/600-invariants.md`).
 - **Versions**: the SDK requires nats.go v1.55.0, which raises a producer's nats.go and Go floor (Go 1.26) when it imports the SDK (§4.7 *Versions*, T-19).
 - **Open**: the producer-side API is a sketch and fixes no signatures beyond the names above;
   the send-path token protocol behind `Pending()` (`producer.md` §4.6 *Send-path token protocol*) is reviewed with eqp-hub's maintainers before phase G (T-26).
@@ -82,7 +82,7 @@ type Config struct {
     SubjectPrefix      string            // the traffic stream's prefix
     Stream             string            // the traffic stream every publish expects; empty takes busconfig's default
     ClaimBucket        string
-    Tunables           Tunables          // lanes, H, τ, ε, sampler; every field has a default
+    Tunables           Tunables          // lanes, H, τ, ε, sampler, the send path's bounds; every field has a default
 }
 
 func New(cfg Config, opts ...Option) (*Producer, error)
@@ -167,7 +167,8 @@ which the SDK's changelog states on every tracepack upgrade.
 The header-block length is computed by the SDK from the NATS header wire format, as the spec asks the producer to do.
 
 **Producer-side API** (sketch): `Begin(ctx, CaptureDescriptor)`, `Rotate(ctx, CaptureDescriptor)`, `End(ctx) Report` (bounded, never an error the device must act on;
-the `Report` says which capture it closed, whether its `stop` was queued, whether it was abandoned, whether the drain finished in time and how many records it dropped, and whether another lifecycle call held the lock past the deadline),
+the `Report` says which capture it closed, whether its `stop` was queued, whether it was abandoned, whether the drain finished in time and how many records it dropped, and whether another lifecycle call held the lock past the deadline;
+the first `End` to take the lock owns the capture and its `Report`, a later one returns an empty `Report`, and the figures are those at its return, T-31),
 which the device's `Start`, `HotReload` and `Stop` map onto (`producer.md` §4.2 *Device verbs and SDK calls*, T-26);
 `Pending()` and `TimeoutSource` (*Send path*, below), `Sampler{N, T}`, and:
 
@@ -182,16 +183,18 @@ which the device's `Start`, `HotReload` and `Stop` map onto (`producer.md` §4.2
   // Token is one registration's handle: safe from any goroutine, never blocking on anything external.
   type Token interface {
       Sent()                            // progress, from the forwarding call; the three exclude each other
-      SendFailed()                      // removes the entry by token
-      SubmissionFailed()                // removes the entry by token
-      Replied()                         // terminal outcomes, from the waiter; the first wins
+      SendFailed()                      // removes a live entry by token
+      SubmissionFailed()                // removes a live entry by token
+      Awaiting(timeout time.Duration)   // the waiter opened the wait; the entry's expiry follows it (T-31)
+      Replied()                         // terminal outcomes, from the waiter; the first seals the entry
       TimedOut(effective time.Duration) // the effective timeout of that wait; the only source of T3
       Cancelled()
   }
 
   // TimeoutSource is the response waiter's side, which eqp-hub's waiter implements.
   type TimeoutSource interface {
-      // Await opens the wait for a registered request and reports exactly one terminal outcome on t.
+      // Await opens the wait for a registered request, reports Awaiting on t as it opens it,
+      // and then reports exactly one terminal outcome on t.
       Await(t Token, timeout time.Duration)
   }
   ```
@@ -232,4 +235,6 @@ which the device's `Start`, `HotReload` and `Stop` map onto (`producer.md` §4.2
 (2) every descriptor carries the configured `toolID` and the configured device name;
 (3) `secsobs`'s connection options and lifecycle attachment installed on the device's connection before it opens;
 (4) `End` called on an orderly stop and never allowed to fail the device;
-(5) `Rotate` called on every descriptor change.
+(5) `Rotate` called on every descriptor change;
+(6) the send path: every forwarded W-bit primary registered through `Pending()` before it is sent, its progress reported on its token,
+and a `TimeoutSource` that reports `Awaiting` and the terminal outcomes as `producer.md` §4.6 states, which the conformance check covers (T-31).

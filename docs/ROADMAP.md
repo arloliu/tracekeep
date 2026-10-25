@@ -41,7 +41,7 @@ each is a barrier-controlled test on both catalog engines where the catalog is i
 Phase 1 may run without a policy only on data that holds nothing sensitive; production traffic waits for phase 3.
 Phases 0–3 run in one repository with one CI matrix (embedded bus, `fs` or `gofakes3`, SQLite and MariaDB in containers),
 so every chaos and race test is a barrier-controlled in-process test;
-eqp-hub reviews the SDK's API (`Bus`, `Preflight`, the five guarantees, the `secsobs` observer options) during phase 0 without changing any code.
+eqp-hub reviews the SDK's API (`Bus`, `Preflight`, the six guarantees, the `secsobs` observer options) during phase 0 without changing any code.
 
 ## Active plans
 

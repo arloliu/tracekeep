@@ -287,3 +287,102 @@ the SDK's lifecycle, observer options and narrow `Bus` (`producer.md` §4.2, `pr
 the send-path token protocol and `TimeoutSource` (`producer.md` §4.4, §4.6, `producer-sdk.md` §4.7),
 and optional presigning with an API download fallback and the `keys` module (`storage.md` §5.2, `api.md` §10.1, `masking-keys.md` §9).
 The token protocol is still reviewed with the eqp-hub maintainers before phase G (T-26).
+
+### T-31 — producer defaults, overlapping lifecycle calls and the send path (2026-10-25)
+
+Defaults the SDK's first phase fixed in code without an entry, now decided:
+the ordinary lane holds 16384 records and 64 MiB of frame bytes;
+a fresh capture that faults again within a minute waits 30 s (`FaultBackoff`) before the next fault rotation;
+the traffic stream's default name is `TRACEKEEP_TRAFFIC` (`producer/busconfig`);
+every `recorder_instance_id` is derived under the namespace UUID `e4bb8a4e-8a26-46c0-8b44-79994bc40a3e`, which never changes, since changing it changes every device's identity;
+and the encodings `producer.md` §4.2 and §4.5 state stand as written (the 4-byte big-endian length prefixes inside `recorder_instance_id`, the claim metadata keys `tpk-record-header` and `tpk-ts-utc-ns`).
+ε is a field of `Tunables`, one value per producer, which the SDK writes into every descriptor it starts or rotates to;
+that is what T-29 means by "written into each descriptor".
+
+Overlapping lifecycle calls, on which the specs were silent:
+the first `End` to take the lifecycle lock owns the capture and its `Report`;
+a later `End` finds no capture and returns an empty `Report`, or `Contended` when it cannot take the lock by its deadline,
+and an empty `Report` says nothing about whether the first `End`'s drain has finished.
+A `Report`'s drain and drop figures are those at its return.
+A `Close` during an `End` stops the publisher; the `End` still returns by its deadline and counts what is left as dropped.
+
+The send path's rules (`producer.md` §4.6), fixed before the phase that builds its fixture;
+the signatures are still reviewed with the eqp-hub maintainers (T-26):
+- an entry is `live`, `completed`, `removed` or `expired`:
+  progress is first-wins, a failure removes only a `live` entry, the first terminal outcome seals the entry so every later report of either kind is a counted no-op, and expiry, which ends `live` and `completed` entries, is no outcome;
+- expiry follows the wait, not the registration:
+  the waiter reports `Awaiting(timeout)` on the token when it opens the wait, and the entry expires at that time plus the timeout plus a reporting grace (default 5 s);
+  an entry never awaited is removed 30 s after its registration; both are tunables;
+- an ambiguous entry counts its `TimedOut` and emits nothing;
+  an entry records its socket, never an epoch;
+  the T3 event goes to the capture current when the timeout is reported, with the epoch that capture's socket map holds for the socket,
+  and a socket absent from that map is counted as unattributed and emits nothing;
+- the integrator's obligations gain a sixth, the send path:
+  register every forwarded W-bit primary before sending it, report its progress, and implement `TimeoutSource`, which the conformance check covers.
+
+### T-32 — parking, termination and ingest serialize on the capture row (2026-10-25)
+
+The roadmap's open parking and catalog items and the findings of an external review of the applied module interfaces (kept outside the repository), decided:
+- every parking transaction runs the catalog's capture-row helper:
+  *advance*, the `acked` update, a copy row's insert, operator termination, an order's application,
+  and the move `parked → evicted-hour`, which `EvictHour` and the parked consumer make, each by compare-and-set;
+- a redelivered original whose version is `evicted-hour` is published like one whose version is `parked`;
+- termination and every ingest effect of a capture serialize on the capture row, and whichever commits first wins:
+  `Admit`, `Reject`, `BeginParking` and ingest's `RegisterPack` take the delivery's identity
+  and re-check under the row its version's resolution and the capture's active termination orders;
+  a terminated or covered delivery returns `terminated` and writes nothing else,
+  and a `RegisterPack` that finds one aborts and tombstones the key in the same transaction,
+  so `capture terminate` either precedes or follows each batch in flight;
+- `RegisterPack` takes delivery evidence (each record's version key, bus incarnation and stream seq) as an input;
+  the reconciler and a close's publication pass none and write coverage only;
+  the reconciler refuses, tombstones and deletes an orphan that holds a terminated seq or belongs to a capture with a termination order;
+  an adopted pack never gains evidence later, because a redelivery writes another segment under its own pack id;
+- `Reject` on an admitted capture writes nothing:
+  different bytes return `descriptor-conflict`;
+  equal bytes return the admitted state and its processing configuration, and the classifier decides again;
+- admission serializes with membership on a sentinel row, `counters('membership')`,
+  which every binding path of `Admit`, every member registration, renewal and leave, and every configuration activation and retirement updates;
+  the lock order is capture → `leases` → `counters('membership')` → `counters('scope_events')`, each step optional;
+- `RecordConflict` takes the pack ids it compared and clears only while the row names exactly those, otherwise it returns `changed`;
+- a close's registration and its publication are one transaction, the event seq allocated last;
+  a close the horizon guard refuses leaves its intent `abandoned` and its key tombstoned;
+- every compactor transaction that changes domain state checks the lease.
+
+### T-33 — deferred and terminated seqs, change events and download lifetimes (2026-10-25)
+
+- Completeness reads the `parked` table:
+  a seq of an unresolved version is **deferred**, a seq of a terminated version a **declared loss** with its action id;
+  per seq the precedence is retained > evicted > deferred > declared loss > gap, and it never hides another version's loss;
+  an hour holding only parked seqs reports them instead of `no-data`,
+  and classification runs up to the higher of `highest_seq` and the highest parked seq.
+  `ListPacks` and its proto gain the class.
+- A termination emits a scope event of a new kind, `terminated`, on the scope of each terminated seq's hour, upserting the scope when it is missing,
+  with `revision + 1` and the counter last;
+  entering parking emits nothing, and parking touches no counter except there.
+- A download URL, presigned or served by the API, expires at the earlier of now plus its lifetime and its object's deadline minus a margin.
+  The deadline is the earliest time the object may be deleted:
+  `merged_at + D` for a merged input, the hour's earliest eviction for retention, staged and excluded packs included,
+  and for a completed export bundle the end of its own retention.
+  Issuance whose clamped lifetime falls below a floor is refused with `pack-superseded`, and the VE client re-lists.
+  The margin is 2 min, the floor 1 min and an export bundle's retention 24 h, all tunable;
+  a later retention change never shortens what an issued URL was promised.
+- Session and download keys: configuration names one issuing key id and a list of accepted ids per purpose,
+  every credential carries its key id in its authenticated part,
+  rotation adds the new id everywhere, then switches issuance, then drops the old id after the longest credential lifetime plus clock tolerance,
+  and an unknown or wrong-purpose id fails closed.
+- `storage.presign`, on by default, lets an operator turn presigning off for an `s3` store whose presigned URLs readers cannot use
+  (a proxy, a different host name, a policy refusing query-string authentication);
+  downloads then go through the API.
+  The api role checks presigning at start and reports a store that refuses its signature.
+
+### T-34 — the S3 client and the stores it is tested against (2026-10-25)
+
+The `s3` backend uses aws-sdk-go-v2 (`service/s3` and its presign client), not minio-go:
+MinIO's open-source server is archived and no longer maintained,
+and aws-sdk-go-v2 compiles to modules of one publisher where minio-go pulls in about ten.
+With a custom endpoint it uses path-style addressing and sets both checksum options to `WhenRequired`,
+since the SDK's default checksums break some S3-compatible stores;
+`Put` passes a seekable body.
+Deployments run MinIO and Ceph RGW,
+so the shared `ObjectStore` conformance suite runs against both, in containers, from the phase that builds the store;
+the specs recommend no particular store.
