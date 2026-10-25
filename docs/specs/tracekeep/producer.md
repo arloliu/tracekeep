@@ -55,7 +55,7 @@ and this section is the contract between them.
   the device constructs the SDK from the traffic bus configuration (§4.7),
   the SDK owns the dedicated connection to the traffic cluster by default (injection through `WithConn` is an optional integration choice),
   and the device wires the SDK's observers into the HSMS connection when enabled.
-- Its inputs are go-secs v2.6.0 observers on that connection:
+- Its inputs are go-secs v2.8.0 observers on that connection:
   `hsms.WithWireObserver` for every frame in both directions, rejected frames included,
   `hsms.WithSocketObserver` and lifecycle events for sockets, epochs and causes,
   and `hsms.WithTransactionObserver` for the outcomes of sends go-secs itself awaits (tracepack-go.md §5).
@@ -79,7 +79,7 @@ and this section is the contract between them.
   A callback can wait on this lock for another callback
   (go-secs runs inbound and outbound observers concurrently:
   the outbound wire observer runs on the writing goroutine **under the connection's write lock**,
-  the inbound one on the receive goroutine that T8 bounds, `hsms/connection_config.go` v2.6.0,
+  the inbound one on the receive goroutine that T8 bounds, `hsms/connection_config.go` v2.8.0,
   so the wait sits on the link itself);
   the wait depends on the holder being scheduled, not on the bus or any other system,
   and the design has no algorithm that removes it.
