@@ -1,6 +1,6 @@
 # P1 — module interfaces
 
-Status: draft (2026-10-25) — awaiting the owner; amended by its first external review
+Status: active (2026-10-25) — accepted (T-26); each item applied as its own change
 
 Covers six changes to how tracekeep's modules present their interfaces, from a deep-module review of seed v21 and its external review (both kept outside the repository).
 Read before designing the catalog, ingest's disposition, the producer SDK's API, the eqp-hub send hook, `ObjectStore` or `internal/keys`.
@@ -75,6 +75,8 @@ a crash between the acknowledgement and the catalog update stays recoverable by 
   Choose one SDK vocabulary,
   or document the mapping once, keeping an idempotent start, a deadline-bounded stop that cannot fail the device, and rotation on every descriptor change;
   update the five guarantees and `.agents/rules/600-invariants.md` with it.
+  The owner chose `Begin`, `Rotate` and `End` for the SDK (T-26);
+  `producer.md` maps the device's `Start`, `Stop` and `HotReload` onto them once.
 - **Observers**: the integrator receives the SDK's observer options instead of calling `Observe`.
   With go-secs v2.6+ the wire, socket and transaction observers are `hsms.ConnOption`s, passed for HSMS-SS through `hsmsss.WithConnectionOption`,
   and lifecycle events need a separate `SubscribeLifecycle`.

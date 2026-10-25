@@ -239,3 +239,11 @@ a consumer's `ack_wait` must exceed F plus the upload ([STO §4] *Stream setting
 and Q = 15 min must exceed F plus `ack_wait` plus redelivery slack (§7.3),
 which leaves under 10 minutes for `ack_wait` and the slack together;
 raising F later means raising Q with it.
+
+### T-26 — module interfaces (2026-10-25)
+
+P1 (module interfaces) is accepted as a whole;
+each of its six items is applied as its own change to the spec files it names, item 4 before the SDK's first code.
+For item 4 the SDK's lifecycle vocabulary is `Begin`, `Rotate` and `End`:
+the SDK does not take the gateway's verbs, and `producer.md` maps the device's `Start`, `Stop` and `HotReload` onto them once.
+Item 5's token protocol is reviewed with the eqp-hub maintainers before phase G.

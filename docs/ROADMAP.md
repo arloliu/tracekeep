@@ -47,6 +47,8 @@ eqp-hub reviews the SDK's API (`Bus`, `Preflight`, the five guarantees, `Observe
 
 - [Repository bootstrap](plans/repo-bootstrap.md) —
   conventions, documents, module skeleton and CI for the new repository.
+- [P1 — module interfaces](specs/tracekeep/proposals/p1-interfaces.md) —
+  six interface changes, accepted (T-26), each applied as its own change; item 4 (the SDK) before phase 0's code.
 
 ## Draft plans
 
