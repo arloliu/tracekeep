@@ -53,11 +53,13 @@ func startBus(t *testing.T) (*testbus.Server, jetstream.JetStream) {
 }
 
 // The traffic bus goes down and comes back while the tool runs:
-// forwarding never slows, and what the stream holds afterwards is a consistent capture with its T3 events.
+// forwarding never slows, and the stream afterwards holds a consistent capture whose drops show as seq holes.
 func TestBusDownAndUpWhileTheToolRuns(t *testing.T) {
 	t.Parallel()
 	srv, js := startBus(t)
-	l := newTestLoopback(t, producer.Config{Servers: []string{srv.URL()}})
+	// A small lane and horizon make the outage drop records, which must show as seq holes.
+	tun := producer.Tunables{OrdinaryLaneRecords: 32, RetryHorizon: 200 * time.Millisecond}
+	l := newTestLoopback(t, producer.Config{Servers: []string{srv.URL()}, Tunables: tun})
 	if err := l.Start(t.Context()); err != nil {
 		t.Fatal(err)
 	}
@@ -77,8 +79,6 @@ func TestBusDownAndUpWhileTheToolRuns(t *testing.T) {
 	traffic(50)
 	srv.Restart()
 	traffic(50)
-	// The scenario idles past T3, so withheld requests time out before the device stops; only some T3 is asserted below.
-	time.Sleep(100 * time.Millisecond)
 	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 	defer cancel()
 	l.Stop(ctx)
@@ -87,9 +87,14 @@ func TestBusDownAndUpWhileTheToolRuns(t *testing.T) {
 	if err := producertest.CheckCaptures(msgs); err != nil {
 		t.Fatal(err)
 	}
-	var t3, stops int
+	var stops int
+	seqs := map[tracepack.UUID]map[uint64]bool{}
 	for i := range msgs {
 		br := decode(t, &msgs[i])
+		if seqs[br.CaptureID] == nil {
+			seqs[br.CaptureID] = map[uint64]bool{}
+		}
+		seqs[br.CaptureID][br.Record.Seq] = true
 		if br.Record.Kind != tracepack.KindTransportEvent {
 			continue
 		}
@@ -97,16 +102,23 @@ func TestBusDownAndUpWhileTheToolRuns(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		switch {
-		case ev.Event == tracepack.EventTimerExpiry && ev.Timer != nil && *ev.Timer == tracepack.TimerT3:
-			t3++
-		case ev.Event == tracepack.EventCaptureBoundary && *ev.BoundaryKind == tracepack.BoundaryKindStop:
+		if ev.Event == tracepack.EventCaptureBoundary && *ev.BoundaryKind == tracepack.BoundaryKindStop {
 			stops++
-		default:
 		}
 	}
-	if t3 == 0 || stops != 1 {
-		t.Errorf("%d T3 events and %d stops on the stream; want some and one", t3, stops)
+	if stops != 1 {
+		t.Errorf("%d stops on the stream, want one", stops)
+	}
+	holes := 0
+	for _, s := range seqs {
+		top := uint64(0)
+		for seq := range s {
+			top = max(top, seq)
+		}
+		holes += int(top) + 1 - len(s) //nolint:gosec // a test capture's seqs are few
+	}
+	if holes == 0 {
+		t.Errorf("no seq hole on the stream: the outage's drops are invisible")
 	}
 }
 
