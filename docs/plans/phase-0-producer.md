@@ -1,6 +1,6 @@
 # Phase 0 — producer
 
-Status: active (2026-10-25) — phase 0.1 coded on `feat/producer/core`, in external review
+Status: active (2026-10-25) — phase 0.1 done (#1); phase 0.2 next
 
 Milestone 0 of the [roadmap](../ROADMAP.md):
 the producer SDK, in this repository only, with the simulator and the embedded bus that prove it.
@@ -18,25 +18,10 @@ This plan only orders the work.
 
 | Phase | Scope | State |
 |---|---|---|
-| 0.1 — core | `producer`: capture object, seq and clock, lanes, rotation and the lifecycle lock, the dependency barrier, `start` publication, claim-check puts, the retry horizon, `Metrics` and `Logger` | in-progress |
+| 0.1 — core | `producer`: capture object, seq and clock, lanes, rotation and the lifecycle lock, the dependency barrier, `start` publication, claim-check puts, the retry horizon, `Metrics` and `Logger` | done (#1, 6d651da) |
 | 0.2 — observers | `producer/secsobs`: wire, socket, lifecycle and transaction events to records, the frame copy, the socket→epoch map; HSMS-SS only | pending |
 | 0.3 — bus | `producer/busconfig`, `Preflight`, `internal/testbus`, and the default connection the SDK dials (until then `New` needs `WithBus`) | pending |
 | 0.4 — proving | `producer/producertest`, `cmd/tracekeep-sim` (loopback and replay), the `TimeoutSource` fixture; thinning disabled | pending |
 | 0.5 — gate | the roadmap's phase 0 gate on both resolved module graphs | pending |
 
 Only the phase under way is detailed; the others are detailed when they start.
-
-## Phase 0.1 — core
-
-Work on the branch `feat/producer/core`, one commit per step, test first;
-the branch merges by pull request once the whole phase passes an external post-implementation review.
-Concurrent schedules are barrier-controlled (`.agents/rules/300-testing.md`):
-the core holds named test hooks, nil outside tests, that a test sets to hold a goroutine at a point.
-
-| Step | Scope | State |
-|---|---|---|
-| 1 | `Metrics` and `Logger` interfaces with no-op defaults; `Config`, `Tunables` and their defaults; the descriptor type and `recorder_instance_id` (UUIDv5, length-prefixed) | done (afa931b, cdb9cd8) |
-| 2 | capture object: the lock and the fields it guards, seq allocation, the clock check with ε, the reservation set, the socket→epoch map, the fault state; a benchmark showing the critical section allocates nothing | done (4d77f58) |
-| 3 | lanes: the reserved lane (count bound, never drops) and the ordinary lane (count and byte budgets, drops the newest); the observer callback's steps 1–8 with its recover | done (a8993bc) |
-| 4 | `Begin`, `Rotate` and `End` on the lifecycle goroutine: the lifecycle lock and generation, rotation with its commit point, abandonment, fault rotation with backoff | done (67fdeb9, 39be02d) |
-| 5 | `Bus` and its message types, a minimal in-memory `Bus` in `producertest` (brought forward from 0.4, which completes it), the publisher goroutine: the dependency barrier, `start` publication, claim-check puts with read-back, the retry horizon H, `End`'s drain | done (c528a10) |
