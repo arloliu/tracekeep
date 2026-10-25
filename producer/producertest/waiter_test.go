@@ -105,10 +105,11 @@ func (badSource) Await(t producer.Token, timeout time.Duration) {
 func TestCheckTimeoutSourceCatchesAViolation(t *testing.T) {
 	t.Parallel()
 	err := producertest.CheckTimeoutSource(producertest.TimeoutSourceHarness{
-		Source: badSource{},
-		Reply:  func(producer.Token) {},
-		Cancel: func(producer.Token) {},
-		Expire: func(time.Duration) {},
+		Source:  badSource{},
+		Reply:   func(producer.Token) {},
+		Cancel:  func(producer.Token) {},
+		Expire:  func(time.Duration) {},
+		Quiesce: func() {},
 	})
 	if err == nil || !strings.Contains(err.Error(), "timed-out") {
 		t.Fatalf("CheckTimeoutSource = %v, want a timeout violation", err)
@@ -165,6 +166,54 @@ func TestCheckTimeoutSourceCatchesAMovedWait(t *testing.T) {
 	})
 	if err == nil || !strings.Contains(err.Error(), "the 30s wait reports") {
 		t.Fatalf("CheckTimeoutSource = %v, want the moved wait found", err)
+	}
+}
+
+// echoing reports every reply twice, the second time only once the harness quiesces it, however late that is.
+type echoing struct {
+	*producertest.Waiter
+	mu      sync.Mutex
+	pending []producer.Token
+}
+
+func (e *echoing) reply(t producer.Token) {
+	if e.Reply(t) {
+		e.mu.Lock()
+		e.pending = append(e.pending, t)
+		e.mu.Unlock()
+	}
+}
+
+func (e *echoing) quiesce() {
+	e.mu.Lock()
+	late := e.pending
+	e.pending = nil
+	e.mu.Unlock()
+	for _, t := range late {
+		t.Replied()
+	}
+}
+
+func TestCheckTimeoutSourceCatchesALateDuplicate(t *testing.T) {
+	t.Parallel()
+	clk := producertest.NewClock()
+	e := &echoing{Waiter: producertest.NewWaiter(clk)}
+	h := waiterHarness(e.Waiter, clk)
+	h.Reply = e.reply
+	h.Quiesce = e.quiesce
+	err := producertest.CheckTimeoutSource(h)
+	if err == nil || !strings.Contains(err.Error(), `"replied" "replied"`) {
+		t.Fatalf("CheckTimeoutSource = %v, want the duplicate reply found", err)
+	}
+}
+
+func TestCheckTimeoutSourceNeedsQuiesce(t *testing.T) {
+	t.Parallel()
+	clk := producertest.NewClock()
+	h := waiterHarness(producertest.NewWaiter(clk), clk)
+	h.Quiesce = nil
+	if err := producertest.CheckTimeoutSource(h); err == nil {
+		t.Fatalf("CheckTimeoutSource ran without Quiesce")
 	}
 }
 

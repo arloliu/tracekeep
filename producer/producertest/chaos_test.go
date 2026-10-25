@@ -108,10 +108,18 @@ func (f *failures) add(s string) {
 	f.errors = append(f.errors, s)
 }
 
-// brokenDevice wires the SDK wrongly: hotReload and traffic say whether those verbs reach it.
+// brokenDevice wires the SDK wrongly: hotReload and traffic say whether those verbs reach it,
+// and startup makes Start exchange a few messages of its own, as a session's select does.
 type brokenDevice struct {
 	producertest.Device
-	hotReload, traffic bool
+	hotReload, traffic, startup bool
+}
+
+func (d *brokenDevice) Start(ctx context.Context) error {
+	if err := d.Device.Start(ctx); err != nil || !d.startup {
+		return err
+	}
+	return d.Device.Traffic(ctx, 3)
 }
 
 func (d *brokenDevice) HotReload(ctx context.Context) error {
@@ -132,19 +140,20 @@ func (d *brokenDevice) Traffic(ctx context.Context, n int) error {
 func TestRunChaosFailsBrokenWiring(t *testing.T) {
 	t.Parallel()
 	for _, tt := range []struct {
-		name               string
-		hotReload, traffic bool
-		failing            []string
+		name                        string
+		hotReload, traffic, startup bool
+		failing                     []string
 	}{
-		{"no hot reload", false, true, []string{"bus down and up", "hot reload under traffic", "injected faults"}},
-		{"no traffic", true, false, []string{"bus down and up", "hot reload under traffic", "stop under a stalled publisher", "injected faults"}},
+		{"no hot reload", false, true, false, []string{"bus down and up", "hot reload under traffic", "injected faults"}},
+		{"no traffic", true, false, false, []string{"bus down and up", "hot reload under traffic", "stop under a stalled publisher", "injected faults"}},
+		{"only startup traffic", true, false, true, []string{"bus down and up", "hot reload under traffic", "injected faults"}},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			var mu sync.Mutex
 			got := map[string]*failures{}
 			producertest.RunChaosReporting(t, func(t *testing.T, bus *producertest.Bus, tun producer.Tunables) producertest.Device {
-				return &brokenDevice{Device: newRecDevice(t, bus, tun), hotReload: tt.hotReload, traffic: tt.traffic}
+				return &brokenDevice{Device: newRecDevice(t, bus, tun), hotReload: tt.hotReload, traffic: tt.traffic, startup: tt.startup}
 			}, func(st *testing.T) testing.TB {
 				f := &failures{TB: st}
 				mu.Lock()

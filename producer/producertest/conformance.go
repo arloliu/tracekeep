@@ -15,8 +15,6 @@ const (
 	awaitBound = time.Second
 	// outcomeBound is how long the check waits for a terminal outcome.
 	outcomeBound = 5 * time.Second
-	// quiet is how long the check watches for a report a source must not make, when the harness has no Quiesce.
-	quiet = 100 * time.Millisecond
 )
 
 // TimeoutSourceHarness drives an integrator's producer.TimeoutSource for CheckTimeoutSource.
@@ -29,8 +27,8 @@ type TimeoutSourceHarness struct {
 	Cancel func(t producer.Token)
 	// Expire lets d pass on the waiter's clock, so every wait opened with a timeout of at most d times out.
 	Expire func(d time.Duration)
-	// Quiesce, if set, returns once the source has made every report the harness's calls so far cause.
-	// Without it the check watches for 100 ms, so a source that reports later than that can pass a duplicate.
+	// Quiesce returns once the source has made every report the harness's calls so far cause;
+	// a source that reports synchronously passes a function that does nothing.
 	Quiesce func()
 }
 
@@ -40,13 +38,10 @@ type TimeoutSourceHarness struct {
 // and TimedOut carries the timeout the wait was opened with, so a later, shorter timeout applies to new waits only.
 // It returns every violation it found, nil when there is none.
 func CheckTimeoutSource(h TimeoutSourceHarness) error {
-	if h.Source == nil || h.Reply == nil || h.Cancel == nil || h.Expire == nil {
-		return errors.New("producertest: the harness needs Source, Reply, Cancel and Expire")
+	if h.Source == nil || h.Reply == nil || h.Cancel == nil || h.Expire == nil || h.Quiesce == nil {
+		return errors.New("producertest: the harness needs Source, Reply, Cancel, Expire and Quiesce")
 	}
 	quiesce := h.Quiesce
-	if quiesce == nil {
-		quiesce = func() { time.Sleep(quiet) }
-	}
 	var errs []error
 	timeouts := []time.Duration{30 * time.Second, 10 * time.Second}
 	// open opens n waits, the second with a shorter timeout, as after a HotReload.

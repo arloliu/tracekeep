@@ -130,11 +130,17 @@ type capture struct {
 
 func busDownAndUp(c *chaos) {
 	c.verb("Start", verbTimeout, c.d.Start)
-	c.traffic(20)
-	c.bus.FailPublish(func(*producer.Msg) error { return errBusDown })
+	c.trafficSeen(20)
+	failed := make(chan struct{})
+	var once sync.Once
+	c.bus.FailPublish(func(*producer.Msg) error {
+		once.Do(func() { close(failed) })
+		return errBusDown
+	})
 	c.traffic(200)
 	c.verb("HotReload", verbTimeout, c.d.HotReload)
 	c.traffic(20)
+	c.wait(failed, "no publish met the outage")
 	c.bus.FailPublish(nil)
 	c.traffic(20)
 	c.stop(stopTimeout)
@@ -143,6 +149,7 @@ func busDownAndUp(c *chaos) {
 
 func hotReloadUnderTraffic(c *chaos) {
 	c.verb("Start", verbTimeout, c.d.Start)
+	c.trafficSeen(20)
 	for range 5 {
 		var wg sync.WaitGroup
 		wg.Go(func() { c.traffic(50) })
@@ -187,15 +194,10 @@ func injectedFaults(c *chaos) {
 	c.traffic(100)
 	c.verb("HotReload", verbTimeout, c.d.HotReload)
 	c.traffic(100)
-	ctx, cancel := context.WithTimeout(c.t.Context(), settleTimeout)
-	defer cancel()
-	select {
-	case <-faulted:
-	case <-ctx.Done():
-		c.t.Errorf("no publish failed: the traffic never reached the bus")
-	}
+	c.wait(faulted, "no publish met an injected fault")
 	c.bus.FailPublish(nil)
 	c.bus.FailPutsUncertain(nil)
+	c.trafficSeen(20)
 	c.stop(stopTimeout)
 	c.settle(2)
 }
@@ -218,6 +220,49 @@ func (c *chaos) verb(name string, d time.Duration, f func(ctx context.Context) e
 func (c *chaos) traffic(n int) {
 	c.t.Helper()
 	c.verb(fmt.Sprintf("Traffic(%d)", n), verbTimeout, func(ctx context.Context) error { return c.d.Traffic(ctx, n) })
+}
+
+// trafficSeen runs Traffic(n) and waits until at least n more frames are on the bus, so the traffic is the device's own.
+func (c *chaos) trafficSeen(n int) {
+	c.t.Helper()
+	ctx, cancel := context.WithTimeout(c.t.Context(), settleTimeout)
+	defer cancel()
+	msgs := c.bus.Messages()
+	before := frames(msgs)
+	c.traffic(n)
+	for got := frames(msgs); got < before+n; got = frames(msgs) {
+		var err error
+		if msgs, err = c.bus.WaitMessages(ctx, len(msgs)+1); err != nil {
+			c.t.Errorf("Traffic(%d) put %d frames on the bus, want at least %d", n, got-before, n)
+			return
+		}
+	}
+}
+
+// wait waits for done, reporting what if it does not come.
+func (c *chaos) wait(done <-chan struct{}, what string) {
+	c.t.Helper()
+	ctx, cancel := context.WithTimeout(c.t.Context(), settleTimeout)
+	defer cancel()
+	select {
+	case <-done:
+	case <-ctx.Done():
+		c.t.Error(what)
+	}
+}
+
+// frames counts the data and control records among msgs, ignoring any that do not decode.
+func frames(msgs []producer.Msg) int {
+	n := 0
+	for i := range msgs {
+		if caps, err := decode(msgs[i : i+1]); err == nil {
+			for _, cp := range caps {
+				n += cp.frames
+			}
+		}
+	}
+
+	return n
 }
 
 func (c *chaos) stop(d time.Duration) {
