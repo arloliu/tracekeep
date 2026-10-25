@@ -154,9 +154,7 @@ func (pb *publisher) run(quit <-chan struct{}) {
 		timer.Reset(wait)
 		select {
 		case <-quit:
-			pb.pollFlights(time.Now()) // count what already resolved
-			pb.report(true)
-
+			pb.stop()
 			return
 		case e := <-rec.Reserved():
 			pb.add(e)
@@ -167,6 +165,17 @@ func (pb *publisher) run(quit <-chan struct{}) {
 		case <-timer.C:
 		}
 	}
+}
+
+// stop ends the publisher: what already resolved is counted, and every record it still holds is dropped and counted,
+// since nothing will publish it.
+func (pb *publisher) stop() {
+	pb.pollFlights(time.Now())
+	pb.drainLanes(true)
+	for _, st := range pb.caps {
+		pb.dropAll(st, core.DropPublishFailed)
+	}
+	pb.report(true)
 }
 
 // pass makes all the progress it can: drain the lanes, read reservations, publish what the barrier allows.
