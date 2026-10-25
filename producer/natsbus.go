@@ -4,8 +4,11 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
+	"crypto/x509"
 	"errors"
 	"fmt"
+	"net/url"
+	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -82,8 +85,15 @@ func newNATSBus(cfg *Config, tun *Tunables, nc *nats.Conn) (*natsBus, error) {
 		return nil, err
 	}
 	b.opts = nats.GetDefaultOptions()
-	for _, s := range cfg.Servers {
-		b.opts.Servers = append(b.opts.Servers, strings.TrimSpace(s))
+	for i, s := range cfg.Servers {
+		s = strings.TrimSpace(s)
+		if err := checkServerURL(s); err != nil {
+			return nil, fmt.Errorf("%w: server %d: %w", ErrInvalidConfig, i, err)
+		}
+		b.opts.Servers = append(b.opts.Servers, s)
+	}
+	if err := checkTLSFiles(&cfg.TLS); err != nil {
+		return nil, err
 	}
 	for _, opt := range opts {
 		if err := opt(&b.opts); err != nil {
@@ -147,13 +157,13 @@ func dialOptions(cfg *Config, b *natsBus) ([]nats.Option, error) {
 func (b *natsBus) dial(tun *Tunables) {
 	nc, err := b.opts.Connect()
 	if err != nil {
-		b.log.Error("producer: traffic connection cannot be made", "error", err)
+		b.log.Error("producer: traffic connection cannot be made", "error", redact(err))
 		return
 	}
 	c, err := newNATSConn(nc, tun)
 	if err != nil {
 		nc.Close()
-		b.log.Error("producer: traffic connection cannot be made", "error", err)
+		b.log.Error("producer: traffic connection cannot be made", "error", redact(err))
 
 		return
 	}
@@ -165,6 +175,54 @@ func (b *natsBus) dial(tun *Tunables) {
 	}
 	b.conn.Store(c)
 	close(b.up)
+}
+
+// checkServerURL parses a server URL as nats.go will, a bare "host:port" taking the nats scheme,
+// so a malformed one fails New instead of the background dial; the error never carries the URL, which may hold credentials.
+func checkServerURL(s string) error {
+	if !strings.Contains(s, "://") {
+		s = "nats://" + s
+	}
+	u, err := url.Parse(s)
+	if err != nil {
+		return fmt.Errorf("malformed URL: %w", redact(err))
+	}
+	if u.Hostname() == "" {
+		return errors.New("URL names no host")
+	}
+
+	return nil
+}
+
+// checkTLSFiles reads the configured TLS material once, so a missing or unreadable file fails New;
+// nats.go reads it again at every connection, so a rotated file takes effect at the next one.
+func checkTLSFiles(t *TLSConfig) error {
+	if t.CAFile != "" {
+		pem, err := os.ReadFile(t.CAFile)
+		if err != nil {
+			return fmt.Errorf("%w: TLS CA file: %w", ErrInvalidConfig, err)
+		}
+		if !x509.NewCertPool().AppendCertsFromPEM(pem) {
+			return fmt.Errorf("%w: TLS CA file %s holds no certificate", ErrInvalidConfig, t.CAFile)
+		}
+	}
+	if t.CertFile != "" {
+		if _, err := tls.LoadX509KeyPair(t.CertFile, t.KeyFile); err != nil {
+			return fmt.Errorf("%w: TLS client certificate: %w", ErrInvalidConfig, err)
+		}
+	}
+
+	return nil
+}
+
+// redact drops the URL from a url.Error, which spells it with any credentials it holds.
+func redact(err error) error {
+	var ue *url.Error
+	if errors.As(err, &ue) {
+		return fmt.Errorf("%s: %w", ue.Op, ue.Err)
+	}
+
+	return err
 }
 
 // authOptions returns the one authentication option a configures, or none.
@@ -274,12 +332,12 @@ func (b *natsBus) Objects(ctx context.Context, bucket string) (Objects, error) {
 	if s.CachedInfo().Config.AllowDirect {
 		return nil, fmt.Errorf("producer: claim bucket %s: its stream %s allows direct reads, which a lagging replica can answer", bucket, stream)
 	}
-	os, err := c.js.ObjectStore(ctx, bucket)
+	store, err := c.js.ObjectStore(ctx, bucket)
 	if err != nil {
 		return nil, fmt.Errorf("producer: claim bucket %s: %w", bucket, err)
 	}
 
-	return natsObjects{os: os}, nil
+	return natsObjects{os: store}, nil
 }
 
 // CheckConn implements Bus.
@@ -330,19 +388,22 @@ func (b *natsBus) waitUp(quit <-chan struct{}) *nats.Conn {
 	}
 }
 
-// close stops the JetStream publisher, whose reply subscription would outlive the producer on a connection WithConn brought,
-// and closes the connection the SDK dialed, now or, if the first dial is still running, as soon as it returns.
+// close closes the connection the SDK dialed, now or, if the first dial is still running, as soon as it returns;
+// on a connection WithConn brought it stops the JetStream publisher instead, whose reply subscription would outlive the producer.
+// A dialed connection is closed without CleanupPublisher: closing it ends the publisher's reconnect watcher,
+// which a CleanupPublisher run before that watcher first reads its channel would leave parked for good (nats.go v1.55.0 jetstream/publish.go).
 func (b *natsBus) close() {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.closed = true
 	c := b.conn.Load()
-	if c == nil {
-		return
-	}
-	c.js.CleanupPublisher()
-	if b.owned {
+	switch {
+	case c == nil:
+	case b.owned:
 		c.nc.Close()
+	default:
+		// shortcut: nats.go v1.55.0 can park the reconnect watcher of the first async publish when Close follows it at once, leaking that goroutine for good; upgrade when nats.go captures the channel before starting the watcher.
+		c.js.CleanupPublisher()
 	}
 }
 
