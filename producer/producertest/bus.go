@@ -197,6 +197,7 @@ func (b *Bus) waitHeld(ctx context.Context) error {
 
 // Ops returns every publish and object operation made on the bus, in order:
 // "publish <msg id>", "publish-async <msg id>", and "info", "put", "get" or "delete" with the object's name.
+// The bus keeps every one for its life, so a long run on one bus grows with its traffic.
 func (b *Bus) Ops() []string {
 	b.mu.Lock()
 	defer b.mu.Unlock()

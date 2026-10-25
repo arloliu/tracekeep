@@ -470,7 +470,7 @@ func (r *Recorder) SignalFault(c *Capture) {
 	}
 }
 
-// SetHook sets the function a test holds a goroutine in at hook id, before any callback runs;
+// SetHook sets the function a test holds a goroutine in at hook id, before the goroutine that reaches it starts;
 // the module's tests outside this package set HookLocked and HookTryLockFailed here.
 func (r *Recorder) SetHook(id int, f func()) { r.hooks[id] = f }
 
