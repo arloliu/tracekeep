@@ -387,3 +387,16 @@ since the SDK's default checksums break some S3-compatible stores;
 Deployments run MinIO and Ceph RGW,
 so the shared `ObjectStore` conformance suite runs against both, in containers, from the phase that builds the store;
 the specs recommend no particular store.
+
+### T-35 — where the SDK's bus is tested, and TLS as a finding (2026-10-26)
+
+The SDK's default connection must be tested against a real JetStream,
+but the SDK cannot import `internal/testbus` or nats-server without pulling the server into every producer's graph,
+and the service module does not require the SDK before its first tag.
+Those tests therefore live in `producer/internal/bustest`, a module of its own that only tests:
+it requires the SDK and the service through `replace` directives to this repository, is never tagged and is required by nothing,
+so its `replace` directives and its nats-server requirement reach no producer and no build of the service.
+It runs, like the SDK, with `GOWORK=off`, so CI needs no workspace.
+`New` refuses a connection given through `WithConn` only when its reconnect buffer is enabled, which correctness depends on (`producer.md` §4.2 *Large records*);
+a connection without TLS is reported by `Preflight` and never refused,
+so the embedded test bus and a development bus run on plain `nats://`.

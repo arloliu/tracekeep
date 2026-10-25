@@ -21,7 +21,7 @@ Contract changes go through proposals, which the subject [README.md](README.md) 
 - **Identity**: carried by each capture's descriptor, never by `Config`:
   the SDK derives `recorder_instance_id` from the descriptor's `tool_id` and `recorder_instance_name` (`producer.md` §4.5).
 - **Connection**: by default the SDK dials a dedicated connection with every correctness-bearing option applied;
-  `WithConn` brings a producer's own connection, which `New` verifies and refuses if it fails;
+  `WithConn` brings a producer's own connection, which `New` refuses with the reconnect buffer enabled, and on which `Preflight` reports a missing TLS (T-35);
   `WithBus` brings any `Bus`, which is how `producertest` injects its in-memory bus;
   nothing about the stream is configurable from a producer.
 - **Publication policy**: the SDK's on every route: message id `<capture_id>.<seq>`, the expected stream, no client retries;
@@ -101,7 +101,8 @@ the reconnect buffer disabled (§4.2), unlimited reconnects, TLS, the publish de
 and the claim bucket's chunk size from `MaxPayload`;
 nothing about the **stream** is configurable from a producer, because the stream is tracekeep's.
 `WithConn` is for producers with their own TLS loader, credential rotation, dialer or connection event hooks;
-`New` then verifies what it can on the given connection (the reconnect buffer, TLS) and refuses one that fails.
+`New` then refuses a given connection whose reconnect buffer is enabled;
+a connection without TLS is a `Preflight` finding, never a refusal, so a plain `nats://` test or development bus still works (T-35).
 `Bus` is the seam the core is written against and that `producertest` implements;
 it is exported for that purpose, not as the primary API,
 and `WithBus` stays as an escape hatch whose route the publication policy covers like every other.
@@ -159,7 +160,7 @@ and from v1.55.0 on the SDK raises it only for stability and upstream fixes, nev
 The raise carries more with it:
 nats.go v1.55.0's `go.mod` declares `go 1.26.0`, so a producer builds with Go 1.26 or later, the line the gateway is on (T-14),
 and its own requirements rise (nkeys, `klauspost/compress`, `golang.org/x/crypto`).
-nats-server is required by the service module only (`internal/testbus`), never by the SDK, so no producer pulls it in.
+nats-server is required by the service module (`internal/testbus`) and the SDK's test-only bus module (T-35), never by the SDK, so no producer pulls it in.
 CI runs a sample producer's **resolved** graph (`go list -m all`) at that minimum and at the latest nats.go,
 since producers will usually be newer than the floor;
 tracepack's own `go.mod` sets a go-secs floor in the same way,

@@ -12,10 +12,12 @@ The design is in `docs/specs/tracekeep/`; the roadmap is `docs/ROADMAP.md`.
 |---|---|---|
 | `github.com/arloliu/tracekeep` | `.` | the service: `cmd/`, `internal/`, migrations, `web/`, `deploy/` |
 | `github.com/arloliu/tracekeep/producer` | `producer/` | the producer SDK, tagged `producer/vX.Y.Z` |
+| `github.com/arloliu/tracekeep/producer/internal/bustest` | `producer/internal/bustest/` | the SDK's tests against a real JetStream; test-only, never tagged or published (T-35) |
 
 `go.work` joins the two for local development; `make work` creates it, and it is gitignored with `go.work.sum` (T-27).
 The service requires the SDK by version and carries no `replace`, so it also builds with `GOWORK=off`;
 until the SDK's first tag it does not require the SDK at all.
+The bus-test module requires the SDK and the service through `replace` directives to this repository, which only a module nothing requires may carry.
 
 The dependency direction is fixed and one-way: `go-secs/tracepack ← tracekeep/producer ← tracekeep`.
 **The SDK's boundary**:
