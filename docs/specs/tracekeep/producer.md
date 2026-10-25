@@ -336,6 +336,9 @@ so a tool has **one capture series per device**, told apart by `recorder_instanc
 the producer is enabled **per device**,
 so a connection whose peer is a host-side system is captured only if its operators want it,
 and the VE's reader selects the device it plays.
+A `pdf_*` device keeps vantage host too:
+the legacy host system's `pdf` endpoint is the passive side, and eqp-hub's `eqp-hsms` device plays the host role toward it,
+so no device needs another vantage and every `dir` the SDK writes stays right (T-37).
 
 ### 4.6 FDC polling: thin only what is positively identified (requirement 1)
 
