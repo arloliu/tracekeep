@@ -1,7 +1,6 @@
 package core
 
 import (
-	"runtime"
 	"testing"
 	"time"
 
@@ -224,13 +223,17 @@ func TestTimeoutAfterAReconnectedBindIsAmbiguous(t *testing.T) {
 
 // The first lookup of a fresh table, which a go-secs request with no registration makes, allocates nothing.
 func TestFirstBindDoesNotAllocate(t *testing.T) {
-	pt, _ := newTestPending(t, 0)
-	var before, after runtime.MemStats
-	runtime.ReadMemStats(&before)
-	pt.Bind(1, 1, 1, 3, 5)
-	runtime.ReadMemStats(&after)
-	if n := after.Mallocs - before.Mallocs; n != 0 {
-		t.Fatalf("the first Bind allocates %d times", n)
+	tables := make([]*PendingTable, 101) // AllocsPerRun's warm-up run takes one
+	for i := range tables {
+		tables[i], _ = newTestPending(t, 0)
+	}
+	i := 0
+	n := testing.AllocsPerRun(100, func() {
+		tables[i].Bind(1, 1, 1, 3, 5)
+		i++
+	})
+	if n != 0 {
+		t.Fatalf("the first Bind of a table allocates %v times", n)
 	}
 }
 
