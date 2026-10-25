@@ -227,7 +227,7 @@ and this section is the contract between them.
   These bound when the producer **attempts** a publish, not when the server **accepts** one:
   bytes already written to the socket can be processed after the client's deadline, and no client setting retracts them.
   §8.4 therefore does not rely on an acceptance bound; it relies on receipts and on the stream's own pending state.
-  Object-store facts of nats.go v1.40.1 the SDK builds on:
+  Object-store facts of nats.go v1.55.0 the SDK builds on (unchanged since v1.40.1, T-19):
   `Put(ctx, ObjectMeta, io.Reader)` publishes chunks through its own internal JetStream publisher, inherits none of the SDK's publish options, and observes only its context;
   so every object operation carries a context deadline,
   the chunk size is set per object through `ObjectMetaOptions.ChunkSize` from `Conn().MaxPayload()` (the default 128 KiB chunk would exceed a small `max_payload`),

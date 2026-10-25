@@ -57,11 +57,9 @@ eqp-hub reviews the SDK's API (`Bus`, `Preflight`, the five guarantees, the `sec
   the result goes to the decision log.
 - The veq branch `docs/ve/log-service-decisions` (commit 7b8a019) carries the LS-row amendments and V-35;
   it is not merged yet.
-- nats.go `v1.55.0` in the SDK (T-19) contradicts `producer-sdk.md` §4.7 *Versions*,
-  which keeps the SDK's floor at or below the gateway's v1.40.1:
-  importing the SDK raises the gateway to v1.55.0 (phase G).
-  The nats.go v1.40.1 facts of the specs (`producer.md` §4.2 *Large records*, `producer-sdk.md` §4.7 *Publication policy*, `parking.md` confirmation and reconciler)
-  and their nats-server v2.14.5 source citations are re-verified against v1.55.0 and v2.15.1,
-  and §4.7 is amended, before the SDK's first code.
+- The claim bucket is created with `AllowDirect` on (nats.go's object-store default),
+  so the SDK's never-overwrite check (`GetInfo`, `producer.md` §4.2 *Large records*) may read a lagging replica,
+  and a stale "not found" would let a put replace an existing object;
+  either accept that and say so, or have `busconfig` turn `AllowDirect` off on the bucket and `Preflight` check it (found by the T-19 re-verification).
 - The service's `go.mod` requires the SDK from its first tag (`producer/vX.Y.Z`) on;
   `producer/doc.go` blank-imports tracepack and nats.go only to keep the SDK's requirements until code imports them.

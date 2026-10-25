@@ -60,6 +60,6 @@ Rulings cited as `G5-n` are in go-secs `docs/specs/tracepack/tracepack-decisions
 `LS-n` a row of `ve-log-service.md`, and `V-n` a VE decision.
 Where a ruling already settles a point, the specs apply it and do not re-derive it.
 Facts about eqp-hub are as of its `develop` branch at fc67e5f;
-facts about nats.go are as of v1.40.1, the version eqp-hub pins.
+facts about nats.go are as of v1.55.0, the version the SDK requires, and about nats-server as of v2.15.1, the version `internal/testbus` embeds (T-19).
 
 Next free proposal ID: P3.

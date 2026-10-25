@@ -80,7 +80,8 @@ the original is acknowledged as already staged or under the termination (*resolu
 in every branch the transaction also inserts-or-finds the original's row in **`parked_copies`** (the traffic stream's incarnation, its stream sequence from the delivery's metadata, the version key),
 so every message of a version is accounted for;
 (2) for a row in `parking` or `parked` state `ingest` publishes the copy on the version's subject with `WithExpectLastSequencePerSubject(0)`
-(nats-server v2.14.5 `server/stream.go` `processJetStreamMsg`, lines 6441–6466:
+(nats-server v2.15.1: standalone in `server/stream.go` `processJetStreamMsgWithBatch`, lines 6774–6800,
+clustered in `server/jetstream_batching.go`, lines 766–822:
 the expected value is compared with the last message stored under the subject,
 and `0` is accepted exactly when the store finds none,
 so after the sole copy is acknowledged and removed from the work-queue stream the subject is empty again).
@@ -88,19 +89,27 @@ so after the sole copy is acknowledged and removed from the work-queue stream th
 a `PubAck` with `Duplicate` false (the copy is stored), or a wrong-last-sequence error that reports a stored last sequence
 (nats-server error 10071 with a non-zero sequence:
 the version's subject holds a message, which can only be a copy of this version;
-nats.go v1.40.1 surfaces it as a wrapped `*jetstream.APIError`
+nats.go v1.55.0 surfaces it as a wrapped `*jetstream.APIError`
 whose `ErrorCode` is 10071 and whose `Description` carries the sequence as text, there is no structured field,
 so the client parses a strictly positive integer from the pinned description format and treats zero, a malformed description or any other code as non-confirmation).
 Nothing else confirms, and the original stays unacknowledged:
 a `PubAck` with `Duplicate` true means the stream's duplicate window (server default two minutes, which `Preflight` reads from the stream and `busconfig` records) suppressed the publish
 because a message with the same `Nats-Msg-Id`, another version of the seq included, was stored inside the window,
-and it **stored nothing** (`server/stream.go` lines 6673–6684: the duplicate check is by message id alone and returns before the store);
+and it **stored nothing** (the duplicate check is by message id alone and returns before the store:
+standalone in `server/stream.go` lines 7017–7036, clustered in `server/jetstream_batching.go` lines 607–629, whose `Duplicate` reply `server/jetstream_cluster.go` builds at lines 13190–13198).
+The two checks run in opposite orders:
+a standalone stream checks the expected last sequence before the duplicate window, a clustered stream the duplicate window first
+(nats-server v2.14.5 behaves the same);
+either order leads to one of the outcomes above and the protocol converges on both;
 the original is then nak'd with a delay longer than the window and the publish is repeated
 (the server purges duplicate entries on a timer, so a repeat may meet one more `Duplicate` and wait again;
 with a working bus the repeats converge,
 and a `Duplicate` that refers to this version's own earlier stored copy, a lost `PubAck` for instance, merely repeats
 until the stored copy is confirmed by the 10071 path or resolved);
 the clustered in-flight rejection (error 10164, which carries no sequence) and a timeout are retried the same way.
+nats.go v1.55.0 exports 10164 as `JSErrCodeStreamWrongLastSequenceConstant`, documented as the replicated-stream equivalent of 10071;
+nats-server v2.15.1 sends it only for in-flight conditions and still sends 10071 with the sequence for a real mismatch,
+so publish errors are classified by `ErrorCode` and the parsed description as above, never through the key-value package's sentinels.
 (3) CAS the row `parking → parked`.
 (4) acknowledge the original with `DoubleAck` and mark its copy row `acked`.
 A crash at any point redelivers the never-acknowledged original, which re-runs the protocol from (1).
@@ -165,7 +174,7 @@ which is the completion signal, not a time bound.
 `acked_at` on a version row is **metadata, never a protection predicate**:
 set when the last known copy row became `acked`.
 The reconciler marks a copy row `acked` only by its **own** identity:
-for a resolved version it first refreshes **the very handle it will read with** (`Stream.Info`, which updates the handle's cached configuration, nats.go v1.40.1 `jetstream/stream.go`), checks on that answer the incarnation (`Created`, `LastSeq` not rewound) and `Config.AllowDirect == false`, and only then asks that handle for the copy's stream sequence with `Stream.GetMsg(seq)`,
+for a resolved version it first refreshes **the very handle it will read with** (`Stream.Info`, which updates the handle's cached configuration, nats.go v1.55.0 `jetstream/stream.go`), checks on that answer the incarnation (`Created`, `LastSeq` not rewound) and `Config.AllowDirect == false`, and only then asks that handle for the copy's stream sequence with `Stream.GetMsg(seq)`,
 which is then the leader-served `$JS.API.STREAM.MSG.GET`
 (`GetMsg` picks the direct route from the handle's cached `AllowDirect`,
 so a stale handle could read a replica that has not yet received the sequence);

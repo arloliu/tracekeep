@@ -33,10 +33,9 @@ Contract changes under discussion are in [P1](proposals/p1-interfaces.md).
 - **`Preflight`**: runs on the producer's own bus, in the background after the connection is up, never delaying the device's `Start`;
   returns a readable list of what is wrong.
 - **What the producer must guarantee**: five items, the whole of an integrator's obligations (§4.7, last paragraph; `.agents/rules/600-invariants.md`).
+- **Versions**: the SDK requires nats.go v1.55.0, which raises a producer's nats.go and Go floor (Go 1.26) when it imports the SDK (§4.7 *Versions*, T-19).
 - **Open**: the producer-side API is a sketch and fixes no signatures beyond the names above;
-  the send-path token protocol behind `Pending()` is P1 item 5;
-  *Versions* keeps the SDK's nats.go floor at or below the gateway's v1.40.1,
-  which the owner's choice of v1.55.0 contradicts, an open item of the bootstrap plan.
+  the send-path token protocol behind `Pending()` is P1 item 5.
 
 ### 4.7 The producer SDK: a separate Go module
 
@@ -103,11 +102,14 @@ nothing about the **stream** is configurable from a producer, because the stream
 it is exported for that purpose, not as the primary API,
 and `WithBus` stays as an escape hatch whose route the publication policy covers like every other.
 
+`PublishAsyncComplete` may close while a caller waiting for a free async slot is about to publish (nats.go v1.55.0);
+only the publisher goroutine, the one caller that publishes, waits on it, and a `Stop` drain never waits on it from another goroutine.
+
 **Publication policy**, applied identically on the default connection and on an injected one,
 since a producer never chooses publish options:
 - common to every publish: `WithMsgID("<capture_id>.<seq>")` and `WithExpectStream(<traffic stream>)`,
   which stamps `Nats-Expected-Stream` into the message (the header parking removes, §6.1), and `WithRetryAttempts(0)`:
-  the client's default of two retries on `ErrNoResponders` is turned off (nats.go v1.40.1 retries only on that error, and `0` means none),
+  the client's default of two retries on `ErrNoResponders` is turned off (nats.go v1.55.0 retries only on that error, and `0` means none),
   and every retry is the SDK's own, under its backoff and the horizon H,
   so a retry is always a deliberate re-publish with the same message id;
 - **synchronous set** (`start`, every reserved record, and `PublishMsg` in general):
@@ -145,8 +147,15 @@ Owning the client isolates nothing at the module level: a Go build holds one ver
 and minimal version selection picks the **highest** requirement in the whole graph,
 so the SDK's requirement is a **floor that can push a producer upward**
 (a producer at v1.41.0 and an SDK at v1.55.0 build with v1.55.0, and `go mod tidy` rewrites the producer's go.mod).
-The discipline therefore stands:
-the SDK's `go.mod` requires the lowest nats.go whose `jetstream` API it needs (at or below eqp-hub's v1.40.1) and never raises it for a feature;
+The SDK requires nats.go v1.55.0 (T-19), above the v1.40.1 the gateway pins,
+so importing the SDK **raises the gateway** to v1.55.0 (phase G).
+Every `jetstream` API the specs use already exists in v1.40.1;
+the floor is the owner's choice of a current release, not a feature's need,
+and from v1.55.0 on the SDK never raises it for a feature.
+The raise carries more with it:
+nats.go v1.55.0's `go.mod` declares `go 1.26.0`, so a producer builds with Go 1.26 or later, the line the gateway is on (T-14),
+and its own requirements rise (nkeys, `klauspost/compress`, `golang.org/x/crypto`).
+nats-server is required by the service module only (`internal/testbus`), never by the SDK, so no producer pulls it in.
 CI runs a sample producer's **resolved** graph (`go list -m all`) at that minimum and at the latest nats.go,
 since producers will usually be newer than the floor;
 tracepack's own `go.mod` sets a go-secs floor in the same way,
