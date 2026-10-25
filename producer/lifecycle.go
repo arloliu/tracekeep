@@ -122,10 +122,14 @@ func (p *Producer) Rotate(ctx context.Context, d CaptureDescriptor) error {
 // It never returns an error, and returns by the deadline.
 func (p *Producer) End(ctx context.Context) Report {
 	dl := deadline(ctx)
-	p.stopping.Store(true)
+	// Announced before waiting for the lock, so a rotation inside it abandons; withdrawn if End gives up.
+	p.ending.Add(1)
 	if !p.lockLife(dl) {
+		p.ending.Add(-1)
 		return Report{Contended: true}
 	}
+	p.stopping.Store(true)
+	p.ending.Add(-1)
 	cur := p.rec.Current()
 	if cur == nil {
 		p.unlockLife()
@@ -159,21 +163,28 @@ func (p *Producer) End(ctx context.Context) Report {
 	return rep
 }
 
-// waitEnded waits until every capture is terminated or dl passes.
+// waitEnded waits until every capture is terminated or dl passes,
+// and returns whether all were, and every loss counted on them so far.
 func waitEnded(caps []*core.Capture, dl time.Time) (bool, uint64) {
 	t := time.NewTimer(time.Until(dl))
 	defer t.Stop()
-	var dropped uint64
+	all := true
 	for _, c := range caps {
 		select {
 		case <-c.Done():
-			dropped += c.Dropped()
+			continue
 		case <-t.C:
-			return false, dropped
+			all = false
 		}
+
+		break
+	}
+	var dropped uint64
+	for _, c := range caps {
+		dropped += c.Dropped()
 	}
 
-	return true, dropped
+	return all, dropped
 }
 
 // lockLife takes the lifecycle lock, giving up at dl.
@@ -225,7 +236,7 @@ func (p *Producer) rotateLocked(ctx context.Context, d *CaptureDescriptor, previ
 		return err
 	}
 
-	res := p.rec.Rotate(c, deadline(ctx), func() bool { return p.stopping.Load() || ctx.Err() != nil }, p.now)
+	res := p.rec.Rotate(c, deadline(ctx), func() bool { return p.stoppingNow() || ctx.Err() != nil }, p.now)
 	if res.Abandoned {
 		return ErrRotationAbandoned
 	}
@@ -386,7 +397,7 @@ func (p *Producer) handleSeqLimit(c *core.Capture) {
 		return
 	}
 	defer p.unlockLife()
-	if p.stopping.Load() || p.rec.Current() != c || c.Faulted() {
+	if p.stoppingNow() || p.rec.Current() != c || c.Faulted() {
 		return
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), defaultLifecycleTimeout)
@@ -398,8 +409,11 @@ func (p *Producer) handleSeqLimit(c *core.Capture) {
 	}
 }
 
+// stoppingNow reports a completed stop, or an End waiting for the lifecycle lock.
+func (p *Producer) stoppingNow() bool { return p.stopping.Load() || p.ending.Load() > 0 }
+
 func (p *Producer) faultCurrentLocked(c *core.Capture) bool {
-	return !p.stopping.Load() && !c.Abandoned() && p.rec.Current() == c && c.Faulted()
+	return !p.stoppingNow() && !c.Abandoned() && p.rec.Current() == c && c.Faulted()
 }
 
 // next returns a capture id that sorts after every id this generator returned before.

@@ -663,3 +663,24 @@ func TestCloseSettlesUnresolvedPublishes(t *testing.T) {
 		t.Errorf("ordinary lane budget %d records, %d bytes after Close, want 0", n, b)
 	}
 }
+
+// End's Report counts every loss of the captures it stopped, including one during the drain.
+func TestReportCountsLossesDuringTheDrain(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t, producer.Tunables{RetryHorizon: 50 * time.Millisecond})
+	c := h.begin()
+	h.wait(1)
+	h.bus.FailPublish(func(m *producer.Msg) error {
+		if m.MsgID == c.ID.String()+".1" {
+			return errDown // the record is lost at its horizon, while End drains
+		}
+
+		return nil
+	})
+	h.observe(frame(4))
+
+	rep := h.p.End(t.Context())
+	if !rep.Drained || rep.Dropped != 1 {
+		t.Errorf("End = %+v, want drained with the one record lost", rep)
+	}
+}

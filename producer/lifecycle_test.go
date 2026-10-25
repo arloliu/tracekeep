@@ -275,3 +275,26 @@ func TestEndKeepsItsDeadlineUnderContention(t *testing.T) {
 		t.Errorf("End = %+v, current changed: %v; want contended and nothing changed", rep, p.rec.Current() != c)
 	}
 }
+
+// A contended End leaves the lifecycle as it found it: rotations still run.
+func TestContendedEndChangesNothing(t *testing.T) {
+	t.Parallel()
+	p := newTestProducer(t, Tunables{})
+	if err := p.Begin(t.Context(), testDescriptor()); err != nil {
+		t.Fatal(err)
+	}
+	p.lifeSem <- struct{}{}
+	ctx, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond)
+	defer cancel()
+	if rep := p.End(ctx); !rep.Contended {
+		t.Fatalf("End = %+v, want contended", rep)
+	}
+	<-p.lifeSem
+
+	d := testDescriptor()
+	sw := "v2"
+	d.HostSoftware = &sw
+	if err := p.Rotate(t.Context(), d); err != nil {
+		t.Errorf("Rotate after a contended End = %v, want a rotation", err)
+	}
+}

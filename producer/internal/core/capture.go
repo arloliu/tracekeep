@@ -92,9 +92,10 @@ type Capture struct {
 	terminated atomic.Bool
 	done       chan struct{}
 	doneOnce   sync.Once
-	// endBy is End's deadline for publishing the capture, Unix ns; zero until End stamps it.
-	endBy atomic.Int64
-	// queued counts the capture's records in the lanes, between their send and the publisher taking them in.
+	// endBy is End's deadline for publishing the capture, kept with its monotonic reading; nil until End stamps it.
+	endBy atomic.Pointer[time.Time]
+	// queued counts the capture's records from their allocation, under the lock, until the publisher takes them in,
+	// so a capture with a record a callback has not sent yet never looks finished.
 	queued atomic.Int64
 	// dropped counts what the publisher gave up of the capture when it terminated it.
 	dropped atomic.Uint64
@@ -196,6 +197,10 @@ func (c *Capture) Allocate(wall, mono int64, socket uint64) (Allocation, Status)
 	}
 	a.Seq = c.nextSeq
 	c.nextSeq++
+	c.queued.Add(1)
+	if a.Step {
+		c.queued.Add(1)
+	}
 	if a.Seq >= c.rotateAt && !c.rotateAsked {
 		c.rotateAsked, a.RotateDue = true, true
 	}
@@ -269,12 +274,15 @@ func (c *Capture) Terminate() {
 func (c *Capture) Done() <-chan struct{} { return c.done }
 
 // SetEndBy stamps End's deadline for publishing the capture.
-func (c *Capture) SetEndBy(t time.Time) { c.endBy.Store(t.UnixNano()) }
+func (c *Capture) SetEndBy(t time.Time) { c.endBy.Store(&t) }
 
 // EndBy returns End's deadline for the capture, false until End stamps it.
 func (c *Capture) EndBy() (time.Time, bool) {
-	ns := c.endBy.Load()
-	return time.Unix(0, ns), ns != 0
+	if t := c.endBy.Load(); t != nil {
+		return *t, true
+	}
+
+	return time.Time{}, false
 }
 
 // Settle records that the publisher finished with the capture; Settled reports it.

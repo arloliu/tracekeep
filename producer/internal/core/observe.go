@@ -141,7 +141,12 @@ func NewRecorder(p RecorderParams) *Recorder {
 func (r *Recorder) Observe(o *Observation) {
 	var c *Capture
 	allocated := false
+	// owed is what Allocate counted as queued that this callback has not sent yet.
+	var owed int64
 	defer func() {
+		if owed > 0 {
+			c.queued.Add(-owed)
+		}
 		if p := recover(); p != nil {
 			r.panics.Add(1)
 			// Before allocation the loss has no seq to show it, so the fault window of the current capture bounds it.
@@ -162,6 +167,10 @@ func (r *Recorder) Observe(o *Observation) {
 		return
 	}
 	allocated = true
+	owed = 1
+	if a.Step {
+		owed = 2
+	}
 	if a.RotateDue {
 		select {
 		case r.rotations <- c:
@@ -178,13 +187,14 @@ func (r *Recorder) Observe(o *Observation) {
 		// Queued whatever becomes of the ordinary record, and retired only once queued,
 		// so no later record is published before it.
 		step := Entry{Cap: c, Kind: EntryClockStep, Seq: a.StepSeq, Wall: o.Wall, Mono: o.Mono, Drift: a.StepDrift}
-		if !r.PushReserved(step) {
+		if !r.pushCounted(step) {
 			c.Fault()
 			r.SignalFault(c)
 			r.drop(DropCaptureFault, int64(len(o.Payload)))
 
 			return
 		}
+		owed--
 		c.Retire(a.StepSeq)
 	}
 
@@ -198,11 +208,10 @@ func (r *Recorder) Observe(o *Observation) {
 		RecKind: o.Kind, Dir: o.Dir, Fidelity: o.Fidelity, Quality: q,
 		Payload: append(make([]byte, 0, n), o.Payload...),
 	}
-	c.queued.Add(1)
 	select {
 	case r.ordinary <- e:
+		owed--
 	default:
-		c.queued.Add(-1)
 		r.returnBudget(n)
 		r.drop(r.fullReason(), n)
 	}
@@ -217,6 +226,22 @@ func (r *Recorder) OrdinaryDepth() (count, bytes int64) { return r.ordCount.Load
 // PushReserved queues e in the reserved lane without blocking;
 // false when the lane's bound, which counts the reserved records the publisher holds, is reached.
 func (r *Recorder) PushReserved(e Entry) bool {
+	if e.Cap != nil {
+		e.Cap.queued.Add(1)
+	}
+	if !r.pushCounted(e) {
+		if e.Cap != nil {
+			e.Cap.queued.Add(-1)
+		}
+
+		return false
+	}
+
+	return true
+}
+
+// pushCounted is PushReserved for an entry whose capture already counts it as queued.
+func (r *Recorder) pushCounted(e Entry) bool {
 	if !r.takeReserved(1) {
 		return false
 	}
@@ -321,17 +346,10 @@ func (r *Recorder) takeReserved(n int64) bool {
 
 // sendReserved puts e in the channel; the bound keeps the channel from filling, so this fails only on a bug.
 func (r *Recorder) sendReserved(e Entry) bool {
-	if e.Cap != nil {
-		e.Cap.queued.Add(1)
-	}
 	select {
 	case r.reserved <- e:
 		return true
 	default:
-		if e.Cap != nil {
-			e.Cap.queued.Add(-1)
-		}
-
 		return false
 	}
 }

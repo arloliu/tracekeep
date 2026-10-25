@@ -1,6 +1,7 @@
 package core
 
 import (
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -180,5 +181,30 @@ func TestAllocateDoesNotAllocate(t *testing.T) {
 	})
 	if allocs != 0 {
 		t.Errorf("Allocate allocates %v times per call, want 0", allocs)
+	}
+}
+
+// End's deadline keeps its monotonic reading, so a wall-clock step cannot move it.
+func TestEndByKeepsTheMonotonicReading(t *testing.T) {
+	t.Parallel()
+	c, _ := newTestCapture(t, 8)
+	dl := time.Now().Add(time.Second)
+	c.SetEndBy(dl)
+	got, ok := c.EndBy()
+	// time.Time.String prints the monotonic reading as "m=..." only when the value carries one.
+	if !ok || !got.Equal(dl) || !strings.Contains(got.String(), "m=") {
+		t.Errorf("EndBy = %v, %v; want the stamped time with its monotonic reading", got, ok)
+	}
+}
+
+// A record counts as queued from its allocation, before its callback sends it.
+func TestAllocationCountsAsQueued(t *testing.T) {
+	t.Parallel()
+	c, _ := newTestCapture(t, 8)
+	if _, st := c.Allocate(origin+3*eps, 0, 1); st != Allocated { // a clock step and its record
+		t.Fatal(st)
+	}
+	if got := c.Queued(); got != 2 {
+		t.Errorf("Queued = %d after allocating a step and a record, want 2", got)
 	}
 }

@@ -88,6 +88,10 @@ func (r *Recorder) Rotate(next *Capture, deadline time.Time, abort func() bool, 
 		return discard()
 	}
 
+	if old != nil {
+		// Counted as queued before the commit point, so the old capture never looks finished before its stop is sent.
+		old.queued.Add(credit)
+	}
 	r.cur.Store(next)
 	if next != nil {
 		next.start.Store(uint32(StartInstalled))
@@ -98,6 +102,7 @@ func (r *Recorder) Rotate(next *Capture, deadline time.Time, abort func() bool, 
 		res.StopQueued, used = r.closeLocked(old, now)
 		old.mu.Unlock()
 		r.resCount.Add(used - credit)
+		old.queued.Add(used - credit)
 	}
 
 	return res

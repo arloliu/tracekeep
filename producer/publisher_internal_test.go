@@ -300,3 +300,73 @@ func TestSendOrdinaryStopsAtEndDeadline(t *testing.T) {
 		t.Errorf("published %v past End's deadline", got)
 	}
 }
+
+// slowBus delays MaxPayload, which building a message calls, past End's deadline.
+type slowBus struct {
+	*recBus
+	delay time.Duration
+}
+
+func (b slowBus) MaxPayload() int {
+	time.Sleep(b.delay) // injects the delay of the scenario: building the message crosses End's deadline
+	return b.recBus.MaxPayload()
+}
+
+// A deadline crossed while building a message stops the attempt, ordinary or reserved.
+func TestDeadlineCrossedWhileBuilding(t *testing.T) {
+	t.Parallel()
+	bus := slowBus{recBus: newRecBus(), delay: 50 * time.Millisecond}
+	p, err := New(Config{SubjectPrefix: "tpk", ClaimBucket: "b"}, func(o *options) { o.noPublisher = true })
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = p.Close() })
+	pb := newPublisher(p, bus)
+	if err := p.Begin(t.Context(), testDescriptor()); err != nil {
+		t.Fatal(err)
+	}
+	c := p.rec.Current()
+	c.SetEndBy(time.Now().Add(20 * time.Millisecond))
+	st := &capState{cap: c, subject: c.Subject}
+
+	pb.sendOrdinary(st, &pending{e: core.Entry{Cap: c, Kind: core.EntryObserved, Seq: 1, Payload: []byte{1}}})
+	pb.publishReserved(st, &pending{e: core.Entry{Cap: c, Kind: core.EntryStop, Seq: 2}}, time.Now())
+	if got := bus.published(); len(got) != 0 {
+		t.Errorf("published %v after End's deadline passed while building", got)
+	}
+}
+
+// A capture with a record a callback allocated but has not sent stays on End's list across later rotations.
+func TestAllocatedButUnsentCaptureStaysOnEndsList(t *testing.T) {
+	t.Parallel()
+	bus := newRecBus()
+	p, err := New(Config{SubjectPrefix: "tpk", ClaimBucket: "b"}, WithBus(bus))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = p.Close() })
+	if err := p.Begin(t.Context(), testDescriptor()); err != nil {
+		t.Fatal(err)
+	}
+	a := p.rec.Current()
+	wall, mono := core.Now()
+	a.Allocate(wall, mono, 1) // a callback allocated seq 1 and has not sent it
+
+	sw := "v2"
+	d := testDescriptor()
+	d.HostSoftware = &sw
+	if err := p.Rotate(t.Context(), d); err != nil {
+		t.Fatal(err)
+	}
+	bus.waitFor(t, 3) // A's start, A's stop, B's start: the publisher has nothing else of A
+	sw = "v3"
+	if err := p.Rotate(t.Context(), d); err != nil { // prunes settled captures
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 100*time.Millisecond)
+	defer cancel()
+	p.End(ctx)
+	if _, stamped := a.EndBy(); !stamped {
+		t.Errorf("End did not stop a capture whose allocated record was still unsent")
+	}
+}

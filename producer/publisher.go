@@ -207,7 +207,7 @@ func (pb *publisher) takeEnds() {
 }
 
 // finishEnds terminates each capture End stamped once nothing of it is left, at its deadline, or once it is abandoned,
-// dropping and counting on the capture what is left.
+// dropping what is left (dropEntry counts every loss of a stamped capture on the capture).
 // Termination is final: a publish still in flight is counted and never retried, and a record queued later is dropped.
 // Only captures End stamped are touched, so a successor a later Begin opened never is.
 func (pb *publisher) finishEnds() {
@@ -219,15 +219,12 @@ func (pb *publisher) finishEnds() {
 		if !empty && now.Before(dl) && !c.Abandoned() {
 			continue
 		}
-		var left uint64
 		if st != nil {
-			left = uint64(len(st.reserved) + len(st.held))
 			pb.dropAll(st, core.DropPublishFailed)
 			if st.empty() {
 				delete(pb.caps, c)
 			}
 		}
-		c.AddDropped(left)
 		c.Terminate()
 		delete(pb.ending, c)
 	}
@@ -333,6 +330,9 @@ func (pb *publisher) publishReserved(st *capState, pd *pending, now time.Time) b
 		pd.claimed = true
 	}
 
+	if pastEnd(st.cap, time.Now()) { // building or the claim put may have crossed End's deadline
+		return false
+	}
 	ctx, cancel := context.WithDeadline(context.Background(), pb.attemptDeadline(time.Now(), st.cap))
 	defer cancel()
 	start := time.Now()
@@ -411,6 +411,9 @@ func (pb *publisher) sendOrdinary(st *capState, pd *pending) bool {
 		if pastEnd(st.cap, now) {
 			return false
 		}
+	}
+	if pastEnd(st.cap, time.Now()) { // building the message may have crossed End's deadline
+		return false
 	}
 	fut, err := pb.bus.PublishAsync(&pd.msg.msg)
 	if err != nil {
@@ -604,6 +607,9 @@ func (pb *publisher) dropAll(st *capState, reason core.DropReason) {
 func (pb *publisher) dropEntry(e *core.Entry, reason core.DropReason) {
 	pb.dropped[reason]++
 	pb.dropBytes += uint64(len(e.Payload))
+	if _, stamped := e.Cap.EndBy(); stamped {
+		e.Cap.AddDropped(1) // End's Report counts every loss of a capture it stopped
+	}
 	if e.Kind == core.EntryObserved {
 		pb.p.rec.ReleaseOrdinary(e)
 	} else {

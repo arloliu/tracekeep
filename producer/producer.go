@@ -45,8 +45,10 @@ type Producer struct {
 	lifeSem chan struct{}
 	// gen is the lifecycle generation; only abandonment advances it.
 	gen atomic.Uint64
-	// stopping is set by End before it takes the lifecycle lock, so a rotation inside the lock abandons.
+	// stopping is set by a completed End until the next Begin;
+	// ending counts Ends waiting for the lifecycle lock, so a rotation inside it abandons.
 	stopping atomic.Bool
+	ending   atomic.Int32
 	// Guarded by the lifecycle lock.
 	desc       CaptureDescriptor
 	descKey    []byte
