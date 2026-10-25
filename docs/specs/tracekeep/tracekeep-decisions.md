@@ -189,3 +189,15 @@ The veq document lifecycle (living and finite documents, the Status line, subjec
 Each subject spec file opens with an *Interface* section:
 a non-normative summary of what a caller must know, traceable to the text below it, which stays authoritative.
 Contract changes go through proposals, starting with [P1](proposals/p1-interfaces.md).
+
+### T-22 — configuration
+
+The service's configuration is loaded with `github.com/arloliu/fuda`:
+one struct whose tags carry each key, default, environment override and validation rule,
+human-readable durations and sizes for the tunables,
+and fuda's `ref` resolution for configuration secrets such as bus credentials and the catalog password.
+Key material for masking is not configuration:
+it is resolved by the `KeyProvider` at the version a binding pins (`masking-keys.md` §9), never through a `ref`.
+The configuration is read once at start; live reload is not used,
+since a capture's processing configuration is immutable once bound (`rollouts.md` §6.4).
+The version is pinned when the service's `go.mod` first requires it.

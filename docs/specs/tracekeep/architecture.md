@@ -54,6 +54,7 @@ tracekeep api                                                        §10
   object storage any S3 endpoint (MinIO on the same host is enough for a pilot),
   MariaDB on the host, or SQLite for a single-host pilot with every writing role in the one `all` process (§7.4).
 - Both read one config schema; the difference is the key provider and the number of processes.
+  The schema is one Go struct loaded with fuda (T-22).
 
 ### 3.4 Transport scope
 

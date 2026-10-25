@@ -14,6 +14,8 @@ Contract changes under discussion are in [P1](proposals/p1-interfaces.md).
 
 - **Write seam**: a consumer masks its batch, then writes with `tracepack.NewWriter` over an `io.Writer` with a `Syncer` on a temporary file;
   after `Close` the file is uploaded whole, with one put under its [STO §3] key (§5.1).
+- **Working directory**: every temporary file lives under `storage.work_dir`, holds masked bytes only,
+  and is disposable: a role removes what it left behind at start (§5.1).
 - **Read seam**: `io.ReaderAt` plus size, for `tracepack.Open`, `Verify` and `MergeInput`,
   which may issue parallel `ReadAt` calls (§5.1, §5.3).
 - **`ObjectStore`**: `Put`, `Open`, `Stat`, `List`, `Delete`; backends `s3`, `fs`, `mem`;
@@ -38,6 +40,17 @@ Contract changes under discussion are in [P1](proposals/p1-interfaces.md).
   The seam is therefore an `io.Writer` with a `Syncer` over a temporary file;
   after `Close` returns, the file is uploaded whole with one put under its [STO §3] key.
   `Writer.Close` finalizes the bytes; durability is the put's.
+- **Working files**: `ingest`'s flush output and `compact`'s merge and close output are written to temporary files under one working directory,
+  `storage.work_dir` in the service configuration (T-22;
+  default: the operating system's temporary directory; on Kubernetes an `emptyDir` with a `sizeLimit`).
+  Files are created with mode 0600 and removed once their put returns or their batch is abandoned;
+  at start each role removes the working files it left behind.
+  A lost working file costs nothing:
+  its messages were not acknowledged (`ingest`), or its scope is merged or its close written again next cycle (`compact`).
+  The directory holds one segment per concurrent flush, plus one archive per concurrent merge for `compact`;
+  open batches are held in memory until flush.
+  A working file holds masked bytes only, the same as the pack it becomes
+  (`masking-keys.md`: originals are never written to a file).
 - Reading: `io.ReaderAt` + size for `tracepack.Open`, `tracepack.Verify` and `tracepack.MergeInput`;
   all may issue parallel `ReadAt` calls.
 
