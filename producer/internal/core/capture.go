@@ -37,8 +37,10 @@ type Allocation struct {
 	// Step reports that the observation's clock reading drifted past ε from the anchor:
 	// StepSeq is the reserved seq of the clock-step record that precedes the observation,
 	// which the caller pushes into the reserved lane and then retires.
-	Step    bool
-	StepSeq uint64
+	// StepDrift is the drift that caused the step, in nanoseconds.
+	Step      bool
+	StepSeq   uint64
+	StepDrift int64
 	// OrderingUncertain reports an observation older than the one allocated before it in this capture.
 	OrderingUncertain bool
 }
@@ -138,12 +140,12 @@ func (c *Capture) Allocate(wall, mono int64, socket uint64) (Allocation, Status)
 		a.Epoch = epoch
 	}
 
-	if c.driftedLocked(wall, mono) {
+	if drift := c.driftLocked(wall, mono); drift > c.tolerance || drift < -c.tolerance {
 		if len(c.reservations) == cap(c.reservations) || c.nextSeq > LastOrdinarySeq {
 			c.faultLocked()
 			return a, Faulted
 		}
-		a.Step, a.StepSeq = true, c.nextSeq
+		a.Step, a.StepSeq, a.StepDrift = true, c.nextSeq, drift
 		c.reservations = append(c.reservations, reservation{seq: c.nextSeq, mono: mono})
 		c.nextSeq++
 		c.anchorWall, c.anchorMono = wall, mono
@@ -245,9 +247,7 @@ func (c *Capture) epochLocked(socket uint64) (uint32, bool) {
 	return uint32(c.nSockets), true //nolint:gosec // nSockets ≤ MaxSockets
 }
 
-// driftedLocked reports whether the reading drifted past ε from the anchor ([SEM §4]).
-func (c *Capture) driftedLocked(wall, mono int64) bool {
-	drift := (wall - c.anchorWall) - (mono - c.anchorMono)
-
-	return drift > c.tolerance || drift < -c.tolerance
+// driftLocked returns the reading's drift from the anchor ([SEM §4]): (wall − anchor wall) − (mono − anchor mono).
+func (c *Capture) driftLocked(wall, mono int64) int64 {
+	return (wall - c.anchorWall) - (mono - c.anchorMono)
 }

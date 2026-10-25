@@ -73,6 +73,9 @@ func TestAllocateClockStep(t *testing.T) {
 	if st != Allocated || !a.Step {
 		t.Fatalf("status %v step %v, want a clock step", st, a.Step)
 	}
+	if a.StepDrift != 3*eps {
+		t.Errorf("step drift %d, want %d", a.StepDrift, 3*eps)
+	}
 	if a.StepSeq != 2 || a.Seq != 3 {
 		t.Errorf("step seq %d record seq %d, want 2 and 3: the step precedes the record", a.StepSeq, a.Seq)
 	}
