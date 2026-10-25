@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/binary"
 	"sync"
 	"testing"
 	"time"
@@ -107,29 +108,32 @@ func TestLoopbackChaos(t *testing.T) {
 	})
 }
 
-// The equipment withholds every fifth reply, so its wait times out and the capture holds a real T3,
-// in the epoch of the socket the request went out on.
+// The equipment withholds every fifth reply, so exactly those requests time out and the capture holds their T3,
+// in the epoch of the socket they went out on; a request that got its reply never records one.
 func TestLoopbackRecordsT3(t *testing.T) {
 	t.Parallel()
+	const n = 200
 	bus := producertest.NewBus()
-	l := newTestLoopback(t, producer.Config{}, producer.WithBus(bus))
+	opts := testOptions()
+	opts.T3 = time.Second // far above a localhost reply, so an answered request's wait never times out
+	l := newTestLoopbackWith(t, producer.Config{}, opts, producer.WithBus(bus))
 	if err := l.Start(t.Context()); err != nil {
 		t.Fatal(err)
 	}
-	if err := l.Traffic(t.Context(), 10); err != nil {
+	if err := l.Traffic(t.Context(), n); err != nil {
 		t.Fatal(err)
 	}
 
-	var t3 []tracepack.TransportEvent
+	t3 := map[uint32]tracepack.TransportEvent{}
 	var dataEpoch, t3Epoch uint32
 	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 	defer cancel()
-	for n := 1; len(t3) < 2; n++ {
-		msgs, err := bus.WaitMessages(ctx, n)
+	for i := 1; len(t3) < n/5; i++ {
+		msgs, err := bus.WaitMessages(ctx, i)
 		if err != nil {
 			t.Fatalf("%d T3 events on the bus: %v", len(t3), err)
 		}
-		br := decode(t, &msgs[n-1])
+		br := decode(t, &msgs[i-1])
 		r := &br.Record
 		if r.Kind == tracepack.KindData {
 			dataEpoch = r.Epoch
@@ -142,11 +146,15 @@ func TestLoopbackRecordsT3(t *testing.T) {
 			t.Fatal(err)
 		}
 		if ev.Event == tracepack.EventTimerExpiry && ev.Timer != nil && *ev.Timer == tracepack.TimerT3 {
-			t3, t3Epoch = append(t3, *ev), r.Epoch
+			sb := binary.BigEndian.Uint32(ev.PrimarySystemBytes[:])
+			if sb%5 != 0 {
+				t.Errorf("T3 for System Bytes %d, which the equipment answered", sb)
+			}
+			t3[sb], t3Epoch = *ev, r.Epoch
 		}
 	}
 	for _, ev := range t3 {
-		if ev.Detail == nil || *ev.Detail != "effective_timeout_ms=50" || *ev.PrimaryStream != 1 || *ev.PrimaryFunction != 3 {
+		if ev.Detail == nil || *ev.Detail != "effective_timeout_ms=1000" || *ev.PrimaryStream != 1 || *ev.PrimaryFunction != 3 {
 			t.Errorf("T3 event = %+v", ev)
 		}
 	}
@@ -154,6 +162,11 @@ func TestLoopbackRecordsT3(t *testing.T) {
 		t.Errorf("T3 in epoch %d, frames in epoch %d", t3Epoch, dataEpoch)
 	}
 	l.Stop(t.Context())
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if len(l.inflight) != 0 {
+		t.Errorf("%d requests still in flight after Stop", len(l.inflight))
+	}
 }
 
 func decode(t *testing.T, m *producer.Msg) tracepack.BusRecord {

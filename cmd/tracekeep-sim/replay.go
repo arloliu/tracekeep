@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"time"
@@ -12,30 +13,30 @@ import (
 // replayPack sends every data frame of the pack at path through l, in seq order,
 // at the pack's pace multiplied by speed, or as fast as the pair takes them when speed is 0.
 // The pack must be synthetic or masked (docs/ROADMAP.md, phase 0); a thinned record has no frame to send and is skipped.
-// It returns how many frames it sent.
-func replayPack(ctx context.Context, l *Loopback, path string, speed float64) (int, error) {
+// A frame go-secs cannot decode, which a wire-exact record may hold, is skipped.
+// It returns how many frames it sent and how many it skipped.
+func replayPack(ctx context.Context, l *Loopback, path string, speed float64) (sent, skipped int, err error) {
 	f, err := os.Open(path)
 	if err != nil {
-		return 0, err
+		return 0, 0, err
 	}
 	defer f.Close()
 	st, err := f.Stat()
 	if err != nil {
-		return 0, err
+		return 0, 0, err
 	}
 	r, err := tracepack.Open(ctx, f, st.Size(), tracepack.ReaderOptions{})
 	if err != nil {
-		return 0, fmt.Errorf("%s: %w", path, err)
+		return 0, 0, fmt.Errorf("%s: %w", path, err)
 	}
 	start := time.Now()
 	var first int64
-	n := 0
 	_, err = r.Iterate(ctx, tracepack.Query{Payloads: true}, func(it *tracepack.Item) error {
 		rec := &it.Record
 		if rec.Kind != tracepack.KindData || r.Unobserved(rec) {
 			return nil
 		}
-		if n == 0 {
+		if sent+skipped == 0 {
 			first = rec.TSUTCNs
 		}
 		if speed > 0 {
@@ -44,15 +45,20 @@ func replayPack(ctx context.Context, l *Loopback, path string, speed float64) (i
 				return err
 			}
 		}
-		if err := l.Replay(ctx, rec.Dir, rec.Payload); err != nil {
+		err := l.Replay(ctx, rec.Dir, rec.Payload)
+		switch {
+		case errors.Is(err, errMalformed):
+			skipped++
+		case err != nil:
 			return fmt.Errorf("seq %d: %w", rec.Seq, err)
+		default:
+			sent++
 		}
-		n++
 
 		return nil
 	})
 
-	return n, err
+	return sent, skipped, err
 }
 
 func sleepUntil(ctx context.Context, t time.Time) error {
