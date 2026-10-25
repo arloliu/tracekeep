@@ -116,12 +116,17 @@ type RecorderParams struct {
 	// OrdinaryRecords and OrdinaryBytes bound the ordinary lane.
 	OrdinaryRecords int
 	OrdinaryBytes   int64
+	// Pending configures the pending-request table.
+	Pending PendingParams
 }
 
 // Recorder holds the current capture and the two lanes the observer callbacks feed
 // (docs/specs/tracekeep/producer.md §4.2 *Observer callback*, *Lanes*).
 type Recorder struct {
 	cur atomic.Pointer[Capture]
+
+	// Pending is the send path's pending-request table (producer.md §4.6).
+	Pending *PendingTable
 
 	// The reserved lane holds start, stop and clock-step records and never drops: a full one faults the capture.
 	reserved chan Entry
@@ -157,6 +162,7 @@ func NewRecorder(p RecorderParams) *Recorder {
 		faults:    make(chan *Capture, faultSignals),
 		rotations: make(chan *Capture, faultSignals),
 		resCap:    int64(p.ReservedCap),
+		Pending:   NewPendingTable(p.Pending),
 	}
 }
 
