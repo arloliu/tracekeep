@@ -24,7 +24,7 @@ Contract changes go through proposals, which the subject [README.md](README.md) 
   (4) `DoubleAck` the original and mark its copy row `acked`.
   A crash re-runs from (1).
 - **Coordinator**: one parking coordinator owns those steps, so no caller holds half of them:
-  begin under the capture row and return the version's state, publish only for a version in `parking` or `parked`, confirm by the two outcomes below only, advance by CAS, `DoubleAck` then mark the copy row `acked`;
+  begin under the capture row and return the version's state, publish only for a version in `parking`, `parked` or `evicted-hour`, confirm by the two outcomes below only, advance by CAS, `DoubleAck` then mark the copy row `acked`;
   no catalog transaction is open across the publish or the acknowledgement (§6.1 *The parking coordinator*).
 - **Confirmation**: only a `PubAck` with `Duplicate` false, or error 10071 with a strictly positive stored sequence;
   anything else leaves the original unacknowledged and retried.
@@ -41,7 +41,8 @@ Contract changes go through proposals, which the subject [README.md](README.md) 
   `capture terminate` also writes a termination order whose cut-off is the traffic stream's `LastSeq` on that incarnation.
 - **Parked consumer**: never terminates a parked message for its age or delivery count;
   `parking.enabled = false` stops new moves only.
-- **Locks**: every branch serializes on the capture row; parking touches no counter.
+- **Locks**: every parking transaction starts with the catalog's capture-row helper, and so does termination, which every ingest effect of the capture re-checks under that row (T-32);
+  parking touches no counter.
 
 ## 6.1 *Parking*
 
@@ -82,7 +83,7 @@ a row already **resolved** (`staged` or `terminated`) publishes nothing:
 the original is acknowledged as already staged or under the termination (*resolution* below);
 in every branch the transaction also inserts-or-finds the original's row in **`parked_copies`** (the traffic stream's incarnation, its stream sequence from the delivery's metadata, the version key),
 so every message of a version is accounted for;
-(2) for a row in `parking` or `parked` state `ingest` publishes the copy on the version's subject with `WithExpectLastSequencePerSubject(0)`
+(2) for a row in `parking`, `parked` or `evicted-hour` state `ingest` publishes the copy on the version's subject with `WithExpectLastSequencePerSubject(0)`
 (nats-server v2.15.1: standalone in `server/stream.go` `processJetStreamMsgWithBatch`, lines 6774–6800,
 clustered in `server/jetstream_batching.go`, lines 766–822:
 the expected value is compared with the last message stored under the subject,
@@ -138,7 +139,10 @@ the parked consumer enters at *advance* with the copy it holds (a crash between 
   and the insert-or-find of the version's `parked` row and the delivery's `parked_copies` row;
   it returns the version's current state.
   A resolved state publishes nothing, and the message is acknowledged under *resolution* below, through *acknowledge*.
-- **Publish** is (2), for a version in `parking` or `parked` only.
+- **Publish** is (2), for a version in `parking`, `parked` or `evicted-hour` only (T-32).
+  An `evicted-hour` version is unresolved, so its original is acknowledged only after a confirmed copy:
+  the publish meets 10071 when the earlier copy is still on the parking stream, or stores a fresh one when that copy was `lost` to a replaced stream,
+  and *advance* is then a no-op.
 - **Confirm** is *Confirmation* above:
   a `PubAck` with `Duplicate` false, or error 10071 whose description parses to a strictly positive sequence, and nothing else;
   a `PubAck` with `Duplicate` true, error 10164, a timeout, a zero or malformed description and any other code leave the original unacknowledged and retried as (2) says.
@@ -149,7 +153,8 @@ the parked consumer enters at *advance* with the copy it holds (a crash between 
 
 No catalog transaction is open across the publish or the acknowledgement:
 *begin* commits before the publish, since the committed row, not the copy, is the protection point,
-and *advance* and the `acked` update are each a transaction of their own.
+and *advance*, the `acked` update and the parked consumer's insert-or-find of a copy row are each a transaction of their own,
+each starting with the catalog's capture-row helper (`catalog.md` §7.2, T-32), as every parking transaction does.
 A crash before an acknowledgement redelivers the message to its consumer, which runs its steps again (an original from *begin*, as above);
 an acknowledgement the server did not confirm leaves the message to be redelivered and acknowledged again (*resolution* below);
 an acknowledgement the server confirmed whose catalog update was lost leaves the copy row `waiting` for a message the work-queue stream removed,
@@ -186,7 +191,7 @@ neither needs the object or a receipt.
 A redelivered message whose copy row already says `acked` (an acknowledgement the server confirmed but whose catalog update was lost, or one that was not confirmed) is acknowledged again under the same rule,
 since its version is resolved.
 **Operator termination** writes the catalog and holds no message:
-`parked terminate <capture> [seq]` and `capture terminate <id>` run one transaction
+`parked terminate <capture> [seq]` and `capture terminate <id>` run one transaction, starting with the capture-row helper,
 that writes every named unresolved version `terminated` with the declared loss and the audit row of the action, and, for `capture terminate`, a **termination order** (capture, the traffic stream's incarnation, cut-off = that stream's `LastSeq` read by a fresh `Info` inside the action, action id, state `active`/`spent`)
 that covers the capture's deferred originals that were never parked:
 a consumer that later receives a message of that capture **on that incarnation** with a stream sequence at or below the cut-off and an unresolved version inserts the version `terminated` under the order's action id, with its copy row, the declared loss and the audit row, and acknowledges it
@@ -195,7 +200,12 @@ that insertion is a transaction that starts with the prologue of §6.3 and re-re
 so a version staged meanwhile is acknowledged as already staged;
 a message above the cut-off, or on another incarnation, is new traffic (a partitioned producer, [STO §4], or a replaced stream) and is handled normally,
 since G5-269 covers versions the operator decided about, never a version the operator has not seen;
-a publish accepted after the `Info` carries a sequence above the cut-off by construction, so the order's edge is exact.
+a publish accepted after the `Info` carries a sequence above the cut-off by construction, so the order's edge is exact;
+the `Info` is read before the transaction opens, so no network call happens under the lock.
+Termination and every ingest effect of the capture serialize on the capture row, and whichever commits first wins (T-32):
+`Admit`, `Reject`, *begin* and ingest's registration re-check under the row the delivery's version resolution and the capture's active orders (`catalog.md` §7.2),
+so a delivery that loses to a termination makes no admission, parking or staging effect,
+and a batch registered first is staged and its messages are acknowledged as already staged.
 An order is `spent` when the stream's `FirstSeq` has passed its cut-off (no covered message can exist) or when its incarnation is retired;
 `capture show <id>` lists a capture's orders with their state.
 The acknowledgements themselves happen at the next delivery of each message, by whichever consumer holds it:
@@ -223,12 +233,15 @@ whose hour retention evicted (it can no longer be staged),
 so a handler that wakes after the version was resolved cannot regress the row;
 copy states likewise `waiting → acked` (`lost` for a copy of a retired incarnation).
 The parked consumer advances a row it holds a copy of from `parking` to `parked` (a crash between (2) and (3)).
+Two transactions move a version `parked → evicted-hour`, each by compare-and-set under the capture-row helper (T-32):
+`EvictHour`, for the `parked` rows of the hour it evicts, which it already reads under the row to choose survivors (§8.4);
+and the parked consumer, when the horizon guard refuses the registration of a version it holds a copy of, after advancing a `parking` row.
 Retention, admission and parking therefore have mutually exclusive durable outcomes on the capture row:
 an **unresolved** row (state neither `staged` nor `terminated`) committed first is seen by retention,
 which keeps the object (§8.4 *survivors*);
 an eviction committed first makes the horizon guard terminate the delivery instead;
 an admission committed first is seen by the re-read, so the branch is chosen against the admitted state.
-The lock order stays capture row → `counters`; parking touches no counter.
+Parking takes the capture row and no other lock, and touches no counter (the full lock order is `catalog.md` §7.2's).
 The **parked consumer** is a second pull consumer of `ingest` on the parking stream, with its own acknowledgement budget,
 that runs the same disposition and staging protocol with long nak delays;
 nothing is ever republished to the traffic stream, so duplicate windows and replay ordering never arise:

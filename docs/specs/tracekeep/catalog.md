@@ -15,14 +15,16 @@ Contract changes go through proposals, which the subject [README.md](README.md) 
 
 - **Role**: the catalog is the service's database; tracepack defines no view of it (`positioning.md` §2).
 - **Operations**: domain transactions, never statements:
-  admit or reject a capture, register a pack, commit a merge, record a conflict, insert and publish a close, delete a pack, evict an hour, release a survivor, begin parking;
-  besides them, take or renew a lease, prune events, append the audit log, and the reads (§7.2, §7.3).
+  admit or reject a capture, register a pack, commit a merge, record a conflict, insert and publish a close, delete a pack, evict an hour, release a survivor, begin parking and its later steps, terminate;
+  besides them, take or renew the compactor lease, register, renew or leave a membership, activate or retire a configuration, prune events, append the audit log, and the reads (§7.2, §7.3).
 - **Contracts**: each transaction states its preconditions, guard reads, affected-row checks, durable outcome and `counters` use (§7.2 table);
   about forty statements, the multi-statement transactions guarded by compare-and-swap predicates with affected-row checks and unique constraints;
   no `SELECT … FOR UPDATE` (§7.2).
-- **Lock order**: one unexported helper runs the prologue, so the capture row is first by construction;
-  the `counters` row is last only in a transaction that allocates an event seq, and parking touches no counter;
-  a transaction committed under the compactor lease updates the `leases` row between the two, so the order is capture → `leases` → `counters`;
+- **Lock order**: capture → `leases` → `counters('membership')` → `counters('scope_events')`, each step optional (T-32):
+  one unexported helper runs the prologue, so the capture row is first by construction;
+  a transaction committed under the compactor lease updates the `leases` row next;
+  admission and every membership change update the `membership` sentinel row;
+  the `scope_events` row is last, only in a transaction that allocates an event seq, and parking touches no counter;
   nothing else is locked (§7.2; `ingest.md` §6.3; `compactor.md` §8.3).
 - **Aborts**: a failed scope-revision or lease check rolls back the whole transaction, which returns the outcome unretried;
   a tombstone commits before its object is deleted (§7.2; `compactor.md` §8.1, §8.3).
@@ -52,7 +54,7 @@ Contract changes go through proposals, which the subject [README.md](README.md) 
 | Table | Holds | Key facts |
 |---|---|---|
 | `captures` | descriptor bytes and decoded fields; the processing configuration ids; `state` `pending`/`open`/`stopped`/`closed`/`rejected` (`pending`: a placeholder without descriptor, inserted by parking before any `start`, §6.1) (a rejected `start`'s descriptor bytes kept for the operator); `data_revision`; `highest_seq`, `highest_seq_ts` (producer seqs only); `stop_seen`; `last_registered_at`; thinning parameters; `device`, decoded from the descriptor's `recorder_instance_name` at admission (none on a `pending` row) | one row per capture; indexed by (`tool_id`, `recorder_instance_id`, start time) for successor lookup and by (`tool_id`, `device`, start time) for device selection |
-| `capture_closes` | the close intent: trigger time, `highest_seq`, `highest_seq_ts`, bounds, fixed `pack_id`, `writer_time`, the serialized `PackMeta` and codec, `state` `pending`/`published` | one row per capture; inserted before the close is written (§8.2) |
+| `capture_closes` | the close intent: trigger time, `highest_seq`, `highest_seq_ts`, bounds, fixed `pack_id`, `writer_time`, the serialized `PackMeta` and codec, `state` `pending`/`published`/`abandoned` | one row per capture; inserted before the close is written (§8.2); `abandoned` when the horizon guard refuses its publication (T-32) |
 | `packs` | `pack_id`, capture, `hour`, role, object key, size, `seq_start`, `format_minor`, `state` `staged`/`merged`/`excluded`/`deleted` | index `(tool_id, hour)`, `(capture_id, hour, state)`; `excluded` packs are read, never merged, never deleted by the merge relation |
 | `pack_ranges` | `(pack_id, seq_from, seq_to, ts_from, ts_to)`: the exact seq runs a pack holds with their endpoint times | the completeness evidence of §7.3; the close sentinel is never a range |
 | `evicted_ranges` | `(capture_id, hour, seq_from, seq_to, ts_from, ts_to)`: seqs whose packs retention deleted, with their hour and endpoint times | §7.3 reports them as evicted, never as gaps, keeps the times a neighbouring gap needs, and tells an evicted hour from a `no-data` hour; a prefix scalar cannot express an hour (§8.3) |
@@ -64,7 +66,7 @@ Contract changes go through proposals, which the subject [README.md](README.md) 
 | `parked`, `parked_copies`, `bus_streams`, `termination_orders` | the parking tables | in [parking.md](parking.md) |
 | `scopes` | `(capture_id, hour)`: `state` `open`/`settled`/`reopened`, `revision`, `archive_pack_id`, `merged_at` | CAS on `revision` (§8.1) |
 | `scope_events` | `(seq, capture_id, hour, event, revision, at)`, `seq` from the `counters` row; a `low_water` and an `epoch` in `counters` | the LS-11 cursor (§7.3); pruned by seq prefix only |
-| `counters` | named counters (`scope_events`) | a row lock serializes allocation with commit order |
+| `counters` | named counters: `scope_events`, and the `membership` sentinel, which holds no value | a row lock serializes allocation with commit order (`scope_events`) and admission with membership changes (`membership`, §6.4, T-32) |
 | `merges`, `merge_inputs` | every merge with its inputs, output and outcome | the deletion relation (§8.3) |
 | `tombstones` | object keys deleted by retention or deletion, with the time | the reconciler never re-registers them |
 | `processing_configs`, `policies` | versioned configurations captures bind to | never updated in place |
@@ -87,7 +89,8 @@ point lookups, range scans on one index, inserts, and the multi-statement domain
 no `SELECT … FOR UPDATE`, so the same statements mean the same on both engines;
 the intentional row locks are the capture row, first in every pack-changing transaction (§6.3),
 the `leases` row, taken by a transaction the compactor commits under its lease after the capture row,
-and the `counters` row, last (§7.3).
+the `counters('membership')` row, taken by admission and every membership change (§6.4),
+and the `counters('scope_events')` row, last (§7.3).
 
 **Domain transactions.**
 The catalog's callable interface is the transactions below and the domain reads of §7.3;
@@ -103,22 +106,25 @@ Signatures are a sketch.
 
 | Transaction (caller) | Preconditions | Guards after the prologue; affected-row checks | Durable outcome | `counters` |
 |---|---|---|---|---|
-| `Admit` (`ingest`, §6.1) | an accepted descriptor | the capture's state re-read under the row; a `rejected` capture's retained bytes re-validated against the delivery's | no row or `pending` → `open`, the processing configuration bound; `rejected` → `open`; equal bytes on an admitted capture: nothing; different bytes: `descriptor-conflict`, nothing written | none |
-| `Reject` (`ingest`, §6.1) | a descriptor that is not accepted | the capture's state re-read under the row; an admitted capture is never overwritten | `captures.state = rejected` with its descriptor bytes, durably; the `start` stays deferred whatever its age | none |
-| `RegisterPack` (`ingest`; the reconciler under the compactor lease, §5.4; a close's publication, §8.2) | the object is put (put → register → ack); the reconciler's is verified and its exact seq set read (§5.4) | `pack_id` already registered: nothing more (idempotent); a `tombstones` row for the key: abort; the hour beyond the retention horizon: abort, and the key is tombstoned before the object is deleted; for the reconciler, the lease, and a `pending` capture leaves the pack unregistered (§5.4) | the rows of §6.3: `packs`, `pack_ranges`, `pack_losses`, `conflicts` with `revision + 1` on every other scope they touch, receipts, a parked record's version `staged` (`parking.md`), the capture's highest seq and stop, the scope upserted with `revision + 1` | last, when it emits `created`, `reopened` or `conflict` |
+| `Admit` (`ingest`, §6.1) | an accepted descriptor; the delivery's identity (version key, bus incarnation, stream seq) | the delivery's version resolution and the capture's active termination orders re-read under the row: terminated, or covered by an order (the version then inserted `terminated` as `parking.md` states), returns `terminated` and writes nothing else (T-32); the capture's state re-read under the row; a `rejected` capture's retained bytes re-validated against the delivery's; on every binding path the `membership` sentinel updated before `consumers` and configurations are read | no row or `pending` → `open`, the processing configuration bound; `rejected` → `open`; equal bytes on an admitted capture: nothing; different bytes: `descriptor-conflict`, nothing written | `membership`, when it binds |
+| `Reject` (`ingest`, §6.1) | a descriptor that is not accepted; the delivery's identity | the termination re-check of `Admit`; the capture's state re-read under the row; an admitted capture is never overwritten | `captures.state = rejected` with its descriptor bytes, durably, and the `start` stays deferred whatever its age; on an admitted capture nothing is written: different bytes return `descriptor-conflict`, equal bytes `already-admitted` with the bound processing configuration, and the classifier decides again (T-32) | none |
+| `RegisterPack` (`ingest`; the reconciler under the compactor lease, §5.4; a close's publication, §8.2) | the object is put (put → register → ack); the reconciler's is verified and its exact seq set read (§5.4); **delivery evidence**, each record's version key, bus incarnation and stream seq, passed by `ingest` only (T-32) | first, `pack_id` already registered: nothing more (idempotent; the registration that committed it won every race); a `tombstones` row for the key: abort; the hour beyond the retention horizon: abort, and the key is tombstoned before the object is deleted; with evidence, a batch version found `terminated` (at the `parked → staged` CAS included) or a message covered by an active termination order: abort, and the key is tombstoned in the same transaction (T-32); for the reconciler, the lease, a `pending` capture leaves the pack unregistered (§5.4), and a seq with a `terminated` `parked` row or a capture with a termination order: abort, and the key is tombstoned (`storage.md` §5.4) | the rows of §6.3: `packs`, `pack_ranges`, `pack_losses`, `conflicts` with `revision + 1` on every other scope they touch, the capture's highest seq and stop, the scope upserted with `revision + 1`; with evidence only, receipts and a parked record's version `staged` (`parking.md`); without evidence, coverage only | last, when it emits `created`, `reopened` or `conflict` |
 | `CommitMerge` (the compactor under its lease, §8.1) | the archive put; the snapshot's revision r and `staged` inputs | `scopes … WHERE … AND revision = r` and `leases … WHERE holder = ? AND fence_token = ?`: zero affected rows on either rolls back the whole transaction, and the archive is never deleted directly (the reconciler adopts it) | the archive's `packs` row with its ranges and losses, `merges`, `merge_inputs`, the inputs `merged`, the scope `settled` with `revision + 1` | last: `settled` |
-| `RecordConflict` (`compact`: a suspect confirmed or cleared, a merge that fails on a conflict, §6.2) | the overlapping records compared, or the merge failed | — | the `conflicts` row written or cleared; `revision + 1` on every scope it touches | last: `conflict` for each touched scope |
-| `CloseIntent` (the compactor, §8.2) | a candidate of the trigger scan | re-read inside: `state = 'open'`, not `stop_seen`, `last_registered_at` older than I or Q by trigger; `captures … WHERE state = 'open' AND data_revision = d`: zero rows aborts, retried next cycle | the `capture_closes` row fixing every byte-affecting input; the capture `closed` | none |
-| `PublishClose` (the compactor, §8.2) | a `pending` intent; the close written from the stored options and put, a lost put checked by `Stat` | those of `RegisterPack`, on the intent's fixed `pack_id` | the close's pack registered, then the intent `published`; a `pending` intent is retried every cycle | as `RegisterPack` |
+| `RecordConflict` (`compact`: a suspect confirmed or cleared, a merge that fails on a conflict, §6.2) | the overlapping records compared, with the pack ids compared, or the merge failed | the lease; to clear, the row still names exactly the compared packs, otherwise `changed` returns and nothing is written, and `compact` compares again next cycle (T-32) | the `conflicts` row written or cleared; a confirmation merges the compared packs in as confirmed and never drops a pack it did not compare; `revision + 1` on every scope it touches | last: `conflict` for each touched scope |
+| `CloseIntent` (the compactor, §8.2) | a candidate of the trigger scan | the lease; re-read inside: `state = 'open'`, not `stop_seen`, `last_registered_at` older than I or Q by trigger; `captures … WHERE state = 'open' AND data_revision = d`: zero rows aborts, retried next cycle | the `capture_closes` row fixing every byte-affecting input; the capture `closed` | none |
+| `PublishClose` (the compactor, §8.2) | a `pending` intent; the close written from the stored options and put, a lost put checked by `Stat` | those of `RegisterPack` without evidence, on the intent's fixed `pack_id`, and the lease | one transaction (T-32): the close's pack registered, or found already registered (the reconciler may adopt the close's object first, `storage.md` §5.4), then `capture_closes … SET state = 'published' WHERE state = 'pending'`, the event seq allocated last; a horizon-guard abort tombstones the key and sets the intent `abandoned`; a `pending` intent is retried every cycle | as `RegisterPack` |
 | `DeletePack` (the compactor after delay D, §8.3) | an input of a successful merge whose output is `staged` or `merged` | the lease; no `packs` row other than this one names the key; either fails: abort | the pack `deleted` and its `tombstones` row; the object removed only after that commit | none |
-| `EvictHour` (retention, one hour of one capture, §8.3) | the hour older than the retention period and not held | the lease and the key check of §8.3; survivors chosen by the predicate of §8.4 under the row | the hour's `pack_ranges` union in `evicted_ranges` (coalesced); its packs, ranges, receipts, scope row and `claim_objects` rows deleted, survivors kept and marked with the hour; tombstones written; the objects, survivors excepted, removed only after that commit | none |
-| `MarkSurvivorDeletable` (the compactor's reconciler, §8.4) | a `survivor` row | the predicate of §8.4 | the row `deletable`; the object is then deleted and the row removed, a step that resumes and never skips | none |
-| `BeginParking` (`ingest`, step (1) of `parking.md`) | a deferral indefinite by its nature | the capture's state re-read: for an admitted capture, a new version whose hour is beyond the horizon is terminated as `beyond-retention` instead; a `pending` or `rejected` capture has no guard | the version's `parked` row inserted or found (`parking`), and the original's `parked_copies` row; returns the version's resolution, and a resolved version publishes nothing | none |
+| `EvictHour` (retention, one hour of one capture, §8.3) | the hour older than the retention period and not held | the lease and the key check of §8.3; survivors chosen by the predicate of §8.4 under the row | the hour's `pack_ranges` union in `evicted_ranges` (coalesced); its packs, ranges, receipts, scope row and `claim_objects` rows deleted, survivors kept and marked with the hour; the hour's `parked` rows moved `parked → evicted-hour` by compare-and-set (`parking.md`); tombstones written; the objects, survivors excepted, removed only after that commit | none |
+| `MarkSurvivorDeletable` (the compactor's reconciler, §8.4) | a `survivor` row | the lease; the predicate of §8.4 | the row `deletable`; the object is then deleted and the row removed under the lease, a step that resumes and never skips | none |
+| `BeginParking` (`ingest`, step (1) of `parking.md`) | a deferral indefinite by its nature; the delivery's identity | the termination re-check of `Admit`; the capture's state re-read: for an admitted capture, a new version whose hour is beyond the horizon is terminated as `beyond-retention` instead; a `pending` or `rejected` capture has no guard | the version's `parked` row inserted or found (`parking`), and the original's `parked_copies` row; returns the version's resolution, and a resolved version publishes nothing | none |
 
-The parking protocol's later steps (`parking → parked`, a copy marked `acked`, a version moved to `evicted-hour`), operator termination and a termination order's application are specified in `parking.md`, which states which of them run the helper;
+The parking protocol's later steps (`parking → parked`, a copy marked `acked`, a copy row inserted by the parked consumer, a version moved to `evicted-hour`), operator termination and a termination order's application are specified in `parking.md`;
+each starts with the helper like every transaction of the table (T-32),
 they change rows forward only by compare-and-set, and parking touches no counter.
+Every compactor transaction that changes domain state checks the lease (`leases … WHERE holder = ? AND fence_token = ?`, affected rows checked) after the helper, with no exception (T-32).
 Outside the table, without the helper:
 taking or renewing the compactor lease (`leases`; a worker that lost it does nothing further, §8.1);
+registering, renewing or leaving a membership and activating or retiring a configuration (`rollouts.md` §6.4), each of which updates `counters('membership')` first, judging a lease's lapse by the database's clock as `Admit` does (T-32);
 pruning `scope_events` by seq prefix, which sets `counters.low_water` in the same transaction and allocates no seq (§7.3);
 appending `audit_log` for the API's actions (other audit rows are written inside their own transaction);
 and the reads (look a capture up, list packs and ranges, pick scopes to merge, pick deletable packs),
@@ -196,12 +202,13 @@ and the caller acts on it: the merge and the close at the next cycle (§8.1, §8
   A `dialect` value isolates insert-ignore, the upsert clause and `ENUM` versus `CHECK`;
   the transactions are CAS-based and engine-neutral (§7.2).
 - **MariaDB**: `READ COMMITTED`; every multi-statement transaction retries whole on deadlock;
-  the capture row and the `counters` row are the intended lock waits, always in that order.
+  the capture row, the `leases` row and the two `counters` rows are the intended lock waits, always in the order of §7.2.
 - **SQLite**: one writer connection (`MaxOpenConns = 1` on the write pool), `BEGIN IMMEDIATE` for every write transaction, `busy_timeout` set, retry whole on `SQLITE_BUSY`;
   only the `all` process writes, enforced by deployment and checked at start (a second writer refuses to start on SQLite).
 - **Tests**: the repository tests run the same adversarial schedules on both engines with barriers, not timing,
   against the transactions of §7.2:
-  registration during a merge snapshot, lease takeover between statements, close intent versus a late registration, event allocation with an uncommitted earlier transaction, two first uses of one key id.
+  registration during a merge snapshot, lease takeover between statements, close intent versus a late registration, event allocation with an uncommitted earlier transaction, two first uses of one key id,
+  a termination racing an admission, a parking and a registration, and a membership renewal racing an admission.
 - **ent** rejected for now (code generation and a graph model for forty flat statements; its migration opinions beside Atlas);
   **sqlc** rejected (per-engine query sets);
   **bun** is the fallback if the dialect value grows.

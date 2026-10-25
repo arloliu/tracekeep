@@ -41,20 +41,25 @@ Section numbers are those of the specs in `docs/specs/tracekeep/`, whose `README
   a copy row `waiting → acked`, or `lost` for a copy of a retired stream incarnation.
   `parking.md` (§6.1 *Parking*).
 - **One parking coordinator owns the parking protocol's steps**, so no caller holds half of them:
-  begin under the capture row, publish only for a version in `parking` or `parked`,
+  begin under the capture row, publish only for a version in `parking`, `parked` or `evicted-hour`,
   confirm only by a `PubAck` with `Duplicate` false or error 10071 with a strictly positive parsed sequence,
   advance by compare-and-set, then `DoubleAck` and mark that delivery's copy row `acked`;
   no catalog transaction is open across the publish or the acknowledgement.
   `parking.md` (§6.1 *The parking coordinator*).
+- **Termination and every ingest effect of a capture serialize on the capture row; whichever commits first wins**:
+  `Admit`, `Reject`, parking's step (1) and ingest's registration re-check under the row the delivery's version resolution and the capture's active termination orders,
+  and a registration that finds one aborts and tombstones its key in the same transaction.
+  `ingest.md` §6.1, `catalog.md` §7.2, `parking.md` (*Operator termination*), T-32.
 
 ## Catalog transactions
 
-- **Lock order is capture row → `leases` row → `counters` row**, and nothing else is locked;
-  the `leases` row is taken only by a transaction the compactor commits under its lease (merge, deletion, the reconciler's registration).
+- **Lock order is capture row → `leases` row → `counters('membership')` row → `counters('scope_events')` row**, each step optional, and nothing else is locked;
+  the `leases` row is taken only by a transaction the compactor commits under its lease, which every compactor transaction that changes domain state is;
+  the `membership` row by admission and every membership change, renewals included.
   One unexported helper of the catalog runs the prologue, so every transaction that admits, parks, registers, deletes, tombstones or evicts a pack of a capture,
-  merges a scope of it or publishes its close starts with the update of the capture's row by construction;
-  where the transaction allocates an event seq, the `counters` update is its last statement, and parking touches no counter.
-  `catalog.md` §7.2 *Domain transactions*, `ingest.md` §6.3 (the prologue), `compactor.md` §8.3.
+  merges a scope of it, publishes its close, or terminates, advances or acknowledges a parked version of it starts with the update of the capture's row by construction;
+  where the transaction allocates an event seq, the `scope_events` update is its last statement, and parking touches no counter.
+  `catalog.md` §7.2 *Domain transactions*, `ingest.md` §6.3 (the prologue), `compactor.md` §8.3, `rollouts.md` §6.4.
 
 ## Deletion
 
