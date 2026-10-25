@@ -8,10 +8,10 @@ endif
 
 TEST_TIMEOUT := 5m
 GOLANGCI     ?= golangci-lint
-# The service module, the producer SDK and the SDK's bus-test module (T-35);
+# The service module, the producer SDK, the SDK's bus-test module (T-35) and the simulator (T-38);
 # `./...` does not cross a module boundary, so every Go target visits each.
 # All but the service run with GOWORK=off so each resolves its own go.mod, never the service's graph through go.work.
-MODULES      := . producer producer/internal/bustest
+MODULES      := . producer producer/internal/bustest cmd/tracekeep-sim
 in_module     = for m in $(MODULES); do w=; [ $$m != . ] && w=off; (cd $$m && GOWORK=$$w $(1)) || exit 1; done
 
 .DEFAULT_GOAL := help
