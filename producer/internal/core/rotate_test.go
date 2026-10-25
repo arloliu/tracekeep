@@ -373,3 +373,32 @@ func TestPanicFaultRacingARotationFaultsTheSuccessor(t *testing.T) {
 		})
 	}
 }
+
+// A callback that loaded a faulted capture and panics after a rotation installed its successor leaves the successor healthy:
+// the loss is inside the faulted capture's window.
+func TestPanicAfterLoadingAFaultedCaptureKeepsTheSuccessor(t *testing.T) {
+	t.Parallel()
+	r, gen, clk := newRotateRecorder(t)
+	a := prepared(gen, clk, 1)
+	r.Rotate(a, time.Now().Add(time.Second), never, clk.now)
+	a.Fault()
+	b := prepared(gen, clk, 2)
+	r.hooks[hookLoaded] = func() {
+		r.Rotate(b, time.Now().Add(time.Second), never, clk.now)
+		panic("injected")
+	}
+
+	r.Observe(frameObs(1, []byte{1}))
+
+	if !a.Faulted() || b.Faulted() {
+		t.Errorf("faulted: old %v, successor %v; want only the old", a.Faulted(), b.Faulted())
+	}
+	select {
+	case got := <-r.Faults():
+		if got != a {
+			t.Errorf("fault signal for the successor")
+		}
+	default:
+		t.Errorf("no fault signal")
+	}
+}
