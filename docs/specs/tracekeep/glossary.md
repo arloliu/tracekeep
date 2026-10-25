@@ -48,7 +48,7 @@ Read when a spec file uses a term you cannot place; the cited section is authori
 | disposition classifier | the pure function that returns a delivery's final disposition or the next step it needs (evidence or a transactional operation); not the record classifier of a processing configuration | §6.1 |
 | parking coordinator | the one owner of the parking protocol's steps: begin under the capture row, publish, confirm, advance, acknowledge | §6.1 *Parking* |
 | pending request | a forwarded W-bit primary registered before it is sent: token, key (session id, System Bytes), capture, channel, thin decision | §4.6 |
-| token | a pending request's handle, on which eqp-hub reports send progress and one terminal outcome | §4.6 |
+| token | a pending request's handle, on which eqp-hub reports send progress, the opened wait (`Awaiting`) and one terminal outcome | §4.6 |
 | survivor | a claim object retention skipped in an evicted hour, because an unresolved parked version still needs it | §8.4 |
 
 ## Tunables
