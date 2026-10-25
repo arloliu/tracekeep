@@ -85,12 +85,21 @@ func newNATSBus(cfg *Config, tun *Tunables, nc *nats.Conn) (*natsBus, error) {
 		return nil, err
 	}
 	b.opts = nats.GetDefaultOptions()
+	var ws int
 	for i, s := range cfg.Servers {
 		s = strings.TrimSpace(s)
-		if err := checkServerURL(s); err != nil {
+		isWS, err := checkServerURL(s)
+		if err != nil {
 			return nil, fmt.Errorf("%w: server %d: %w", ErrInvalidConfig, i, err)
 		}
+		if isWS {
+			ws++
+		}
 		b.opts.Servers = append(b.opts.Servers, s)
+	}
+	// nats.go refuses a pool that mixes websocket and plain servers when it builds it, past the point of retrying.
+	if ws != 0 && ws != len(b.opts.Servers) {
+		return nil, fmt.Errorf("%w: the servers mix websocket and plain URLs", ErrInvalidConfig)
 	}
 	if err := checkTLSFiles(&cfg.TLS); err != nil {
 		return nil, err
@@ -179,19 +188,21 @@ func (b *natsBus) dial(tun *Tunables) {
 
 // checkServerURL parses a server URL as nats.go will, a bare "host:port" taking the nats scheme,
 // so a malformed one fails New instead of the background dial; the error never carries the URL, which may hold credentials.
-func checkServerURL(s string) error {
+// It reports whether the URL is a websocket one.
+func checkServerURL(s string) (bool, error) {
 	if !strings.Contains(s, "://") {
 		s = "nats://" + s
 	}
 	u, err := url.Parse(s)
 	if err != nil {
-		return fmt.Errorf("malformed URL: %w", redact(err))
+		return false, fmt.Errorf("malformed URL: %w", redact(err))
 	}
 	if u.Hostname() == "" {
-		return errors.New("URL names no host")
+		return false, errors.New("URL names no host")
 	}
+	scheme := strings.ToLower(u.Scheme)
 
-	return nil
+	return scheme == "ws" || scheme == "wss", nil
 }
 
 // checkTLSFiles reads the configured TLS material once, so a missing or unreadable file fails New;
