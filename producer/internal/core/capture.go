@@ -1,6 +1,7 @@
 package core
 
 import (
+	"cmp"
 	"sync"
 	"sync/atomic"
 
@@ -13,6 +14,9 @@ const MaxSockets = 1024
 // LastOrdinarySeq is the last seq an observation takes (G5-231);
 // the seqs above it are left for the clock step and stop of a rotation, and 2^63-1 is the consumer's.
 const LastOrdinarySeq = 1<<63 - 4
+
+// DefaultRotateAt leaves the rotation a margin of seqs to take place in before LastOrdinarySeq.
+const DefaultRotateAt = LastOrdinarySeq - 1<<20
 
 // Status is the outcome of Allocate.
 type Status uint8
@@ -43,6 +47,8 @@ type Allocation struct {
 	StepDrift int64
 	// OrderingUncertain reports an observation older than the one allocated before it in this capture.
 	OrderingUncertain bool
+	// RotateDue reports, once per capture, that its seq passed the point where the producer rotates (G5-231).
+	RotateDue bool
 }
 
 // CaptureParams configures NewCapture.
@@ -59,6 +65,8 @@ type CaptureParams struct {
 	ReservedCap int
 	// OriginWall and OriginMono are the clock reading of the capture's start, its first anchor.
 	OriginWall, OriginMono int64
+	// RotateAt is the seq from which the capture asks to be rotated; zero takes DefaultRotateAt.
+	RotateAt uint64
 }
 
 // Capture is one capture: its identity and the state the observer callbacks allocate under its lock
@@ -82,6 +90,7 @@ type Capture struct {
 
 	lifecycle *atomic.Uint64
 	tolerance int64
+	rotateAt  uint64
 
 	mu sync.Mutex
 	// Guarded by mu.
@@ -91,6 +100,8 @@ type Capture struct {
 	lastMono   int64
 	closed     bool
 	faulted    bool
+	// rotateAsked records that the capture asked for its seq-limit rotation.
+	rotateAsked bool
 	// faultedFlag mirrors faulted for readers that must not wait on the lock, such as the lifecycle goroutine.
 	faultedFlag  atomic.Bool
 	sockets      [MaxSockets]uint64
@@ -114,6 +125,7 @@ func NewCapture(p CaptureParams) *Capture {
 		OriginMono:   p.OriginMono,
 		lifecycle:    p.Lifecycle,
 		tolerance:    p.Tolerance,
+		rotateAt:     cmp.Or(p.RotateAt, DefaultRotateAt),
 		nextSeq:      1,
 		anchorWall:   p.OriginWall,
 		anchorMono:   p.OriginMono,
@@ -163,13 +175,16 @@ func (c *Capture) Allocate(wall, mono int64, socket uint64) (Allocation, Status)
 		c.anchorWall, c.anchorMono = wall, mono
 	}
 
-	// shortcut: the seq space ends in a fault, not a rotation; it lasts 2^63 records, so no capture reaches it.
+	// Past RotateAt the capture asks once for a rotation; only if that never comes does the seq space end in a fault.
 	if c.nextSeq > LastOrdinarySeq {
 		c.faultLocked()
 		return a, Faulted
 	}
 	a.Seq = c.nextSeq
 	c.nextSeq++
+	if a.Seq >= c.rotateAt && !c.rotateAsked {
+		c.rotateAsked, a.RotateDue = true, true
+	}
 	a.OrderingUncertain = mono < c.lastMono
 	c.lastMono = max(c.lastMono, mono)
 

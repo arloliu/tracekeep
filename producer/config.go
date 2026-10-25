@@ -8,17 +8,26 @@ import (
 	"github.com/arloliu/go-secs/tracepack"
 )
 
-// Defaults of the tunables (docs/specs/tracekeep/tracekeep-decisions.md T-12, producer-sdk.md §4.7).
+// Defaults of the tunables (docs/specs/tracekeep/tracekeep-decisions.md T-12, T-29, producer-sdk.md §4.7).
 const (
+	// DefaultReservedLaneRecords bounds the reserved lane (T-12).
 	DefaultReservedLaneRecords = 4096
+	// DefaultOrdinaryLaneRecords bounds the ordinary lane by count.
 	DefaultOrdinaryLaneRecords = 16384
-	DefaultOrdinaryLaneBytes   = 64 << 20
-	DefaultReservationTimeout  = time.Second
-	DefaultRetryHorizon        = 5 * time.Minute
-	DefaultPublishTimeout      = 10 * time.Second
-	DefaultStallWait           = 100 * time.Millisecond
-	DefaultFaultBackoff        = 30 * time.Second
-	DefaultClockStepTolerance  = tracepack.DefaultClockStepTolerance
+	// DefaultOrdinaryLaneBytes bounds the ordinary lane by frame bytes.
+	DefaultOrdinaryLaneBytes = 64 << 20
+	// DefaultReservationTimeout is the unqueued-reservation bound (T-12).
+	DefaultReservationTimeout = time.Second
+	// DefaultRetryHorizon is H (T-12).
+	DefaultRetryHorizon = 5 * time.Minute
+	// DefaultPublishTimeout is τ (T-12).
+	DefaultPublishTimeout = 10 * time.Second
+	// DefaultStallWait is the asynchronous publish's stall wait (producer-sdk.md §4.7).
+	DefaultStallWait = 100 * time.Millisecond
+	// DefaultFaultBackoff is the pause before rotating away from a fresh capture that faulted again within a minute.
+	DefaultFaultBackoff = 30 * time.Second
+	// DefaultClockStepTolerance is ε (T-29).
+	DefaultClockStepTolerance = tracepack.DefaultClockStepTolerance
 )
 
 // ErrInvalidConfig reports a Config New refuses.

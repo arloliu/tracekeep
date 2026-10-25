@@ -7,6 +7,7 @@ import (
 	"errors"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -397,5 +398,65 @@ func TestFullLaneWhileTheBusIsDownCountsBusDown(t *testing.T) {
 	_ = h.p.Close()
 	if got := h.m.get("records_dropped_total{reason=bus_down}"); got != 3 {
 		t.Errorf("dropped{bus_down} = %v, want 3", got)
+	}
+}
+
+// An End whose drain outlives its deadline must not touch the next capture once Begin opens it.
+func TestLateDrainSparesTheSuccessor(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t, producer.Tunables{})
+	release := make(chan struct{})
+	blocked := make(chan struct{})
+	var once sync.Once
+	first := h.begin()
+	h.bus.FailPublish(func(m *producer.Msg) error {
+		if m.MsgID == first.ID.String()+".0" {
+			once.Do(func() { close(blocked) })
+			<-release // the publisher is stuck in the old start's publish past End's deadline
+
+			return errDown
+		}
+
+		return nil
+	})
+	<-blocked
+
+	ctx, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond)
+	defer cancel()
+	if rep := h.p.End(ctx); rep.Drained {
+		t.Fatalf("End drained while the publisher was blocked: %+v", rep)
+	}
+	second := h.begin()
+	close(release)
+
+	msgs := h.wait(1)
+	if msgs[0].MsgID != second.ID.String()+".0" {
+		t.Errorf("first accepted message %s, want the successor's start", msgs[0].MsgID)
+	}
+}
+
+// Past the retry horizon a record is dropped without another attempt.
+func TestNoAttemptPastTheHorizon(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t, producer.Tunables{RetryHorizon: 50 * time.Millisecond}) // below the first 100ms backoff
+	c := h.begin()
+	var attempts atomic.Int32
+	h.bus.FailPublish(func(m *producer.Msg) error {
+		if m.MsgID == c.ID.String()+".1" {
+			attempts.Add(1)
+			return errDown
+		}
+
+		return nil
+	})
+	h.observe(frame(4))
+	h.wait(1)
+
+	rep := h.p.End(t.Context()) // drains: seq 1 is dropped once its retry falls past H
+	if !rep.Drained {
+		t.Fatalf("End = %+v", rep)
+	}
+	if got := attempts.Load(); got != 1 {
+		t.Errorf("%d attempts at seq 1, want 1: its retry would fall past the horizon", got)
 	}
 }

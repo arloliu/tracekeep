@@ -26,6 +26,7 @@ const (
 	reasonHotReload = "hotreload"
 	reasonFault     = "fault"
 	reasonStop      = "stop"
+	reasonSeqLimit  = "seq_limit"
 )
 
 var (
@@ -124,11 +125,11 @@ func (p *Producer) End(ctx context.Context) Report {
 	if res.Abandoned {
 		p.rec.Abandon(&p.gen)
 		rep.Abandoned = true
-		p.log.Warn("producer: stop deadline passed, capture abandoned", "capture_id", cur.ID.String())
+		p.emit(func() { p.log.Warn("producer: stop deadline passed, capture abandoned", "capture_id", cur.ID.String()) })
 	}
 	id := cur.ID
 	p.last = &id
-	p.metrics.Add("capture_rotations_total", map[string]string{"reason": reasonStop}, 1)
+	p.emit(func() { p.metrics.Add("capture_rotations_total", map[string]string{"reason": reasonStop}, 1) })
 	p.setCurrentMetric(nil, nil)
 	rep.Drained, rep.Dropped = p.drain(deadline(ctx))
 
@@ -177,6 +178,7 @@ func (p *Producer) rotateLocked(ctx context.Context, d *CaptureDescriptor, previ
 		ReservedCap: p.tun.ReservedLaneRecords,
 		OriginWall:  wall,
 		OriginMono:  mono,
+		RotateAt:    p.rotateAt,
 	})
 	c.Descriptor = base64.StdEncoding.EncodeToString(desc)
 	if c.Subject, err = tracepack.BusSubject(p.prefix, d.ToolID, id); err != nil {
@@ -191,9 +193,11 @@ func (p *Producer) rotateLocked(ctx context.Context, d *CaptureDescriptor, previ
 		return ErrRotationAbandoned
 	}
 	p.desc, p.descKey, p.last = *d, key, &id
-	p.metrics.Add("capture_rotations_total", map[string]string{"reason": reason}, 1)
 	p.setCurrentMetric(c, d)
-	p.log.Info("producer: capture rotated", "reason", reason, "capture_id", id.String())
+	p.emit(func() {
+		p.metrics.Add("capture_rotations_total", map[string]string{"reason": reason}, 1)
+		p.log.Info("producer: capture rotated", "reason", reason, "capture_id", id.String())
+	})
 
 	return nil
 }
@@ -233,19 +237,42 @@ func (p *Producer) descriptorKey(d *CaptureDescriptor) ([]byte, error) {
 
 // setCurrentMetric replaces the current_capture info gauge, deleting the previous label set.
 func (p *Producer) setCurrentMetric(c *core.Capture, d *CaptureDescriptor) {
-	if p.metricsCur != nil {
-		p.metrics.Delete("current_capture", p.metricsCur)
+	if prev := p.metricsCur; prev != nil {
+		p.emit(func() { p.metrics.Delete("current_capture", prev) })
 		p.metricsCur = nil
 	}
 	if c == nil {
 		return
 	}
-	p.metricsCur = map[string]string{
+	cur := map[string]string{
 		"capture_id":           c.ID.String(),
 		"tool_id":              d.ToolID,
 		"recorder_instance_id": d.RecorderInstanceID().String(),
 	}
-	p.metrics.Set("current_capture", p.metricsCur, 1)
+	p.metricsCur = cur
+	p.emit(func() { p.metrics.Set("current_capture", cur, 1) })
+}
+
+// emit hands a log line or a measurement to the sink goroutine without waiting:
+// the lifecycle path never calls an integrator's Logger or Metrics, so neither can delay a bounded End.
+// When the sink falls behind, the event is dropped.
+func (p *Producer) emit(f func()) {
+	select {
+	case p.events <- f:
+	default:
+	}
+}
+
+// sinkLoop runs the events the lifecycle path emitted.
+func (p *Producer) sinkLoop() {
+	for {
+		select {
+		case <-p.quit:
+			return
+		case f := <-p.events:
+			f()
+		}
+	}
 }
 
 // faultLoop rotates away from each capture the observers fault, on the producer's own goroutine.
@@ -256,6 +283,8 @@ func (p *Producer) faultLoop() {
 			return
 		case c := <-p.rec.Faults():
 			p.handleFault(c)
+		case c := <-p.rec.Rotations():
+			p.handleSeqLimit(c)
 		}
 	}
 }
@@ -287,7 +316,7 @@ func (p *Producer) handleFault(c *core.Capture) {
 	if !p.faultCurrentLocked(c) {
 		return
 	}
-	p.log.Error("producer: capture fault, rotating", "capture_id", c.ID.String())
+	p.emit(func() { p.log.Error("producer: capture fault, rotating", "capture_id", c.ID.String()) })
 	ctx, cancel := context.WithTimeout(context.Background(), defaultLifecycleTimeout)
 	defer cancel()
 	d := p.desc
@@ -297,12 +326,28 @@ func (p *Producer) handleFault(c *core.Capture) {
 	// so without it a rotation that cannot complete (a full reserved lane) would spin.
 	_, p.faultedAt = p.now()
 	if err != nil {
-		p.log.Warn("producer: fault rotation failed", "capture_id", c.ID.String(), "error", err)
+		p.emit(func() { p.log.Warn("producer: fault rotation failed", "capture_id", c.ID.String(), "error", err) })
 		p.faultFresh = c.ID
 
 		return
 	}
 	p.faultFresh = *p.last
+}
+
+// handleSeqLimit rotates away from a capture whose seq neared its end, with the same descriptor (G5-231).
+func (p *Producer) handleSeqLimit(c *core.Capture) {
+	p.lifeMu.Lock()
+	defer p.lifeMu.Unlock()
+	if p.stopping.Load() || p.rec.Current() != c || c.Faulted() {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), defaultLifecycleTimeout)
+	defer cancel()
+	d := p.desc
+	id := c.ID
+	if err := p.rotateLocked(ctx, &d, &id, reasonSeqLimit); err != nil {
+		p.emit(func() { p.log.Error("producer: seq-limit rotation failed", "capture_id", id.String(), "error", err) })
+	}
 }
 
 func (p *Producer) faultCurrentLocked(c *core.Capture) bool {

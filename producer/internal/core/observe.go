@@ -108,7 +108,12 @@ type Recorder struct {
 	maxCount  int64
 	maxBytes  int64
 	faults    chan *Capture
+	rotations chan *Capture
 	busDown   atomic.Bool
+	// resCount counts reserved records from their push until the publisher accepts or drops them,
+	// so the reserved lane's bound holds for what the publisher holds too.
+	resCount  atomic.Int64
+	resCap    int64
 	observed  [256][4]atomic.Uint64
 	dropped   [NumDropReasons]atomic.Uint64
 	dropBytes atomic.Uint64
@@ -121,11 +126,13 @@ type Recorder struct {
 // NewRecorder builds a recorder with no current capture.
 func NewRecorder(p RecorderParams) *Recorder {
 	return &Recorder{
-		reserved: make(chan Entry, p.ReservedCap),
-		ordinary: make(chan Entry, p.OrdinaryRecords),
-		maxCount: int64(p.OrdinaryRecords),
-		maxBytes: p.OrdinaryBytes,
-		faults:   make(chan *Capture, faultSignals),
+		reserved:  make(chan Entry, p.ReservedCap),
+		ordinary:  make(chan Entry, p.OrdinaryRecords),
+		maxCount:  int64(p.OrdinaryRecords),
+		maxBytes:  p.OrdinaryBytes,
+		faults:    make(chan *Capture, faultSignals),
+		rotations: make(chan *Capture, faultSignals),
+		resCap:    int64(p.ReservedCap),
 	}
 }
 
@@ -155,6 +162,12 @@ func (r *Recorder) Observe(o *Observation) {
 		return
 	}
 	allocated = true
+	if a.RotateDue {
+		select {
+		case r.rotations <- c:
+		default:
+		}
+	}
 	r.hook(hookAfterUnlock)
 
 	var q tracepack.Quality
@@ -199,15 +212,25 @@ func (r *Recorder) SetBusDown(down bool) { r.busDown.Store(down) }
 // OrdinaryDepth returns the ordinary lane's reserved count and bytes, the records the publisher still holds included.
 func (r *Recorder) OrdinaryDepth() (count, bytes int64) { return r.ordCount.Load(), r.ordBytes.Load() }
 
-// PushReserved queues e in the reserved lane without blocking; false when the lane is full.
+// PushReserved queues e in the reserved lane without blocking;
+// false when the lane's bound, which counts the reserved records the publisher holds, is reached.
 func (r *Recorder) PushReserved(e Entry) bool {
-	select {
-	case r.reserved <- e:
-		return true
-	default:
+	if !r.takeReserved(1) {
 		return false
 	}
+	if !r.sendReserved(e) {
+		r.ReleaseReserved()
+		return false
+	}
+
+	return true
 }
+
+// ReleaseReserved returns one reserved record's place in the lane's bound, once the publisher accepted or dropped it.
+func (r *Recorder) ReleaseReserved() { r.resCount.Add(-1) }
+
+// Rotations carries captures whose seq neared its end, for the lifecycle goroutine to rotate (G5-231).
+func (r *Recorder) Rotations() <-chan *Capture { return r.rotations }
 
 // Reserved is the reserved lane, which only the publisher reads.
 func (r *Recorder) Reserved() <-chan Entry { return r.reserved }
@@ -283,6 +306,25 @@ func (r *Recorder) reserveOrdinary(n int64) bool {
 	}
 
 	return true
+}
+
+func (r *Recorder) takeReserved(n int64) bool {
+	if r.resCount.Add(n) > r.resCap {
+		r.resCount.Add(-n)
+		return false
+	}
+
+	return true
+}
+
+// sendReserved puts e in the channel; the bound keeps the channel from filling, so this fails only on a bug.
+func (r *Recorder) sendReserved(e Entry) bool {
+	select {
+	case r.reserved <- e:
+		return true
+	default:
+		return false
+	}
 }
 
 func (r *Recorder) fullReason() DropReason {

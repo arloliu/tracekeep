@@ -15,6 +15,8 @@ import (
 const (
 	modulePath = "github.com/arloliu/tracekeep/producer"
 	goSecsPath = "github.com/arloliu/go-secs/v2"
+	// sinkEvents bounds the lifecycle events waiting for the sink goroutine.
+	sinkEvents = 256
 )
 
 // ErrNoBus reports a New without a bus.
@@ -52,7 +54,10 @@ type Producer struct {
 	faultedAt  int64          // when the last fault rotation ran, mono ns
 	faultFresh tracepack.UUID // the capture it installed, or the faulted one when it failed
 	metricsCur map[string]string
+	// rotateAt overrides the seq-limit rotation point; the package's tests lower it.
+	rotateAt uint64
 
+	events    chan func()
 	quit      chan struct{}
 	wg        sync.WaitGroup
 	closeOnce sync.Once
@@ -64,6 +69,9 @@ type options struct {
 	bus     Bus
 	// noPublisher builds a producer without a bus or a publisher, for the package's own lifecycle tests.
 	noPublisher bool
+	// hooks and rotateAt are the package's test seams.
+	hooks    publisherHooks
+	rotateAt uint64
 }
 
 func init() {
@@ -113,10 +121,14 @@ func New(cfg Config, opts ...Option) (*Producer, error) {
 		recorder: recorderName(),
 		now:      core.Now,
 		quit:     make(chan struct{}),
+		events:   make(chan func(), sinkEvents),
+		rotateAt: o.rotateAt,
 	}
 	p.wg.Go(p.faultLoop)
+	p.wg.Go(p.sinkLoop)
 	if !o.noPublisher {
 		p.pub = newPublisher(p, o.bus)
+		p.pub.hooks = o.hooks
 		p.wg.Go(func() { p.pub.run(p.quit) })
 	}
 

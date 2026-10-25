@@ -14,8 +14,10 @@ const (
 // Metadata keys of a claim object (docs/specs/tracekeep/producer.md §4.2 *Large records*):
 // the record's 44-byte header and its ts_utc_ns, both hex.
 const (
+	// ObjectMetaRecordHeader holds the record's 44-byte header, hex.
 	ObjectMetaRecordHeader = "tpk-record-header"
-	ObjectMetaTSUTCNs      = "tpk-ts-utc-ns"
+	// ObjectMetaTSUTCNs holds the record's ts_utc_ns, hex.
+	ObjectMetaTSUTCNs = "tpk-ts-utc-ns"
 )
 
 // ErrObjectNotFound reports a claim object that does not exist.

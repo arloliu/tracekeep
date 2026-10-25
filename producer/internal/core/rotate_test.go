@@ -182,21 +182,88 @@ func TestRotateFaultedOldGetsNoStop(t *testing.T) {
 	}
 }
 
-func TestRotateStopThatDoesNotFitIsLost(t *testing.T) {
+// A rotation needs room for the old capture's clock step and stop before it commits; without it, it installs nothing.
+func TestRotateWithoutRoomForTheBoundariesAbandons(t *testing.T) {
 	t.Parallel()
-	r := NewRecorder(RecorderParams{ReservedCap: 1, OrdinaryRecords: 4, OrdinaryBytes: 1 << 10})
+	r := NewRecorder(RecorderParams{ReservedCap: 2, OrdinaryRecords: 4, OrdinaryBytes: 1 << 10})
 	var gen atomic.Uint64
 	clk := &testClock{}
 	clk.wall.Store(origin)
 	a := prepared(&gen, clk, 1)
-	r.Rotate(a, time.Now().Add(time.Second), never, clk.now) // a's start fills the lane
+	r.Rotate(a, time.Now().Add(time.Second), never, clk.now) // a's start takes one of the two places
 
 	res := r.Rotate(nil, time.Now().Add(time.Second), never, clk.now)
-	if !res.Installed || res.StopQueued {
-		t.Fatalf("rotation with a full reserved lane: %+v, want installed without a stop", res)
+	if res.Installed || !res.Abandoned {
+		t.Fatalf("rotation without room for the stop: %+v, want abandoned", res)
 	}
-	if _, st := a.Allocate(origin, 1, 1); st != Closed {
-		t.Errorf("old capture without its stop reads %v, want Closed so callbacks retry on the successor", st)
+	if r.Current() != a {
+		t.Errorf("an abandoned rotation changed the current capture")
+	}
+	if _, st := a.Allocate(origin, 1, 1); st != Allocated {
+		t.Errorf("the old capture reads %v, want still open", st)
+	}
+}
+
+func TestRotateAfterTheDeadlineAbandons(t *testing.T) {
+	t.Parallel()
+	r, gen, clk := newRotateRecorder(t)
+	b := prepared(gen, clk, 1)
+	res := r.Rotate(b, time.Now().Add(-time.Millisecond), never, clk.now)
+	if res.Installed || !res.Abandoned || b.StartState() != StartDiscarded || r.Current() != nil {
+		t.Errorf("rotation past its deadline: %+v, start %v; want nothing installed", res, b.StartState())
+	}
+	cancelled := func() bool { return true }
+	if res := r.Rotate(prepared(gen, clk, 2), time.Now().Add(time.Hour), cancelled, clk.now); res.Installed {
+		t.Errorf("a cancelled rotation was installed")
+	}
+}
+
+// The reserved lane's bound counts what the publisher holds: a popped but unaccepted record keeps its place.
+func TestReservedBoundCountsHeldRecords(t *testing.T) {
+	t.Parallel()
+	r := NewRecorder(RecorderParams{ReservedCap: 2, OrdinaryRecords: 4, OrdinaryBytes: 1 << 10})
+	for i := range 2 {
+		if !r.PushReserved(Entry{Kind: EntryClockStep, Seq: uint64(i)}) {
+			t.Fatalf("push %d refused", i)
+		}
+	}
+	<-r.Reserved()
+	<-r.Reserved() // popped, not yet accepted
+	if r.PushReserved(Entry{Kind: EntryClockStep, Seq: 2}) {
+		t.Fatalf("a push past the bound was accepted while the publisher holds two records")
+	}
+	r.ReleaseReserved()
+	if !r.PushReserved(Entry{Kind: EntryClockStep, Seq: 2}) {
+		t.Errorf("a released place was not reusable")
+	}
+}
+
+func TestSeqLimitAsksForRotation(t *testing.T) {
+	t.Parallel()
+	r := NewRecorder(RecorderParams{ReservedCap: 8, OrdinaryRecords: 8, OrdinaryBytes: 1 << 10})
+	var gen atomic.Uint64
+	c := NewCapture(CaptureParams{ID: tracepack.UUID{1}, Lifecycle: &gen, Tolerance: eps, ReservedCap: 8, OriginWall: origin, RotateAt: 2})
+	c.Retire(0)
+	r.cur.Store(c)
+
+	r.Observe(frameObs(1, []byte{1})) // seq 1
+	select {
+	case <-r.Rotations():
+		t.Fatalf("rotation asked before RotateAt")
+	default:
+	}
+	r.Observe(frameObs(2, []byte{1})) // seq 2
+	r.Observe(frameObs(3, []byte{1})) // seq 3: asked only once
+	select {
+	case got := <-r.Rotations():
+		if got != c {
+			t.Errorf("rotation asked for another capture")
+		}
+	default:
+		t.Fatalf("no rotation asked at RotateAt")
+	}
+	if len(r.Rotations()) != 0 {
+		t.Errorf("rotation asked more than once")
 	}
 }
 
