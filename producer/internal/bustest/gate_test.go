@@ -263,3 +263,33 @@ func TestClaimBucketWithDirectReadsIsRefused(t *testing.T) {
 	}
 	b.fetch(t, 1) // the start, once the bucket is fixed
 }
+
+// The start's synchronous publish makes one attempt: with no stream on its subject, nats.go answers no responders,
+// and the publisher sees the failure at once instead of after the client's own retries (two, 250 ms apart by default).
+func TestStartPublishMakesOneAttempt(t *testing.T) {
+	t.Parallel()
+	b := newBusWith(t, testbus.Options{}, func(sc *jetstream.StreamConfig) { sc.Subjects = []string{"other.>"} }, false)
+	nc, err := nats.Connect(b.url, nats.ReconnectBufSize(-1))
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	t.Cleanup(nc.Close)
+	log := newLog()
+	p, err := producer.New(producer.Config{SubjectPrefix: prefix, ClaimBucket: bucket}, producer.WithConn(nc), producer.WithLogger(log))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	t.Cleanup(func() { _ = p.Close() })
+
+	start := time.Now()
+	if err := p.Begin(t.Context(), producer.CaptureDescriptor{ToolID: "T1", DeviceName: "eqp"}); err != nil {
+		t.Fatalf("Begin: %v", err)
+	}
+	line := log.wait(t, "producer: reserved record not accepted, retrying")
+	if took := time.Since(start); took >= 250*time.Millisecond {
+		t.Errorf("the start's first failure came after %v: the client retried it", took)
+	}
+	if !strings.Contains(line, "no response from stream") {
+		t.Errorf("first failure %q, want no response from a stream", line)
+	}
+}

@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/base64"
 	"errors"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -304,6 +305,38 @@ func TestUncertainClaimIsReadBackAndReplaced(t *testing.T) {
 	_ = h.p.Close()
 	if got := h.m.get("claim_puts_total{outcome=put}"); got != 1 {
 		t.Errorf("claim_puts{put} = %v, want 1 successful put after the uncertain one", got)
+	}
+
+	// The candidate is read back and deleted before the put that completes, and only that put is referenced.
+	name := c.ID.String() + ".1"
+	id, _ := tracepack.BusMsgID(c.ID, 1)
+	var got []string
+	for _, op := range h.bus.Ops() {
+		if strings.HasSuffix(op, " "+name) || strings.HasSuffix(op, " "+id) {
+			got = append(got, strings.Fields(op)[0])
+		}
+	}
+	if want := []string{"info", "put", "info", "get", "delete", "put", "publish-async"}; !slices.Equal(got, want) {
+		t.Errorf("operations on seq 1 = %v, want %v", got, want)
+	}
+}
+
+// The start goes by the synchronous publish, the records above it by the asynchronous one.
+func TestStartIsPublishedSynchronously(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t, producer.Tunables{})
+	c := h.begin()
+	h.observe(frame(4))
+	h.wait(2)
+
+	start, _ := tracepack.BusMsgID(c.ID, 0)
+	record, _ := tracepack.BusMsgID(c.ID, 1)
+	ops := h.bus.Ops()
+	if !slices.Contains(ops, "publish "+start) || slices.Contains(ops, "publish-async "+start) {
+		t.Errorf("the start's publishes = %v, want the synchronous one only", ops)
+	}
+	if !slices.Contains(ops, "publish-async "+record) {
+		t.Errorf("the record's publishes = %v, want an asynchronous one", ops)
 	}
 }
 
