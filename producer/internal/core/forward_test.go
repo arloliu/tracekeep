@@ -186,23 +186,33 @@ func TestDelayedFrameOfTheOldSocketIsAmbiguous(t *testing.T) {
 	}
 }
 
-// A timeout while Bind is held after it found the reconnect, before it records the socket, emits nothing:
-// the entry is ambiguous before it is bound.
-func TestTimeoutDuringAReconnectedBindEmitsNothing(t *testing.T) {
+// A timeout that sees a reconnected request's binding sees its ambiguity too:
+// held right after Bind records the socket, which the capture maps, the timeout is dropped as ambiguous.
+func TestTimeoutAfterAReconnectedBindIsAmbiguous(t *testing.T) {
 	t.Parallel()
 	r, _ := newForwardRecorder(t)
+	o := frameObs(1, []byte{1})
+	o.Socket = 6
+	r.Observe(o)
+	popOrdinary(t, r)
 	r.Pending.SetSocket(5)
 	tok := r.Pending.Register(2, 77, "c")
 	r.Pending.SetSocket(6)
+	held := false
 	r.Pending.bindHook = func() {
+		held = true
 		tok.TimedOut(time.Second)
-		if n := len(r.Ordinary()); n != 0 {
-			t.Errorf("%d records from a timeout inside Bind, want none", n)
-		}
 	}
 	r.Pending.Bind(2, 77, 1, 3, 6)
-	if !tok.Ambiguous() {
-		t.Fatalf("a request registered before the reconnect is not ambiguous")
+
+	if !held {
+		t.Fatalf("Bind never reached its hook")
+	}
+	if n := len(r.Ordinary()); n != 0 {
+		t.Fatalf("%d records from a timeout after the binding, want none", n)
+	}
+	if n := r.Pending.Counters().TimeoutsDropped[TimeoutAmbiguous]; n != 1 {
+		t.Fatalf("ambiguous timeouts %d, want 1: %+v", n, r.Pending.Counters().TimeoutsDropped)
 	}
 }
 
