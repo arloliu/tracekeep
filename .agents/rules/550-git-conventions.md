@@ -52,6 +52,8 @@ Never add `Co-Authored-By` or any other attribution trailers.
 
 ## Pull Requests
 - Title follows the same Conventional Commits format as the commit's first line.
+- Merge by rebase (`gh pr merge <n> --rebase`): never a merge commit and never a squash,
+  so every reviewed commit lands on `main` as it was reviewed.
 - Body restates the WHY and PURPOSE for reviewers.
   Linking the spec and prior review history is acceptable here when it is useful context,
   but lead with domain language so a reviewer who hasn't read the plan can still understand the change.
