@@ -85,12 +85,14 @@ type Capture struct {
 
 	mu sync.Mutex
 	// Guarded by mu.
-	nextSeq      uint64
-	anchorWall   int64
-	anchorMono   int64
-	lastMono     int64
-	closed       bool
-	faulted      bool
+	nextSeq    uint64
+	anchorWall int64
+	anchorMono int64
+	lastMono   int64
+	closed     bool
+	faulted    bool
+	// faultedFlag mirrors faulted for readers that must not wait on the lock, such as the lifecycle goroutine.
+	faultedFlag  atomic.Bool
 	sockets      [MaxSockets]uint64
 	nSockets     int
 	reservations []reservation
@@ -227,13 +229,8 @@ func (c *Capture) Fault() {
 	c.faultLocked()
 }
 
-// Faulted reports whether the capture is in the fault state.
-func (c *Capture) Faulted() bool {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	return c.faulted
-}
+// Faulted reports whether the capture is in the fault state; it never waits on the capture's lock.
+func (c *Capture) Faulted() bool { return c.faultedFlag.Load() }
 
 // faultLocked faults an open capture.
 // A capture a rotation already closed is left closed:
@@ -243,6 +240,7 @@ func (c *Capture) faultLocked() {
 		return
 	}
 	c.closed, c.faulted = true, true
+	c.faultedFlag.Store(true)
 }
 
 // epochLocked returns the epoch of socket, numbering a socket seen for the first time;

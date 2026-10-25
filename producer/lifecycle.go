@@ -32,7 +32,8 @@ var (
 	// ErrNotStarted reports a Rotate with no capture open: before Begin or after End.
 	ErrNotStarted = errors.New("producer: no capture open")
 	// ErrRotationAbandoned reports a rotation that gave up before its commit point:
-	// an observer held the old capture's lock past the deadline, or End began.
+	// an observer held the old capture's lock past the deadline or the context's end, End began,
+	// or the reserved lane had no room for the new start.
 	// The previous capture stays current.
 	ErrRotationAbandoned = errors.New("producer: rotation abandoned")
 )
@@ -118,7 +119,7 @@ func (p *Producer) End(ctx context.Context) Report {
 	if cur == nil {
 		return Report{}
 	}
-	res := p.rec.Rotate(nil, deadline(ctx), func() bool { return false }, p.now)
+	res := p.rec.Rotate(nil, deadline(ctx), func() bool { return ctx.Err() != nil }, p.now)
 	rep := Report{CaptureID: cur.ID, StopQueued: res.StopQueued}
 	if res.Abandoned {
 		p.rec.Abandon(&p.gen)
@@ -185,7 +186,7 @@ func (p *Producer) rotateLocked(ctx context.Context, d *CaptureDescriptor, previ
 		return err
 	}
 
-	res := p.rec.Rotate(c, deadline(ctx), p.stopping.Load, p.now)
+	res := p.rec.Rotate(c, deadline(ctx), func() bool { return p.stopping.Load() || ctx.Err() != nil }, p.now)
 	if res.Abandoned {
 		return ErrRotationAbandoned
 	}
@@ -269,8 +270,8 @@ func (p *Producer) handleFault(c *core.Capture) {
 		p.lifeMu.Unlock()
 		return
 	}
-	wall, _ := p.now()
-	repeat := c.ID == p.faultFresh && time.Duration(wall-p.faultedAt) < faultRepeatWindow
+	_, mono := p.now()
+	repeat := c.ID == p.faultFresh && time.Duration(mono-p.faultedAt) < faultRepeatWindow
 	p.lifeMu.Unlock()
 
 	if repeat {
@@ -291,11 +292,16 @@ func (p *Producer) handleFault(c *core.Capture) {
 	defer cancel()
 	d := p.desc
 	id := c.ID
-	if err := p.rotateLocked(ctx, &d, &id, reasonFault); err != nil {
+	err := p.rotateLocked(ctx, &d, &id, reasonFault)
+	// The backoff covers a failed rotation too: the faulted capture stays current and keeps signalling,
+	// so without it a rotation that cannot complete (a full reserved lane) would spin.
+	_, p.faultedAt = p.now()
+	if err != nil {
 		p.log.Warn("producer: fault rotation failed", "capture_id", c.ID.String(), "error", err)
+		p.faultFresh = c.ID
+
 		return
 	}
-	p.faultedAt, _ = p.now()
 	p.faultFresh = *p.last
 }
 

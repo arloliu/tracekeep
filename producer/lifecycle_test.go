@@ -229,3 +229,25 @@ func TestNewUUIDv7(t *testing.T) {
 		prev = u
 	}
 }
+
+// A fault rotation that cannot complete starts the backoff too, so a persistent fault cannot spin.
+func TestFailedFaultRotationBacksOff(t *testing.T) {
+	t.Parallel()
+	const backoff = 150 * time.Millisecond
+	p := newTestProducer(t, Tunables{ReservedLaneRecords: 1, FaultBackoff: backoff})
+	if err := p.Begin(t.Context(), testDescriptor()); err != nil { // its start fills the one-slot reserved lane
+		t.Fatal(err)
+	}
+	c := p.rec.Current()
+	c.Fault() // no observation signals it, so only the calls below handle it
+
+	p.handleFault(c) // fails for want of room in the reserved lane
+	if p.rec.Current() != c {
+		t.Fatalf("a rotation succeeded with a full reserved lane")
+	}
+	start := time.Now()
+	p.handleFault(c) // the same capture faults on: this attempt waits for the backoff
+	if waited := time.Since(start); waited < backoff {
+		t.Errorf("second attempt after %v, want at least the %v backoff", waited, backoff)
+	}
+}

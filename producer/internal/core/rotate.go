@@ -50,7 +50,7 @@ func (r *Recorder) Rotate(next *Capture, deadline time.Time, abort func() bool, 
 		// Nothing else can hold next's lock before it is installed; seq 0 is its start's.
 		if !r.PushReserved(Entry{Cap: next, Kind: EntryStart, Seq: 0, Wall: next.OriginWall, Mono: next.OriginMono}) {
 			next.start.Store(uint32(StartDiscarded))
-			return RotateResult{Abandoned: true}
+			return RotateResult{Abandoned: true, Old: r.cur.Load()}
 		}
 		next.Retire(0)
 	}

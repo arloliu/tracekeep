@@ -49,8 +49,8 @@ type Producer struct {
 	descKey    []byte
 	last       *tracepack.UUID
 	ids        uuidV7
-	faultedAt  int64          // when the last fault rotation installed its capture, wall ns
-	faultFresh tracepack.UUID // the capture that rotation installed
+	faultedAt  int64          // when the last fault rotation ran, mono ns
+	faultFresh tracepack.UUID // the capture it installed, or the faulted one when it failed
 	metricsCur map[string]string
 
 	quit      chan struct{}
