@@ -76,11 +76,24 @@ What the tag brings with it:
 `recorder_instance_id` = UUIDv5 (RFC 9562), under one fixed namespace UUID that the SDK defines,
 of `tool_id` and the device name, each prefixed by its byte length,
 so no choice of characters in either can make two pairs collide.
-The SDK computes it from `ToolID` and a new `DeviceName` in `Config`, which replaces `RecorderInstanceID`,
-and guarantee (2) of `producer-sdk.md` §4.7 becomes "the configured `toolID` and the configured device name".
 The same names always yield the same UUID, across restarts and leadership changes,
 which the successor lookup by (`tool_id`, `recorder_instance_id`) of `catalog.md` §7.3 and `compactor.md` §8.2 relies on.
+
+The SDK derives it from the descriptor of each capture it starts or rotates to,
+from the descriptor's `tool_id` and `recorder_instance_name`,
+and refuses a descriptor that sets `recorder_instance_id` itself.
+`Config` loses `ToolID` and `RecorderInstanceID` and names the bus only, as `producer-sdk.md` §4.7 intends:
+`Config` is fixed at `New`, while `toolID` can change through a configuration update,
+and the descriptor already carries `tool_id`, so a copy in `Config` could only disagree with it.
+Guarantee (2) of `producer-sdk.md` §4.7 becomes "every descriptor carries the configured `toolID` and the configured device name".
 A `toolID` change is a descriptor change, so the producer rotates (§4.2) and the new captures form a new series.
+Because the identity travels in the descriptor, this item holds whichever lifecycle vocabulary P1 item 4 chooses.
+
+The gateway's `AppID` stays out of the identity.
+The election name is `<AppID>-<toolID>`, so two deployments with different `AppID`s could serve one tool,
+but a reader names a tool and a device,
+and an `AppID` in the identity would break a device's series at every deployment rename.
+Two deployments serving one tool at once look like two overlapping leaders and are handled and reported as §4a describes.
 
 ## 4. Catalog
 
@@ -92,9 +105,27 @@ A `pending` row has none, as it has no descriptor (`ingest.md` §6.1).
 
 Two leaders running at once produce two open captures with the same `tool_id`, device and `recorder_instance_id`,
 which [STO §4] allows (each producer publishes only its own capture, G5-200, G5-242).
-A read by device returns both, each with its own completeness, and never interleaves them into one series;
-`ListDevices` and `ListCaptures` flag a device with more than one open capture.
-The successor lookup of `catalog.md` §7.3 and `compactor.md` §8.2 must tolerate two candidates; how it chooses is open.
+A read by device returns both, each with its own completeness, and never interleaves them into one series.
+
+Neither use of the successor lookup has to choose between candidates;
+each looks at every capture of the key instead of one predecessor:
+
+- **Close a capture left open** (`compactor.md` §8.2).
+  The successor trigger also requires that the capture itself has had no registration for Q,
+  re-validated inside the intent transaction as the inactivity trigger is.
+  A live capture registers a segment at least every F, and Q exceeds F plus `ack_wait`,
+  so an overlapping capture is not closed while its leader still writes,
+  and two leaders that rotate cannot close each other's live captures.
+  A capture whose leader died stops registering and is closed Q after both conditions hold, as today.
+- **Unregistered interval** (`catalog.md` §7.3).
+  It is reported when a capture starts more than Q after the latest `highest_seq_ts` of every earlier capture of the key,
+  not after the end of one predecessor,
+  so an overlap is never reported as missing traffic.
+- **Overlap flag.**
+  When the spans of two captures of one key intersect, each from `capture_origin_utc_ns` to `highest_seq_ts`,
+  both are flagged `overlap` in `ListCaptures` and in `ListDevices`.
+  The flag is computed from those spans, not from the `open` state,
+  so it survives the close of either capture.
 
 ## 5. One selector for every read
 
@@ -122,7 +153,7 @@ A new operation lists what can be selected:
 
 | Operation | Answers |
 |---|---|
-| `ListDevices(tool, from, to)` | per device: name, `equipment_endpoint`, `device_id`, how many captures are open, the last record time, whether the window holds a gap |
+| `ListDevices(tool, from, to)` | per device: name, `equipment_endpoint`, `device_id`, how many captures are open, whether any captures overlap (§4a), the last record time, whether the window holds a gap |
 
 ## 6. Record predicates of `QueryRecords`
 
@@ -152,11 +183,12 @@ and needs no knowledge of capture ids beyond what `ListPacks` returns.
 
 ## Open
 
-- How the successor lookup chooses between two overlapping captures of one device (§4a).
-- Whether the gateway's `AppID` belongs in the identity: the election name is `<AppID>-<toolID>`, so two deployments with different `AppID`s could serve one tool.
-- How this meets P1 item 4, which also reshapes the SDK's `Config` and lifecycle vocabulary.
+Nothing; the three questions of the first draft are answered in the proposal:
+the successor lookup with overlapping captures in §4a,
+`AppID` and the interplay with P1 item 4 in §3.
+Not verified: whether two deployments with different `AppID`s serve one tool in practice.
 
 ## Applying it
 
-Items amend `producer.md` §4.5, `producer-sdk.md` §4.7, `catalog.md` §7.1, `api.md` §10.1, `rollouts.md` §6.4, `positioning.md` §2, `glossary.md`
+Items amend `producer.md` §4.5, `producer-sdk.md` §4.7, `catalog.md` §7.1 and §7.3, `compactor.md` §8.2, `api.md` §10.1, `rollouts.md` §6.4, `positioning.md` §2, `glossary.md`
 and `.agents/rules/600-invariants.md` (guarantee 2), each with its interface section, in one change per accepted item.
