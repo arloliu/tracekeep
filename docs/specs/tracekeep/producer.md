@@ -394,7 +394,8 @@ it also serves §4.4's T3 attribution):
   (System Bytes are 4 bytes;
   the set is capped, default 4 million entries, about 46 days of one-second polling;
   past the cap thinning is off until the process restarts, and the flag is checked at dequeue,
-  so queued thin-selected records are kept in full too).
+  so queued thin-selected records are kept in full too;
+  an entry whose key the full set cannot hold is ambiguous, since a later reuse of its key would go unseen).
   A registration whose key is already in the set marks the new entry **and** any live or unresolved entry of that key ambiguous;
   an ambiguous entry never thins.
   Inserting at registration closes the pre-binding interval:
@@ -406,7 +407,9 @@ it also serves §4.4's T3 attribution):
 - **Socket binding**: the outbound observation records the socket the frame went out on;
   a reply matches an entry only on the **same socket** and while the entry is live or completed;
   a reply on another socket, or after expiry, finds nothing and is kept in full;
-  a reconnect between registration and the outbound observation marks the entry ambiguous.
+  a reconnect between registration and the outbound observation marks the entry ambiguous,
+  whether the frame went out on the new socket or is an old socket's frame observed late,
+  and the mark is made before the binding is recorded.
   The socket is also the epoch source of §4.4.
 - The wire callback looks the outbound primary and the inbound reply up by key (a map read, no body inspection) and attaches the **token** to the record.
   A reply callback that arrives before the outbound callback (go-secs delivers observations out of causal order) finds the entry,
