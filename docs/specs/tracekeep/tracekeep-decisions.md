@@ -416,3 +416,16 @@ Only the SDK requires tracepack today; the service takes the same version when i
 which would invert vantage and every `dir` if the gateway were the equipment endpoint there.
 It is not: the legacy host system's `pdf` endpoint runs in passive mode, and eqp-hub's `eqp-hsms` device holds the host role on that connection.
 A `pdf_*` capture therefore keeps vantage host with no per-device option, and capturing it needs no restriction.
+
+### T-38 — the simulator builds as a module of its own until the SDK's first tag (2026-10-26)
+
+`cmd/tracekeep-sim` drives the SDK, but the service module does not require the SDK before its first tag (T-17, T-27),
+so in the service module the simulator cannot build with `GOWORK=off`, and CI has no workspace.
+Until that tag the simulator is the module `github.com/arloliu/tracekeep/cmd/tracekeep-sim`, built like the bus-test module (T-35):
+it requires the SDK, and the service when it needs `internal/testbus`, through `replace` directives to this repository,
+is never tagged and is required by nothing, and runs with `GOWORK=off`.
+An SDK change and the simulator code that uses it therefore land in one pull request.
+A pseudo-version of `producer/` was rejected because rebase merges rewrite the commit it names;
+an early SDK tag was rejected because phase 0.4 itself still changes the SDK's API.
+The cost is that `go install …@latest` cannot build the simulator while it carries `replace`.
+When the service first requires the SDK by tag, at the latest for phase 1's `tracekeep dev`, the simulator's `go.mod` is removed and it returns to the service module.
