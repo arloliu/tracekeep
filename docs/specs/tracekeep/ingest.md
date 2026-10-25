@@ -83,8 +83,13 @@ and the lookups of the version in `parked` and of an active termination order;
 nothing calls `CheckBusMessage`, fetches an object or validates a descriptor before the classifier has found the version unresolved,
 so a resolved or order-covered delivery reaches its disposition from the raw message alone.
 A transactional operation starts with the prologue of §6.3, **re-reads under the capture row** the mutable facts its outcome depends on, and returns the **actual outcome**,
-which may differ from the one the classifier expected from its snapshot:
-the admission transaction returns `open`, nothing changed (equal bytes) or `descriptor-conflict`;
+which may differ from the one the classifier expected from its snapshot.
+Among those facts are always the delivery's version resolution and the capture's active termination orders:
+admission, rejection and parking's step (1) take the delivery's identity (version key, bus incarnation, stream seq),
+and a delivery terminated, or covered by an order, meanwhile returns `terminated` with nothing else written,
+since termination and every ingest effect of a capture serialize on its row and whichever commits first wins (T-32).
+The admission transaction returns `open`, nothing changed (equal bytes), `descriptor-conflict` or `terminated`;
+the durable write of `rejected` returns `rejected`, `descriptor-conflict` on an admitted capture with other bytes, `already-admitted` with the bound processing configuration on one with equal bytes, after which the classifier decides again (T-32), or `terminated`;
 parking's step (1) returns a version already resolved (acknowledged, nothing published),
 a new row of an admitted capture whose hour is past the retention horizon (terminated as `beyond-retention`),
 or a row in `parking` or `parked` to publish.
@@ -142,7 +147,8 @@ the cases prove the decision, the schedules prove the re-reads under the capture
   Conflicts that batching cannot see (two consumers, two batches, any hours) are found at registration:
   a new `pack_ranges` row that overlaps an existing range of the **same capture, in any hour**, marks the pair `suspect` in `conflicts`
   (redelivery after a crash produces such overlaps legitimately, so suspects are common after an incident and rare otherwise);
-  `compact` compares the overlapping records' bytes **and redaction entries**, clearing the row for equal copies and confirming it for differing ones;
+  `compact` compares the overlapping records' bytes **and redaction entries**, clearing the row for equal copies and confirming it for differing ones,
+  each only while the row still names exactly the packs it compared (`catalog.md` §7.2 `RecordConflict`, T-32);
   a merge that fails on a conflict writes the row too.
   Two concurrent registrations of one capture cannot both miss the overlap:
   the registration transaction's first statement updates the capture's row (§6.3),
@@ -167,7 +173,7 @@ the cases prove the decision, the schedules prove the re-reads under the capture
 | Crash | State left | Recovery |
 |---|---|---|
 | before the put | nothing | redelivery rewrites the batch, byte-identical (G5-214) |
-| after the put, before registration | orphan in `staging/` | reconciler registers it; redelivery writes a second segment with the same records; [FMT I-12] deduplicates |
+| after the put, before registration | orphan in `staging/` | reconciler registers it, coverage only; redelivery writes a second segment with the same records under its own pack id, which writes the receipts and `parked` states the adopted pack never gains (T-32); [FMT I-12] deduplicates |
 | after registration, during the per-message acks | registered segment, some messages acked | the unacked remainder is redelivered and written again; duplicates are harmless |
 | after a confirmed ack | nothing left to recover: the receipt, the `claim_objects` row and, for a parked record, the `staged` state of its `parked` row were written at registration; a crash between that commit and the acknowledgement redelivers a message whose row is resolved (§6.1 *resolution*) | — |
 
@@ -179,12 +185,15 @@ and on SQLite the single writer serializes them;
 it then checks its **guards** and aborts on any of them:
 a `tombstones` row for the key;
 the pack's hour older than the retention horizon (the key is then tombstoned and the object deleted, so a put delayed across eviction never registers);
-for the reconciler, the lease.
+for `ingest`, which passes **delivery evidence** (each record's version key, bus incarnation and stream seq), a version of the batch found `terminated` or a message covered by an active termination order
+(the key is then tombstoned in the same transaction and the object deleted after the commit; the batch is not acknowledged, and each message is classified again at its redelivery, T-32);
+for the reconciler, the lease, and a seq of the pack with a `terminated` `parked` row or a capture with a termination order (tombstoned likewise, `storage.md` §5.4).
+The reconciler and a close's publication pass no evidence, so their registration writes coverage only: no receipt and no `parked` state.
 It then inserts the `packs` row, its `pack_ranges` (exact seq runs with the `ts_utc_ns` of each run's first and last record;
 **the close sentinel 2^63 − 1 is never a range**), its `pack_losses` (coverage entries), any `conflicts` rows
 (and, for every other scope a new `suspect` or confirmed conflict touches, `revision + 1` and a `conflict` event,
 so a reader of that scope learns of it, §7.3),
-and a **receipt** row (`claim_records`, keyed by capture, seq, the 44-byte record header **and** the payload's SHA-256,
+and, only when the caller passed delivery evidence (T-32), a **receipt** row (`claim_records`, keyed by capture, seq, the 44-byte record header **and** the payload's SHA-256,
 so two versions of one seq are two rows) for every record that travelled by claim-check;
 update `captures`: `last_registered_at = now`, and `highest_seq`/`highest_seq_ts`
 when the pack's highest **producer** seq (sentinel excluded) exceeds the stored one (the time of the highest seq, not the latest time);

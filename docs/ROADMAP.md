@@ -36,7 +36,11 @@ each is a barrier-controlled test on both catalog engines where the catalog is i
    a copy row inserted immediately before and immediately after the termination transaction;
    a late same-version message after the object's deletion, acknowledged under the termination;
 6. confirmation failures:
-   zero and malformed 10071 descriptions, 10164, a timeout and a lost `PubAck`, converging, asserted on the stored messages and not only on the responses.
+   zero and malformed 10071 descriptions, 10164, a timeout and a lost `PubAck`, converging, asserted on the stored messages and not only on the responses;
+7. termination against ingest effects (T-32): a termination committed immediately before and immediately after an admission, a parking step (1) and a registration of the same capture,
+   the registration that loses aborting with its key tombstoned and its orphan never adopted;
+   a membership renewal uncommitted while an admission reads the member set;
+   a close whose publication the horizon guard refuses, left `abandoned`.
 
 Phase 1 may run without a policy only on data that holds nothing sensitive; production traffic waits for phase 3.
 Phases 0–3 run in one repository with one CI matrix (embedded bus, `fs` or `gofakes3`, SQLite and MariaDB in containers),
@@ -57,11 +61,5 @@ eqp-hub reviews the SDK's API (`Bus`, `Preflight`, the six guarantees, the `secs
   it is not merged yet.
 - The tracepack release after v0.8.0 makes `WriteClose` always write an uncompressed close segment (G5-272, announced by the tracepack maintainers);
   when tracekeep adopts it, the close intent of `compactor.md` §8.2 drops the codec and keeps the serialized `PackMeta`, `writer_time` and the fixed `pack_id`.
-- Spec gaps found while applying P1 (T-30), each needing an owner decision before the code it concerns:
-  an original whose version is `evicted-hour` and is redelivered is neither published nor acknowledged under a resolution (`parking.md`);
-  what the durable `rejected` write does when its re-read finds the capture already `open` (`ingest.md` §6.1);
-  whether parking's *advance*, the `acked` update and operator termination take the capture row (`parking.md`);
-  what `RegisterPack` does when the `parked → staged` CAS finds the version `terminated` by an operator (`catalog.md` §7.2);
-  whether a close's publication shares one transaction with its registration (`compactor.md` §8.2).
 - The service's `go.mod` requires the SDK from its first tag (`producer/vX.Y.Z`) on;
   `producer/doc.go` blank-imports tracepack and nats.go only to keep the SDK's requirements until code imports them.

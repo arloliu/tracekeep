@@ -26,7 +26,7 @@ Contract changes go through proposals, which the subject [README.md](README.md) 
 - **Activation gate**: a replica registers in `consumers` with the configurations it executes and renews a lease before every fetch;
   registration is refused unless it executes every unretired configuration;
   a new capture binds the newest configuration every leased member supports;
-  capture binding and membership changes serialize on one `counters` row;
+  capture binding and every membership change, renewals included, serialize on the sentinel row `counters('membership')` (T-32);
   every delivered message is checked against the member's lease and membership generation before processing.
 - **Determinism**: across service upgrades, masking determinism is tracepack's guarantee (G5-268), not tracekeep's.
 
@@ -102,7 +102,11 @@ so the current binary runs against the current schema with the current keys and 
   and a rollback is a roll-forward to a compatible build, never a mix;
 - a new capture binds the **newest configuration every leased member supports**, in a transaction that reads the member set,
   and activation of a newer configuration is the moment the last member lacking it has lapsed or left;
-  capture binding and membership changes serialize on one `counters` row;
+  capture binding and membership changes serialize on one sentinel row, `counters('membership')` (T-32):
+  every binding path of `Admit` updates it after the capture row and before it reads `consumers` and configurations,
+  and every member registration, renewal and leave, and every configuration activation and retirement, updates it first,
+  so no renewal still uncommitted when `Admit` reads can extend a membership admission has excluded;
+  a lease's lapse is judged by the database's clock in both;
 - a pull is issued with `MaxWait` no longer than the lease's remaining time,
   and every delivered message is checked against the member's lease and membership generation **before processing**;
   a message received after the lease lapsed is nak'd untouched;

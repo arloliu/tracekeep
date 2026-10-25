@@ -124,9 +124,14 @@ For a key the catalog does not know and that has no **tombstone** (§8.3):
    a `pending` row (§6.1) lets the transaction's prologue succeed but is not admission,
    so such a pack stays unregistered, reported with its capture id, until a `start` admits the capture;
    adoption never turns a placeholder into an apparently registered capture.
+   An orphan holding a seq whose `parked` row is `terminated`, or of a capture with a termination order, is never adopted:
+   the transaction tombstones its key and the object is deleted after the commit (T-32),
+   which loses nothing, since an orphan's messages were never acknowledged and are decided again at their redelivery.
 
 No receipt is reconstructed for an orphan:
 a masked pack holds neither the bus header nor the original payload, and none is needed.
+The reconciler passes no delivery evidence, so its registration writes coverage only, never a receipt or a `parked` state (`catalog.md` §7.2),
+and an adopted pack never gains them later (T-32).
 A claim object without a receipt is deleted only with its record's hour (§8.4),
 so a redelivered claim-check message of an orphan's record fetches its object, is staged again, byte-identical, and writes the receipt then.
 A key with a tombstone, or whose hour is beyond the retention horizon, is deleted again

@@ -13,7 +13,7 @@ The sections below are authoritative; a disagreement is a defect in this summary
 Contract changes go through proposals, which the subject [README.md](README.md) lists.
 
 - **Singleton**: one active compactor under a catalog lease with a fence token;
-  every commit checks the lease, and a worker that lost it does nothing further (§8.1).
+  every commit that changes domain state checks the lease, with no exception, and a worker that lost it does nothing further (§8.1, T-32).
 - **Merge**: snapshot a scope's revision r and its `staged` inputs, merge, put the archive, then commit in one transaction guarded by r and the lease;
   zero affected rows rolls back the whole transaction, and a rolled-back merge never deletes its archive directly (§8.1).
 - **Close**: an intent transaction fixes every byte-affecting input, then `tracepack.WriteClose` writes the same bytes on every retry;
@@ -85,8 +85,9 @@ records that arrive later are staged as below, and the inactivity trigger would 
    so a retry under a new compactor version writes the same bytes;
    put under its `staging/` key;
    after a put whose result was lost, `Stat` the key and compare size and digest with the intent before proceeding;
-   register the pack; set `state='published'`.
-3. Every compactor cycle retries `pending` intents.
+   in **one transaction** (T-32), register the pack, or find it already registered (the reconciler may adopt the close's `staging/` object first, §5.4), and set `state='published'` on the `pending` intent, the event seq allocated last;
+   when the horizon guard aborts the registration, the key is tombstoned and the intent set `abandoned` instead, so it is not retried.
+3. Every compactor cycle retries `pending` intents; an `abandoned` one is final.
 
 A record that arrives after the intent is staged like any record;
 only a genuine `stop` boundary sets `stop_seen`;
@@ -107,7 +108,7 @@ the object is removed only after that commit.
 Registration and deletion of one key therefore serialize on the capture row before either reads its predicates, on both engines, and have mutually exclusive durable outcomes:
 either the tombstone commits first and the registration's predicate aborts it,
 or the registration commits first and the deletion finds a `packs` row and aborts.
-The lock order is capture row → `leases` row → `counters` row, nothing else is locked.
+The lock order is capture row → `leases` row → `counters('membership')` row → `counters('scope_events')` row, each step optional, nothing else is locked (T-32).
 Retention deletes whole hours older than the retention period:
 in one transaction per hour it copies the hour's `pack_ranges` union into `evicted_ranges`, deletes the packs, ranges, receipts, the hour's `claim_objects` rows **except survivors** (§8.4) and the scope row, and writes the tombstones;
 then it deletes the hour's claim objects, survivors excepted, from the bucket;
@@ -166,7 +167,7 @@ no proof about acceptance times, drained subjects or object incarnations is need
   the resolution of a parked message changes nothing about its object **inside** retention:
   staged or terminated while its hour is still retained, the object stays until §8.3 evicts the hour, like any other (no early sweep);
   a survivor is deleted only once that predicate holds, by the compactor's reconciler in a durable, retried step:
-  mark the `claim_objects` row `deletable` under the capture row (the `parked` and `parked_copies` rows stay), delete the object from the bucket, remove the `claim_objects` row;
+  mark the `claim_objects` row `deletable` under the capture row and the lease (the `parked` and `parked_copies` rows stay), delete the object from the bucket, remove the `claim_objects` row under the lease;
   an interrupted step resumes, never skips;
   `tracekeep admin object list --survivors` shows survivors with their evicted hour and bytes;
   an object whose `Metadata` lacks the SDK's header and time (a non-SDK producer) is **never deleted automatically**:
