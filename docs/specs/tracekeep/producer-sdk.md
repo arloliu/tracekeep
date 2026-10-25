@@ -79,9 +79,10 @@ type Config struct {
     Servers            []string          // NATS URLs of the traffic cluster
     Auth               AuthConfig        // one of: credentials file, NKey seed, user and password, token
     TLS                TLSConfig         // CA, client certificate and key, server name
-    SubjectPrefix      string            // the traffic stream's prefix (busconfig knows the stream)
+    SubjectPrefix      string            // the traffic stream's prefix
+    Stream             string            // the traffic stream every publish expects; empty takes busconfig's default
     ClaimBucket        string
-    Tunables           Tunables          // lanes, H, τ, sampler; every field has a default
+    Tunables           Tunables          // lanes, H, τ, ε, sampler; every field has a default
 }
 
 func New(cfg Config, opts ...Option) (*Producer, error)

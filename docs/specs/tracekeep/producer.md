@@ -241,7 +241,7 @@ and this section is the contract between them.
   nats.go creates every object store with `AllowDirect` on (v1.55.0 `jetstream/object.go`) and routes a read by the handle's cached setting (`jetstream/stream.go`),
   so a direct read could reach a lagging replica, and a stale "not found" would let a put replace an existing object;
   an existing object with the same payload digest and the same record header
-  (the SDK stores the 44-byte header and the record's `ts_utc_ns`, hex, in `ObjectMeta.Metadata`) is a candidate for reuse;
+  (the SDK stores the 44-byte header and the record's `ts_utc_ns`, hex, in `ObjectMeta.Metadata` under `tpk-record-header` and `tpk-ts-utc-ns`) is a candidate for reuse;
   one with another digest or header is a producer fault:
   the record is dropped as a gap with alert `claim-conflict`.
   **Uncertain uploads** (`Put` returned an error or timed out):
@@ -296,7 +296,7 @@ A request is awaited by exactly one of the two mechanisms, so no timeout is reco
 `recorder_instance_name` = the `eqp-hsms` device name (`devices[].name`), unchanged and never empty
 (tracepack G5-270, tag 0x0034; it counts toward the 4096-byte header block of the `start` message);
 `recorder_instance_id` = UUIDv5 (RFC 9562), under one fixed namespace UUID the SDK defines,
-of `tool_id` and the device name, each prefixed by its byte length, so no choice of characters can make two pairs collide;
+of `tool_id` and the device name, each prefixed by its byte length as a 4-byte big-endian integer, so no choice of characters can make two pairs collide;
 the SDK derives it from each descriptor it starts or rotates to and refuses a descriptor that sets it;
 the gateway's `AppID` is not part of it, so a deployment rename does not break a device's series;
 nothing in eqp-hub stops two hubs, under one `AppID` or two, from serving one `toolID` at once
@@ -306,6 +306,14 @@ so such hubs write overlapping captures of one device, which `catalog.md` §7.3 
 `hsms_timers` from the go-secs properties (a timer HotReload therefore rotates the capture, §4.2);
 `equipment_connect_mode` from `mode`; `equipment_endpoint` from `hostPort`; `host_software` = eqp-hub version;
 `equipment_model` and `equipment_sw_rev` only if configured; `thinning` entries per §4.6.
+The SDK fixes the values its way of observing decides (G5-274):
+transport HSMS-SS, capture method `raw-stream`, time source capture clock, lifecycle coverage subscribed,
+vantage **host**, since the gateway is the host endpoint of the connection it records,
+and `quality_evaluated` true:
+the SDK sets correlation-incomplete on a record of epoch 0, ordering-uncertain on one observed before its predecessor in the capture,
+and never direction-inferred, since the wire observer reports the direction;
+`recorder` is `tracekeep-producer/<module version> go-secs/<version>`,
+and `clock_step_tolerance_ns` is ε, an operator tunable (T-29) the SDK writes into every descriptor.
 One hub has one `toolID` and several `eqp-hsms` devices
 (fourteen in eqp-hub's `examples/tfdc_common_parallel.yaml`:
 `eqp`, `tlp`, the sensor connections `dpm`, `fac`, `lsc`, `sgs`, each with its own `hostPort`, and in parallel mode the `pdf_*` connections to the legacy host system),
