@@ -129,7 +129,8 @@ and this section is the contract between them.
   so the loss is bounded by the fault window instead of being invisible.
 - **Lanes.**
   The ordinary lane is bounded by record count and by bytes (frames can be MiBs) and drops the newest arrival on overflow.
-  The reserved lane holds `start`, `stop` and `clock-step` records, is bounded by count (default 4096; the records are tens of bytes), and **never drops**.
+  The reserved lane holds `start`, `stop` and `clock-step` records, is bounded by count (default 4096; the records are tens of bytes), and **never drops**;
+  its bound counts a reserved record until the publisher has it accepted, so the publisher's backlog cannot grow past it.
   **Fault handling**: when the reserved lane is full, a reservation stays unqueued longer than a bound (default 1 s),
   the publisher cannot materialize a reserved record, a preallocated structure is exhausted, or a callback panics before allocation,
   the capture is marked `closed` + `faulted` under its lock, an alert is raised, and the publisher **signals the lifecycle goroutine**,
@@ -169,7 +170,10 @@ and this section is the contract between them.
   1. build the new capture, with a fresh `capture_id` the SDK generates as a UUIDv7 (RFC 9562), so capture ids sort by creation time;
      under its own lock, which nothing else can hold before it is installed, take seq 0 for its `start`, reserve it, and push the `start` into the reserved lane
      (the lane is the producer's, not the capture's, and a push never blocks), then unlock;
-  2. take the **old** capture's lock with a `TryLock` loop bounded by the operation's deadline;
+  2. take two places in the reserved lane's bound for the old capture's `clock-step` and `stop`, so a rotation that commits never loses a boundary
+     (no room abandons the rotation as a timeout does);
+     take the **old** capture's lock with a `TryLock` loop bounded by the operation's deadline,
+     and check the deadline and cancellation once more before step 3;
      a timeout here **abandons the rotation with nothing installed**:
      the prepared capture is discarded and its queued `start` is withdrawn from the lane by the publisher,
      which skips records of a capture that was never installed;
@@ -191,7 +195,9 @@ and this section is the contract between them.
   A callback that takes the lock after the generation advanced finds the mismatch and returns without allocating.
   A prepared `start` has three terminal states, **pending** (queued, its capture not yet installed: the publisher waits), **installed** (publish) and **discarded** (the rotation was abandoned before the commit point: the publisher skips it);
   discard is recorded on the capture object, never inferred from the pointer.
-  Seq 2^63 − 4 is the last ordinary seq; the producer rotates before passing it (G5-231).
+  Seq 2^63 − 4 is the last ordinary seq; the producer rotates before passing it (G5-231):
+  a capture whose seq passes a margin below it asks the lifecycle goroutine once for a rotation with the same descriptor,
+  and only a capture that reaches it anyway faults.
 - **Device verbs and SDK calls** (T-26).
   This section names the device's verbs; the SDK's API (`producer-sdk.md` §4.7) names its own, and the integrator maps them once:
   `Start` → `Begin(ctx, descriptor)`;
