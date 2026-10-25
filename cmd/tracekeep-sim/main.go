@@ -98,9 +98,9 @@ func run(ctx context.Context, c *config) error {
 	}
 	var runErr error
 	if c.opts.Replay {
-		var n int
-		n, runErr = replayPack(ctx, l, c.pack, c.speed)
-		log.Info("tracekeep-sim: replayed", "frames", n)
+		var sent, skipped int
+		sent, skipped, runErr = replayPack(ctx, l, c.pack, c.speed)
+		log.Info("tracekeep-sim: replayed", "frames", sent, "malformed", skipped)
 		// The pack's last requests get their waits before the device stops.
 		_ = sleepUntil(ctx, time.Now().Add(c.opts.T3))
 	} else {

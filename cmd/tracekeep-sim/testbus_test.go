@@ -77,7 +77,8 @@ func TestBusDownAndUpWhileTheToolRuns(t *testing.T) {
 	traffic(50)
 	srv.Restart()
 	traffic(50)
-	time.Sleep(100 * time.Millisecond) // the tool idles past T3, so the withheld requests time out before the device stops
+	// The scenario idles past T3, so withheld requests time out before the device stops; only some T3 is asserted below.
+	time.Sleep(100 * time.Millisecond)
 	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 	defer cancel()
 	l.Stop(ctx)

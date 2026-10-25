@@ -58,7 +58,7 @@ type Loopback struct {
 	reload   atomic.Uint64 // HotReloads, which change the descriptor
 
 	mu       sync.Mutex
-	inflight map[uint32]producer.Token // forwarded primaries awaiting a reply, by System Bytes
+	inflight map[uint32]*flight // forwarded primaries awaiting a reply, by System Bytes
 	opened   bool
 }
 
@@ -68,7 +68,7 @@ func NewLoopback(p *producer.Producer, opts Options) (*Loopback, error) {
 	if err != nil {
 		return nil, err
 	}
-	l := &Loopback{p: p, opts: opts, waiter: newWaiter(), inflight: make(map[uint32]producer.Token)}
+	l := &Loopback{p: p, opts: opts, waiter: newWaiter(), inflight: make(map[uint32]*flight)}
 	base := []hsmsss.Option{
 		hsmsss.WithConnectionOption(hsms.WithSessionID(opts.SessionID)),
 		hsmsss.WithConnectionOption(hsms.WithT5(100 * time.Millisecond)),
@@ -164,13 +164,16 @@ func (l *Loopback) Forward(ctx context.Context) error {
 	return l.relay(ctx, msg)
 }
 
+// errMalformed is a replayed frame go-secs cannot decode.
+var errMalformed = errors.New("malformed frame")
+
 // Replay sends one recorded HSMS frame through the pair from the side that sent it:
 // a W-bit primary from the host goes through the send path as Forward's does, anything else is written as it is.
 // A control frame is go-secs's own business and is skipped.
 func (l *Loopback) Replay(ctx context.Context, dir tracepack.Dir, frame []byte) error {
 	m, err := hsms.DecodeHSMSMessage(frame)
 	if err != nil {
-		return fmt.Errorf("replayed frame: %w", err)
+		return fmt.Errorf("%w: %w", errMalformed, err)
 	}
 	msg, ok := m.ToDataMessage()
 	if !ok {
@@ -192,26 +195,49 @@ func (l *Loopback) Replay(ctx context.Context, dir tracepack.Dir, frame []byte) 
 	}
 }
 
-// relay relays a W-bit primary the way the gateway does: register, send, report the send, then open the wait.
+// relay relays a W-bit primary the way the gateway does: register, open the wait, send, report the send.
+// The wait opens before the send, so a reply that comes back at once always finds it (TimeoutSource).
 func (l *Loopback) relay(ctx context.Context, msg *hsms.DataMessage) error {
 	sys := msg.SystemBytes()
 	sb := binary.BigEndian.Uint32(sys[:])
-	tok := l.p.Pending().Register(l.opts.SessionID, sb, channel)
+	tok := &flight{Token: l.p.Pending().Register(l.opts.SessionID, sb, channel), l: l, sb: sb}
 	l.mu.Lock()
 	l.inflight[sb] = tok
 	l.mu.Unlock()
+	l.waiter.Await(tok, l.opts.T3)
 	if err := l.host.ForwardDataMessage(ctx, msg); err != nil {
 		tok.SendFailed()
-		l.mu.Lock()
-		delete(l.inflight, sb)
-		l.mu.Unlock()
+		l.waiter.take(tok) // the request never left, so its wait ends with no outcome
+		l.forget(sb)
 
 		return fmt.Errorf("forward: %w", err)
 	}
 	tok.Sent()
-	l.waiter.Await(tok, l.opts.T3)
 
 	return nil
+}
+
+// flight is a forwarded request's token that leaves the in-flight table when its wait ends without a reply.
+type flight struct {
+	producer.Token
+	l  *Loopback
+	sb uint32
+}
+
+func (f *flight) TimedOut(d time.Duration) {
+	f.l.forget(f.sb)
+	f.Token.TimedOut(d)
+}
+
+func (f *flight) Cancelled() {
+	f.l.forget(f.sb)
+	f.Token.Cancelled()
+}
+
+func (l *Loopback) forget(sb uint32) {
+	l.mu.Lock()
+	delete(l.inflight, sb)
+	l.mu.Unlock()
 }
 
 // Close releases the pair without ending the capture; Stop is the orderly end.

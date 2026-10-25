@@ -87,15 +87,17 @@ func writePack(t *testing.T, frames []tracepack.Dir, payloads [][]byte) string {
 func TestReplaySendsThePackThroughThePair(t *testing.T) {
 	t.Parallel()
 	h2e, e2h := tracepack.DirHostToEquipment, tracepack.DirEquipmentToHost
-	dirs := []tracepack.Dir{h2e, e2h, e2h, h2e, h2e}
+	dirs := []tracepack.Dir{h2e, e2h, e2h, h2e, h2e, h2e}
 	frames := [][]byte{
 		frameOf(t, 1, 3, true, 0x100, secs2.L(secs2.U4(1))),
 		frameOf(t, 1, 4, false, 0x100, secs2.L(secs2.U4(2))),
 		frameOf(t, 6, 11, true, 0x200, secs2.L(secs2.U4(3))),
 		frameOf(t, 6, 12, false, 0x200, secs2.B(0)),
 		frameOf(t, 1, 3, true, 0x101, secs2.L()), // never answered
+		{0, 0, 0, 2, 0xff, 0xff},                 // malformed, as a wire-exact record may be
 	}
 	pack := writePack(t, dirs, frames)
+	frames = frames[:len(frames)-1]
 
 	bus := producertest.NewBus()
 	opts := testOptions()
@@ -104,12 +106,12 @@ func TestReplaySendsThePackThroughThePair(t *testing.T) {
 	if err := l.Start(t.Context()); err != nil {
 		t.Fatal(err)
 	}
-	n, err := replayPack(t.Context(), l, pack, 0)
+	n, skipped, err := replayPack(t.Context(), l, pack, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if n != len(frames) {
-		t.Fatalf("replayed %d frames, want %d", n, len(frames))
+	if n != len(frames) || skipped != 1 {
+		t.Fatalf("replayed %d frames and skipped %d, want %d and 1", n, skipped, len(frames))
 	}
 
 	// Wait for the frames and the T3 of the unanswered request.
@@ -164,7 +166,7 @@ func TestReplayKeepsThePacksPace(t *testing.T) {
 		t.Fatal(err)
 	}
 	start := time.Now()
-	if _, err := replayPack(t.Context(), l, pack, 0.5); err != nil {
+	if _, _, err := replayPack(t.Context(), l, pack, 0.5); err != nil {
 		t.Fatal(err)
 	}
 	// Half speed stretches the 20 ms between the first and the last frame to 40 ms.
@@ -177,7 +179,7 @@ func TestReplayKeepsThePacksPace(t *testing.T) {
 func TestReplayRefusesAMissingPack(t *testing.T) {
 	t.Parallel()
 	l := newTestLoopbackWith(t, producer.Config{}, testOptions(), producer.WithBus(producertest.NewBus()))
-	if _, err := replayPack(t.Context(), l, filepath.Join(t.TempDir(), "none"), 0); !os.IsNotExist(err) {
+	if _, _, err := replayPack(t.Context(), l, filepath.Join(t.TempDir(), "none"), 0); !os.IsNotExist(err) {
 		t.Fatalf("replayPack = %v, want not-exist", err)
 	}
 }
