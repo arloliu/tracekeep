@@ -3,7 +3,7 @@ module github.com/arloliu/tracekeep/producer
 go 1.26.0
 
 require (
-	github.com/arloliu/go-secs/tracepack v0.8.0
+	github.com/arloliu/go-secs/tracepack v0.9.0
 	github.com/arloliu/go-secs/v2 v2.8.0
 	github.com/nats-io/nats.go v1.55.0
 )

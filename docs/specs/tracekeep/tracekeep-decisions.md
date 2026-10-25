@@ -202,7 +202,7 @@ The configuration is read once at start; live reload is not used,
 since a capture's processing configuration is immutable once bound (`rollouts.md` §6.4).
 The version is pinned when the service's `go.mod` first requires it.
 
-### T-23 — tracepack v0.8.0
+### T-23 — tracepack v0.8.0 (superseded by T-36)
 
 `v0.8.0` (spec v2.37, format 1.2, requiring go-secs v2.8.0) in both modules, replacing T-18's `v0.7.1`.
 It carries G5-270's `recorder_instance_name`, which P2 (device selection, applied by T-24) uses for the device name,
@@ -400,3 +400,12 @@ It runs, like the SDK, with `GOWORK=off`, so CI needs no workspace.
 `New` refuses a connection given through `WithConn` only when its reconnect buffer is enabled, which correctness depends on (`producer.md` §4.2 *Large records*);
 a connection without TLS is reported by `Preflight` and never refused,
 so the embedded test bus and a development bus run on plain `nats://`.
+
+### T-36 — tracepack v0.9.0 (2026-10-26)
+
+`v0.9.0` (spec v2.38, format 1.2, still requiring go-secs v2.8.0) replaces T-23's `v0.8.0`.
+Its one breaking change, G5-272, is that `WriteClose` always writes the close segment uncompressed and `CloseOptions.Uncompressed` is gone;
+a close begun by v0.8.0 and retried by v0.9.0 would therefore write other bytes.
+tracekeep has written no close yet, so the compactor is built on v0.9.0 from its first close and never meets that case.
+It also adds `FindTransactions`, which pairs every primary of a time range in one pass (G5-271, G5-273); the API may adopt it, and nothing requires it.
+Only the SDK requires tracepack today; the service takes the same version when its first package needs it.

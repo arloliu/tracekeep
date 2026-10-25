@@ -204,7 +204,7 @@ which the device's `Start`, `HotReload` and `Stop` map onto (`producer.md` §4.2
   it calls `TimedOut` only from its timer branch, with the timeout the wait was opened with,
   so a HotReload's new timeout applies to new waits only (`producer.md` §4.4).
 
-- **Observers**, from `secsobs` (go-secs v2.8.0, the version tracepack v0.8.0 requires):
+- **Observers**, from `secsobs` (go-secs v2.8.0, the version tracepack v0.9.0 requires):
   `ConnOptions() []hsms.ConnOption` returns the wire, socket and transaction observers
   (`hsms.WithWireObserver`, `WithSocketObserver`, `WithTransactionObserver`),
   which an HSMS-SS integrator passes through `hsmsss.WithConnectionOption` when it builds the connection;
