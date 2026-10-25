@@ -24,14 +24,24 @@ const (
 
 // bus is an embedded server with the traffic stream and the claim bucket as tracekeep migrate leaves them.
 type bus struct {
+	srv *testbus.Server
 	url string
 	js  jetstream.JetStream
 }
 
 func newBus(t *testing.T) *bus {
 	t.Helper()
-	url := testbus.Start(t)
-	nc, err := nats.Connect(url)
+
+	return newBusWith(t, testbus.Options{}, nil, false)
+}
+
+// newBusWith starts a server with o and creates the streams, the traffic stream's settings changed by traffic when it is set;
+// raw leaves the claim bucket's stream as nats.go creates it, with direct reads on.
+func newBusWith(t *testing.T, o testbus.Options, traffic func(*jetstream.StreamConfig), raw bool) *bus {
+	t.Helper()
+	srv := testbus.StartServer(t, o)
+	url := srv.URL()
+	nc, err := nats.Connect(url, nats.MaxReconnects(-1), nats.ReconnectWait(10*time.Millisecond))
 	if err != nil {
 		t.Fatalf("connect: %v", err)
 	}
@@ -41,11 +51,19 @@ func newBus(t *testing.T) *bus {
 		t.Fatalf("jetstream: %v", err)
 	}
 	ctx := t.Context()
-	if _, err := js.CreateStream(ctx, busconfig.StreamConfig(busconfig.DefaultTrafficStream, prefix)); err != nil {
+	sc := busconfig.StreamConfig(busconfig.DefaultTrafficStream, prefix)
+	if traffic != nil {
+		traffic(&sc)
+	}
+	if _, err := js.CreateStream(ctx, sc); err != nil {
 		t.Fatalf("create stream: %v", err)
 	}
 	if _, err := js.CreateObjectStore(ctx, busconfig.ObjectStoreConfig(bucket)); err != nil {
 		t.Fatalf("create bucket: %v", err)
+	}
+	b := &bus{srv: srv, url: url, js: js}
+	if raw {
+		return b
 	}
 	s, err := js.Stream(ctx, busconfig.ClaimStreamName(bucket))
 	if err != nil {
@@ -57,14 +75,15 @@ func newBus(t *testing.T) *bus {
 		t.Fatalf("turn direct reads off: %v", err)
 	}
 
-	return &bus{url: url, js: js}
+	return b
 }
 
-// fetch takes n messages off the traffic stream, as a consumer would, waiting up to ten seconds.
+// fetch takes n messages off the traffic stream and acknowledges them, as a consumer would, waiting up to ten seconds;
+// every call reads through one durable consumer, which a restart keeps.
 func (b *bus) fetch(t *testing.T, n int) []jetstream.Msg {
 	t.Helper()
 	ctx := t.Context()
-	cons, err := b.js.CreateOrUpdateConsumer(ctx, busconfig.DefaultTrafficStream, jetstream.ConsumerConfig{AckPolicy: jetstream.AckExplicitPolicy})
+	cons, err := b.js.CreateOrUpdateConsumer(ctx, busconfig.DefaultTrafficStream, jetstream.ConsumerConfig{Durable: "test", AckPolicy: jetstream.AckExplicitPolicy})
 	if err != nil {
 		t.Fatalf("consumer: %v", err)
 	}
@@ -76,6 +95,9 @@ func (b *bus) fetch(t *testing.T, n int) []jetstream.Msg {
 			t.Fatalf("fetch: %v", err)
 		}
 		for m := range batch.Messages() {
+			if err := m.Ack(); err != nil {
+				t.Fatalf("ack: %v", err)
+			}
 			out = append(out, m)
 		}
 	}
@@ -169,7 +191,6 @@ func TestDefaultConnectionPublishes(t *testing.T) {
 			}
 		default:
 		}
-		_ = m.Ack()
 	}
 
 	problems, err := p.Preflight(ctx)

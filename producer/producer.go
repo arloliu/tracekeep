@@ -1,6 +1,7 @@
 package producer
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"runtime/debug"
@@ -110,16 +111,13 @@ func New(cfg Config, opts ...Option) (*Producer, error) {
 		opt(&o)
 	}
 	tun := cfg.Tunables.withDefaults()
-	var conn *natsBus
+	var nb *natsBus
 	if o.bus == nil && !o.noPublisher {
 		var err error
-		if conn, err = newNATSBus(&cfg, &tun, o.conn); err != nil {
+		if nb, err = newNATSBus(&cfg, &tun, o.conn); err != nil {
 			return nil, err
 		}
-		o.bus = conn
-		if !conn.owned {
-			conn = nil
-		}
+		o.bus = nb
 	} else if o.conn != nil {
 		return nil, fmt.Errorf("%w: WithConn and WithBus both given", ErrInvalidConfig)
 	}
@@ -145,7 +143,9 @@ func New(cfg Config, opts ...Option) (*Producer, error) {
 		events:   make(chan func(), sinkEvents),
 		lifeSem:  make(chan struct{}, 1),
 		rotateAt: o.rotateAt,
-		conn:     conn,
+	}
+	if nb != nil && nb.owned {
+		p.conn = nb
 	}
 	p.wg.Go(p.faultLoop)
 	p.wg.Go(p.sinkLoop)
@@ -153,6 +153,9 @@ func New(cfg Config, opts ...Option) (*Producer, error) {
 		p.pub = newPublisher(p, o.bus)
 		p.pub.hooks = o.hooks
 		p.wg.Go(func() { p.pub.run(p.quit) })
+	}
+	if nb != nil {
+		p.wg.Go(func() { p.preflightOnConnect(nb.nc) })
 	}
 
 	return p, nil
@@ -193,6 +196,36 @@ func (p *Producer) Close() error {
 	}
 
 	return nil
+}
+
+// preflightOnConnect runs Preflight once the connection first comes up and logs what it finds,
+// so a misconfigured bus is reported at startup without delaying Begin (docs/specs/tracekeep/producer-sdk.md §4.7).
+func (p *Producer) preflightOnConnect(nc *nats.Conn) {
+	up := nc.StatusChanged(nats.CONNECTED)
+	defer nc.RemoveStatusListener(up)
+	if !nc.IsConnected() {
+		select {
+		case <-up:
+		case <-p.quit:
+			return
+		}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), p.tun.PublishTimeout)
+	defer cancel()
+	go func() {
+		select {
+		case <-p.quit:
+			cancel()
+		case <-ctx.Done():
+		}
+	}()
+	problems, err := p.Preflight(ctx)
+	if err != nil {
+		p.log.Warn("producer: preflight could not finish", "error", err)
+	}
+	for _, pr := range problems {
+		p.log.Warn("producer: preflight", "check", pr.Check, "problem", pr.Detail)
+	}
 }
 
 // recorderName names the SDK and the go-secs that delivers its observations (the descriptor's recorder).
