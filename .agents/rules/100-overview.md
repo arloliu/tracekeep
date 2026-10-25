@@ -68,7 +68,8 @@ Create a directory when its first code lands, not before.
 ## Prime Directives
 
 1. **No sensitive data in the repository.**
-   No company, site, tool-ID, internal-service or person names, no local paths, no real traffic.
+   No company, site, tool-ID, internal-service or person names, no local paths,
+   no quoted vendor-manual content, no real traffic.
    Real inputs live only in `data/`; tests and examples use synthetic data.
 2. **Neutral terms.**
    The host-side automation program is the EAP;

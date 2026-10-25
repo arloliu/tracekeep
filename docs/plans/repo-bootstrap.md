@@ -93,6 +93,13 @@ The Makefile is veq's unchanged, so `make ci` needs a `go.mod` and is phase 3's 
 veq has no `.semlf.ini`; the row was dropped (owner, 2026-10-25).
 To pass `docs-check`, the seed's Status line was cut to one clause (the rest moved, unchanged, to the paragraph below it)
 and the subject README names its file in backticks, as veq's do.
+Where the rows above say "unchanged", the copies differ from veq as follows (owner, 2026-10-25):
+`100-overview.md` directive 2 lets eqp-hub be named, since the specs cite it throughout,
+and directive 3 covers claims about the bus, the gateway or a library and asks for a version and a source location,
+since tracekeep's claims are about nats and eqp-hub;
+directive 1 keeps veq's "no quoted vendor-manual content";
+`550-git-conventions.md` uses tracekeep packages in its examples
+and names material kept outside the repository instead of `tmp/` review reports, as `450-doc-lifecycle.md` does.
 
 ## Phase 2 — documents
 
