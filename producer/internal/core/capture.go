@@ -263,6 +263,19 @@ func (c *Capture) Fault() {
 	c.faultLocked()
 }
 
+// FaultOpen faults the capture unless a rotation already closed it,
+// which it reports as false: the caller then faults the successor the rotation installed.
+func (c *Capture) FaultOpen() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.closed && !c.faulted {
+		return false
+	}
+	c.faultLocked()
+
+	return true
+}
+
 // Terminate marks the capture finished for the publisher: a record of it queued later is dropped, never published.
 // It closes Done.
 func (c *Capture) Terminate() {

@@ -22,6 +22,7 @@ const (
 	hookBeforeAllocate = iota
 	hookLoaded         // the callback holds a capture pointer and has not taken its lock
 	hookAfterUnlock
+	hookFaultLoaded // a panic's fault holds a capture pointer and has not taken its lock
 	numHooks
 )
 
@@ -173,12 +174,8 @@ func (r *Recorder) Observe(o *Observation) {
 		if p := recover(); p != nil {
 			r.panics.Add(1)
 			// Before allocation the loss has no seq to show it, so the fault window of the current capture bounds it.
-			if !allocated && c == nil {
-				c = r.cur.Load()
-			}
-			if !allocated && c != nil {
-				c.Fault()
-				r.SignalFault(c)
+			if !allocated {
+				r.faultCurrent()
 			}
 		}
 	}()
@@ -248,10 +245,7 @@ func (r *Recorder) Observe(o *Observation) {
 func (r *Recorder) Recover() {
 	if p := recover(); p != nil { //nolint:revive // Recover is only ever deferred, where recover stops the panic
 		r.panics.Add(1)
-		if c := r.cur.Load(); c != nil {
-			c.Fault()
-			r.SignalFault(c)
-		}
+		r.faultCurrent()
 	}
 }
 
@@ -408,6 +402,23 @@ func (r *Recorder) returnBudget(n int64) {
 func (r *Recorder) drop(reason DropReason, n int64) {
 	r.dropped[reason].Add(1)
 	r.dropBytes.Add(uint64(n)) //nolint:gosec // a payload length is never negative
+}
+
+// faultCurrent faults the current capture for a loss that has no seq to show it.
+// A capture a rotation closed meanwhile is passed over for its successor, as allocate does,
+// so the loss always falls in a fault window; the loop ends within as many rounds as rotations in progress.
+func (r *Recorder) faultCurrent() {
+	for {
+		c := r.cur.Load()
+		if c == nil {
+			return
+		}
+		r.hook(hookFaultLoaded)
+		if c.FaultOpen() {
+			r.SignalFault(c)
+			return
+		}
+	}
 }
 
 // SignalFault tells the lifecycle goroutine that c faulted, without blocking.
