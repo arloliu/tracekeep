@@ -45,7 +45,7 @@ The package `producer` reaches the core's hooks through `internal/link`, as it r
 
 | Step | Scope | State |
 |---|---|---|
-| 1 | core schedules on the existing hooks: opposing clock steps from two callbacks, a callback held across A→B→C rotations, `Stop` after a callback loaded the pointer, an abandoned rotation's callback resumed after a later `Start` | done |
+| 1 | core schedules on the existing hooks: opposing clock steps from two callbacks, a callback held across A→B→C rotations, `Stop` after a callback loaded the pointer, an abandoned rotation's callback resumed after a later `Start` | done (a53471e) |
 | 2 | `Stop` and the capture lock: a callback held inside the critical section while `End` passes its deadline (the capture is abandoned, the record dropped as `abandoned`, the `Report` says so), and a HotReload held in its `TryLock` loop when `Stop` arrives (it returns `ErrRotationAbandoned`, its `start` is never published, `End` returns by its deadline) | pending |
 | 3 | faults and the lifecycle: `End` between `handleFault`'s two lifecycle-lock sections, a fault rotation racing a HotReload, and the reserved lane filled while the bus is down, then the successor after it comes back | pending |
 | 4 | the publisher: the `start` goes by the synchronous publish (a call count on `producertest.Bus`) with the production option set (one attempt against `internal/testbus`); an uncertain upload is read back, deleted and put again before its reference is published (an operation log on `producertest.Bus`) | pending |

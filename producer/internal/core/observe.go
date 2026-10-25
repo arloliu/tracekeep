@@ -24,6 +24,10 @@ const (
 	hookLoaded         // the callback holds a capture pointer and has not taken its lock
 	hookAfterUnlock
 	hookFaultLoaded // a panic's fault holds a capture pointer and has not taken its lock
+	// HookLocked holds a callback inside the capture's critical section, past its closed, faulted and generation checks.
+	HookLocked
+	// HookTryLockFailed holds a rotation once its first attempt at the old capture's lock failed.
+	HookTryLockFailed
 	numHooks
 )
 
@@ -364,7 +368,7 @@ func (r *Recorder) allocate(o *Observation, cp **Capture) (Allocation, bool) {
 			return Allocation{}, false
 		}
 		r.hook(hookLoaded)
-		a, st := c.allocateIn(o.Wall, o.Mono, o.Socket, o.Mapped)
+		a, st := c.allocateIn(o.Wall, o.Mono, o.Socket, o.Mapped, r.hooks[HookLocked])
 		switch st {
 		case Allocated:
 			return a, true
@@ -465,6 +469,10 @@ func (r *Recorder) SignalFault(c *Capture) {
 	default:
 	}
 }
+
+// SetHook sets the function a test holds a goroutine in at hook id, before any callback runs;
+// the module's tests outside this package set HookLocked and HookTryLockFailed here.
+func (r *Recorder) SetHook(id int, f func()) { r.hooks[id] = f }
 
 func (r *Recorder) hook(id int) {
 	if h := r.hooks[id]; h != nil {

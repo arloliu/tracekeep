@@ -74,7 +74,7 @@ func (r *Recorder) Rotate(next *Capture, deadline time.Time, abort func() bool, 
 			return discard()
 		}
 		credit = boundarySlots
-		if !old.tryLockUntil(deadline, abort) {
+		if !old.tryLockUntil(deadline, abort, r.hooks[HookTryLockFailed]) {
 			r.resCount.Add(-credit)
 			return discard()
 		}
@@ -151,11 +151,16 @@ func (r *Recorder) closeLocked(old *Capture, now func() (wall, mono int64)) (boo
 	return stopped, used
 }
 
-// tryLockUntil takes c's lock unless deadline passes or abort reports true first.
-func (c *Capture) tryLockUntil(deadline time.Time, abort func() bool) bool {
+// tryLockUntil takes c's lock unless deadline passes or abort reports true first;
+// failed, when set, is a test's hook run once the first attempt fails.
+func (c *Capture) tryLockUntil(deadline time.Time, abort func() bool, failed func()) bool {
 	for {
 		if c.mu.TryLock() {
 			return true
+		}
+		if failed != nil {
+			failed()
+			failed = nil
 		}
 		if abort() || !time.Now().Before(deadline) {
 			return false

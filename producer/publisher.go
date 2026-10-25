@@ -609,8 +609,13 @@ func (pb *publisher) drainLanes(ordinary bool) {
 func (pb *publisher) add(e core.Entry) {
 	e.Cap.Dequeued()
 	if e.Cap.Terminated() {
-		// A callback that allocated before End's drain finished and queued after it.
-		pb.dropEntry(&e, core.DropPublishFailed)
+		// A callback that allocated before End's drain finished, or before End abandoned the capture, and queued after it.
+		reason := core.DropPublishFailed
+		if e.Cap.Abandoned() {
+			reason = core.DropAbandoned
+		}
+		pb.dropEntry(&e, reason)
+
 		return
 	}
 	st := pb.caps[e.Cap]

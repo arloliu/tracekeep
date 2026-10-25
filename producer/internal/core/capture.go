@@ -158,11 +158,12 @@ func NewCapture(p CaptureParams) *Capture {
 // wall and mono are the observation's clock reading, in nanoseconds;
 // socket is go-secs's socket identity, 0 for none.
 func (c *Capture) Allocate(wall, mono int64, socket uint64) (Allocation, Status) {
-	return c.allocateIn(wall, mono, socket, false)
+	return c.allocateIn(wall, mono, socket, false, nil)
 }
 
 // allocateIn is Allocate; with mapped, a socket missing from the socket map yields Unmapped instead of a new epoch.
-func (c *Capture) allocateIn(wall, mono int64, socket uint64, mapped bool) (Allocation, Status) {
+// locked, when set, is a test's hook inside the critical section.
+func (c *Capture) allocateIn(wall, mono int64, socket uint64, mapped bool, locked func()) (Allocation, Status) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -175,6 +176,9 @@ func (c *Capture) allocateIn(wall, mono int64, socket uint64, mapped bool) (Allo
 	}
 	if c.lifecycle.Load() != c.Generation {
 		return a, Abandoned
+	}
+	if locked != nil {
+		locked()
 	}
 
 	if socket != 0 {
