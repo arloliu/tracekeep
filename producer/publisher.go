@@ -247,7 +247,7 @@ func (pb *publisher) finishEnds() {
 			continue
 		}
 		if st != nil {
-			pb.dropAll(st, core.DropPublishFailed)
+			pb.dropAll(st, endLoss(c))
 			if st.empty() {
 				delete(pb.caps, c)
 			}
@@ -255,6 +255,15 @@ func (pb *publisher) finishEnds() {
 		c.Terminate()
 		delete(pb.ending, c)
 	}
+}
+
+// endLoss is why a record of c is dropped when End terminates c: abandoned if End gave c up, a failed publish otherwise.
+func endLoss(c *core.Capture) core.DropReason {
+	if c.Abandoned() {
+		return core.DropAbandoned
+	}
+
+	return core.DropPublishFailed
 }
 
 // pass makes all the progress it can: drain the lanes, read reservations, publish what the barrier allows.
@@ -610,12 +619,7 @@ func (pb *publisher) add(e core.Entry) {
 	e.Cap.Dequeued()
 	if e.Cap.Terminated() {
 		// A callback that allocated before End's drain finished, or before End abandoned the capture, and queued after it.
-		reason := core.DropPublishFailed
-		if e.Cap.Abandoned() {
-			reason = core.DropAbandoned
-		}
-		pb.dropEntry(&e, reason)
-
+		pb.dropEntry(&e, endLoss(e.Cap))
 		return
 	}
 	st := pb.caps[e.Cap]
