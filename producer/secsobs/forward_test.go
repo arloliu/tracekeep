@@ -71,3 +71,21 @@ func TestOnlyAnOutboundPrimaryBinds(t *testing.T) {
 		t.Errorf("bound to socket %d, want unbound", s)
 	}
 }
+
+// A socket the passive side accepts and then refuses is not the connection's newest:
+// a request registered after it and sent on the live socket keeps its T3.
+func TestRefusedSocketKeepsTheLiveSocket(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t)
+	h.obs.socket(hsms.SocketEvent{Kind: hsms.SocketAccepted, Socket: 3, At: time.Now()})
+	h.obs.wire(hsms.WireEvent{Direction: hsms.WireInbound, Socket: 3, Generation: 1, At: time.Now(), Frame: frame(1)})
+	h.obs.socket(hsms.SocketEvent{Kind: hsms.SocketAccepted, Socket: 4, At: time.Now()})
+	h.obs.wire(hsms.WireEvent{Direction: hsms.WireInbound, Socket: 4, At: time.Now(), Frame: frame(1)})
+	h.obs.socket(hsms.SocketEvent{Kind: hsms.SocketRefused, Socket: 4, At: time.Now()})
+	tok := h.p.Pending().Register(1, 7, "c")
+	h.obs.wire(hsms.WireEvent{Direction: hsms.WireOutbound, Socket: 3, Generation: 1, At: time.Now(), Frame: frame(0)})
+
+	if e, ok := tok.(interface{ Ambiguous() bool }); !ok || e.Ambiguous() {
+		t.Fatalf("a request sent on the live socket is ambiguous after a refused socket")
+	}
+}

@@ -200,6 +200,7 @@ which the device's `Start`, `HotReload` and `Stop` map onto (`producer.md` §4.2
   }
   ```
 
+  The wait is open before its reply can arrive (`producer.md` §4.6 *The wait*).
   A `TimeoutSource` reports exactly one terminal outcome per `Await` and never blocks its caller;
   it calls `TimedOut` only from its timer branch, with the timeout the wait was opened with,
   so a HotReload's new timeout applies to new waits only (`producer.md` §4.4).

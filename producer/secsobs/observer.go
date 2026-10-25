@@ -126,12 +126,22 @@ func (o *Observer) wire(ev hsms.WireEvent) {
 	switch ev.Direction {
 	case hsms.WireInbound:
 		obs.Dir = tracepack.DirEquipmentToHost
+		o.adopted(&ev)
 	case hsms.WireOutbound:
+		o.adopted(&ev)
 		obs.Dir = tracepack.DirHostToEquipment
 		o.bind(ev.Frame, ev.Socket)
 	default:
 	}
 	o.rec.Observe(&obs)
+}
+
+// adopted records the socket of a frame a generation owns as the connection's newest;
+// a refused socket's frames belong to no generation.
+func (o *Observer) adopted(ev *hsms.WireEvent) {
+	if ev.Generation != 0 {
+		o.rec.Pending.SetSocket(ev.Socket)
+	}
 }
 
 // bind binds a forwarded request's registration to the socket its W-bit primary went out on,
@@ -156,9 +166,9 @@ func (o *Observer) socket(ev hsms.SocketEvent) {
 		o.role.Store(uint32(e.Role))
 		o.rec.Pending.SetSocket(ev.Socket)
 	case hsms.SocketAccepted:
+		// An accepted socket may still be refused; its first frame on a generation makes it the newest (adopted).
 		e = core.Event{Kind: tracepack.EventSocketAccept, Role: tracepack.SocketRolePassive}
 		o.role.Store(uint32(e.Role))
-		o.rec.Pending.SetSocket(ev.Socket)
 	case hsms.SocketRefused:
 		e = core.Event{
 			Kind: tracepack.EventStateTransition, Prev: tracepack.StateNotConnected, Cur: tracepack.StateNotConnected,

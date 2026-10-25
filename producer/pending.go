@@ -33,6 +33,9 @@ type Token interface {
 }
 
 // TimeoutSource is the response waiter's side of the send path, which the gateway's waiter implements.
+// The wait must be open before its reply can arrive: the gateway calls Await before it sends the request,
+// or the waiter holds a reply that comes before its wait.
+// A reply dropped for want of a wait ends in a timeout, a T3 the SDK cannot tell from a real one.
 // A TimeoutSource never blocks its caller,
 // reports exactly one terminal outcome per Await,
 // and calls TimedOut only from its timer branch, with the timeout the wait was opened with,

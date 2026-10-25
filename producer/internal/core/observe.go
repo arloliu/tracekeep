@@ -379,6 +379,7 @@ func (r *Recorder) allocate(o *Observation, cp **Capture) (Allocation, bool) {
 			r.drop(DropAbandoned, int64(len(o.Payload)))
 			return a, false
 		case Unmapped:
+			// Counted observed above, its loss is counted here and not as a dropped record: it never had a seq.
 			r.Pending.timeoutsDropped[TimeoutUnattributed].Add(1)
 			return a, false
 		default:

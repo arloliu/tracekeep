@@ -145,3 +145,19 @@ func TestBindDoesNotAllocate(t *testing.T) {
 		t.Fatalf("Bind allocates %v times", n)
 	}
 }
+
+// Only the first outbound frame binds: a later frame with the same key names no other stream or function.
+func TestBindKeepsTheFirstFrame(t *testing.T) {
+	t.Parallel()
+	r, _ := newForwardRecorder(t)
+	r.Pending.SetSocket(5)
+	tok := r.Pending.Register(2, 77, "c")
+	r.Pending.Bind(2, 77, 1, 3, 5)
+	r.Pending.Bind(2, 77, 6, 11, 5)
+
+	tok.TimedOut(time.Second)
+	e := <-r.Ordinary()
+	if e.Event.Stream != 1 || e.Event.Function != 3 {
+		t.Fatalf("T3 names S%dF%d, want S1F3", e.Event.Stream, e.Event.Function)
+	}
+}
