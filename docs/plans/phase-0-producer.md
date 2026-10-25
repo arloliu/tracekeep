@@ -50,7 +50,7 @@ The package `producer` reaches the core's hooks through `internal/link`, as it r
 | 3 | faults and the lifecycle: `End` between `handleFault`'s two lifecycle-lock sections, a fault rotation racing a HotReload, and the reserved lane filled while the bus is down, then the successor after it comes back | done (dd8cfbc) |
 | 4 | the publisher: the `start` goes by the synchronous publish (a call count on `producertest.Bus`) with the production option set (one attempt against `internal/testbus`); an uncertain upload is read back, deleted and put again before its reference is published (an operation log on `producertest.Bus`) | done (0864a65) |
 | 5 | drops visible as gaps: the chaos harness checks for seq holes in the bus-down scenario, and the simulator's bus-down test runs with a small lane and retry horizon so its outage drops records | done (0f904a6) |
-| 6 | both resolved module graphs: the pinned `go.mod` gives the minimum nats.go; a Makefile target and a CI job run the SDK's and `bustest`'s tests on a copy with the latest nats.go | pending |
+| 6 | both resolved module graphs: the pinned `go.mod` gives the minimum nats.go; a Makefile target and a CI job run the SDK's and `bustest`'s tests on a copy with the latest nats.go | done (71e2c41) |
 
 Step 6's job fails when a nats.go release breaks the SDK, which is its purpose; a red `main` from it is fixed in the SDK or recorded, not silenced.
 Absolute bounds on each device verb stand for "no tool-side latency change": a ratio against a run with the bus up would flake under the race detector.
