@@ -70,13 +70,13 @@ type harness struct {
 	rec *core.Recorder
 }
 
-func newHarness(t *testing.T, tun producer.Tunables) *harness {
+func newHarness(t *testing.T, tun producer.Tunables, opts ...producer.Option) *harness {
 	t.Helper()
 	bus := producertest.NewBus()
 	m := &metrics{counts: map[string]float64{}}
 	p, err := producer.New(
 		producer.Config{SubjectPrefix: "tpk", ClaimBucket: bucket, Tunables: tun},
-		producer.WithBus(bus), producer.WithMetrics(m),
+		append([]producer.Option{producer.WithBus(bus), producer.WithMetrics(m)}, opts...)...,
 	)
 	if err != nil {
 		t.Fatalf("New: %v", err)

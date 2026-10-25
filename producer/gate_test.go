@@ -132,7 +132,8 @@ func TestHotReloadBlockedOnACaptureLockWhenStopArrives(t *testing.T) {
 // its fault rotation finds no room and waits, and once the bus is back the successor's start names the faulted capture.
 func TestReservedLaneFullWhileTheBusIsDown(t *testing.T) {
 	t.Parallel()
-	h := newHarness(t, producer.Tunables{ReservedLaneRecords: 4, FaultBackoff: 50 * time.Millisecond})
+	log := warnLog{warned: make(chan string, 64)}
+	h := newHarness(t, producer.Tunables{ReservedLaneRecords: 4, FaultBackoff: 50 * time.Millisecond}, producer.WithLogger(log))
 	h.bus.FailPublish(func(*producer.Msg) error { return errDown })
 	a := h.begin()
 
@@ -149,8 +150,13 @@ func TestReservedLaneFullWhileTheBusIsDown(t *testing.T) {
 			t.Errorf("observation %d took %v with the reserved lane full", i, took)
 		}
 	}
-	if !a.Faulted() || h.rec.Current() != a {
-		t.Fatalf("faulted %v, current %v: want the capture faulted and still current, its rotation short of room", a.Faulted(), h.rec.Current())
+	if !a.Faulted() {
+		t.Fatalf("the capture did not fault with the reserved lane full")
+	}
+	// Its fault rotation runs while the bus is still down, finds no room for the successor's start, and installs nothing.
+	waitWarn(t, log, "producer: fault rotation failed")
+	if h.rec.Current() != a {
+		t.Fatalf("current %v after the failed fault rotation, want the faulted capture", h.rec.Current())
 	}
 
 	h.bus.FailPublish(nil)
@@ -192,4 +198,20 @@ func successorOf(t *testing.T, msgs []producer.Msg, id tracepack.UUID) bool {
 	}
 
 	return false
+}
+
+// waitWarn waits for the warning msg, failing after ten seconds.
+func waitWarn(t *testing.T, log warnLog, msg string) {
+	t.Helper()
+	timeout := time.After(10 * time.Second)
+	for {
+		select {
+		case got := <-log.warned:
+			if got == msg {
+				return
+			}
+		case <-timeout:
+			t.Fatalf("no warning %q within ten seconds", msg)
+		}
+	}
 }
