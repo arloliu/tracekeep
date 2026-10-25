@@ -37,4 +37,4 @@ the go-secs loopback pair that drives them over a real connection is `cmd/tracek
 |---|---|---|
 | 1 | transport events through the lanes: an observation carries its event as plain fields and the publisher encodes it with tracepack, so an event callback allocates nothing | done (6740387) |
 | 2 | `secsobs` observers: wire frames (kind from the SType byte, direction from the host vantage, the borrowed frame copied only once admitted), socket events, go-secs's own T3 from the transaction observer; `ConnOptions` | done (2e629e6) |
-| 3 | `AttachLifecycle`: lifecycle events to state transitions with the cause mapping of tracepack-go.md §5.1 | in-progress |
+| 3 | `AttachLifecycle`: lifecycle events to state transitions with the cause mapping of tracepack-go.md §5.1 | done (60af431) |
