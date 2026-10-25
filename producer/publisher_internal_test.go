@@ -205,3 +205,64 @@ func TestSeqLimitRotates(t *testing.T) {
 		t.Errorf("reserved entry %+v, want the old capture's stop: a clean rotation, not a fault", e)
 	}
 }
+
+// A record of a capture whose drain ended is dropped even when a late callback queues it afterwards.
+func TestLateEnqueueAfterDrainIsDropped(t *testing.T) {
+	t.Parallel()
+	bus := newRecBus()
+	p, err := New(Config{SubjectPrefix: "tpk", ClaimBucket: "b"}, WithBus(bus))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = p.Close() })
+	if err := p.Begin(t.Context(), testDescriptor()); err != nil {
+		t.Fatal(err)
+	}
+	c := p.rec.Current()
+	if rep := p.End(t.Context()); !rep.Drained {
+		t.Fatalf("End = %+v", rep)
+	}
+	if !c.Terminated() {
+		t.Fatalf("a drained capture is not terminated")
+	}
+	before := len(bus.published())
+
+	p.rec.PushReserved(core.Entry{Cap: c, Kind: core.EntryClockStep, Seq: 99})
+	if err := p.Begin(t.Context(), testDescriptor()); err != nil { // its start is published after the late entry was taken in
+		t.Fatal(err)
+	}
+	ids := bus.waitFor(t, before+1)
+	for _, id := range ids[before:] {
+		if id == c.ID.String()+".99" {
+			t.Errorf("published %s of a capture whose drain ended", id)
+		}
+	}
+}
+
+// An attempt is judged by the present: a record whose horizon has passed is dropped without an attempt.
+func TestSendOrdinaryUsesThePresent(t *testing.T) {
+	t.Parallel()
+	bus := newRecBus()
+	p, err := New(Config{SubjectPrefix: "tpk", ClaimBucket: "b", Tunables: Tunables{RetryHorizon: 50 * time.Millisecond}},
+		func(o *options) { o.noPublisher = true })
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = p.Close() })
+	pb := newPublisher(p, bus)
+	if err := p.Begin(t.Context(), testDescriptor()); err != nil {
+		t.Fatal(err)
+	}
+	c := p.rec.Current()
+	st := &capState{cap: c, subject: c.Subject}
+	first := time.Now().Add(-time.Second) // its first attempt was a second ago, far past H
+	pd := &pending{e: core.Entry{Cap: c, Kind: core.EntryObserved, Seq: 1, Payload: []byte{1}}, first: first}
+
+	pb.sendOrdinary(st, pd)
+	if got := bus.published(); len(got) != 0 {
+		t.Errorf("published %v past the retry horizon", got)
+	}
+	if pb.dropped[core.DropPublishFailed] != 1 {
+		t.Errorf("dropped{publish_failed} = %d, want 1", pb.dropped[core.DropPublishFailed])
+	}
+}

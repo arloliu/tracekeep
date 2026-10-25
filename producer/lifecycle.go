@@ -114,10 +114,9 @@ func (p *Producer) Rotate(ctx context.Context, d CaptureDescriptor) error {
 func (p *Producer) End(ctx context.Context) Report {
 	p.stopping.Store(true)
 	p.lifeMu.Lock()
-	defer p.lifeMu.Unlock()
-
 	cur := p.rec.Current()
 	if cur == nil {
+		p.lifeMu.Unlock()
 		return Report{}
 	}
 	res := p.rec.Rotate(nil, deadline(ctx), func() bool { return ctx.Err() != nil }, p.now)
@@ -131,18 +130,21 @@ func (p *Producer) End(ctx context.Context) Report {
 	p.last = &id
 	p.emit(func() { p.metrics.Add("capture_rotations_total", map[string]string{"reason": reasonStop}, 1) })
 	p.setCurrentMetric(nil, nil)
-	rep.Drained, rep.Dropped = p.drain(deadline(ctx))
+	// The drain is waited for outside the lifecycle lock, which only bounded steps then hold,
+	// so a second End or a Begin is not held behind this one's drain.
+	p.lifeMu.Unlock()
+	rep.Drained, rep.Dropped = p.drain(cur, deadline(ctx))
 
 	return rep
 }
 
-// drain gives the publisher until dl to publish what is queued, the stop included; what is left then is dropped and counted.
+// drain gives the publisher until dl to publish what is queued of c, its stop included; what is left then is dropped and counted.
 // It never waits past dl, even for a publish in progress.
-func (p *Producer) drain(dl time.Time) (bool, uint64) {
+func (p *Producer) drain(c *core.Capture, dl time.Time) (bool, uint64) {
 	if p.pub == nil {
 		return false, 0
 	}
-	req := drainReq{deadline: dl, reply: make(chan uint64, 1)}
+	req := drainReq{cap: c, deadline: dl, reply: make(chan uint64, 1)}
 	select {
 	case p.pub.drainCh <- req:
 	default:

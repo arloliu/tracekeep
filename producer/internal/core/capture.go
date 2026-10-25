@@ -87,6 +87,8 @@ type Capture struct {
 	Subject    string
 
 	start atomic.Uint32
+	// terminated is set once End's drain of the capture finished: nothing of it is published afterwards.
+	terminated atomic.Bool
 
 	lifecycle *atomic.Uint64
 	tolerance int64
@@ -243,6 +245,12 @@ func (c *Capture) Fault() {
 	defer c.mu.Unlock()
 	c.faultLocked()
 }
+
+// Terminate marks the capture finished for the publisher: a record of it queued later is dropped, never published.
+func (c *Capture) Terminate() { c.terminated.Store(true) }
+
+// Terminated reports whether Terminate was called.
+func (c *Capture) Terminated() bool { return c.terminated.Load() }
 
 // Faulted reports whether the capture is in the fault state; it never waits on the capture's lock.
 func (c *Capture) Faulted() bool { return c.faultedFlag.Load() }

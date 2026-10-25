@@ -26,7 +26,15 @@ type Bus struct {
 	failPub    func(m *producer.Msg) error
 	failObj    func(op, name string) error
 	uncertain  func(name string) bool
+	hold       bool
+	held       []heldPublish
+	asyncCalls map[string]int
 	changed    chan struct{}
+}
+
+type heldPublish struct {
+	msg producer.Msg
+	f   future
 }
 
 type object struct {
@@ -56,6 +64,7 @@ func NewBus() *Bus {
 		maxPayload: DefaultMaxPayload,
 		ids:        make(map[string]bool),
 		buckets:    make(map[string]map[string]object),
+		asyncCalls: make(map[string]int),
 		changed:    make(chan struct{}),
 	}
 }
@@ -87,6 +96,58 @@ func (b *Bus) FailPutsUncertain(f func(name string) bool) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.uncertain = f
+}
+
+// HoldAsync makes asynchronous publishes wait, unresolved, until ReleaseAsync; false resolves them at once again.
+func (b *Bus) HoldAsync(hold bool) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.hold = hold
+}
+
+// ReleaseAsync resolves every held asynchronous publish: stored and acked when err is nil, failed with err otherwise.
+func (b *Bus) ReleaseAsync(err error) {
+	b.mu.Lock()
+	held := b.held
+	b.held = nil
+	b.mu.Unlock()
+	for _, h := range held {
+		if err != nil {
+			h.f.err <- err
+			continue
+		}
+		ack, serr := b.store(&h.msg)
+		if serr != nil {
+			h.f.err <- serr
+		} else {
+			h.f.ok <- ack
+		}
+	}
+}
+
+// WaitAsync waits until an asynchronous publish of msgID was made.
+func (b *Bus) WaitAsync(ctx context.Context, msgID string) error {
+	for {
+		b.mu.Lock()
+		n, ch := b.asyncCalls[msgID], b.changed
+		b.mu.Unlock()
+		if n > 0 {
+			return nil
+		}
+		select {
+		case <-ch:
+		case <-ctx.Done():
+			return fmt.Errorf("producertest: waiting for a publish of %s: %w", msgID, ctx.Err())
+		}
+	}
+}
+
+// AsyncCalls returns how many asynchronous publishes named msgID.
+func (b *Bus) AsyncCalls(msgID string) int {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	return b.asyncCalls[msgID]
 }
 
 // Messages returns the stored messages in the order the stream accepted them.
@@ -153,6 +214,19 @@ func (b *Bus) Publish(ctx context.Context, m *producer.Msg) (producer.Ack, error
 // PublishAsync implements producer.Bus.
 func (b *Bus) PublishAsync(m *producer.Msg) (producer.AckFuture, error) {
 	f := future{ok: make(chan producer.Ack, 1), err: make(chan error, 1)}
+	b.mu.Lock()
+	b.asyncCalls[m.MsgID]++
+	b.notifyLocked()
+	if b.hold {
+		c := *m
+		c.Header = maps.Clone(m.Header)
+		c.Data = slices.Clone(m.Data)
+		b.held = append(b.held, heldPublish{msg: c, f: f})
+		b.mu.Unlock()
+
+		return f, nil
+	}
+	b.mu.Unlock()
 	ack, err := b.store(m)
 	if err != nil {
 		f.err <- err
@@ -184,10 +258,15 @@ func (b *Bus) store(m *producer.Msg) (producer.Ack, error) {
 	c.Header = maps.Clone(m.Header)
 	c.Data = slices.Clone(m.Data)
 	b.msgs = append(b.msgs, c)
-	close(b.changed)
-	b.changed = make(chan struct{})
+	b.notifyLocked()
 
 	return producer.Ack{Stream: m.ExpectStream, Seq: uint64(len(b.msgs))}, nil
+}
+
+// notifyLocked wakes every waiter; the caller holds mu.
+func (b *Bus) notifyLocked() {
+	close(b.changed)
+	b.changed = make(chan struct{})
 }
 
 func (b *Bus) bucketLocked(bucket string) map[string]object {

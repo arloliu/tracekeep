@@ -18,6 +18,8 @@ const (
 	retryCap  = 5 * time.Second
 	// metricsInterval is how often counters are reported to Metrics.
 	metricsInterval = time.Second
+	// drainRequests bounds the drains waiting for the publisher to take them in.
+	drainRequests = 4
 )
 
 // dropReasons labels records_dropped_total.
@@ -42,7 +44,7 @@ type publisher struct {
 	caps    map[*core.Capture]*capState
 	flights []*flight
 	drainCh chan drainReq
-	drain   *drainReq
+	drains  []drainReq
 	// epoch counts reservation snapshots; an entry taken in after the current snapshot waits for the next.
 	epoch uint64
 	hooks publisherHooks
@@ -94,8 +96,6 @@ type flight struct {
 	st  *capState
 	pd  *pending
 	fut AckFuture
-	// final is set by a drain past its deadline: the outcome is counted, never retried.
-	final bool
 }
 
 // publisherHooks are points where the package's tests act on a running publisher; nil outside tests.
@@ -104,7 +104,9 @@ type publisherHooks struct {
 	afterPass     func()
 }
 
+// drainReq is End's drain of the one capture it closed.
 type drainReq struct {
+	cap      *core.Capture
 	deadline time.Time
 	reply    chan uint64
 }
@@ -124,7 +126,7 @@ func newPublisher(p *Producer, bus Bus) *publisher {
 		p:         p,
 		bus:       bus,
 		caps:      make(map[*core.Capture]*capState),
-		drainCh:   make(chan drainReq, 1),
+		drainCh:   make(chan drainReq, drainRequests),
 		claimPuts: make(map[string]uint64),
 		reported:  reported{claimPuts: make(map[string]uint64)},
 	}
@@ -135,8 +137,10 @@ func (pb *publisher) run(quit <-chan struct{}) {
 	timer := time.NewTimer(pollInterval)
 	defer timer.Stop()
 	for {
+		// A drain past its deadline ends its capture before the pass can attempt anything of it.
+		pb.finishDrains()
 		pb.pass()
-		pb.finishDrain()
+		pb.finishDrains()
 		pb.report(false)
 
 		// Idle, it still wakes every half reservation timeout: a reservation can go stale with nothing else moving.
@@ -144,20 +148,22 @@ func (pb *publisher) run(quit <-chan struct{}) {
 		if pb.busy() {
 			wait = pollInterval
 		}
-		if pb.drain != nil {
-			wait = max(min(wait, time.Until(pb.drain.deadline)), 0)
+		for _, d := range pb.drains {
+			wait = max(min(wait, time.Until(d.deadline)), 0)
 		}
 		timer.Reset(wait)
 		select {
 		case <-quit:
+			pb.pollFlights(time.Now()) // count what already resolved
 			pb.report(true)
+
 			return
 		case e := <-rec.Reserved():
 			pb.add(e)
 		case e := <-rec.Ordinary():
 			pb.add(e)
 		case d := <-pb.drainCh:
-			pb.drain = &d
+			pb.drains = append(pb.drains, d)
 		case <-timer.C:
 		}
 	}
@@ -185,9 +191,12 @@ func (pb *publisher) pass() {
 	pb.pollFlights(now)
 
 	for c, st := range pb.caps {
-		if c.Abandoned() {
+		switch {
+		case c.Abandoned():
 			pb.dropAll(st, core.DropAbandoned)
-		} else {
+		case c.Terminated():
+			pb.dropAll(st, core.DropPublishFailed)
+		default:
 			pb.progress(st, now)
 		}
 		if st.empty() && pb.p.rec.Current() != c {
@@ -225,7 +234,7 @@ func (pb *publisher) progress(st *capState, now time.Time) {
 		switch {
 		case st.lost && pd.e.Seq >= st.lostFrom:
 			pb.dropEntry(&pd.e, core.DropCaptureFault)
-		case pd.epoch == pb.epoch || !st.mayPublish(pd.e.Seq) || now.Before(pd.next) || !pb.sendOrdinary(st, pd, now):
+		case pd.epoch == pb.epoch || !st.mayPublish(pd.e.Seq) || now.Before(pd.next) || !pb.sendOrdinary(st, pd):
 			kept = append(kept, pd)
 		default:
 		}
@@ -286,7 +295,9 @@ func (pb *publisher) retryReserved(st *capState, now time.Time, err error) {
 
 // sendOrdinary sends an ordinary record asynchronously, putting its claim object first;
 // false keeps it for a retry, and a record past the retry horizon H is dropped as a seq gap.
-func (pb *publisher) sendOrdinary(st *capState, pd *pending, now time.Time) bool {
+func (pb *publisher) sendOrdinary(st *capState, pd *pending) bool {
+	// The pass's clock may be stale after a blocking publish; an attempt is judged by the present.
+	now := time.Now()
 	if pd.first.IsZero() {
 		pd.first = now
 	}
@@ -319,9 +330,13 @@ func (pb *publisher) sendOrdinary(st *capState, pd *pending, now time.Time) bool
 				return true
 			}
 
-			return pb.retryOrDrop(pd, now, core.DropClaimFailed)
+			return pb.retryOrDrop(pd, time.Now(), core.DropClaimFailed)
 		}
 		pd.claimed = true
+		if !time.Now().Before(horizon) {
+			pb.dropEntry(&pd.e, core.DropPublishFailed)
+			return true
+		}
 	}
 	fut, err := pb.bus.PublishAsync(&pd.msg.msg)
 	if err != nil {
@@ -412,7 +427,7 @@ func (pb *publisher) pollFlights(now time.Time) {
 		case err := <-f.fut.Err():
 			f.st.inflight--
 			pb.failed(err)
-			if f.final {
+			if f.st.cap.Terminated() {
 				pb.dropEntry(&f.pd.e, core.DropPublishFailed)
 			} else if !pb.retryOrDrop(f.pd, now, core.DropPublishFailed) {
 				f.st.held = append(f.st.held, f.pd)
@@ -477,6 +492,11 @@ func (pb *publisher) drainLanes(ordinary bool) {
 
 // add takes one lane entry into its capture's state.
 func (pb *publisher) add(e core.Entry) {
+	if e.Cap.Terminated() {
+		// A callback that allocated before End's drain finished and queued after it.
+		pb.dropEntry(&e, core.DropPublishFailed)
+		return
+	}
 	st := pb.caps[e.Cap]
 	if st == nil {
 		st = &capState{cap: e.Cap, subject: e.Cap.Subject}
@@ -496,36 +516,32 @@ func (pb *publisher) add(e core.Entry) {
 	}
 }
 
-// finishDrain answers End's drain once nothing of an ended capture is left, or at its deadline after dropping what is left.
-// It drains only captures that are not current, so a drain that outlived its End never touches a successor;
-// publishes still in flight then are final: their outcome is counted and never retried.
-func (pb *publisher) finishDrain() {
-	if pb.drain == nil {
-		return
-	}
-	if !pb.drained() && time.Now().Before(pb.drain.deadline) {
-		return
-	}
-	pb.drainLanes(true)
-	cur := pb.p.rec.Current()
-	var left uint64
-	for c, st := range pb.caps {
-		if c == cur {
+// finishDrains answers each drain once its capture has nothing left, or at its deadline after dropping what is left.
+// Either way the capture is then terminated: publishes still in flight are counted and never retried,
+// and a record of it queued later is dropped.
+// A drain names its capture, so one that outlives its End never touches a successor.
+func (pb *publisher) finishDrains() {
+	kept := pb.drains[:0]
+	for _, d := range pb.drains {
+		st := pb.caps[d.cap]
+		done := (st == nil || st.empty()) && len(pb.p.rec.Reserved()) == 0 && len(pb.p.rec.Ordinary()) == 0
+		if !done && time.Now().Before(d.deadline) {
+			kept = append(kept, d)
 			continue
 		}
-		left += uint64(len(st.reserved) + len(st.held))
-		pb.dropAll(st, core.DropPublishFailed)
-		if st.empty() {
-			delete(pb.caps, c)
+		d.cap.Terminate()
+		var left uint64
+		if st != nil {
+			left = uint64(len(st.reserved) + len(st.held))
+			pb.dropAll(st, core.DropPublishFailed)
+			if st.empty() {
+				delete(pb.caps, d.cap)
+			}
 		}
+		d.reply <- left
 	}
-	for _, f := range pb.flights {
-		if f.st.cap != cur {
-			f.final = true
-		}
-	}
-	pb.drain.reply <- left
-	pb.drain = nil
+	clear(pb.drains[len(kept):])
+	pb.drains = kept
 }
 
 func (pb *publisher) dropAll(st *capState, reason core.DropReason) {
@@ -570,8 +586,10 @@ func (pb *publisher) setBusDown(down bool) {
 // attemptDeadline is τ from now, cut short by a drain's deadline.
 func (pb *publisher) attemptDeadline(now time.Time) time.Time {
 	d := now.Add(pb.p.tun.PublishTimeout)
-	if pb.drain != nil && pb.drain.deadline.Before(d) {
-		d = pb.drain.deadline
+	for _, dr := range pb.drains {
+		if dr.deadline.Before(d) {
+			d = dr.deadline
+		}
 	}
 
 	return d
@@ -580,7 +598,7 @@ func (pb *publisher) attemptDeadline(now time.Time) time.Time {
 // busy reports work that needs the publisher to wake on its own: in-flight publishes, held records,
 // and reservations, which time out even when nothing else moves.
 func (pb *publisher) busy() bool {
-	if len(pb.flights) > 0 {
+	if len(pb.flights) > 0 || len(pb.drains) > 0 {
 		return true
 	}
 	for _, st := range pb.caps {
@@ -590,19 +608,6 @@ func (pb *publisher) busy() bool {
 	}
 
 	return false
-}
-
-// drained reports that no capture but the current one has anything left to publish.
-func (pb *publisher) drained() bool {
-	cur := pb.p.rec.Current()
-	for c, st := range pb.caps {
-		if c != cur && !st.empty() {
-			return false
-		}
-	}
-	rec := pb.p.rec
-
-	return len(rec.Reserved()) == 0 && len(rec.Ordinary()) == 0
 }
 
 // report sends the counts gathered since the last report to Metrics, at most once per interval unless forced.

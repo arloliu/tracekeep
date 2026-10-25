@@ -401,25 +401,39 @@ func TestFullLaneWhileTheBusIsDownCountsBusDown(t *testing.T) {
 	}
 }
 
-// An End whose drain outlives its deadline must not touch the next capture once Begin opens it.
+// An End whose drain outlives its deadline must not touch the next capture once Begin opens it,
+// and ends its own capture for good.
 func TestLateDrainSparesTheSuccessor(t *testing.T) {
 	t.Parallel()
 	h := newHarness(t, producer.Tunables{})
 	release := make(chan struct{})
 	blocked := make(chan struct{})
 	var once sync.Once
-	first := h.begin()
+	t.Cleanup(func() {
+		select {
+		case <-release:
+		default:
+			close(release)
+		}
+	})
 	h.bus.FailPublish(func(m *producer.Msg) error {
-		if m.MsgID == first.ID.String()+".0" {
-			once.Do(func() { close(blocked) })
-			<-release // the publisher is stuck in the old start's publish past End's deadline
+		first := false
+		once.Do(func() { first = true })
+		if first {
+			close(blocked)
+			<-release // the publisher is stuck in the first start's publish past End's deadline
 
 			return errDown
 		}
 
 		return nil
 	})
-	<-blocked
+	first := h.begin()
+	select {
+	case <-blocked:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the first start was never attempted")
+	}
 
 	ctx, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond)
 	defer cancel()
@@ -432,6 +446,83 @@ func TestLateDrainSparesTheSuccessor(t *testing.T) {
 	msgs := h.wait(1)
 	if msgs[0].MsgID != second.ID.String()+".0" {
 		t.Errorf("first accepted message %s, want the successor's start", msgs[0].MsgID)
+	}
+	_ = h.p.End(t.Context())
+	for _, m := range h.bus.Messages() {
+		if strings.HasPrefix(m.MsgID, first.ID.String()) {
+			t.Errorf("published %s of the drained capture after its drain ended", m.MsgID)
+		}
+	}
+}
+
+// A second End does not wait behind the first one's drain.
+func TestOverlappingEndsKeepTheirDeadlines(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t, producer.Tunables{})
+	stopTried := make(chan struct{})
+	var once sync.Once
+	h.bus.FailPublish(func(m *producer.Msg) error {
+		switch {
+		case strings.HasSuffix(m.MsgID, ".0"):
+			return nil // the start is accepted, so the stop is attempted next
+		case strings.HasSuffix(m.MsgID, ".1"): // the first End's stop: that End has rotated and is draining
+			once.Do(func() { close(stopTried) })
+		default:
+		}
+
+		return errDown // the stop never drains
+	})
+	h.begin()
+
+	firstDone := make(chan struct{})
+	go func() {
+		defer close(firstDone)
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		h.p.End(ctx)
+	}()
+	select {
+	case <-stopTried:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the first End's stop was never attempted")
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 100*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	h.p.End(ctx)
+	if took := time.Since(start); took > 500*time.Millisecond {
+		t.Errorf("the second End took %v with a 100ms deadline", took)
+	}
+	<-firstDone
+}
+
+// A publish still in flight when a drain ends is counted when it fails, never retried.
+func TestFlightAfterDrainIsNotRetried(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t, producer.Tunables{})
+	c := h.begin()
+	h.wait(1)
+	h.bus.HoldAsync(true)
+	h.observe(frame(4)) // seq 1 goes out asynchronously and stays unresolved
+	id := c.ID.String() + ".1"
+	wctx, wcancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer wcancel()
+	if err := h.bus.WaitAsync(wctx, id); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithTimeout(t.Context(), 100*time.Millisecond)
+	defer cancel()
+	h.p.End(ctx)
+	h.bus.HoldAsync(false)
+	h.bus.ReleaseAsync(errDown)
+	_ = h.p.Close() // the publisher has seen the failure by the time it stops
+
+	if got := h.bus.AsyncCalls(id); got != 1 {
+		t.Errorf("%d publishes of %s, want 1: a failure after the drain is final", got, id)
+	}
+	if got := h.m.get("records_dropped_total{reason=publish_failed}"); got != 1 {
+		t.Errorf("dropped{publish_failed} = %v, want 1", got)
 	}
 }
 
