@@ -1,6 +1,6 @@
 # Repository bootstrap
 
-Status: active (2026-10-25) — phase 1 under way
+Status: active (2026-10-25) — phases 1 and 2 done; phase 3 next
 
 tracekeep (`github.com/arloliu/tracekeep`) is the traffic-log service of the Virtual Equipment project:
 it consumes the SECS/HSMS traffic records an equipment gateway publishes on NATS JetStream,
@@ -51,8 +51,8 @@ phase 2 carried them into `tracekeep-decisions.md` as T-13…T-21:
 
 | Phase | Scope | State |
 |---|---|---|
-| 1 — conventions | the files in *Phase 1* below; `make docs-check data-check` green | in-progress |
-| 2 — documents | split the seed into the files in *Phase 2*, each subject file opening with an interface summary; proposal P1; `make docs-check` green; the seed deleted | in-progress |
+| 1 — conventions | the files in *Phase 1* below; `make docs-check data-check` green | done (4bd5ecc) |
+| 2 — documents | split the seed into the files in *Phase 2*, each subject file opening with an interface summary; proposal P1; `make docs-check` green; the seed deleted | done (4bd5ecc, reflow 24e6a1b) |
 | 3 — skeleton | `go.work`, the two `go.mod`, `producer/`, `cmd/tracekeep-sim/`, `internal/testbus/`, `cmd/tracekeep/` (`dev` and `migrate` as empty commands); `make ci` and `GOWORK=off go build ./...` green | pending |
 | 4 — CI | GitHub Actions: lint, vet, test with the race detector, `docs-check`, `data-check`, both builds; the embedded nats-server in tests, no network | pending |
 | 5 — close | this plan closes (its outcome in the commit message); `docs/plans/phase-0-producer.md`, created `draft` in phase 2, becomes `active` | pending |
@@ -129,7 +129,7 @@ Section numbers stay as the seed had them, so a `§N` in moved text keeps its me
 `README.md` maps each number to its file,
 and `tracekeep-decisions.md` keeps §13's numbering (T-N is §13 item N).
 Line breaking is unchanged by the move;
-reflowing the long seed paragraphs to semantic linefeeds is a later, separate change.
+the long seed paragraphs were reflowed to semantic linefeeds in a separate commit that changes only line breaks.
 One correction is applied in the move, because an owner decision already supersedes the text:
 §11's "a `replace` to `./producer` for local development" becomes the committed `go.work` (`docs/guides/repository.md`).
 The section pointers of `AGENTS.md`, `600-invariants.md` and `650-perf-sec.md` are rewritten to the split files.
