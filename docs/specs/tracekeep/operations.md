@@ -49,7 +49,7 @@ each with the alert that raises it, the metric to look at, the admin command tha
 shipped in `docs/guides/runbook.md` and referenced by the alert annotations.
 
 **Tunables**, all in one table in `docs/guides/configuration.md` with their defaults and the consequence of moving each:
-Q, I, L, D, H, τ, ε, the lane sizes, the key-set cap, `parking.enabled` (default true; false documents the service-wide stall it allows)
+F, Q, I, L, D, H, τ, ε, the lane sizes, the key-set cap, `parking.enabled` (default true; false documents the service-wide stall it allows)
 and `parking.redelivery_delay` (default 60 s, the parked consumer's scheduled nak delay;
 how soon a termination or a cleared blocker takes effect follows from it only while that consumer is up and has delivery capacity,
 and the completion signal is `parked list`, §6.1) (§13 lists the defaults).

@@ -229,3 +229,13 @@ Applied to `producer.md` §4.2 and §4.5, `producer-sdk.md` §4.7, `catalog.md` 
 Not verified: whether two deployments with different `AppID`s serve one tool in practice;
 if they do, they are reported as overlapping captures.
 
+### T-25 — flush interval (2026-10-25)
+
+`ingest`'s flush interval F defaults to 5 minutes,
+the value the catalog's sizing implies, until measurements on real traffic tune it.
+It joins the service defaults of T-12.
+The bounds it touches:
+a consumer's `ack_wait` must exceed F plus the upload ([STO §4] *Stream settings*), so more than 5 minutes,
+and Q = 15 min must exceed F plus `ack_wait` plus redelivery slack (§7.3),
+which leaves under 10 minutes for `ack_wait` and the slack together;
+raising F later means raising Q with it.

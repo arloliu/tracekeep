@@ -48,11 +48,11 @@ Read when a spec file uses a term you cannot place; the cited section is authori
 
 ## Tunables
 
-Defaults are T-12 in [tracekeep-decisions.md](tracekeep-decisions.md).
+Defaults are T-12 and T-25 in [tracekeep-decisions.md](tracekeep-decisions.md).
 
 | Symbol | Meaning | Default | Defined in |
 |---|---|---|---|
-| F | `ingest`'s flush interval | not set in the seed | §3.1, §6.2 |
+| F | `ingest`'s flush interval | 5 min (T-25) | §3.1, §6.2 |
 | Q | quiet period: a scope becomes a merge candidate at hour end + Q; also the adjacency delay and the silence a successor close requires | 15 min | §7.3, §8.2 |
 | I | inactivity close: a capture with no registration for I is closed | 2 h | §8.2 |
 | L | retirement inactivity bound for a processing configuration | 7 days | §6.4 |
