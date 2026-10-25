@@ -38,6 +38,16 @@ var causes = map[hsms.TransitionCause]causeMap{
 	hsms.CauseHandlerExit:    {tracepack.CauseImplementationFault, tracepack.TimerNone, "go-secs:CauseHandlerExit"},
 }
 
+// unknownRaw names every cause value by go-secs's own String, built once so a callback never formats one;
+// a cause the go-secs this SDK was built with does not map still keeps its source name.
+var unknownRaw = func() (t [256]string) {
+	for i := range t {
+		t[i] = "go-secs:" + hsms.TransitionCause(i).String() //nolint:gosec // i < 256
+	}
+
+	return t
+}()
+
 // Observer holds the observers that feed one producer from one HSMS-SS connection.
 // Its callbacks are safe for concurrent use and never block on anything external.
 type Observer struct {
@@ -70,10 +80,8 @@ func (o *Observer) AttachLifecycle(conn hsms.Connection) (cancel func()) {
 
 // lifecycle records one state transition (tracepack-go.md §5.1, §5.2), timed when it fired, in its generation's epoch.
 func (o *Observer) lifecycle(ev hsms.LifecycleEvent) {
-	c, ok := causes[ev.Cause]
-	if !ok {
-		c = causeMap{cause: tracepack.CauseUnknown}
-	}
+	defer o.rec.Recover()
+	c := mapCause(ev.Cause)
 	o.event(ev.At.UnixNano(), core.Mono(ev.At), ev.Socket, &core.Event{
 		Kind: tracepack.EventStateTransition, Prev: state(ev.Previous), Cur: state(ev.Current),
 		Cause: c.cause, CauseRaw: c.raw, Timer: c.timer,
@@ -96,6 +104,7 @@ func state(s hsms.ConnState) tracepack.State {
 // wire records one frame (tracepack-go.md §5.5).
 // The gateway is the connection's host (vantage host), so an outbound frame travels host to equipment.
 func (o *Observer) wire(ev hsms.WireEvent) {
+	defer o.rec.Recover()
 	obs := core.Observation{
 		Wall: ev.At.UnixNano(), Mono: core.Mono(ev.At), Socket: ev.Socket,
 		Kind: tracepack.KindData, Fidelity: tracepack.FidelityWireExact,
@@ -116,6 +125,7 @@ func (o *Observer) wire(ev hsms.WireEvent) {
 
 // socket records one socket event (tracepack-go.md §5.3).
 func (o *Observer) socket(ev hsms.SocketEvent) {
+	defer o.rec.Recover()
 	var e core.Event
 	switch ev.Kind {
 	case hsms.SocketConnected:
@@ -141,6 +151,7 @@ func (o *Observer) socket(ev hsms.SocketEvent) {
 // tx records go-secs's own T3 (tracepack-go.md §5.4); every other outcome leaves no record.
 // TxEvent carries no time, so the event is timed at its reception.
 func (o *Observer) tx(ev hsms.TxEvent) {
+	defer o.rec.Recover()
 	if ev.Outcome != hsms.TxT3Timeout {
 		return
 	}
@@ -159,13 +170,18 @@ func (o *Observer) event(wall, mono int64, socket uint64, e *core.Event) {
 	})
 }
 
+// mapCause maps a go-secs cause by tracepack-go.md §5.1; an unmapped one is unknown, its source name kept in cause_raw.
+func mapCause(cause hsms.TransitionCause) causeMap {
+	if c, ok := causes[cause]; ok {
+		return c
+	}
+
+	return causeMap{cause: tracepack.CauseUnknown, raw: unknownRaw[cause]}
+}
+
 // closeCause maps a socket close's reason by the table of tracepack-go.md §5.3.
 func closeCause(ev *hsms.SocketEvent) (tracepack.Cause, string) {
-	c, ok := causes[ev.Cause]
-	if !ok {
-		// Every go-secs v2.8.0 cause is mapped; naming a later one in cause_raw would allocate in the callback.
-		return tracepack.CauseUnknown, ""
-	}
+	c := mapCause(ev.Cause)
 	if ev.Cause != hsms.CauseIOError {
 		return c.cause, c.raw
 	}

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"reflect"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -170,6 +171,7 @@ func TestSocketEvents(t *testing.T) {
 		{"declined", closed(0, hsms.CauseUnknown, nil), closeEvent(tracepack.CauseUnknown, "go-secs:CauseUnknown")},
 		{"T7", closed(1, hsms.CauseT7Timeout, hsms.ErrT7Timeout), closeEvent(tracepack.CauseTimerExpiry, "go-secs:CauseT7Timeout")},
 		{"peer separate", closed(1, hsms.CausePeerSeparate, nil), closeEvent(tracepack.CausePeerSeparate, "go-secs:CausePeerSeparate")},
+		{"unknown cause", closed(1, 201, nil), closeEvent(tracepack.CauseUnknown, "go-secs:TransitionCause(201)")},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -304,6 +306,9 @@ func TestCallbacksAllocateOnlyTheFrameCopy(t *testing.T) {
 			obs.socket(hsms.SocketEvent{Kind: hsms.SocketClosed, Socket: 3, At: time.Now(), Cause: hsms.CauseIOError, Err: io.EOF})
 		}, 0},
 		{"tx", func() { obs.tx(hsms.TxEvent{Outcome: hsms.TxT3Timeout, Socket: 3}) }, 0},
+		{"lifecycle", func() {
+			obs.lifecycle(hsms.LifecycleEvent{Previous: hsms.SelectedState, Current: hsms.NotConnectedState, Cause: 200, Socket: 3, At: time.Now()})
+		}, 0},
 	}
 	for _, tt := range tests {
 		got := testing.AllocsPerRun(1000, func() {
@@ -353,7 +358,7 @@ func TestLifecycleEvents(t *testing.T) {
 			"unknown cause", hsms.LifecycleEvent{Previous: hsms.SelectedState, Current: hsms.NotConnectedState, Cause: 200},
 			tracepack.TransportEvent{
 				Event: tracepack.EventStateTransition, PrevState: new(tracepack.StateSelected), CurState: new(tracepack.StateNotConnected),
-				Cause: new(tracepack.CauseUnknown),
+				Cause: new(tracepack.CauseUnknown), CauseRaw: new("go-secs:TransitionCause(200)"),
 			},
 		},
 	}
@@ -404,5 +409,103 @@ func TestAttachLifecycleSubscribes(t *testing.T) {
 	cancel()
 	if !conn.cancelled {
 		t.Errorf("cancel did not cancel the subscription")
+	}
+}
+
+// panicError panics when errors.Is inspects it, as a broken custom transport's error might.
+type panicError struct{}
+
+func (panicError) Error() string { return "broken" }
+func (panicError) Is(error) bool { panic("broken Is") }
+
+func TestPanicBeforeObserveFaultsTheCapture(t *testing.T) {
+	t.Parallel()
+	bus := producertest.NewBus()
+	p, err := producer.New(producer.Config{SubjectPrefix: "tpk", ClaimBucket: "tpk-objects"}, producer.WithBus(bus))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	t.Cleanup(func() { _ = p.Close() })
+	if err := p.Begin(t.Context(), producer.CaptureDescriptor{ToolID: "T1", DeviceName: "eqp"}); err != nil {
+		t.Fatalf("Begin: %v", err)
+	}
+	obs := New(p)
+	c := obs.rec.Current()
+
+	obs.socket(hsms.SocketEvent{Kind: hsms.SocketClosed, Socket: 3, At: time.Now(), Cause: hsms.CauseIOError, Err: panicError{}})
+
+	if !c.Faulted() {
+		t.Errorf("capture not faulted by a panic before Observe")
+	}
+	if got := obs.rec.Counters().Panics; got != 1 {
+		t.Errorf("panics = %d, want 1", got)
+	}
+}
+
+// TestOneObserverAcrossSockets feeds one observer two sockets in turn, with events of the first delivered after the second is up.
+func TestOneObserverAcrossSockets(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t)
+	now := time.Now()
+	h.obs.socket(hsms.SocketEvent{Kind: hsms.SocketConnected, Socket: 5, At: now})
+	h.obs.socket(hsms.SocketEvent{Kind: hsms.SocketClosed, Socket: 5, Generation: 1, At: now, Cause: hsms.CauseIOError, Err: io.EOF})
+	h.obs.socket(hsms.SocketEvent{Kind: hsms.SocketConnected, Socket: 6, At: now})
+	h.obs.wire(hsms.WireEvent{Direction: hsms.WireInbound, Socket: 6, Generation: 2, At: now, Frame: frame(1)})
+	// Late reports of generation 1: its drop and a send bound to it that timed out.
+	h.obs.lifecycle(hsms.LifecycleEvent{
+		Previous: hsms.SelectedState, Current: hsms.NotConnectedState, Cause: hsms.CauseIOError, Socket: 5, Generation: 1, At: now,
+	})
+	h.obs.tx(hsms.TxEvent{Stream: 1, Function: 3, ID: 9, Outcome: hsms.TxT3Timeout, Socket: 5, Generation: 1})
+
+	recs := h.records(6)
+	for i, want := range []uint32{1, 1, 2, 2, 1, 1} {
+		if recs[i].Epoch != want {
+			t.Errorf("record %d epoch %d, want %d", i, recs[i].Epoch, want)
+		}
+	}
+	if ev := event(t, &recs[4]); ev.Event != tracepack.EventStateTransition || recs[4].TSUTCNs != now.UnixNano() {
+		t.Errorf("late transition = %+v at %d, want its own time %d", ev, recs[4].TSUTCNs, now.UnixNano())
+	}
+}
+
+// TestConcurrentCallbacks runs the wire observer for both directions and the socket observer at once on one observer,
+// as go-secs's receive and write goroutines do; every record keeps its seq.
+func TestConcurrentCallbacks(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t)
+	const per = 50
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	for _, call := range []func(){
+		func() {
+			h.obs.wire(hsms.WireEvent{Direction: hsms.WireInbound, Socket: 3, At: time.Now(), Frame: frame(0, 1)})
+		},
+		func() {
+			h.obs.wire(hsms.WireEvent{Direction: hsms.WireOutbound, Socket: 3, At: time.Now(), Frame: frame(0, 2)})
+		},
+		func() { h.obs.socket(hsms.SocketEvent{Kind: hsms.SocketConnected, Socket: 3, At: time.Now()}) },
+	} {
+		wg.Go(func() {
+			<-start
+			for range per {
+				call()
+			}
+		})
+	}
+	close(start)
+	wg.Wait()
+
+	recs := h.records(3 * per)
+	seen := make(map[uint64]bool, len(recs))
+	for i := range recs {
+		seen[recs[i].Seq] = true
+		if recs[i].Epoch != 1 {
+			t.Errorf("seq %d epoch %d, want 1", recs[i].Seq, recs[i].Epoch)
+		}
+	}
+	for seq := uint64(1); seq <= 3*per; seq++ {
+		if !seen[seq] {
+			t.Errorf("seq %d missing", seq)
+		}
 	}
 }
