@@ -357,7 +357,7 @@ The roadmap's open parking and catalog items and the findings of an external rev
   and classification runs up to the higher of `highest_seq` and the highest parked seq.
   `ListPacks` and its proto gain the class.
 - A termination emits a scope event of a new kind, `terminated`, on the scope of each terminated seq's hour, upserting the scope when it is missing,
-  with `revision + 1` and the counter last;
+  with `revision + 1` and the counter last, except in an hour retention has evicted, whose scope is gone;
   entering parking emits nothing, and parking touches no counter except there.
 - A download URL, presigned or served by the API, expires at the earlier of now plus its lifetime and its object's deadline minus a margin.
   The deadline is the earliest time the object may be deleted:

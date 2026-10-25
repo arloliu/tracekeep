@@ -53,8 +53,9 @@ Contract changes go through proposals, which the subject [README.md](README.md) 
     on conflict it compares the stored fingerprint with its own;
     a mismatch fails closed: the consumer defers every record needing that key and alerts.
     Two consumers resolving one id for the first time therefore agree or one of them stops.
-    A `keyID`, like a processing configuration, is retired only under §6.4's condition,
-    never merely because its captures are stopped.
+    A `digest` or `master` `keyID`, like a processing configuration, is retired only under §6.4's condition,
+    never merely because its captures are stopped;
+    `session` and `download` key ids retire by the rotation rule below.
   - **The `keys` module** (`internal/keys`) owns the HKDF derivation, the fingerprint, the insert-or-compare and the in-memory cache,
     for every role that uses a key;
     a `KeyProvider` only returns the material at a provider reference and version, and derives, compares and caches nothing.
@@ -74,6 +75,13 @@ Contract changes go through proposals, which the subject [README.md](README.md) 
     `digest` (`DigestKey`), `master` (the IKM of `EncryptionKey`), `session` (the session cookie of `api.md` §10.2) and `download` (the download tokens of `api.md` §10.1).
     A request for a key id under another kind fails closed,
     and no key of one purpose is derived from a key of another.
+  - **Session and download keys rotate by configuration** (T-33):
+    configuration names, per purpose, one **issuing** key id and a list of **accepted** key ids;
+    every cookie and token carries its key id in its authenticated part, and an unknown or wrong-purpose id fails closed.
+    Rotation is three steps:
+    add the new id to the accepted list on every replica, then switch issuance to it,
+    then drop the old id once no replica issues under it and the longest credential lifetime plus the clock tolerance has passed.
+    Such a key id is retired when no credential issued under it can still be valid, which says nothing about captures.
 - `KeyProvider` implementations:
   `vault` (KV v2 with the version pinned in the binding; Kubernetes auth in the cluster, AppRole on a host; material held in memory only, never on disk, and cached by the `keys` module),
   `file` (files a Vault Agent or an operator places, mode 0600, for standalone), `env` (development only, refused in production mode).

@@ -24,15 +24,16 @@ Contract changes go through proposals, which the subject [README.md](README.md) 
   one unexported helper runs the prologue, so the capture row is first by construction;
   a transaction committed under the compactor lease updates the `leases` row next;
   admission and every membership change update the `membership` sentinel row;
-  the `scope_events` row is last, only in a transaction that allocates an event seq, and parking touches no counter;
+  the `scope_events` row is last, only in a transaction that allocates an event seq, and parking touches no counter except when it terminates (T-33);
   nothing else is locked (§7.2; `ingest.md` §6.3; `compactor.md` §8.3).
 - **Aborts**: a failed scope-revision or lease check rolls back the whole transaction, which returns the outcome unretried;
   a tombstone commits before its object is deleted (§7.2; `compactor.md` §8.1, §8.3).
 - **Reads**: domain results;
   `ListPacks` returns completeness and the watermark read before the listing, and the module owns cursor recovery (§7.3).
 - **Completeness**: producer coverage is the union of `pack_ranges` and `evicted_ranges`;
+  a seq of an unresolved parked version is deferred, one of a terminated version a declared loss;
   a hole is a gap, evicted, or the unknown tail;
-  an hour with no scope is `no-data`;
+  an hour with no scope and no parked seq is `no-data`;
   unregistered intervals are reported against every earlier capture of the device,
   and overlapping captures of one device are flagged, never merged into one series (§7.3).
 - **Device**: `captures.device` is the descriptor's `recorder_instance_name`, indexed with `tool_id` for selection (§7.1).
@@ -120,7 +121,10 @@ Signatures are a sketch.
 
 The parking protocol's later steps (`parking → parked`, a copy marked `acked`, a copy row inserted by the parked consumer, a version moved to `evicted-hour`), operator termination and a termination order's application are specified in `parking.md`;
 each starts with the helper like every transaction of the table (T-32),
-they change rows forward only by compare-and-set, and parking touches no counter.
+and they change rows forward only by compare-and-set.
+Parking touches no counter except a termination's, by the operator or by an order's application (T-33):
+for each hour holding a seq it terminated, it upserts that scope with `revision + 1`, creating it when missing, and allocates a `terminated` event as its last statement;
+an hour retention has evicted gets neither, since its scope is gone and its seqs read from `evicted_ranges` and `parked`.
 Every compactor transaction that changes domain state checks the lease (`leases … WHERE holder = ? AND fence_token = ?`, affected rows checked) after the helper, with no exception (T-32).
 Outside the table, without the helper:
 taking or renewing the compactor lease (`leases`; a worker that lost it does nothing further, §8.1);
@@ -152,20 +156,30 @@ and the caller acts on it: the merge and the close at the next cycle (§8.1, §8
   The seqs above `highest_seq` are the **unknown tail**, whatever the capture's state, closed included ([STO §4]).
   A segment of hour h that arrives after the merge still extends the union;
   nothing about completeness depends on scope state.
-- **Declared losses** come from `pack_losses`;
+- **Deferred and terminated seqs** (T-33) read from the `parked` table, kept for the capture's lifetime (`parking.md` §7.1):
+  a seq whose version is `parking`, `parked` or `evicted-hour` is **deferred**, with its time from the carried header;
+  a seq whose version is `terminated` is a **declared loss** with the action id in `terminated_by`.
+  Each seq is classified once, by the precedence retained > evicted > deferred > declared loss > gap,
+  since an unresolved version of the seq can still be staged;
+  the precedence classifies the seq only, and a declared loss of one version is still reported beside another version that is retained.
+  Classification runs up to the higher of `highest_seq` and the capture's highest parked seq,
+  so a parked seq above the registered frontier is deferred or lost, never the unknown tail,
+  and a parked seq never reads as a gap (`parking.md` §6.1).
+- **Declared losses** come from `pack_losses` and from `terminated` `parked` rows;
   **crash gaps** from `capture_closes` (`gap_start`, `gap_end`);
   **conflicts** from `conflicts`.
 - `ListPacks(tool, from, to)` iterates the requested hours:
   for each, the scopes of every capture of the tool overlapping it, with packs, ranges, state and revision;
   an hour with no scope is reported as `no-data` together with whether a capture of the tool was open then,
-  so a missing whole hour is a result, not an absence.
+  so a missing whole hour is a result, not an absence;
+  an hour with no scope that holds parked seqs reports them as deferred or declared losses instead (T-33).
   An **unregistered interval** is reported
   when a capture starts more than Q after the latest `highest_seq_ts` of every earlier capture of its (`tool_id`, `recorder_instance_id`),
   not after the end of one predecessor, so two overlapping captures are never reported as missing traffic;
   or when its `previous_capture_id` names no registered capture.
 - **Domain results**: the read side returns results, never rows for a caller to classify.
   `ListPacks` returns the watermark it read before the listing (*Cursor* below) with each capture's completeness:
-  gaps with their time intervals, evicted and unknown-tail seqs, `no-data` hours, unregistered intervals, declared losses, crash gaps and conflicts, an unresolved suspect reported as a conflict (§6.2);
+  gaps with their time intervals, evicted, deferred and unknown-tail seqs, `no-data` hours, unregistered intervals, declared losses, crash gaps and conflicts, an unresolved suspect reported as a conflict (§6.2);
   `ListCaptures` and `ListDevices` return the `overlap` flag;
   `ListScopeChanges` (`api.md` §10.1) returns the events after a cursor, or reports the cursor stale when it is below `low_water` or carries another epoch,
   so the module detects a stale cursor and `ListPacks` returns the watermark to continue from:
@@ -182,7 +196,8 @@ and the caller acts on it: the merge and the close at the next cycle (§8.1, §8
 - **Cursor**: `scope_events.seq` is allocated from the `counters` row as the last statement of the emitting transaction;
   the row lock makes allocation order commit order on MariaDB, and SQLite has one writer,
   so a reader that has seen seq s never misses a lower seq committed later.
-  Events are emitted for `created`, `settled`, `reopened` and `conflict` (a suspect raised, confirmed or cleared on that scope, whichever hour the other version is in, §6.2);
+  Events are emitted for `created`, `settled`, `reopened`, `conflict` (a suspect raised, confirmed or cleared on that scope, whichever hour the other version is in, §6.2)
+  and `terminated` (a seq of that hour terminated, deferred becoming a declared loss, §7.2, T-33);
   every conflict transition, in registration or in `compact` (confirmation, clearing, a merge that fails on a conflict), increments the revision of **every** scope it touches in the same transaction, capture row first and `counters` last,
   so a replayed event is never ignored for a changed state.
   Pruning deletes a **seq prefix only**:

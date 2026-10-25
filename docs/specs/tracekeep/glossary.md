@@ -18,6 +18,7 @@ Read when a spec file uses a term you cannot place; the cited section is authori
 | gap | a hole in a capture's producer coverage between seq 0 and `highest_seq` | §7.3 |
 | unknown tail | the seqs above `highest_seq`, whatever the capture's state | §7.3 |
 | evicted | seqs whose packs retention deleted, reported as their own class, never as a gap | §7.3 |
+| deferred | seqs of unresolved parked versions, reported as their own class until staged or terminated, never as a gap | §7.3 |
 | unknown capture | a capture with no catalog row, or with a `pending` placeholder row that parking inserted before any `start` | §6.1 |
 | admitted capture | a capture whose descriptor was accepted: state `open`, `stopped` or `closed` | §6.1 |
 
