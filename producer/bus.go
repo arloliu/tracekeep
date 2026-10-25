@@ -35,7 +35,7 @@ var ErrStreamNotFound = errors.New("producer: stream not found")
 // Every implementation publishes under the SDK's publication policy:
 // the message id and expected stream Msg names, no client retries, the synchronous or asynchronous option set.
 type Bus interface {
-	// MaxPayload returns the server's max_payload.
+	// MaxPayload returns the server's max_payload, or 0 before the first connection reports it.
 	MaxPayload() int
 	// Publish publishes m with the synchronous option set and waits for its ack within ctx.
 	Publish(ctx context.Context, m *Msg) (Ack, error)
@@ -72,10 +72,12 @@ type Ack struct {
 	Duplicate bool
 }
 
-// AckFuture reports the outcome of an asynchronous publish: exactly one of its channels delivers.
+// AckFuture reports the outcome of an asynchronous publish.
 type AckFuture interface {
-	Ok() <-chan Ack
-	Err() <-chan error
+	// Poll reports the outcome without waiting: done is false while the publish is in flight;
+	// once done, err is nil and ack is the stream's acknowledgement, or err says why the publish failed.
+	// The publisher stops polling a future once it is done.
+	Poll() (ack Ack, done bool, err error)
 }
 
 // Objects is the claim bucket: put, read back, inspect and delete claim objects.

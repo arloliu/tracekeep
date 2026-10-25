@@ -8,7 +8,7 @@
 ## Before commit
 
 1. `make lint` — fix all issues.
-2. `make test` — must pass with the race detector, in both modules.
+2. `make test` — must pass with the race detector, in every module.
 3. Touched `docs/`?
    `make docs-check` must pass.
 4. Touched a parser of external input?
@@ -41,14 +41,14 @@ See `550-git-conventions.md` for branch, commit-message, and pull-request conven
 ## Make targets
 
 ```bash
-make lint           # golangci-lint run, both modules
-make fmt            # golangci-lint fmt, both modules
-make vet            # go vet, both modules
+make lint           # golangci-lint run, every module
+make fmt            # golangci-lint fmt, every module
+make vet            # go vet, every module
 make check          # lint + vet
 make docs-check     # docs/ against 450-doc-lifecycle.md
 make data-check     # nothing under data/ tracked but README.md and .gitignore
 make hooks          # enable scripts/hooks
-make test           # both modules, -short, -race
+make test           # every module, -short, -race
 make bench
 make ci             # check + docs-check + data-check + test + the service built with GOWORK=off
 ```

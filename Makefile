@@ -8,10 +8,11 @@ endif
 
 TEST_TIMEOUT := 5m
 GOLANGCI     ?= golangci-lint
-# The service module and the producer SDK; `./...` does not cross a module boundary, so every Go target visits both.
-# The SDK runs with GOWORK=off so it resolves its own go.mod, never the service's graph through go.work.
-MODULES      := . producer
-in_module     = for m in $(MODULES); do w=; [ $$m = producer ] && w=off; (cd $$m && GOWORK=$$w $(1)) || exit 1; done
+# The service module, the producer SDK and the SDK's bus-test module (T-35);
+# `./...` does not cross a module boundary, so every Go target visits each.
+# All but the service run with GOWORK=off so each resolves its own go.mod, never the service's graph through go.work.
+MODULES      := . producer producer/internal/bustest
+in_module     = for m in $(MODULES); do w=; [ $$m != . ] && w=off; (cd $$m && GOWORK=$$w $(1)) || exit 1; done
 
 .DEFAULT_GOAL := help
 
@@ -24,13 +25,13 @@ help: ## Print this help
 
 ##@ Lint
 
-lint: ## Run golangci-lint in both modules (version pinned in mise.toml)
+lint: ## Run golangci-lint in every module (version pinned in mise.toml)
 	@$(call in_module,$(GOLANGCI) run)
 
-fmt: ## Apply golangci-lint fmt in both modules
+fmt: ## Apply golangci-lint fmt in every module
 	@$(call in_module,$(GOLANGCI) fmt)
 
-vet: ## Run go vet in both modules
+vet: ## Run go vet in every module
 	@$(call in_module,go vet ./...)
 
 check: lint vet ## Run lint + vet
@@ -49,10 +50,10 @@ hooks: ## Enable the repository's git hooks (data-check before every commit); on
 
 ##@ Test
 
-test: ## Run tests in both modules with -short and -race
+test: ## Run tests in every module with -short and -race
 	@$(call in_module,CGO_ENABLED=1 go test ./... -short -race -timeout=$(TEST_TIMEOUT) $(VERBOSE_TAG))
 
-bench: ## Run benchmarks in both modules
+bench: ## Run benchmarks in every module
 	@$(call in_module,go test ./... -run=^$$ -bench=. -benchmem)
 
 ##@ CI

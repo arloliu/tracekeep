@@ -34,6 +34,9 @@ var dropReasons = [core.NumDropReasons]string{
 // errClaimConflict reports a claim object of the same name holding another record: a producer fault.
 var errClaimConflict = errors.New("producer: claim object holds another record")
 
+// errNoMaxPayload reports a bus that has not connected yet, so it knows no max_payload to build a message for.
+var errNoMaxPayload = errors.New("producer: bus not connected, max_payload unknown")
+
 // publisher is the producer's one publishing goroutine, the only place that waits
 // (docs/specs/tracekeep/producer.md §4.2 *Publisher goroutine*, *Dependency barrier*, *start publication*, *Large records*).
 type publisher struct {
@@ -312,7 +315,12 @@ func (pb *publisher) progress(st *capState, now time.Time) {
 // A reserved record is never dropped for the bus: it is retried until it is accepted.
 func (pb *publisher) publishReserved(st *capState, pd *pending, now time.Time) bool {
 	if pd.msg == nil {
-		m, err := pb.p.buildMessage(&pd.e, st.subject, pb.bus.MaxPayload())
+		maxPayload := pb.bus.MaxPayload()
+		if maxPayload == 0 {
+			pb.retryReserved(st, now, errNoMaxPayload)
+			return false
+		}
+		m, err := pb.p.buildMessage(&pd.e, st.subject, maxPayload)
 		if err != nil {
 			// A reserved record the publisher cannot materialize faults the capture (producer.md §4.2 *Lanes*).
 			pb.p.log.Error("producer: reserved record cannot be built", "capture_id", st.cap.ID.String(), "seq", pd.e.Seq, "error", err)
@@ -383,7 +391,12 @@ func (pb *publisher) sendOrdinary(st *capState, pd *pending) bool {
 		return true
 	}
 	if pd.msg == nil {
-		m, err := pb.p.buildMessage(&pd.e, st.subject, pb.bus.MaxPayload())
+		maxPayload := pb.bus.MaxPayload()
+		if maxPayload == 0 {
+			pb.failed(errNoMaxPayload)
+			return pb.retryOrDrop(pd, now, core.DropPublishFailed)
+		}
+		m, err := pb.p.buildMessage(&pd.e, st.subject, maxPayload)
 		if err != nil {
 			pb.p.log.Error("producer: record cannot be built", "capture_id", st.cap.ID.String(), "seq", pd.e.Seq, "error", err)
 			pb.dropEntry(&pd.e, core.DropPublishFailed)
@@ -495,13 +508,16 @@ func (pb *publisher) putClaim(c *claimObject, cp *core.Capture, horizon time.Tim
 func (pb *publisher) pollFlights(now time.Time) {
 	kept := pb.flights[:0]
 	for _, f := range pb.flights {
-		select {
-		case <-f.fut.Ok():
+		_, done, err := f.fut.Poll()
+		switch {
+		case !done:
+			kept = append(kept, f)
+		case err == nil:
 			f.st.inflight--
 			pb.setBusDown(false)
 			pb.published++
 			pb.p.rec.ReleaseOrdinary(&f.pd.e)
-		case err := <-f.fut.Err():
+		default:
 			f.st.inflight--
 			pb.failed(err)
 			if f.st.cap.Terminated() {
@@ -509,8 +525,6 @@ func (pb *publisher) pollFlights(now time.Time) {
 			} else if !pb.retryOrDrop(f.pd, now, core.DropPublishFailed) {
 				f.st.held = append(f.st.held, f.pd)
 			}
-		default:
-			kept = append(kept, f)
 		}
 	}
 	clear(pb.flights[len(kept):])

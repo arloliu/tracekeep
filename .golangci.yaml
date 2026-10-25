@@ -224,6 +224,10 @@ linters:
       - linters:
           - gosec
         text: "G115|G118"
+      # The bus-test module is required by nothing, so its replace directives reach no other build (T-35).
+      - linters:
+          - gomoddirectives
+        path: producer/internal/bustest/go\.mod
     paths:
       - third_party$
       - builtin$
