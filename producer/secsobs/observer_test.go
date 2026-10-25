@@ -19,6 +19,7 @@ import (
 
 type harness struct {
 	t   *testing.T
+	p   *producer.Producer
 	obs *Observer
 	bus *producertest.Bus
 }
@@ -36,7 +37,7 @@ func newHarness(t *testing.T) *harness {
 		t.Fatalf("Begin: %v", err)
 	}
 
-	return &harness{t: t, obs: New(p), bus: bus}
+	return &harness{t: t, p: p, obs: New(p), bus: bus}
 }
 
 // records waits for n records after the start and decodes them as a consumer does.

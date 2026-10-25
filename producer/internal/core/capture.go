@@ -31,6 +31,8 @@ const (
 	Faulted
 	// Abandoned means the lifecycle generation advanced past the capture: return without allocating.
 	Abandoned
+	// Unmapped means the observation required a socket the capture never saw: return without allocating.
+	Unmapped
 )
 
 // Allocation is what Allocate decided for one observation.
@@ -156,6 +158,11 @@ func NewCapture(p CaptureParams) *Capture {
 // wall and mono are the observation's clock reading, in nanoseconds;
 // socket is go-secs's socket identity, 0 for none.
 func (c *Capture) Allocate(wall, mono int64, socket uint64) (Allocation, Status) {
+	return c.allocateIn(wall, mono, socket, false)
+}
+
+// allocateIn is Allocate; with mapped, a socket missing from the socket map yields Unmapped instead of a new epoch.
+func (c *Capture) allocateIn(wall, mono int64, socket uint64, mapped bool) (Allocation, Status) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -171,6 +178,9 @@ func (c *Capture) Allocate(wall, mono int64, socket uint64) (Allocation, Status)
 	}
 
 	if socket != 0 {
+		if mapped && !c.knownLocked(socket) {
+			return a, Unmapped
+		}
 		epoch, ok := c.epochLocked(socket)
 		if !ok {
 			c.faultLocked()
@@ -349,6 +359,17 @@ func (c *Capture) epochLocked(socket uint64) (uint32, bool) {
 	c.nSockets++
 
 	return uint32(c.nSockets), true //nolint:gosec // nSockets ≤ MaxSockets
+}
+
+// knownLocked reports whether socket is in the capture's socket map.
+func (c *Capture) knownLocked(socket uint64) bool {
+	for i := c.nSockets - 1; i >= 0; i-- {
+		if c.sockets[i] == socket {
+			return true
+		}
+	}
+
+	return false
 }
 
 // driftLocked returns the reading's drift from the anchor ([SEM §4]): (wall − anchor wall) − (mono − anchor mono).

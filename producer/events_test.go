@@ -3,6 +3,7 @@ package producer_test
 import (
 	"reflect"
 	"testing"
+	"time"
 
 	"github.com/arloliu/go-secs/tracepack"
 	"github.com/arloliu/tracekeep/producer"
@@ -80,6 +81,19 @@ func TestObservedEventsEncode(t *testing.T) {
 				Event: tracepack.EventTimerExpiry, Timer: new(tracepack.TimerT3),
 				PrimarySessionID: new(uint64(0x0102)), PrimaryStream: new(uint64(1)), PrimaryFunction: new(uint64(13)),
 				PrimarySystemBytes: [4]byte{0x0a, 0x0b, 0x0c, 0x0d}, PrimarySystemBytesPresent: true,
+			},
+		},
+		{
+			name: "T3 of a forwarded request names its effective timeout",
+			ev: core.Event{
+				Kind: tracepack.EventTimerExpiry, Timer: tracepack.TimerT3,
+				SessionID: 1, Stream: 1, Function: 3, SystemBytes: 9, Timeout: 45 * time.Second,
+			},
+			want: tracepack.TransportEvent{
+				Event: tracepack.EventTimerExpiry, Timer: new(tracepack.TimerT3),
+				PrimarySessionID: new(uint64(1)), PrimaryStream: new(uint64(1)), PrimaryFunction: new(uint64(3)),
+				PrimarySystemBytes: [4]byte{0, 0, 0, 9}, PrimarySystemBytesPresent: true,
+				Detail: new("effective_timeout_ms=45000"),
 			},
 		},
 	}

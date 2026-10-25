@@ -30,6 +30,13 @@ var ignoredReasons = [core.NumIgnoredReasons]string{
 	core.IgnoredExpired:           "expired",
 }
 
+// timeoutDropReasons labels pending_timeouts_dropped_total.
+var timeoutDropReasons = [core.NumTimeoutDropReasons]string{
+	core.TimeoutUnbound:      "unbound",
+	core.TimeoutAmbiguous:    "ambiguous",
+	core.TimeoutUnattributed: "unattributed",
+}
+
 // dropReasons labels records_dropped_total.
 var dropReasons = [core.NumDropReasons]string{
 	core.DropLaneFull:      "lane_full",
@@ -747,6 +754,11 @@ func (pb *publisher) report(force bool) {
 	for i := range core.NumIgnoredReasons {
 		if delta := pc.Ignored[i] - last.pending.Ignored[i]; delta > 0 {
 			m.Add("pending_reports_ignored_total", map[string]string{"reason": ignoredReasons[i]}, float64(delta))
+		}
+	}
+	for i := range core.NumTimeoutDropReasons {
+		if delta := pc.TimeoutsDropped[i] - last.pending.TimeoutsDropped[i]; delta > 0 {
+			m.Add("pending_timeouts_dropped_total", map[string]string{"reason": timeoutDropReasons[i]}, float64(delta))
 		}
 	}
 	if delta := pc.Ambiguous - last.pending.Ambiguous; delta > 0 {

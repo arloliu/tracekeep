@@ -34,6 +34,20 @@ const (
 	OutcomeCancelled
 )
 
+// TimeoutDropReason names why a forwarded request's timeout recorded no T3 (operations.md, pending_timeouts_dropped_total).
+type TimeoutDropReason uint8
+
+const (
+	// TimeoutUnbound is a request whose outbound frame was never observed.
+	TimeoutUnbound TimeoutDropReason = iota
+	// TimeoutAmbiguous is a request whose key was reused, or whose socket changed between registration and send.
+	TimeoutAmbiguous
+	// TimeoutUnattributed is a request whose socket the capture current at the timeout never saw.
+	TimeoutUnattributed
+	// NumTimeoutDropReasons counts the reasons.
+	NumTimeoutDropReasons
+)
+
 // IgnoredReason names why a report on a token changed nothing (operations.md, pending_reports_ignored_total).
 type IgnoredReason uint8
 
@@ -82,6 +96,8 @@ type PendingCounters struct {
 	Ambiguous uint64
 	// Capped reports that the ambiguity set reached its cap: keys registered since are not remembered past their entry.
 	Capped bool
+	// TimeoutsDropped counts the forwarded timeouts that recorded no T3, by reason.
+	TimeoutsDropped [NumTimeoutDropReasons]uint64
 }
 
 // PendingTable is the pending-request table of producer.md §4.6:
@@ -102,8 +118,14 @@ type PendingTable struct {
 	live   map[*PendingEntry]struct{}
 	capped bool
 
-	ignored   [NumIgnoredReasons]atomic.Uint64
-	ambiguous atomic.Uint64
+	// socket is the connection's newest socket, which a registration compares its send's socket against.
+	socket atomic.Uint64
+	// emit records a forwarded request's T3; the recorder sets it.
+	emit func(e *PendingEntry, effective time.Duration)
+
+	ignored         [NumIgnoredReasons]atomic.Uint64
+	ambiguous       atomic.Uint64
+	timeoutsDropped [NumTimeoutDropReasons]atomic.Uint64
 }
 
 // PendingEntry is one registration and the token that reports its fate.
@@ -115,6 +137,11 @@ type PendingEntry struct {
 	Channel     string
 
 	ambiguous atomic.Bool
+	// regSocket is the connection's newest socket at registration;
+	// bound is the socket the outbound frame went out on, 0 until it is observed, and hdr that frame's stream and function.
+	regSocket uint64
+	bound     atomic.Uint64
+	hdr       atomic.Uint32
 
 	// Guarded by t.mu.
 	state    PendingState
@@ -145,7 +172,7 @@ func NewPendingTable(p PendingParams) *PendingTable {
 // A key registered before in this process marks the new entry, and the key's newest entry still kept, ambiguous.
 func (t *PendingTable) Register(sessionID uint16, systemBytes uint32, channel string) *PendingEntry {
 	k := key(sessionID, systemBytes)
-	e := &PendingEntry{t: t, key: k, SessionID: sessionID, SystemBytes: systemBytes, Channel: channel}
+	e := &PendingEntry{t: t, key: k, SessionID: sessionID, SystemBytes: systemBytes, Channel: channel, regSocket: t.socket.Load()}
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	e.expires = t.now() + t.unawaited
@@ -180,6 +207,24 @@ func (t *PendingTable) Lookup(sessionID uint16, systemBytes uint32) *PendingEntr
 	return e
 }
 
+// SetSocket records the connection's newest socket; the socket observer calls it at every connect or accept.
+func (t *PendingTable) SetSocket(socket uint64) { t.socket.Store(socket) }
+
+// Bind binds the newest entry of a key to the socket its outbound frame went out on, from the wire observer;
+// it takes no lock and allocates nothing.
+// Only the first frame binds, and a socket other than the newest at registration marks the entry ambiguous:
+// the connection was replaced between registration and send.
+func (t *PendingTable) Bind(sessionID uint16, systemBytes uint32, stream, function uint8, socket uint64) {
+	e := t.Lookup(sessionID, systemBytes)
+	if e == nil || socket == 0 {
+		return
+	}
+	e.hdr.Store(uint32(stream)<<8 | uint32(function))
+	if e.bound.CompareAndSwap(0, socket) && socket != e.regSocket {
+		t.markAmbiguous(e)
+	}
+}
+
 // Sweep expires every entry past its expiry.
 func (t *PendingTable) Sweep() {
 	t.mu.Lock()
@@ -202,6 +247,9 @@ func (t *PendingTable) Counters() PendingCounters {
 		c.Ignored[i] = t.ignored[i].Load()
 	}
 	c.Ambiguous = t.ambiguous.Load()
+	for i := range t.timeoutsDropped {
+		c.TimeoutsDropped[i] = t.timeoutsDropped[i].Load()
+	}
 
 	return c
 }
@@ -236,10 +284,29 @@ func (e *PendingEntry) Awaiting(timeout time.Duration) {
 func (e *PendingEntry) Replied() { e.reportOutcome(OutcomeReplied) }
 
 // TimedOut reports the waiter's timeout, with the effective timeout of that wait.
-func (e *PendingEntry) TimedOut(_ time.Duration) { e.reportOutcome(OutcomeTimedOut) }
+// As the first terminal outcome of an unambiguous entry bound to a socket it records T3 in the current capture;
+// otherwise it is counted and records nothing.
+func (e *PendingEntry) TimedOut(effective time.Duration) {
+	if !e.reportOutcome(OutcomeTimedOut) {
+		return
+	}
+	t := e.t
+	switch {
+	case e.bound.Load() == 0:
+		t.timeoutsDropped[TimeoutUnbound].Add(1)
+	case e.ambiguous.Load():
+		t.timeoutsDropped[TimeoutAmbiguous].Add(1)
+	case t.emit != nil:
+		t.emit(e, effective)
+	default:
+	}
+}
 
 // Cancelled reports a wait that ended any other way.
 func (e *PendingEntry) Cancelled() { e.reportOutcome(OutcomeCancelled) }
+
+// Socket returns the socket the entry's outbound frame went out on, 0 before it is observed.
+func (e *PendingEntry) Socket() uint64 { return e.bound.Load() }
 
 // State returns the entry's state.
 func (e *PendingEntry) State() PendingState {
@@ -283,14 +350,17 @@ func (e *PendingEntry) reportProgress(failed bool) {
 	t.dropLocked(e, PendingRemoved)
 }
 
-func (e *PendingEntry) reportOutcome(o Outcome) {
+// reportOutcome seals a live entry with o and reports whether it did.
+func (e *PendingEntry) reportOutcome(o Outcome) bool {
 	t := e.t
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if !e.liveLocked(t.now()) {
-		return
+		return false
 	}
 	e.state, e.outcome = PendingCompleted, o
+
+	return true
 }
 
 // liveLocked reports whether e still takes a report, expiring it first if its time has come;

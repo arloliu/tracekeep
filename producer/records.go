@@ -94,6 +94,10 @@ func observedEvent(o *core.Event) (tracepack.TransportEvent, error) {
 		ev.PrimaryStream, ev.PrimaryFunction = new(uint64(o.Stream)), new(uint64(o.Function))
 		binary.BigEndian.PutUint32(ev.PrimarySystemBytes[:], o.SystemBytes)
 		ev.PrimarySystemBytesPresent = true
+		if o.Timeout > 0 {
+			// A forwarded request's T3 names the timeout its wait was opened with (producer.md §4.4).
+			ev.Detail = new("effective_timeout_ms=" + strconv.FormatInt(o.Timeout.Milliseconds(), 10))
+		}
 	case tracepack.EventUnknown, tracepack.EventCaptureBoundary, tracepack.EventClockStep:
 		return ev, fmt.Errorf("producer: an observer reported a %v event", o.Kind)
 	default:
