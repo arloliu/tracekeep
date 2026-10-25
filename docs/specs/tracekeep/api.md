@@ -98,8 +98,8 @@ and needs no knowledge of capture ids beyond what `ListPacks` returns.
 **Downloads.**
 `PackURL` and an export's fetch return a download URL that never outlives its object (T-33).
 Each object has a **deadline**, the earliest time it may be deleted:
-`merged_at + D` for a merged input (§8.3);
-for any other pack, the time retention may first evict its hour (hour end plus the retention period, pushed out by a hold), `staged` and `excluded` packs included;
+for every pack, the time retention may first evict its hour (hour end plus the retention period, pushed out by a hold), `staged` and `excluded` packs included,
+and for a merged input the earlier of that and `merged_at + D` (§8.3);
 for a completed export bundle, the end of its retention.
 The URL expires at the earlier of now plus its lifetime and the deadline minus a margin (default 2 min) that covers clock skew and a read in flight.
 When that leaves less than a floor (default 1 min), issuance is refused with `pack-superseded`:

@@ -25,8 +25,9 @@ Section numbers are those of the specs in `docs/specs/tracekeep/`, whose `README
   nothing is acquired after it, and a rotation abandoned before it installs nothing.
   `producer.md` §4.2 *Rotation* and *Lifecycle serialization*.
 - **A forwarded request's token takes one terminal outcome**: the first of reply, timeout and cancellation seals the entry, and every later report of any kind is a counted no-op;
-  expiry follows the wait the waiter reports opening and is no outcome, so T3 of a forwarded request comes only from the waiter's typed timeout,
-  on an unambiguous entry its outbound observation bound to a socket, with the epoch the capture current at the timeout holds for that socket.
+  expiry follows the wait the waiter reports opening and is no outcome,
+  so T3 of a forwarded request comes only from the waiter's typed timeout on an unambiguous entry its outbound observation bound to a socket,
+  and carries the epoch the capture current at the timeout holds for that socket.
   `producer.md` §4.6 *Send-path token protocol*, §4.4.
 
 ## Ingest and parking

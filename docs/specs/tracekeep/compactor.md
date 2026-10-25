@@ -86,7 +86,7 @@ records that arrive later are staged as below, and the inactivity trigger would 
    put under its `staging/` key;
    after a put whose result was lost, `Stat` the key and compare size and digest with the intent before proceeding;
    in **one transaction** (T-32), register the pack, or find it already registered (the reconciler may adopt the close's `staging/` object first, §5.4), and set `state='published'` on the `pending` intent, the event seq allocated last;
-   when the horizon guard aborts the registration, the key is tombstoned and the intent set `abandoned` instead, so it is not retried.
+   when the horizon guard aborts the registration, or the key is already tombstoned (retention evicted a close the reconciler had adopted), the intent is set `abandoned` instead, so it is not retried.
 3. Every compactor cycle retries `pending` intents; an `abandoned` one is final.
 
 A record that arrives after the intent is staged like any record;
