@@ -175,7 +175,7 @@ func (r *Recorder) Observe(o *Observation) {
 			r.panics.Add(1)
 			// Before allocation the loss has no seq to show it, so the fault window of the current capture bounds it.
 			if !allocated {
-				r.faultCurrent()
+				r.faultFrom(c)
 			}
 		}
 	}()
@@ -245,7 +245,7 @@ func (r *Recorder) Observe(o *Observation) {
 func (r *Recorder) Recover() {
 	if p := recover(); p != nil { //nolint:revive // Recover is only ever deferred, where recover stops the panic
 		r.panics.Add(1)
-		r.faultCurrent()
+		r.faultFrom(nil)
 	}
 }
 
@@ -404,20 +404,21 @@ func (r *Recorder) drop(reason DropReason, n int64) {
 	r.dropBytes.Add(uint64(n)) //nolint:gosec // a payload length is never negative
 }
 
-// faultCurrent faults the current capture for a loss that has no seq to show it.
+// faultFrom faults c, or the current capture when c is nil, for a loss that has no seq to show it.
 // A capture a rotation closed meanwhile is passed over for its successor, as allocate does,
 // so the loss always falls in a fault window; the loop ends within as many rounds as rotations in progress.
-func (r *Recorder) faultCurrent() {
-	for {
-		c := r.cur.Load()
-		if c == nil {
-			return
-		}
+// A capture already faulted ends it: the loss is inside that capture's fault window.
+func (r *Recorder) faultFrom(c *Capture) {
+	if c == nil {
+		c = r.cur.Load()
+	}
+	for c != nil {
 		r.hook(hookFaultLoaded)
 		if c.FaultOpen() {
 			r.SignalFault(c)
 			return
 		}
+		c = r.cur.Load()
 	}
 }
 
