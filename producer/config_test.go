@@ -26,6 +26,9 @@ func TestTunablesDefaults(t *testing.T) {
 	if got.StallWait != 100*time.Millisecond {
 		t.Errorf("StallWait = %v, want 100ms", got.StallWait)
 	}
+	if got.ClockStepTolerance != time.Second {
+		t.Errorf("ClockStepTolerance = %v, want 1s (T-29)", got.ClockStepTolerance)
+	}
 	if got.OrdinaryLaneRecords <= 0 || got.OrdinaryLaneBytes <= 0 || got.FaultBackoff <= 0 {
 		t.Errorf("unset defaults: %+v", got)
 	}
@@ -45,10 +48,12 @@ func TestConfigValidate(t *testing.T) {
 	}
 
 	cases := map[string]func(*Config){
-		"bad prefix":        func(c *Config) { c.SubjectPrefix = "tpk.>" },
-		"no bucket":         func(c *Config) { c.ClaimBucket = "" },
-		"negative tunable":  func(c *Config) { c.Tunables.OrdinaryLaneBytes = -1 },
-		"zero-size reserve": func(c *Config) { c.Tunables.ReservedLaneRecords = -1 },
+		"bad prefix":       func(c *Config) { c.SubjectPrefix = "tpk.>" },
+		"no bucket":        func(c *Config) { c.ClaimBucket = "" },
+		"negative tunable": func(c *Config) { c.Tunables.OrdinaryLaneBytes = -1 },
+		"two auth methods": func(c *Config) { c.Auth = AuthConfig{Token: "x", CredsFile: "f"} },
+		"user alone":       func(c *Config) { c.Auth = AuthConfig{User: "u"} },
+		"cert without key": func(c *Config) { c.TLS = TLSConfig{CertFile: "c"} },
 	}
 	for name, mutate := range cases {
 		c := valid

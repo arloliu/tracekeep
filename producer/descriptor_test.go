@@ -40,7 +40,7 @@ func TestCaptureDescriptorValidate(t *testing.T) {
 		{"no tool", CaptureDescriptor{DeviceName: "eqp"}, false},
 		{"tool a key cannot hold", CaptureDescriptor{ToolID: "..", DeviceName: "eqp"}, false},
 		{"no device", CaptureDescriptor{ToolID: "T1"}, false},
-		{"negative tolerance", CaptureDescriptor{ToolID: "T1", DeviceName: "eqp", ClockStepTolerance: -time.Second}, false},
+		{"connect mode out of range", CaptureDescriptor{ToolID: "T1", DeviceName: "eqp", EquipmentConnectMode: new(tracepack.SocketRole(99))}, false},
 		{"thinning outside SECS-II", CaptureDescriptor{ToolID: "T1", DeviceName: "eqp", Thinning: []tracepack.Thinning{{Stream: 128, Function: 1}}}, false},
 	}
 	for _, c := range cases {
@@ -72,7 +72,7 @@ func TestStartDescriptorRoundTrip(t *testing.T) {
 	prev := tracepack.UUID{1}
 	origin := time.Unix(1_800_000_000, 5)
 
-	b, err := encodeStartDescriptor(&d, &prev, origin, "tracekeep-producer/test")
+	b, err := encodeStartDescriptor(&d, &prev, origin, tracepack.DefaultClockStepTolerance, "tracekeep-producer/test")
 	if err != nil {
 		t.Fatalf("encodeStartDescriptor: %v", err)
 	}
@@ -114,7 +114,7 @@ func TestStartDescriptorWithoutPrevious(t *testing.T) {
 	t.Parallel()
 
 	d := CaptureDescriptor{ToolID: "T1", DeviceName: "eqp"}
-	b, err := encodeStartDescriptor(&d, nil, time.Unix(1_800_000_000, 0), "tracekeep-producer/test")
+	b, err := encodeStartDescriptor(&d, nil, time.Unix(1_800_000_000, 0), tracepack.DefaultClockStepTolerance, "tracekeep-producer/test")
 	if err != nil {
 		t.Fatalf("encodeStartDescriptor: %v", err)
 	}

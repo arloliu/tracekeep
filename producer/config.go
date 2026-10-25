@@ -11,13 +11,14 @@ import (
 // Defaults of the tunables (docs/specs/tracekeep/tracekeep-decisions.md T-12, producer-sdk.md §4.7).
 const (
 	DefaultReservedLaneRecords = 4096
-	DefaultOrdinaryLaneRecords = 65536
+	DefaultOrdinaryLaneRecords = 16384
 	DefaultOrdinaryLaneBytes   = 64 << 20
 	DefaultReservationTimeout  = time.Second
 	DefaultRetryHorizon        = 5 * time.Minute
 	DefaultPublishTimeout      = 10 * time.Second
 	DefaultStallWait           = 100 * time.Millisecond
 	DefaultFaultBackoff        = 30 * time.Second
+	DefaultClockStepTolerance  = tracepack.DefaultClockStepTolerance
 )
 
 // ErrInvalidConfig reports a Config New refuses.
@@ -80,6 +81,9 @@ type Tunables struct {
 	StallWait time.Duration
 	// FaultBackoff pauses rotation after a fresh capture faults again within a minute.
 	FaultBackoff time.Duration
+	// ClockStepTolerance is ε, the wall-against-monotonic drift a capture tolerates before it records a clock step (T-29);
+	// every capture's descriptor carries it as clock_step_tolerance_ns.
+	ClockStepTolerance time.Duration
 }
 
 func (c *Config) validate() error {
@@ -89,13 +93,37 @@ func (c *Config) validate() error {
 	if c.ClaimBucket == "" {
 		return fmt.Errorf("%w: claim bucket is empty", ErrInvalidConfig)
 	}
+	if err := c.Auth.validate(); err != nil {
+		return err
+	}
+	if (c.TLS.CertFile == "") != (c.TLS.KeyFile == "") {
+		return fmt.Errorf("%w: a TLS client certificate needs both its certificate and its key", ErrInvalidConfig)
+	}
 
 	return c.Tunables.validate()
 }
 
+func (a *AuthConfig) validate() error {
+	methods := 0
+	for _, set := range []bool{a.CredsFile != "", a.NKeySeedFile != "", a.User != "" || a.Password != "", a.Token != ""} {
+		if set {
+			methods++
+		}
+	}
+	if methods > 1 {
+		return fmt.Errorf("%w: more than one authentication method set", ErrInvalidConfig)
+	}
+	if (a.User == "") != (a.Password == "") {
+		return fmt.Errorf("%w: user and password go together", ErrInvalidConfig)
+	}
+
+	return nil
+}
+
 func (t Tunables) validate() error {
 	if t.ReservedLaneRecords < 0 || t.OrdinaryLaneRecords < 0 || t.OrdinaryLaneBytes < 0 ||
-		t.ReservationTimeout < 0 || t.RetryHorizon < 0 || t.PublishTimeout < 0 || t.StallWait < 0 || t.FaultBackoff < 0 {
+		t.ReservationTimeout < 0 || t.RetryHorizon < 0 || t.PublishTimeout < 0 || t.StallWait < 0 || t.FaultBackoff < 0 ||
+		t.ClockStepTolerance < 0 {
 		return fmt.Errorf("%w: negative tunable in %+v", ErrInvalidConfig, t)
 	}
 
@@ -103,26 +131,22 @@ func (t Tunables) validate() error {
 }
 
 func (t Tunables) withDefaults() Tunables {
-	def := func(v *int, d int) {
-		if *v == 0 {
-			*v = d
-		}
-	}
-	defDur := func(v *time.Duration, d time.Duration) {
-		if *v == 0 {
-			*v = d
-		}
-	}
-	def(&t.ReservedLaneRecords, DefaultReservedLaneRecords)
-	def(&t.OrdinaryLaneRecords, DefaultOrdinaryLaneRecords)
-	if t.OrdinaryLaneBytes == 0 {
-		t.OrdinaryLaneBytes = DefaultOrdinaryLaneBytes
-	}
-	defDur(&t.ReservationTimeout, DefaultReservationTimeout)
-	defDur(&t.RetryHorizon, DefaultRetryHorizon)
-	defDur(&t.PublishTimeout, DefaultPublishTimeout)
-	defDur(&t.StallWait, DefaultStallWait)
-	defDur(&t.FaultBackoff, DefaultFaultBackoff)
+	orDefault(&t.ReservedLaneRecords, DefaultReservedLaneRecords)
+	orDefault(&t.OrdinaryLaneRecords, DefaultOrdinaryLaneRecords)
+	orDefault(&t.OrdinaryLaneBytes, DefaultOrdinaryLaneBytes)
+	orDefault(&t.ReservationTimeout, DefaultReservationTimeout)
+	orDefault(&t.RetryHorizon, DefaultRetryHorizon)
+	orDefault(&t.PublishTimeout, DefaultPublishTimeout)
+	orDefault(&t.StallWait, DefaultStallWait)
+	orDefault(&t.FaultBackoff, DefaultFaultBackoff)
+	orDefault(&t.ClockStepTolerance, DefaultClockStepTolerance)
 
 	return t
+}
+
+func orDefault[T comparable](v *T, d T) {
+	var zero T
+	if *v == zero {
+		*v = d
+	}
 }

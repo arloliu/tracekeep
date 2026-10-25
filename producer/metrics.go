@@ -20,8 +20,11 @@ type Metrics interface {
 // The producer logs only from its own goroutines, never from an observer callback,
 // and an alert is one Warn or Error per state change, not per record.
 type Logger interface {
+	// Info logs a state change worth knowing, such as a rotation.
 	Info(msg string, args ...any)
+	// Warn logs a degraded state, such as the bus becoming unreachable.
 	Warn(msg string, args ...any)
+	// Error logs an alert, such as a capture fault or a claim conflict.
 	Error(msg string, args ...any)
 }
 
