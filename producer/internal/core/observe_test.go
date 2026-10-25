@@ -3,6 +3,7 @@ package core
 import (
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/arloliu/go-secs/tracepack"
 )
@@ -17,6 +18,9 @@ func newTestRecorder(t *testing.T, p RecorderParams) (*Recorder, *Capture) {
 	}
 	if p.OrdinaryBytes == 0 {
 		p.OrdinaryBytes = 1 << 20
+	}
+	if p.Pending.Unawaited == 0 {
+		p.Pending = PendingParams{Grace: 5 * time.Second, Unawaited: 30 * time.Second}
 	}
 	r := NewRecorder(p)
 	var gen atomic.Uint64

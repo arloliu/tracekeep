@@ -2,6 +2,7 @@ package core
 
 import (
 	"sync/atomic"
+	"time"
 
 	"github.com/arloliu/go-secs/tracepack"
 )
@@ -64,6 +65,9 @@ type Event struct {
 	SessionID        uint16
 	Stream, Function uint8
 	SystemBytes      uint32
+	// Timeout is the effective timeout of a forwarded request's T3, which the publisher writes into detail;
+	// zero for go-secs's own T3.
+	Timeout time.Duration
 }
 
 // Observation is one go-secs event as the observers hand it to Observe.
@@ -80,6 +84,9 @@ type Observation struct {
 	Payload []byte
 	// Event is the transport event of an observation of kind transport-event.
 	Event Event
+	// Mapped requires Socket to be in the current capture's socket map already, as a forwarded request's T3 does:
+	// a socket the capture never saw is not numbered, and the observation is dropped as unattributed.
+	Mapped bool
 }
 
 // Entry is one record in a lane, waiting for the publisher.
@@ -154,7 +161,7 @@ type Recorder struct {
 
 // NewRecorder builds a recorder with no current capture.
 func NewRecorder(p RecorderParams) *Recorder {
-	return &Recorder{
+	r := &Recorder{
 		reserved:  make(chan Entry, p.ReservedCap),
 		ordinary:  make(chan Entry, p.OrdinaryRecords),
 		maxCount:  int64(p.OrdinaryRecords),
@@ -162,8 +169,11 @@ func NewRecorder(p RecorderParams) *Recorder {
 		faults:    make(chan *Capture, faultSignals),
 		rotations: make(chan *Capture, faultSignals),
 		resCap:    int64(p.ReservedCap),
-		Pending:   NewPendingTable(p.Pending),
 	}
+	r.Pending = NewPendingTable(p.Pending)
+	r.Pending.emit = r.forwardedT3
+
+	return r
 }
 
 // Observe records one observation: the observer callback of producer.md §4.2, steps 1–8.
@@ -255,6 +265,22 @@ func (r *Recorder) Recover() {
 	}
 }
 
+// forwardedT3 records a forwarded request's T3 in the current capture, at the epoch its socket map holds for the request's socket
+// (producer.md §4.6 *Send-path token protocol*); a socket the capture never saw is counted as unattributed instead.
+func (r *Recorder) forwardedT3(e *PendingEntry, effective time.Duration) {
+	wall, mono := Now()
+	hdr := e.hdr.Load()
+	r.Observe(&Observation{
+		Wall: wall, Mono: mono, Socket: e.bound.Load(), Mapped: true,
+		Kind: tracepack.KindTransportEvent, Dir: tracepack.DirLocal, Fidelity: tracepack.FidelityNotApplicable,
+		Event: Event{
+			Kind: tracepack.EventTimerExpiry, Timer: tracepack.TimerT3,
+			SessionID: e.SessionID, Stream: uint8(hdr >> 8), Function: uint8(hdr), SystemBytes: e.SystemBytes, //nolint:gosec // hdr holds two bytes
+			Timeout: effective,
+		},
+	})
+}
+
 // SetBusDown records whether the publisher finds the bus unreachable, which names why a full lane drops.
 func (r *Recorder) SetBusDown(down bool) { r.busDown.Store(down) }
 
@@ -338,7 +364,7 @@ func (r *Recorder) allocate(o *Observation, cp **Capture) (Allocation, bool) {
 			return Allocation{}, false
 		}
 		r.hook(hookLoaded)
-		a, st := c.Allocate(o.Wall, o.Mono, o.Socket)
+		a, st := c.allocateIn(o.Wall, o.Mono, o.Socket, o.Mapped)
 		switch st {
 		case Allocated:
 			return a, true
@@ -351,6 +377,9 @@ func (r *Recorder) allocate(o *Observation, cp **Capture) (Allocation, bool) {
 			return a, false
 		case Abandoned:
 			r.drop(DropAbandoned, int64(len(o.Payload)))
+			return a, false
+		case Unmapped:
+			r.Pending.timeoutsDropped[TimeoutUnattributed].Add(1)
 			return a, false
 		default:
 			panic("core: unknown allocation status")

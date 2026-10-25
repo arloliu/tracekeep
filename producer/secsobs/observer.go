@@ -1,6 +1,7 @@
 package secsobs
 
 import (
+	"encoding/binary"
 	"errors"
 	"io"
 	"sync/atomic"
@@ -12,8 +13,17 @@ import (
 	"github.com/arloliu/tracekeep/producer/internal/link"
 )
 
-// sTypeOff is the offset of a frame's SType byte, after the 4-byte length prefix; nonzero marks a control frame.
-const sTypeOff = 9
+// Offsets in a frame, after its 4-byte length prefix, of the HSMS header's fields (SEMI E37).
+const (
+	sessionOff = 4
+	// wBitOff holds the W-bit and the stream.
+	wBitOff     = 6
+	functionOff = 7
+	// sTypeOff is the SType byte; nonzero marks a control frame.
+	sTypeOff       = 9
+	systemBytesOff = 10
+	frameHeaderEnd = 14
+)
 
 // causeMap is a go-secs cause as tracepack-go.md §5.1 maps it, with its cause_raw.
 type causeMap struct {
@@ -118,9 +128,22 @@ func (o *Observer) wire(ev hsms.WireEvent) {
 		obs.Dir = tracepack.DirEquipmentToHost
 	case hsms.WireOutbound:
 		obs.Dir = tracepack.DirHostToEquipment
+		o.bind(ev.Frame, ev.Socket)
 	default:
 	}
 	o.rec.Observe(&obs)
+}
+
+// bind binds a forwarded request's registration to the socket its W-bit primary went out on,
+// which its T3 needs (producer.md §4.6 *Association protocol*); any other frame binds nothing.
+func (o *Observer) bind(f []byte, socket uint64) {
+	if len(f) < frameHeaderEnd || f[sTypeOff] != 0 || f[wBitOff]&0x80 == 0 || f[functionOff]&1 == 0 {
+		return
+	}
+	o.rec.Pending.Bind(
+		binary.BigEndian.Uint16(f[sessionOff:]), binary.BigEndian.Uint32(f[systemBytesOff:]),
+		f[wBitOff]&0x7f, f[functionOff], socket,
+	)
 }
 
 // socket records one socket event (tracepack-go.md §5.3).
@@ -131,9 +154,11 @@ func (o *Observer) socket(ev hsms.SocketEvent) {
 	case hsms.SocketConnected:
 		e = core.Event{Kind: tracepack.EventSocketConnect, Role: tracepack.SocketRoleActive}
 		o.role.Store(uint32(e.Role))
+		o.rec.Pending.SetSocket(ev.Socket)
 	case hsms.SocketAccepted:
 		e = core.Event{Kind: tracepack.EventSocketAccept, Role: tracepack.SocketRolePassive}
 		o.role.Store(uint32(e.Role))
+		o.rec.Pending.SetSocket(ev.Socket)
 	case hsms.SocketRefused:
 		e = core.Event{
 			Kind: tracepack.EventStateTransition, Prev: tracepack.StateNotConnected, Cur: tracepack.StateNotConnected,
