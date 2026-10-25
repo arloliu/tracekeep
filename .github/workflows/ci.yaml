@@ -27,6 +27,9 @@ jobs:
     # then the service built with GOWORK=off; tests use the embedded nats-server, no external service.
     - name: make ci
       run: make ci
+    # The SDK's minimum resolved graph, the one make ci tested.
+    - name: Resolved module graph of the SDK
+      run: cd producer && GOWORK=off go list -m all
 
   # The SDK and its bus tests on the latest nats.go, the graph a newer producer resolves;
   # the pinned go.mod, which make ci tests, is the minimum one (producer-sdk.md §4.7 *Versions*).

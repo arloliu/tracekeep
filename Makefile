@@ -60,7 +60,7 @@ test-latest: ## Run the SDK's and bustest's tests with the latest nats.go
 	git ls-files -z | tar --null -T - -cf - | tar -xf - -C "$$d"; \
 	for m in producer producer/internal/bustest; do \
 		(cd "$$d/$$m" && export GOWORK=off && go get github.com/nats-io/nats.go@latest && go mod tidy && \
-			echo "$$m: $$(go list -m github.com/nats-io/nats.go)" && \
+			echo "$$m resolves:" && go list -m all && \
 			CGO_ENABLED=1 go test ./... -short -race -timeout=$(TEST_TIMEOUT) $(VERBOSE_TAG)); \
 	done
 

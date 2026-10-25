@@ -286,7 +286,8 @@ func TestStartPublishMakesOneAttempt(t *testing.T) {
 		t.Fatalf("Begin: %v", err)
 	}
 	line := log.wait(t, "producer: reserved record not accepted, retrying")
-	if took := time.Since(start); took >= 250*time.Millisecond {
+	// Two client retries take at least 500 ms; the bound leaves the rest for scheduling under the race detector.
+	if took := time.Since(start); took >= 400*time.Millisecond {
 		t.Errorf("the start's first failure came after %v: the client retried it", took)
 	}
 	if !strings.Contains(line, "no response from stream") {
