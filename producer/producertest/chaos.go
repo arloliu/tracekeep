@@ -54,6 +54,11 @@ type NewDevice func(t *testing.T, bus *Bus, tun producer.Tunables) Device
 // and what reaches the bus must pass CheckCaptures.
 func RunChaos(t *testing.T, newDevice NewDevice) {
 	t.Helper()
+	runScenarios(t, newDevice, func(t *testing.T) testing.TB { return t })
+}
+
+func runScenarios(t *testing.T, newDevice NewDevice, report func(t *testing.T) testing.TB) {
+	t.Helper()
 	scenarios := []struct {
 		name string
 		tun  producer.Tunables
@@ -68,7 +73,7 @@ func RunChaos(t *testing.T, newDevice NewDevice) {
 	for _, sc := range scenarios {
 		t.Run(sc.name, func(t *testing.T) {
 			bus := NewBus()
-			sc.run(&chaos{t: t, bus: bus, d: newDevice(t, bus, sc.tun)})
+			sc.run(&chaos{t: report(t), bus: bus, d: newDevice(t, bus, sc.tun)})
 		})
 	}
 }
@@ -107,8 +112,9 @@ func CheckCaptures(msgs []producer.Msg) error {
 	return errors.Join(errs...)
 }
 
+// chaos reports through Error and Errorf only, so a scenario's failures can be recorded instead of failing a test.
 type chaos struct {
-	t   *testing.T
+	t   testing.TB
 	bus *Bus
 	d   Device
 }
@@ -116,6 +122,7 @@ type chaos struct {
 // capture is what the bus holds of one capture.
 type capture struct {
 	desc    *tracepack.PackMeta
+	frames  int // data and control records
 	maxSeq  uint64
 	stopped bool
 	stopSeq uint64
@@ -131,7 +138,7 @@ func busDownAndUp(c *chaos) {
 	c.bus.FailPublish(nil)
 	c.traffic(20)
 	c.stop(stopTimeout)
-	c.settle()
+	c.settle(2)
 }
 
 func hotReloadUnderTraffic(c *chaos) {
@@ -143,13 +150,19 @@ func hotReloadUnderTraffic(c *chaos) {
 		wg.Wait()
 	}
 	c.stop(stopTimeout)
-	c.settle()
+	c.settle(6)
 }
 
 func stopUnderAStalledPublisher(c *chaos) {
 	c.bus.HoldAsync(true)
 	c.verb("Start", verbTimeout, c.d.Start)
 	c.traffic(20)
+	// Records go out asynchronously, so the publisher is stalled once one is held.
+	ctx, cancel := context.WithTimeout(c.t.Context(), settleTimeout)
+	defer cancel()
+	if err := c.bus.waitHeld(ctx); err != nil {
+		c.t.Errorf("the traffic never reached the bus: %v", err)
+	}
 	c.stop(stalledStop)
 	c.bus.HoldAsync(false)
 	c.bus.ReleaseAsync(nil)
@@ -158,8 +171,12 @@ func stopUnderAStalledPublisher(c *chaos) {
 
 func injectedFaults(c *chaos) {
 	var n atomic.Int64
+	faulted := make(chan struct{})
 	c.bus.FailPublish(func(*producer.Msg) error {
-		if n.Add(1)%3 == 0 {
+		if n.Add(1) == 3 {
+			close(faulted)
+		}
+		if n.Load()%3 == 0 {
 			return errFault
 		}
 
@@ -170,10 +187,17 @@ func injectedFaults(c *chaos) {
 	c.traffic(100)
 	c.verb("HotReload", verbTimeout, c.d.HotReload)
 	c.traffic(100)
+	ctx, cancel := context.WithTimeout(c.t.Context(), settleTimeout)
+	defer cancel()
+	select {
+	case <-faulted:
+	case <-ctx.Done():
+		c.t.Errorf("no publish failed: the traffic never reached the bus")
+	}
 	c.bus.FailPublish(nil)
 	c.bus.FailPutsUncertain(nil)
 	c.stop(stopTimeout)
-	c.settle()
+	c.settle(2)
 }
 
 // verb runs one device verb with deadline d and fails the test if it errs or returns more than slack past d.
@@ -204,25 +228,42 @@ func (c *chaos) stop(d time.Duration) {
 	})
 }
 
-// settle waits until the last capture's stop is on the bus, then checks everything published.
-func (c *chaos) settle() {
+// settle waits until the last capture's stop is on the bus, then checks everything published:
+// the device's captures, one per Start or HotReload, and its traffic among them.
+func (c *chaos) settle(captures int) {
 	c.t.Helper()
 	ctx, cancel := context.WithTimeout(c.t.Context(), settleTimeout)
 	defer cancel()
 	msgs := c.bus.Messages()
+	var caps map[tracepack.UUID]*capture
 	for {
-		caps, err := decode(msgs)
-		if err != nil {
-			c.t.Fatal(err)
+		var err error
+		if caps, err = decode(msgs); err != nil {
+			c.t.Error(err)
+			return
 		}
 		if lastStopped(caps) {
 			break
 		}
 		if msgs, err = c.bus.WaitMessages(ctx, len(msgs)+1); err != nil {
-			c.t.Fatalf("the last capture's stop never reached the bus: %v", err)
+			c.t.Errorf("the last capture's stop never reached the bus: %v", err)
+			return
 		}
 	}
 	c.check(msgs)
+	started, frames := 0, 0
+	for _, cp := range caps {
+		if cp.desc != nil {
+			started++
+		}
+		frames += cp.frames
+	}
+	if started != captures {
+		c.t.Errorf("%d captures on the bus, want %d: one per Start and HotReload", started, captures)
+	}
+	if frames == 0 {
+		c.t.Errorf("no traffic on the bus")
+	}
 }
 
 func (c *chaos) check(msgs []producer.Msg) {
@@ -274,6 +315,9 @@ func decode(msgs []producer.Msg) (map[tracepack.UUID]*capture, error) {
 		}
 		r := &br.Record
 		c.maxSeq = max(c.maxSeq, r.Seq)
+		if r.Kind == tracepack.KindData || r.Kind == tracepack.KindControl {
+			c.frames++
+		}
 		desc := br.Descriptor
 		if desc == nil && br.ClaimCheck && m.Header[tracepack.BusHeaderDescriptor] != "" {
 			// A claim-check start's descriptor is checked with its payload, which the check does not fetch.

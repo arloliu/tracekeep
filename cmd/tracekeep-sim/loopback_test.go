@@ -63,10 +63,11 @@ func TestWaiterConforms(t *testing.T) {
 	w := newWaiter()
 	w.after = clk.after
 	err := producertest.CheckTimeoutSource(producertest.TimeoutSourceHarness{
-		Source: w,
-		Reply:  func(t producer.Token) { w.reply(t) },
-		Cancel: func(t producer.Token) { w.cancel(t) },
-		Expire: clk.expire,
+		Source:  w,
+		Reply:   func(t producer.Token) { w.reply(t) },
+		Cancel:  func(t producer.Token) { w.cancel(t) },
+		Expire:  clk.expire,
+		Quiesce: func() {}, // the fake timers fire synchronously
 	})
 	if err != nil {
 		t.Fatal(err)
