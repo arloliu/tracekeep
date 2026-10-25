@@ -27,3 +27,16 @@ jobs:
     # then the service built with GOWORK=off; tests use the embedded nats-server, no external service.
     - name: make ci
       run: make ci
+
+  # The SDK and its bus tests on the latest nats.go, the graph a newer producer resolves;
+  # the pinned go.mod, which make ci tests, is the minimum one (producer-sdk.md §4.7 *Versions*).
+  latest-nats:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v7
+    - name: Setup Go from mise.toml
+      uses: jdx/mise-action@v4
+      with:
+        install_args: go
+    - name: make test-latest
+      run: make test-latest

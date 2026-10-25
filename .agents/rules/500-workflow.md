@@ -49,6 +49,7 @@ make docs-check     # docs/ against 450-doc-lifecycle.md
 make data-check     # nothing under data/ tracked but README.md and .gitignore
 make hooks          # enable scripts/hooks
 make test           # every module, -short, -race
+make test-latest    # the SDK and bustest on a copy with the latest nats.go (needs the module proxy; its own CI job)
 make bench
 make ci             # check + docs-check + data-check + test + the service built with GOWORK=off
 ```

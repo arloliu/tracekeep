@@ -53,6 +53,17 @@ hooks: ## Enable the repository's git hooks (data-check before every commit); on
 test: ## Run tests in every module with -short and -race
 	@$(call in_module,CGO_ENABLED=1 go test ./... -short -race -timeout=$(TEST_TIMEOUT) $(VERBOSE_TAG))
 
+# The pinned go.mod is the SDK's minimum resolved graph; this is the latest one, on a copy of the tracked tree,
+# since producers are usually newer than the SDK's floor (producer-sdk.md §4.7 *Versions*).
+test-latest: ## Run the SDK's and bustest's tests with the latest nats.go
+	@set -e; d=$$(mktemp -d); trap 'rm -rf "$$d"' EXIT; \
+	git ls-files -z | tar --null -T - -cf - | tar -xf - -C "$$d"; \
+	for m in producer producer/internal/bustest; do \
+		(cd "$$d/$$m" && export GOWORK=off && go get github.com/nats-io/nats.go@latest && go mod tidy && \
+			echo "$$m: $$(go list -m github.com/nats-io/nats.go)" && \
+			CGO_ENABLED=1 go test ./... -short -race -timeout=$(TEST_TIMEOUT) $(VERBOSE_TAG)); \
+	done
+
 bench: ## Run benchmarks in every module
 	@$(call in_module,go test ./... -run=^$$ -bench=. -benchmem)
 
@@ -61,4 +72,4 @@ bench: ## Run benchmarks in every module
 ci: check docs-check data-check test ## Every gate, plus the service built without the workspace
 	@GOWORK=off go build ./...
 
-.PHONY: help lint fmt vet check docs-check data-check work hooks test bench ci
+.PHONY: help lint fmt vet check docs-check data-check work hooks test test-latest bench ci
