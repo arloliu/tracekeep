@@ -46,7 +46,7 @@ Contract changes go through proposals, which the subject [README.md](README.md) 
 Every producer must implement §4.2–§4.6 identically;
 eqp-hub should not re-derive them, and a later producer (a test fixture, another gateway) should not either.
 It is a **separate Go module** in the tracekeep repository, `github.com/arloliu/tracekeep/producer` (its own `go.mod`, tagged `producer/vX.Y.Z`),
-because importing a package of the service module would pull the service's dependency graph (sqlx, minio, oidc, atlas) into every producer.
+because importing a package of the service module would pull the service's dependency graph (sqlx, the S3 client, oidc, atlas) into every producer.
 
 **No import cycle.**
 The bus payload is not tracekeep's:

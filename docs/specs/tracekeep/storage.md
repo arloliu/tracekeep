@@ -71,8 +71,12 @@ type ObjectStore interface {
 the object is visible under its key only when complete; a returned nil means durable;
 a returned error means nothing is visible, or the caller treats the key as unknown and the reconciler (§5.4) decides.
 
-- `s3` (minio-go v7; AWS S3, MinIO, Ceph RGW): one `PutObject`, atomic and durable on success;
+- `s3` (aws-sdk-go-v2 `service/s3`, T-34; any S3-compatible store): one `PutObject` with a seekable body, atomic and durable on success;
   keys are never overwritten ([STO §3]).
+  With a custom endpoint it uses path-style addressing and sets `RequestChecksumCalculation` and `ResponseChecksumValidation` to `WhenRequired`,
+  since the SDK's default checksums break some S3-compatible stores;
+  `Presigner` uses the SDK's presign client.
+  Deployments run MinIO and Ceph RGW, so the conformance suite runs the `s3` backend against both, each in a container, in CI (T-34).
 - `fs` (standalone pilots, tests): write to `<root>/.partial/`, fsync the file, rename into place, fsync the directory.
 - `mem` (tests).
 
