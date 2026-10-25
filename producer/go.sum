@@ -1,5 +1,5 @@
-github.com/arloliu/go-secs/tracepack v0.8.0 h1:2pShjsDcxFDR/WffuUI1lYUfLYHdX2QZpBc/jP3RU74=
-github.com/arloliu/go-secs/tracepack v0.8.0/go.mod h1:BKyTMJM3/QR7hNUHzRivfguTQsn8TsxIv+RhfT7Xg1Q=
+github.com/arloliu/go-secs/tracepack v0.9.0 h1:Nf7/NZCLArDyDsh2jNOJ01iliZjvk1iH43O0UYAxFgQ=
+github.com/arloliu/go-secs/tracepack v0.9.0/go.mod h1:BKyTMJM3/QR7hNUHzRivfguTQsn8TsxIv+RhfT7Xg1Q=
 github.com/arloliu/go-secs/v2 v2.8.0 h1:gkBY7QQsCBDNWqp98arnSCUdcjSFpRiKLZo6Vddl7iE=
 github.com/arloliu/go-secs/v2 v2.8.0/go.mod h1:SEbNIic8oZ6zb0EW/ldiw7gfQNPgePSDqpZITKHqiHA=
 github.com/klauspost/compress v1.20.1 h1:T7kKElXUMXrUJ2E9QhQhxFtcK5rPyLdsGZvdbLMPdiQ=
