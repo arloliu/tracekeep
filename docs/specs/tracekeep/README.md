@@ -23,6 +23,7 @@ The review reports, the owner's decision brief and the seed's last text (v21) ar
 | `glossary.md` | living | draft | terms and tunables, with their defining sections |
 | `tracekeep-decisions.md` | living | draft | rulings relied on, the owner's decisions T-1 onward, service defaults |
 | `proposals/p1-interfaces.md` | finite | draft | module interface changes from the deep-module review |
+| `proposals/p2-device-selection.md` | finite | draft | selecting traffic by tool and device name in every read operation |
 
 ## Read order
 
@@ -62,4 +63,4 @@ Where a ruling already settles a point, the specs apply it and do not re-derive 
 Facts about eqp-hub are as of its `develop` branch at fc67e5f;
 facts about nats.go are as of v1.40.1, the version eqp-hub pins.
 
-Next free proposal ID: P2.
+Next free proposal ID: P3.
