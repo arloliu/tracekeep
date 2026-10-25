@@ -45,12 +45,24 @@ eqp-hub reviews the SDK's API (`Bus`, `Preflight`, the five guarantees, `Observe
 
 ## Active plans
 
-- [Repository bootstrap](plans/repo-bootstrap.md) —
-  conventions, documents, module skeleton and CI for the new repository.
+- [Phase 0 — producer](plans/phase-0-producer.md) — the producer SDK and its proving ground.
 - [P1 — module interfaces](specs/tracekeep/proposals/p1-interfaces.md) —
   six interface changes, accepted (T-26), each applied as its own change; item 4 (the SDK) before phase 0's code.
 
-## Draft plans
+## Open items
 
-- [Phase 0 — producer](plans/phase-0-producer.md) — the producer SDK and its proving ground;
-  becomes active when the bootstrap closes.
+- Whether timer-triggered FDC collection contexts count as interval polling (T-3) is with the FDC maintainers;
+  thinning stays disabled until the poll channel exists.
+- connect-go's overhead against plain gRPC is measured before the API of phase 2 is implemented;
+  the result goes to the decision log.
+- The veq branch `docs/ve/log-service-decisions` (commit 7b8a019) carries the LS-row amendments and V-35;
+  it is not merged yet.
+- nats.go `v1.55.0` in the SDK (T-19) contradicts `producer-sdk.md` §4.7 *Versions*,
+  which keeps the SDK's floor at or below the gateway's v1.40.1:
+  importing the SDK raises the gateway to v1.55.0 (phase G).
+  The nats.go v1.40.1 facts of the specs (`producer.md` §4.2 *Large records*, `producer-sdk.md` §4.7 *Publication policy*, `parking.md` confirmation and reconciler)
+  and their nats-server v2.14.5 source citations are re-verified against v1.55.0 and v2.15.1,
+  and §4.7 is amended, before the SDK's first code.
+- The service's `go.mod` requires the SDK from its first tag (`producer/vX.Y.Z`) on;
+  `producer/doc.go` blank-imports tracepack and nats.go only to keep the SDK's requirements until code imports them.
+- The CI workflow has not run yet; its first run follows the first push.

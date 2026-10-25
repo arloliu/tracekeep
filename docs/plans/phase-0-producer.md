@@ -1,6 +1,6 @@
 # Phase 0 — producer
 
-Status: draft (2026-10-25) — becomes active when the repository bootstrap closes
+Status: active (2026-10-25) — the repository bootstrap closed; phase 0.1 next
 
 Milestone 0 of the [roadmap](../ROADMAP.md):
 the producer SDK, in this repository only, with the simulator and the embedded bus that prove it.
@@ -11,8 +11,8 @@ This plan only orders the work.
 ## Before it starts
 
 - `producer-sdk.md` §4.7 amended for nats.go v1.55.0 and the nats.go and nats-server facts the specs cite re-verified (T-19).
-- The owner's decision on items 4 and 5 of [P1](../specs/tracekeep/proposals/p1-interfaces.md),
-  which shape the SDK's public interface.
+- Item 4 of [P1](../specs/tracekeep/proposals/p1-interfaces.md) applied to the specs (accepted with `Begin`, `Rotate` and `End`, T-26);
+  item 5's token protocol fixed far enough for the `TimeoutSource` fixture of phase 0.4.
 
 ## Phases
 

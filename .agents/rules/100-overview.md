@@ -14,7 +14,8 @@ The design is in `docs/specs/tracekeep/`; the roadmap is `docs/ROADMAP.md`.
 | `github.com/arloliu/tracekeep/producer` | `producer/` | the producer SDK, tagged `producer/vX.Y.Z` |
 
 `go.work` joins the two for development and is committed with `go.work.sum`.
-The service requires the SDK by version and carries no `replace`, so it also builds with `GOWORK=off`.
+The service requires the SDK by version and carries no `replace`, so it also builds with `GOWORK=off`;
+until the SDK's first tag it does not require the SDK at all.
 
 The dependency direction is fixed and one-way: `go-secs/tracepack ← tracekeep/producer ← tracekeep`.
 **The SDK's boundary**:

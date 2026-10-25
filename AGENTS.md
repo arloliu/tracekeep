@@ -20,7 +20,6 @@ go-secs (SECS-II, HSMS and `tracepack`, which owns the payload format),
 eqp-hub (the equipment gateway, the first producer to link the SDK),
 and veq (the VE design whose log service tracekeep is, and the source of these conventions).
 
-The repository is being bootstrapped: `docs/plans/repo-bootstrap.md` says what exists and what comes next.
 Start with `docs/ROADMAP.md` for where the work stands.
 The design is in `docs/specs/tracekeep/`; start with its `README.md`.
 

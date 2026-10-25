@@ -52,6 +52,7 @@ an owner decision (T-17) replaced it with the committed workspace.
 
 `go.work` names both and is committed with `go.work.sum`.
 The service requires the SDK by version and carries no `replace`, so it also builds with `GOWORK=off`;
+until the SDK's first tag the service imports nothing from it and does not require it, since no version resolves without the workspace;
 the SDK resolves its own `go.mod`, never the service's graph, so the Makefile runs it with `GOWORK=off` (T-17).
 
 ## Setup and checks
