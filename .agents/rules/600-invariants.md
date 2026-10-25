@@ -10,9 +10,10 @@ Section numbers are those of the specs in `docs/specs/tracekeep/`, whose `README
 - **The producer's five guarantees** are the whole of what an integrator owes; everything else is the SDK's:
   the bus address, credentials and TLS in `Config` (or a connection through `WithConn`);
   every descriptor carrying the configured `toolID` and the configured device name;
-  `Observe` called from the observers and nowhere else;
+  `secsobs`'s connection options and lifecycle attachment installed on the device's connection before it opens;
   `End` called on an orderly stop and never allowed to fail the device;
-  a rotation on every descriptor change.
+  `Rotate` called on every descriptor change.
+  The device's `Start`, `HotReload` and `Stop` map onto `Begin`, `Rotate` and `End` (`producer.md` §4.2 *Device verbs and SDK calls*).
   `producer-sdk.md` §4.7 *What the producer must guarantee*.
 - **A callback never blocks on anything external**: not the bus, the claim bucket, a log or go-secs.
   Its one wait is for another callback to leave the capture's critical section,

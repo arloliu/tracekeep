@@ -11,7 +11,7 @@ This plan only orders the work.
 ## Before it starts
 
 - `producer-sdk.md` §4.7 amended for nats.go v1.55.0 and the nats.go and nats-server facts the specs cite re-verified (T-19).
-- Item 4 of [P1](../specs/tracekeep/proposals/p1-interfaces.md) applied to the specs (accepted with `Begin`, `Rotate` and `End`, T-26);
+- Item 4 of [P1](../specs/tracekeep/proposals/p1-interfaces.md) applied to the specs (done: `Begin`, `Rotate` and `End`, `secsobs` observer options, the narrow `Bus`);
   item 5's token protocol fixed far enough for the `TimeoutSource` fixture of phase 0.4.
 
 ## Phases

@@ -36,9 +36,8 @@ Contract changes under discussion are in [P1](proposals/p1-interfaces.md).
 - **Send path**: every forwarded W-bit primary is registered as a pending request before it is sent (§4.6 *Association protocol*);
   T3 of a forwarded request comes from eqp-hub's waiter through `TimeoutSource` (§4.4);
   thinning is off by default and touches only positively identified FDC interval polls (§4.6).
-- **Open**: this file describes the SDK under the device's verbs (`Start`, `Stop`, `HotReload`);
-  `producer-sdk.md` §4.7 sketches `Begin`, `Rotate`, `End`;
-  the seed fixes no mapping between them.
+- **Device verbs and SDK calls**: this file states the rules under the device's verbs (`Start`, `Stop`, `HotReload`);
+  the SDK's calls are `Begin`, `Rotate` and `End`, and each rule holds for the call its verb maps to (§4.2 *Device verbs and SDK calls*, T-26).
 
 ## 4. The gateway producer (requirements 1 and 2)
 
@@ -190,6 +189,13 @@ and this section is the contract between them.
   A prepared `start` has three terminal states, **pending** (queued, its capture not yet installed: the publisher waits), **installed** (publish) and **discarded** (the rotation was abandoned before the commit point: the publisher skips it);
   discard is recorded on the capture object, never inferred from the pointer.
   Seq 2^63 − 4 is the last ordinary seq; the producer rotates before passing it (G5-231).
+- **Device verbs and SDK calls** (T-26).
+  This section names the device's verbs; the SDK's API (`producer-sdk.md` §4.7) names its own, and the integrator maps them once:
+  `Start` → `Begin(ctx, descriptor)`;
+  a `HotReload` that changes any descriptor value → `Rotate(ctx, descriptor)`, and one that changes none calls nothing;
+  `Stop` → `End(ctx)`, which returns a `Report` and never an error;
+  a fault rotation is the SDK's own, on its lifecycle goroutine, and has no call.
+  Every rule stated here for a device verb holds for the SDK call it maps to.
 - **`Start` is idempotent**: a `Start` on an already-open connection does not open a second capture.
 - **`Stop`** rotates to nil, then gives the publisher a bounded deadline (a fraction of `closeConnTimeout`) to drain and publish the `stop`;
   what is left is dropped and counted;

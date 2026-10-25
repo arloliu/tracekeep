@@ -26,11 +26,15 @@ Contract changes under discussion are in [P1](proposals/p1-interfaces.md).
   nothing about the stream is configurable from a producer.
 - **Publication policy**: the SDK's on every route: message id `<capture_id>.<seq>`, the expected stream, no client retries;
   the synchronous set for `start` and every reserved record, the asynchronous set for ordinary records (§4.7 *Publication policy*).
-- **`Bus`**: the seam the core is written against, exported so `producertest` can implement it, not the primary API.
+- **Lifecycle**: `Begin`, `Rotate` and `End`, onto which the device's `Start`, `HotReload` and `Stop` map once (`producer.md` §4.2, T-26).
+- **Observers**: the integrator installs `secsobs`'s connection options and lifecycle attachment before the connection opens;
+  no record enters the SDK any other way (§4.7 *Producer-side API*).
+- **`Bus`**: a narrow seam of the SDK's own types that a connection-free fake implements; NATS details stay private (§4.7).
 - **`Preflight`**: runs on the producer's own bus, in the background after the connection is up, never delaying the device's `Start`;
   returns a readable list of what is wrong.
 - **What the producer must guarantee**: five items, the whole of an integrator's obligations (§4.7, last paragraph; `.agents/rules/600-invariants.md`).
-- **Open**: the producer-side API is a sketch and fixes no signatures;
+- **Open**: the producer-side API is a sketch and fixes no signatures beyond the names above;
+  the send-path token protocol behind `Pending()` is P1 item 5;
   *Versions* keeps the SDK's nats.go floor at or below the gateway's v1.40.1,
   which the owner's choice of v1.55.0 contradicts, an open item of the bootstrap plan.
 
@@ -61,8 +65,8 @@ so the direction holds.
 
 | Package | Depends on | Holds |
 |---|---|---|
-| `producer` | tracepack, nats.go `jetstream` | `Producer`, `Capture`, the algorithm of §4.2 (lock, lanes, rotation, `start`, claim-check, retry horizon), the pending-request table and sampler of §4.6, `Metrics` and `Logger` interfaces (no Prometheus dependency) |
-| `producer/secsobs` | + go-secs `hsms` | `WireEvent`, `SocketEvent`, `LifecycleEvent`, `TxEvent` → records (tracepack-go.md §5), the frame copy, the socket→epoch map |
+| `producer` | tracepack, nats.go `jetstream` | `Producer`, `Capture`, the algorithm of §4.2 (lock, lanes, rotation, `start`, claim-check, retry horizon), the pending-request table and sampler of §4.6, `Bus`, `Metrics` and `Logger` interfaces (no Prometheus dependency); no exported record entry point |
+| `producer/secsobs` | + go-secs `hsms` | the observer options and lifecycle attachment an integrator installs; `WireEvent`, `SocketEvent`, `LifecycleEvent`, `TxEvent` → records (tracepack-go.md §5), the frame copy, the socket→epoch map; it reaches the capture algorithm through an internal package of the module |
 | `producer/busconfig` | nats.go `jetstream` | `StreamConfig()`, `ObjectStoreConfig()`, `ConsumerConfig()`, subject prefix and naming: one definition of [STO §4] *Stream settings* shared by producers and `tracekeep migrate` |
 
 **The SDK owns the NATS client by default; injection is the escape hatch.**
@@ -95,8 +99,9 @@ and the claim bucket's chunk size from `MaxPayload`;
 nothing about the **stream** is configurable from a producer, because the stream is tracekeep's.
 `WithConn` is for producers with their own TLS loader, credential rotation, dialer or connection event hooks;
 `New` then verifies what it can on the given connection (the reconnect buffer, TLS) and refuses one that fails.
-`Bus` remains the internal seam the core is written against and that `producertest` implements;
-it is exported for that purpose, not as the primary API.
+`Bus` is the seam the core is written against and that `producertest` implements;
+it is exported for that purpose, not as the primary API,
+and `WithBus` stays as an escape hatch whose route the publication policy covers like every other.
 
 **Publication policy**, applied identically on the default connection and on an injected one,
 since a producer never chooses publish options:
@@ -115,16 +120,25 @@ The `start` therefore uses the synchronous set, as §4.2 requires,
 and a producer's phase-0 gate tests the `start` with exactly this set.
 
 ```go
-// Bus is the seam the core uses; jetstream.JetStream satisfies it.
+// Bus is the narrow seam the core uses (sketch).
+// Its types are the SDK's own: the default implementation wraps nats.go,
+// and producertest's fake implements it without a connection.
 type Bus interface {
-    Conn() *nats.Conn
-    PublishMsg(ctx context.Context, m *nats.Msg, opts ...jetstream.PublishOpt) (*jetstream.PubAck, error)
-    PublishMsgAsync(m *nats.Msg, opts ...jetstream.PublishOpt) (jetstream.PubAckFuture, error)
+    MaxPayload() int                                           // the server's max_payload
+    CheckConn() []Problem                                      // reconnect buffer disabled, TLS in use
+    Publish(ctx context.Context, m Msg) (Ack, error)           // the synchronous set
+    PublishAsync(m Msg) (AckFuture, error)                     // the asynchronous set
     PublishAsyncComplete() <-chan struct{}
-    ObjectStore(ctx context.Context, bucket string) (jetstream.ObjectStore, error)
-    Stream(ctx context.Context, name string) (jetstream.Stream, error) // Preflight's inspection
+    Objects(ctx context.Context, bucket string) (Objects, error) // GetInfo, Put, Get, Delete of claim objects
+    StreamInfo(ctx context.Context, name string) (StreamInfo, error) // Preflight's inspection
 }
 ```
+
+`Msg` carries the subject, the headers, the body, the message id and the expected stream the core sets,
+so every implementation publishes under the policy above;
+nats.go types stay inside the default implementation.
+`WithConn(*nats.Conn)` keeps nats.go in the public interface,
+so hiding `Bus` would neither remove it nor change the module's version floor.
 
 **Versions.**
 Owning the client isolates nothing at the module level: a Go build holds one version of nats.go,
@@ -140,10 +154,22 @@ which the SDK's changelog states on every tracepack upgrade.
 The header-block length is computed by the SDK from the NATS header wire format, as the spec asks the producer to do.
 
 **Producer-side API** (sketch): `Begin(ctx, CaptureDescriptor)`, `Rotate(ctx, CaptureDescriptor)`, `End(ctx) Report` (bounded, never an error the device must act on),
-`Observe(*Record)` (concurrent, non-blocking), `Pending().Register/Complete/Fail(token)`, `Sampler{N, T}`, and:
+which the device's `Start`, `HotReload` and `Stop` map onto (`producer.md` §4.2 *Device verbs and SDK calls*, T-26);
+`Pending().Register/Complete/Fail(token)`, `Sampler{N, T}`, and:
+
+- **Observers**, from `secsobs` (go-secs v2.8.0, the version tracepack v0.8.0 requires):
+  `ConnOptions() []hsms.ConnOption` returns the wire, socket and transaction observers
+  (`hsms.WithWireObserver`, `WithSocketObserver`, `WithTransactionObserver`),
+  which an HSMS-SS integrator passes through `hsmsss.WithConnectionOption` when it builds the connection;
+  `AttachLifecycle(hsms.Connection) (cancel func())` subscribes through `Connection.SubscribeLifecycle`,
+  called before the connection opens and cancelled after `End`.
+  Both are installed before traffic starts.
+  The observers feed the capture algorithm of §4.2 directly:
+  no queue before seq allocation, no frame retained past the callback, no lifecycle or network work in a callback.
+  There is no exported `Observe`: an integrator cannot feed records by any other route.
 
 - `(*Producer).Preflight(ctx) (Report, error)`, run on the producer's own bus
-  (`Bus` carries `Stream`, `ObjectStore` and `Conn` for it; `producertest`'s fake implements them):
+  (`Bus` carries `StreamInfo`, `Objects`, `MaxPayload` and `CheckConn` for it; `producertest`'s fake implements them):
   checks the stream and bucket exist with the [STO §4] settings that the API exposes
   (retention, storage, limits, compression;
   encryption at rest is a deployment assurance it only reports as unverifiable), `max_payload ≥ 4140`, TLS, the reconnect buffer disabled,
@@ -159,6 +185,6 @@ The header-block length is computed by the SDK from the NATS header wire format,
 **What the producer must guarantee**, the whole list (everything else is the SDK's):
 (1) the traffic cluster's address, credentials and TLS material in `Config`, or a dedicated connection through `WithConn`;
 (2) every descriptor carries the configured `toolID` and the configured device name;
-(3) `Observe` called from the observers and nowhere else;
+(3) `secsobs`'s connection options and lifecycle attachment installed on the device's connection before it opens;
 (4) `End` called on an orderly stop and never allowed to fail the device;
-(5) a rotation on every descriptor change.
+(5) `Rotate` called on every descriptor change.

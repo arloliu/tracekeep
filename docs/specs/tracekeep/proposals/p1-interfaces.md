@@ -122,5 +122,7 @@ registration before forwarding, the process-lifetime ambiguity set and its cap, 
 
 ## Applying it
 
+Applied so far: item 4.
+
 Each accepted item is applied as its own change to the spec files it names, with their interface sections and `.agents/rules/600-invariants.md` updated in the same commit.
 A spec's mechanism and proofs win over this proposal wherever the two disagree.
