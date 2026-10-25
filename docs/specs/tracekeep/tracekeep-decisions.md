@@ -257,3 +257,13 @@ The rest of T-17 stands:
 the service's `go.mod` requires the SDK by version and carries no `replace`,
 CI builds the service with `GOWORK=off`, and the SDK is never built through a workspace.
 When the service starts importing the SDK, a CI leg that creates the workspace can verify a change spanning both modules.
+
+### T-28 — nats.go upgrades and the claim bucket's reads (2026-10-25)
+
+Two decisions after the T-19 re-verification, which found no nats behavior the specs rely on changed in nats.go v1.55.0 or nats-server v2.15.1.
+The SDK raises its nats.go requirement beyond v1.55.0 only for stability and upstream fixes, never for a feature,
+since every raise also raises each producer that imports the SDK.
+The claim bucket's stream has `AllowDirect` off:
+nats.go creates object stores with it on, so `tracekeep migrate` turns it off after creating the bucket,
+`busconfig` records the setting and `Preflight` refuses a bucket that has it on,
+so the SDK's never-overwrite check reads the stream's leader and never a lagging replica (`producer.md` §4.2 *Large records*).

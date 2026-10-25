@@ -19,7 +19,7 @@ A second module, the producer SDK, is published for producers (§4.7).
 | `ingest` | pull consumer of the traffic stream; registers descriptors; batches records per (capture, UTC hour); masks; writes segments; registers packs; acks per message | stateless, N replicas; the work-queue stream balances them |
 | `compact` | merges scopes; closes captures left open; deletes merged segments after a delay; applies retention, claim objects included; reconciles `staging/` and `archive/` against the catalog | one active instance under a catalog lease with a fence token (§8); shard by tool later if needed |
 | `api` | machine API for the VE service, human API and embedded web UI, exports, restore, admin | stateless, N replicas |
-| `migrate` | applies the catalog's versioned migrations; ensures the traffic stream and claim bucket | once per release |
+| `migrate` | applies the catalog's versioned migrations; ensures the traffic stream and claim bucket, the bucket's stream with `AllowDirect` off (T-28) | once per release |
 
 JetStream consumer settings `ingest` depends on:
 `ack_wait` longer than the flush interval F plus the upload, and in-progress acks every `ack_wait/3`

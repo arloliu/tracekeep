@@ -57,9 +57,5 @@ eqp-hub reviews the SDK's API (`Bus`, `Preflight`, the five guarantees, the `sec
   the result goes to the decision log.
 - The veq branch `docs/ve/log-service-decisions` (commit 7b8a019) carries the LS-row amendments and V-35;
   it is not merged yet.
-- The claim bucket is created with `AllowDirect` on (nats.go's object-store default),
-  so the SDK's never-overwrite check (`GetInfo`, `producer.md` §4.2 *Large records*) may read a lagging replica,
-  and a stale "not found" would let a put replace an existing object;
-  either accept that and say so, or have `busconfig` turn `AllowDirect` off on the bucket and `Preflight` check it (found by the T-19 re-verification).
 - The service's `go.mod` requires the SDK from its first tag (`producer/vX.Y.Z`) on;
   `producer/doc.go` blank-imports tracepack and nats.go only to keep the SDK's requirements until code imports them.

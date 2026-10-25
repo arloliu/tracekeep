@@ -66,7 +66,7 @@ so the direction holds.
 |---|---|---|
 | `producer` | tracepack, nats.go `jetstream` | `Producer`, `Capture`, the algorithm of §4.2 (lock, lanes, rotation, `start`, claim-check, retry horizon), the pending-request table and sampler of §4.6, `Bus`, `Metrics` and `Logger` interfaces (no Prometheus dependency); no exported record entry point |
 | `producer/secsobs` | + go-secs `hsms` | the observer options and lifecycle attachment an integrator installs; `WireEvent`, `SocketEvent`, `LifecycleEvent`, `TxEvent` → records (tracepack-go.md §5), the frame copy, the socket→epoch map; it reaches the capture algorithm through an internal package of the module |
-| `producer/busconfig` | nats.go `jetstream` | `StreamConfig()`, `ObjectStoreConfig()`, `ConsumerConfig()`, subject prefix and naming: one definition of [STO §4] *Stream settings* shared by producers and `tracekeep migrate` |
+| `producer/busconfig` | nats.go `jetstream` | `StreamConfig()`, `ObjectStoreConfig()`, `ConsumerConfig()`, subject prefix and naming: one definition of [STO §4] *Stream settings* shared by producers and `tracekeep migrate`, including `AllowDirect` off on the claim bucket's stream, which `migrate` sets after creating the bucket (T-28) |
 
 **The SDK owns the NATS client by default; injection is the escape hatch.**
 A producer's configuration names the bus and nothing about how to drive it:
@@ -151,7 +151,7 @@ The SDK requires nats.go v1.55.0 (T-19), above the v1.40.1 the gateway pins,
 so importing the SDK **raises the gateway** to v1.55.0 (phase G).
 Every `jetstream` API the specs use already exists in v1.40.1;
 the floor is the owner's choice of a current release, not a feature's need,
-and from v1.55.0 on the SDK never raises it for a feature.
+and from v1.55.0 on the SDK raises it only for stability and upstream fixes, never for a feature (T-28).
 The raise carries more with it:
 nats.go v1.55.0's `go.mod` declares `go 1.26.0`, so a producer builds with Go 1.26 or later, the line the gateway is on (T-14),
 and its own requirements rise (nkeys, `klauspost/compress`, `golang.org/x/crypto`).
@@ -180,7 +180,7 @@ which the device's `Start`, `HotReload` and `Stop` map onto (`producer.md` §4.2
 - `(*Producer).Preflight(ctx) (Report, error)`, run on the producer's own bus
   (`Bus` carries `StreamInfo`, `Objects`, `MaxPayload` and `CheckConn` for it; `producertest`'s fake implements them):
   checks the stream and bucket exist with the [STO §4] settings that the API exposes
-  (retention, storage, limits, compression;
+  (retention, storage, limits, compression, `AllowDirect` off on the claim bucket's stream;
   encryption at rest is a deployment assurance it only reports as unverifiable), `max_payload ≥ 4140`, TLS, the reconnect buffer disabled,
   the capture's `start` message within the header-block and `max_payload` limits
   (through `CheckBusStart` with the real header block), `tool_id` and `recorder_instance_name` set in the descriptor;

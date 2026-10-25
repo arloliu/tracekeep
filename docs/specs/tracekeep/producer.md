@@ -233,7 +233,10 @@ and this section is the contract between them.
   the chunk size is set per object through `ObjectMetaOptions.ChunkSize` from `Conn().MaxPayload()` (the default 128 KiB chunk would exceed a small `max_payload`),
   and the metadata message is checked to fit.
   The SDK **never overwrites** a claim object with another version:
-  before a put it reads `GetInfo(name)`;
+  before a put it reads `GetInfo(name)`,
+  which the stream's leader answers because the claim bucket's stream has `AllowDirect` off (T-28):
+  nats.go creates every object store with `AllowDirect` on (v1.55.0 `jetstream/object.go`) and routes a read by the handle's cached setting (`jetstream/stream.go`),
+  so a direct read could reach a lagging replica, and a stale "not found" would let a put replace an existing object;
   an existing object with the same payload digest and the same record header
   (the SDK stores the 44-byte header and the record's `ts_utc_ns`, hex, in `ObjectMeta.Metadata`) is a candidate for reuse;
   one with another digest or header is a producer fault:
