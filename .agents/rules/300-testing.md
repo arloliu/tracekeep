@@ -38,6 +38,8 @@ Anything that touches JetStream runs against `internal/testbus`:
 an embedded nats-server with JetStream on a random port and file storage under `t.TempDir()`.
 No test reaches a network or a shared server.
 The SDK's tests use `producertest`'s in-memory bus; the SDK module never imports `internal/testbus`.
+What needs a real server (the SDK's default connection, `WithConn`, `Preflight` on a live stream) is tested in `producer/internal/bustest`,
+a test-only module that imports both and runs, like the SDK, with `GOWORK=off` (T-35).
 
 ## Patterns
 
