@@ -58,7 +58,7 @@ Section numbers are those of the specs in `docs/specs/tracekeep/`, whose `README
   the `membership` row by admission and every membership change, renewals included.
   One unexported helper of the catalog runs the prologue, so every transaction that admits, parks, registers, deletes, tombstones or evicts a pack of a capture,
   merges a scope of it, publishes its close, or terminates, advances or acknowledges a parked version of it starts with the update of the capture's row by construction;
-  where the transaction allocates an event seq, the `scope_events` update is its last statement, and parking touches no counter.
+  where the transaction allocates an event seq, the `scope_events` update is its last statement, and parking touches no counter except a termination's event.
   `catalog.md` §7.2 *Domain transactions*, `ingest.md` §6.3 (the prologue), `compactor.md` §8.3, `rollouts.md` §6.4.
 
 ## Deletion

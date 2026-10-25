@@ -38,11 +38,12 @@ Contract changes go through proposals, which the subject [README.md](README.md) 
   replacing, restoring or rewinding a stream is the stop-the-world procedure
   that ends in `tracekeep admin bus adopt-stream`, never a live operation.
 - **Operator termination**: `parked terminate` and `capture terminate` write the catalog and hold no message;
-  `capture terminate` also writes a termination order whose cut-off is the traffic stream's `LastSeq` on that incarnation.
+  `capture terminate` also writes a termination order whose cut-off is the traffic stream's `LastSeq` on that incarnation;
+  a termination emits a `terminated` scope event for each hour it touches (`catalog.md` §7.3).
 - **Parked consumer**: never terminates a parked message for its age or delivery count;
   `parking.enabled = false` stops new moves only.
 - **Locks**: every parking transaction starts with the catalog's capture-row helper, and so does termination, which every ingest effect of the capture re-checks under that row (T-32);
-  parking touches no counter.
+  parking touches no counter except a termination's scope event (T-33).
 
 ## 6.1 *Parking*
 
@@ -241,13 +242,13 @@ an **unresolved** row (state neither `staged` nor `terminated`) committed first 
 which keeps the object (§8.4 *survivors*);
 an eviction committed first makes the horizon guard terminate the delivery instead;
 an admission committed first is seen by the re-read, so the branch is chosen against the admitted state.
-Parking takes the capture row and no other lock, and touches no counter (the full lock order is `catalog.md` §7.2's).
+Parking takes the capture row and no other lock, and touches no counter except a termination's scope event (`catalog.md` §7.2, which holds the full lock order).
 The **parked consumer** is a second pull consumer of `ingest` on the parking stream, with its own acknowledgement budget,
 that runs the same disposition and staging protocol with long nak delays;
 nothing is ever republished to the traffic stream, so duplicate windows and replay ordering never arise:
 a parked message is staged from the parking stream
 when its blocker clears (a rejected capture accepted by a fixed consumer in a `rejected → open` transaction that re-validates the descriptor, a claim object restored, a start finally admitted), or terminated by the operator,
-and its seq never reads as a gap while it is parked.
+and its seq never reads as a gap while it is parked: it reads as deferred, and a termination makes it a declared loss (`catalog.md` §7.3, T-33).
 The parked consumer applies the rows above with the one exception G5-267 makes:
 a parked message is **never terminated for its age or its delivery count**.
 A parked message whose record hour retention evicted meanwhile is therefore neither staged (a registration into an evicted hour is refused by §6.3's horizon guard) nor age-terminated:

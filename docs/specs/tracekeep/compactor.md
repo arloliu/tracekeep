@@ -98,7 +98,8 @@ and a read whose range meets the gap reports `incomplete` ([STO §4]).
 
 A pack is deletable when it is an input of a successful merge
 whose output pack is in state `staged` or `merged` (the relation in `merges`/`merge_inputs`, never a flag or lineage tag);
-it is deleted after a delay D (default 1 hour) that exceeds the lifetime of any download URL, presigned or served by the API (§5.2 *Downloads*, §10.1), and any read in flight,
+it is deleted after a delay D (default 1 hour) that exceeds the lifetime of any download URL, presigned or served by the API (§5.2 *Downloads*, §10.1), and any read in flight;
+a URL issued after the merge is clamped to `merged_at + D` instead (§10.1 *Downloads*, T-33),
 and a `tombstones` row is written in the same transaction as the `deleted` state.
 Every deletion, by this rule or by retention, runs a transaction
 whose **first statement updates the capture's row** (the same row every registration updates first, §6.3),
@@ -109,6 +110,10 @@ Registration and deletion of one key therefore serialize on the capture row befo
 either the tombstone commits first and the registration's predicate aborts it,
 or the registration commits first and the deletion finds a `packs` row and aborts.
 The lock order is capture row → `leases` row → `counters('membership')` row → `counters('scope_events')` row, each step optional, nothing else is locked (T-32).
+A download URL's expiry is clamped to its hour's eviction time (§10.1 *Downloads*),
+so a shortened retention period takes effect for an hour only once the longest URL lifetime has passed since the change,
+and retention never evicts an hour before a time an issued URL was promised (T-33).
+A completed export bundle under `exports/` is deleted at the end of its retention (default 24 h), its URLs clamped to that time likewise.
 Retention deletes whole hours older than the retention period:
 in one transaction per hour it copies the hour's `pack_ranges` union into `evicted_ranges`, deletes the packs, ranges, receipts, the hour's `claim_objects` rows **except survivors** (§8.4) and the scope row, and writes the tombstones;
 then it deletes the hour's claim objects, survivors excepted, from the bucket;

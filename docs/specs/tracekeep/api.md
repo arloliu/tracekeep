@@ -16,9 +16,9 @@ Contract changes go through proposals, which the subject [README.md](README.md) 
 - **Operations**: `ListDevices`, `ListCaptures`, `ListPacks`, `ListScopeChanges`, `PackURL`, `QueryRecords`, `FindTransaction`, `Export`, `Restore`, `Digest`, admin (§10.1 table).
 - **Selector**: reads name (`tool_id`, devices, window), the device being the gateway's `eqp-hsms` device name;
   omitting the devices selects every device of the tool (§10.1 *Selector*).
-- **`PackURL`**: a download URL with a lifetime below D; it makes the VE service a privileged reader of packs (T-5).
+- **`PackURL`**: a download URL that expires before its object can be deleted, or `pack-superseded`; it makes the VE service a privileged reader of packs (T-5).
 - **Downloads**: a presigned URL where the store presigns, otherwise a URL on the API carrying a signed download token;
-  either is issued only after the role check, expires below D and serves ranged reads (§10.1 *Downloads*).
+  either is issued only after the role check, expires before its object's deletion deadline minus a margin, and serves ranged reads (§10.1 *Downloads*).
 - **Exports**: an asynchronous job producing a bundle with one JSONL file per source pack, by that pack's `format_minor`;
   a filtered `.tpk` is not offered (§10.1).
 - **People**: OIDC authorization code with PKCE in a backend-for-frontend;
@@ -40,12 +40,12 @@ gRPC for Go clients, JSON over HTTP for the browser, one definition.
 |---|---|
 | `ListDevices(tool, from, to)` | per device: name, `equipment_endpoint`, `device_id`, how many captures are open, whether any captures overlap (§7.3 *Overlap*), the last record time, whether the window holds a gap |
 | `ListCaptures(selector)` | captures with state, device, `recorder_instance_id`, `previous_capture_id`, unregistered intervals and the `overlap` flag (§7.3), thinning parameters, processing configuration ids |
-| `ListPacks(selector)` | per hour and scope: state, revision, packs with their ranges, gaps with time intervals, declared losses, crash gaps, conflicts, unknown tail, `no-data` hours (§7.3) — LS-10 |
-| `ListScopeChanges(after seq, selector)` | `scope_events` after a cursor, paginated, with the epoch — LS-11; one global cursor, returning only the selected tool's and devices' events |
-| `PackURL(pack_id)` | a download URL (lifetime < D, *Downloads* below) so the VE reads packs with tracepack's own reader; this makes the VE service a privileged reader of packs that hold ciphertext in place (§13) |
+| `ListPacks(selector)` | per hour and scope: state, revision, packs with their ranges, gaps with time intervals, deferred seqs, declared losses with their action ids, crash gaps, conflicts, unknown tail, `no-data` hours (§7.3) — LS-10 |
+| `ListScopeChanges(after seq, selector)` | `scope_events` (`created`, `settled`, `reopened`, `conflict`, `terminated`) after a cursor, paginated, with the epoch — LS-11; one global cursor, returning only the selected tool's and devices' events |
+| `PackURL(pack_id)` | a download URL (expiry clamped to the object's deadline, or `pack-superseded`, *Downloads* below) so the VE reads packs with tracepack's own reader; this makes the VE service a privileged reader of packs that hold ciphertext in place (§13) |
 | `QueryRecords(selector, predicates)` | streamed masked records, via `MergeIterate`; the predicates below, plus capture, seq range and epoch |
 | `FindTransaction(capture, seq, hour)` | tracepack's lookup |
-| `Export(filter, kind)` | an asynchronous job producing a **bundle** (tar) under `exports/`, fetched by a download URL (*Downloads* below): one JSONL file **per source pack**, `tracepack-jsonl/1`, `/2` or `/3` by that pack's `format_minor` 0, 1 or 2 (G5-233, G5-270), plus `manifest.json` naming packs, captures, hours, each pack's incompleteness from its read, conflicts, and the filter. `kind=canonical` uses the canonical exporter unfiltered; `kind=filtered` writes the same record schema with the filter applied and is declared non-canonical in the manifest. A filtered `.tpk` is an extract, a v1.0 non-goal, and is not offered. A cancelled or failed job deletes its partial objects |
+| `Export(filter, kind)` | an asynchronous job producing a **bundle** (tar) under `exports/`, fetched by a download URL (*Downloads* below): one JSONL file **per source pack**, `tracepack-jsonl/1`, `/2` or `/3` by that pack's `format_minor` 0, 1 or 2 (G5-233, G5-270), plus `manifest.json` naming packs, captures, hours, each pack's incompleteness from its read, conflicts, and the filter. `kind=canonical` uses the canonical exporter unfiltered; `kind=filtered` writes the same record schema with the filter applied and is declared non-canonical in the manifest. A filtered `.tpk` is an extract, a v1.0 non-goal, and is not offered. A cancelled or failed job deletes its partial objects; a completed bundle is kept for its retention (default 24 h) and then deleted by the compactor (T-33) |
 | `Restore`, `Digest` | §9 |
 | admin | policies, processing configurations, key ids (no material), retention, thinning status, holds if LS-13 (a) is chosen |
 
@@ -96,17 +96,27 @@ it lists packs, follows scope changes and fetches `PackURL`s through the selecto
 and needs no knowledge of capture ids beyond what `ListPacks` returns.
 
 **Downloads.**
-`PackURL` and an export's fetch return a download URL whose lifetime is below the deletion delay D (§8.3).
-Where the store presigns (`storage.md` §5.2 *Downloads*), it is a presigned GET of the object;
+`PackURL` and an export's fetch return a download URL that never outlives its object (T-33).
+Each object has a **deadline**, the earliest time it may be deleted:
+`merged_at + D` for a merged input (§8.3);
+for any other pack, the time retention may first evict its hour (hour end plus the retention period, pushed out by a hold), `staged` and `excluded` packs included;
+for a completed export bundle, the end of its retention.
+The URL expires at the earlier of now plus its lifetime and the deadline minus a margin (default 2 min) that covers clock skew and a read in flight.
+When that leaves less than a floor (default 1 min), issuance is refused with `pack-superseded`:
+the client re-lists, and a merged input's archive is listed in its place, so the VE client handles `pack-superseded` by re-listing.
+D stays above the lifetime, so a URL issued before a merge is untouched by the merge's deletion,
+and a later change of the retention period never shortens what an issued URL was promised (§8.3).
+Where the store presigns and `storage.presign` is on (`storage.md` §5.2 *Downloads*), the URL is a presigned GET of the object;
 otherwise it is a URL on the API itself carrying a download token, and the API serves the object:
 
 - The token is issued only after the issuing operation's role check (`pack-reader` for `PackURL`, `exporter` for an export);
   it names exactly one object key and an expiry, and authorizes nothing else.
 - It is signed with the download-token key, a key purpose of its own (`masking-keys.md` §9),
-  so any replica validates it without shared state.
+  so any replica validates it without shared state;
+  it carries the key id it was signed with, and rotation follows `masking-keys.md` §9's rule for session and download keys.
 - A request after the expiry is refused;
-  the lifetime is the presigned URL's,
-  so a merged pack's object outlives every token issued for it as it outlives every presigned URL.
+  the expiry is computed as for a presigned URL,
+  so an object outlives every token issued for it as it outlives every presigned URL.
 - The API answers `HEAD` and ranged `GET` (`Range`, `206 Partial Content`) as S3 does, reading through `ObjectStore.Open`'s `io.ReaderAt`,
   so tracepack's reader works over either kind of URL unchanged.
 - A download URL, presigned or not, is a bearer credential until it expires and is never logged.
@@ -114,7 +124,7 @@ otherwise it is a URL on the API itself carrying a download token, and the API s
 ### 10.2 Auth
 
 - **People**: OIDC authorization code with PKCE, handled by the Go backend as a backend-for-frontend (`coreos/go-oidc`, `golang.org/x/oauth2`).
-  The session is a **signed, encrypted cookie** (a `session` key from the `keys` module, `masking-keys.md` §9) holding subject, roles and expiry,
+  The session is a **signed, encrypted cookie** (a `session` key from the `keys` module, `masking-keys.md` §9, rotated by its rule there) holding subject, roles and expiry,
   so any replica validates it without shared state;
   roles map from IdP groups or claims in configuration.
 - **Services** (the VE generation service, the scorer): OAuth2 client credentials from the same IdP, validated against its JWKS;

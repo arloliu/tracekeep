@@ -29,8 +29,8 @@ Contract changes go through proposals, which the subject [README.md](README.md) 
   only an admitted capture's orphan is adopted;
   a tombstoned or beyond-retention key is deleted again (§5.4).
 - **Downloads**: presigning is an optional capability, `Presigner`, that `s3` implements and `fs` and `mem` do not;
-  without it the API serves the download itself (`api.md` §10.1 *Downloads*).
-  Either way a download URL lives less than the deletion delay D (§5.2 *Downloads*).
+  without it, or with `storage.presign` off, the API serves the download itself (`api.md` §10.1 *Downloads*).
+  Either way a download URL expires before its object can be deleted (§5.2 *Downloads*).
 
 ## 5. Storage (requirement 3)
 
@@ -95,8 +95,12 @@ type Presigner interface {
   `fs` and `mem` do not, so a standalone pilot has no presigned URLs.
 - The `api` role finds the capability once at start, by type assertion on its store;
   without it, the API serves downloads itself (§10.1 *Downloads*).
-  No configuration chooses between the two.
-- A presigned URL, like an API download token, lives less than the deletion delay D (§8.3).
+- `storage.presign` (default on) is the one configuration that chooses between the two (T-33):
+  off, an `s3` store's downloads also go through the API,
+  for a store whose presigned URLs readers cannot use (a proxy or a different host name in front of the store, a policy refusing query-string authentication).
+  With it on, the `api` role checks at start by presigning a GET of a key that does not exist and fetching it:
+  not-found means the store accepts the signature, and a refused signature is reported with the advice to turn presigning off.
+- A presigned URL, like an API download token, expires before its object can be deleted (`api.md` §10.1 *Downloads*, §8.3).
 
 ### 5.3 ReaderAt
 
