@@ -1,6 +1,6 @@
 # Roadmap
 
-Status: current (2026-10-25) — milestones from seed v21 §12
+Status: current (2026-10-26) — milestones from seed v21 §12
 
 Where tracekeep's work stands, and the single index of active plans (`.agents/rules/450-doc-lifecycle.md`).
 The milestones and their gates are seed v21 §12, moved unchanged;
@@ -49,7 +49,7 @@ eqp-hub reviews the SDK's API (`Bus`, `Preflight`, the six guarantees, the `secs
 
 ## Active plans
 
-- [Phase 0 — producer](plans/phase-0-producer.md) — the producer SDK and its proving ground.
+None. Phase 0 is done (#1, #3, #4, #7, #8); phase 1's plan is written when it starts.
 
 ## Open items
 
