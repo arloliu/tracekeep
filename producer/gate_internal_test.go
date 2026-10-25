@@ -2,6 +2,7 @@ package producer
 
 import (
 	"slices"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -121,8 +122,13 @@ func TestHeldRecordOfAnAbandonedCaptureIsDroppedAsAbandoned(t *testing.T) {
 func TestOpposingStepsHoldBackTheReservedLane(t *testing.T) {
 	t.Parallel()
 	bus := newRecBus()
+	// Only passes after armed is set count, so none from before the schedule below can stand in for one.
+	var armed atomic.Bool
 	passes := make(chan struct{}, 64)
 	hooks := publisherHooks{afterPass: func() {
+		if !armed.Load() {
+			return
+		}
 		select {
 		case passes <- struct{}{}:
 		default:
@@ -144,7 +150,13 @@ func TestOpposingStepsHoldBackTheReservedLane(t *testing.T) {
 	wall, mono := core.Now()
 	a, _ := c.Allocate(wall+3*int64(time.Second), mono, 1)
 	p.rec.Observe(&core.Observation{Wall: wall, Mono: mono + 1, Socket: 1, Kind: tracepack.KindData, Payload: []byte{1}})
-	for range 5 {
+	// Three passes that start after B queued: the first may only take its entries in, the next ones could publish them.
+	armed.Store(true)
+	for range 3 {
+		select {
+		case p.pub.wake <- struct{}{}:
+		default:
+		}
 		<-passes
 	}
 	if ids := bus.published(); len(ids) != 1 {
