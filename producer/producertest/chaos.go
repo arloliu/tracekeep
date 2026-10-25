@@ -48,7 +48,7 @@ type Device interface {
 // NewDevice builds a device whose producer publishes through bus (producer.WithBus) with tun as its Config.Tunables.
 type NewDevice func(t *testing.T, bus *Bus, tun producer.Tunables) Device
 
-// RunChaos runs phase 0's chaos scenarios against an integrator's device, each on a fresh bus and device:
+// RunChaos runs the chaos scenarios against an integrator's device, each on a fresh bus and device:
 // the bus going down and up, HotReload under traffic, Stop under a stalled publisher, and injected publish faults.
 // Every device verb must return within its deadline whatever the bus does,
 // and what reaches the bus must pass CheckCaptures.
@@ -74,7 +74,7 @@ func RunChaos(t *testing.T, newDevice NewDevice) {
 }
 
 // CheckCaptures checks what a producer published, as a consumer reads it:
-// every message decodes; every capture with a message has its start at seq 0;
+// every message decodes; every capture with a message has its start on the bus;
 // every start but the first names as its previous capture one whose start is also on the bus;
 // and a capture's stop, if any, is its last seq.
 // It does not check for gaps, which a drop leaves by design,
@@ -232,7 +232,7 @@ func (c *chaos) check(msgs []producer.Msg) {
 	}
 }
 
-// lastStopped reports whether the capture no other start names as previous has its stop on the bus.
+// lastStopped reports whether every capture no other start names as previous has its stop on the bus.
 func lastStopped(caps map[tracepack.UUID]*capture) bool {
 	named := make(map[tracepack.UUID]bool, len(caps))
 	for _, c := range caps {
@@ -240,13 +240,17 @@ func lastStopped(caps map[tracepack.UUID]*capture) bool {
 			named[*c.desc.PreviousCaptureID] = true
 		}
 	}
+	tips := 0
 	for id, c := range caps {
 		if c.desc != nil && !named[id] {
-			return c.stopped
+			if !c.stopped {
+				return false
+			}
+			tips++
 		}
 	}
 
-	return false
+	return tips > 0
 }
 
 func decode(msgs []producer.Msg) (map[tracepack.UUID]*capture, error) {

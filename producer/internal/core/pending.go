@@ -207,8 +207,16 @@ func (t *PendingTable) Lookup(sessionID uint16, systemBytes uint32) *PendingEntr
 	return e
 }
 
-// SetSocket records the connection's newest socket; the socket observer calls it at every connect or accept.
-func (t *PendingTable) SetSocket(socket uint64) { t.socket.Store(socket) }
+// SetSocket records socket as the connection's newest unless a later one is already recorded:
+// the observers call it for a dialed socket and for every frame of an adopted one.
+// go-secs numbers sockets in order and never reuses an id, so the newest is the largest.
+func (t *PendingTable) SetSocket(socket uint64) {
+	for cur := t.socket.Load(); socket > cur; cur = t.socket.Load() {
+		if t.socket.CompareAndSwap(cur, socket) {
+			return
+		}
+	}
+}
 
 // Bind binds the newest entry of a key to the socket its outbound frame went out on, from the wire observer;
 // it takes no lock and allocates nothing.
@@ -216,7 +224,7 @@ func (t *PendingTable) SetSocket(socket uint64) { t.socket.Store(socket) }
 // the connection was replaced between registration and send.
 func (t *PendingTable) Bind(sessionID uint16, systemBytes uint32, stream, function uint8, socket uint64) {
 	e := t.Lookup(sessionID, systemBytes)
-	if e == nil || socket == 0 {
+	if e == nil || socket == 0 || e.bound.Load() != 0 {
 		return
 	}
 	e.hdr.Store(uint32(stream)<<8 | uint32(function))

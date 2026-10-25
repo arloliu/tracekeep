@@ -444,6 +444,9 @@ it also serves §4.4's T3 attribution):
     the entry then expires at that time plus the timeout plus the reporting grace,
     and an entry on which no wait is opened is removed 30 s after its registration (T-31).
     A second `Awaiting`, and one after a terminal outcome, are counted no-ops.
+    The wait is open before its reply can arrive:
+    `doSendToTarget` opens it before `ForwardDataMessage`, or the waiter holds a reply that comes before its wait,
+    since a reply dropped for want of a wait ends in a timeout the SDK cannot tell from a real T3.
   - **Terminal outcomes**, reported by the waiter:
     `Replied`;
     `TimedOut`, only from the waiter's timer branch, carrying the effective timeout of that wait;

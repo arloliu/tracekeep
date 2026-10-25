@@ -14,6 +14,8 @@ import (
 const (
 	// pollInterval is how often the publisher looks at in-flight publishes and due retries while it has work.
 	pollInterval = 5 * time.Millisecond
+	// sweepInterval is how often the publisher expires pending requests; a report on an entry past its expiry finds it expired anyway.
+	sweepInterval = time.Second
 	// retryBase and retryCap bound the backoff between attempts at one record.
 	retryBase = 100 * time.Millisecond
 	retryCap  = 5 * time.Second
@@ -152,13 +154,17 @@ func (pb *publisher) run(quit <-chan struct{}) {
 	rec := pb.p.rec
 	timer := time.NewTimer(pollInterval)
 	defer timer.Stop()
+	var swept time.Time
 	for {
 		// A capture past End's deadline is terminated before the pass can attempt anything of it.
 		pb.takeEnds()
 		pb.finishEnds()
 		pb.pass()
 		pb.finishEnds()
-		rec.Pending.Sweep()
+		if now := time.Now(); now.Sub(swept) >= sweepInterval {
+			rec.Pending.Sweep() // it scans every live entry under the lock Register takes
+			swept = now
+		}
 		pb.report(false)
 
 		// Idle, it still wakes every half reservation timeout: a reservation can go stale with nothing else moving.
