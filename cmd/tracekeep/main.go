@@ -21,6 +21,7 @@ import (
 	"github.com/arloliu/go-secs/tracepack"
 
 	"github.com/arloliu/tracekeep/internal/admin"
+	"github.com/arloliu/tracekeep/internal/catalog"
 	"github.com/arloliu/tracekeep/internal/config"
 	"github.com/arloliu/tracekeep/internal/service"
 )
@@ -36,7 +37,7 @@ commands:
   admin      run an operator command:
                parked list [capture] | parked terminate <capture> [seq]
                capture terminate <capture> | capture show <capture>
-               bus adopt-stream <traffic|parking> | object list`
+               bus adopt-stream <traffic|parking> | object list [--unattributed|--survivors]`
 
 // errUsage marks a command line the binary cannot run; it exits 2.
 var errUsage = errors.New("usage")
@@ -94,6 +95,10 @@ func dispatch(ctx context.Context, args []string, stdout, stderr io.Writer) erro
 	}
 	log := slog.New(slog.NewJSONHandler(stderr, nil)).With("replica", cfg.Replica)
 	e, err := service.Open(ctx, cfg, log)
+	if !isRole && errors.Is(err, catalog.ErrSecondWriter) {
+		// Admin through the owning process is the api role's, phase 2.
+		return fmt.Errorf("%w: a running service holds this SQLite catalog; stop the service to run admin, or run the catalog on MariaDB", err)
+	}
 	if err != nil {
 		return err
 	}
@@ -130,7 +135,7 @@ func runAdmin(ctx context.Context, a *admin.Admin, args []string, stdout io.Writ
 		out, err = onCapture(ctx, a, cmd, args[2:])
 	case cmd == "bus adopt-stream" && len(args) == 3:
 		out, err = a.AdoptStream(ctx, args[2])
-	case cmd == "object list" && len(args) == 2:
+	case cmd == "object list" && (len(args) == 2 || len(args) == 3 && (args[2] == "--unattributed" || args[2] == "--survivors")):
 		// Unattributed objects and survivors are what retention leaves, which phase 2 brings.
 		out = []struct{}{}
 	default:

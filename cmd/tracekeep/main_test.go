@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/arloliu/tracekeep/internal/catalog"
+	"github.com/arloliu/tracekeep/internal/config"
 	"github.com/arloliu/tracekeep/internal/testbus"
 	"github.com/arloliu/tracekeep/migrations"
 )
@@ -52,7 +53,7 @@ func TestUsage(t *testing.T) {
 	for _, args := range [][]string{
 		nil, {"serve"}, {"migrate", "--config", path, "extra"}, {"admin", "--config", path},
 		{"admin", "--config", path, "capture", "show", "not-a-uuid"}, {"admin", "--config", path, "parked", "terminate"},
-		{"dev", "--flush", "0s"}, {"dev", "--data", t.TempDir(), "extra"},
+		{"dev", "--flush", "0s"}, {"dev", "--data", t.TempDir(), "extra"}, {"admin", "--config", path, "object", "list", "--all"},
 	} {
 		if code, _, stderr := tracekeep(t, args...); code != 2 || !strings.Contains(stderr, "usage:") {
 			t.Errorf("tracekeep %v = %d, %q; want 2 with the usage", args, code, stderr)
@@ -71,12 +72,32 @@ func TestMigrateAndAdmin(t *testing.T) {
 		t.Fatalf("migrate = %d, %s", code, stderr)
 	}
 	for _, args := range [][]string{
-		{"parked", "list"}, {"object", "list"}, {"parked", "terminate", "01234567-89ab-cdef-0123-456789abcdef"},
+		{"parked", "list"}, {"object", "list"}, {"object", "list", "--unattributed"}, {"object", "list", "--survivors"},
+		{"parked", "terminate", "01234567-89ab-cdef-0123-456789abcdef"},
 		{"bus", "adopt-stream", "parking"},
 	} {
 		code, stdout, stderr := tracekeep(t, append([]string{"admin", "--config", path, "--actor", "op"}, args...)...)
 		if code != 0 || !json.Valid([]byte(stdout)) {
 			t.Errorf("admin %v = %d, %q, %s; want JSON", args, code, stdout, stderr)
 		}
+	}
+}
+
+// An admin command on a SQLite catalog a running service holds says why it cannot run, and what to do.
+func TestAdminBesideARunningService(t *testing.T) {
+	t.Parallel()
+	path := setup(t)
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	held, err := catalog.Open(t.Context(), catalog.Config{Engine: catalog.EngineSQLite, DSN: cfg.Catalog.DSN})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = held.Close() })
+	code, _, stderr := tracekeep(t, "admin", "--config", path, "parked", "list")
+	if code != 1 || !strings.Contains(stderr, "stop the service") || !strings.Contains(stderr, "MariaDB") {
+		t.Errorf("admin beside a running service = %d, %q; want the cause and the ways around it", code, stderr)
 	}
 }
