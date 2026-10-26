@@ -1,0 +1,184 @@
+package catalog
+
+import (
+	"context"
+	"crypto/sha256"
+	"database/sql"
+	"errors"
+	"fmt"
+	"slices"
+	"time"
+
+	"github.com/jmoiron/sqlx"
+)
+
+var (
+	// ErrConfigNotExecuted refuses a membership whose replica does not execute every configuration not yet retired (rollouts.md §6.4).
+	ErrConfigNotExecuted = errors.New("catalog: the replica does not execute every unretired configuration")
+	// ErrMembershipLapsed reports a membership whose lease lapsed or whose generation is not the current one: register again.
+	ErrMembershipLapsed = errors.New("catalog: membership lapsed")
+)
+
+// Membership is a replica's registration in the activation gate.
+type Membership struct {
+	Replica string
+	// Generation changes with every registration, so a delivery is checked against the membership it was pulled under.
+	Generation int64
+}
+
+// ActivateConfig records a processing configuration the binary executes and returns its id; the same content returns the same id.
+// A new capture binds the newest activated configuration every leased member supports.
+func (c *Catalog) ActivateConfig(ctx context.Context, content []byte) (int64, error) {
+	sum := sha256.Sum256(content)
+	var id int64
+	err := c.inTx(ctx, func(tx *sqlx.Tx) error {
+		if err := c.lockMembership(ctx, tx); err != nil {
+			return err
+		}
+		err := tx.GetContext(ctx, &id, `SELECT config_id FROM processing_configs WHERE content_sha256 = ?`, sum[:])
+		if !errors.Is(err, sql.ErrNoRows) {
+			return err
+		}
+		if err := tx.GetContext(ctx, &id, `SELECT COALESCE(MAX(config_id), 0) + 1 FROM processing_configs`); err != nil {
+			return err
+		}
+		now := c.now()
+		_, err = tx.ExecContext(ctx, `INSERT INTO processing_configs (config_id, content, content_sha256, created_at, activated_at)
+			VALUES (?, ?, ?, ?, ?)`, id, content, sum[:], now, now)
+
+		return err
+	})
+	if err != nil {
+		return 0, fmt.Errorf("catalog: activate configuration: %w", err)
+	}
+
+	return id, nil
+}
+
+// RetireConfig retires a configuration: no new capture binds it, and a replica need not execute it to register.
+// The caller has established that every capture bound to it is producer-quiescent (rollouts.md §6.4).
+func (c *Catalog) RetireConfig(ctx context.Context, id int64) error {
+	return c.inTx(ctx, func(tx *sqlx.Tx) error {
+		if err := c.lockMembership(ctx, tx); err != nil {
+			return err
+		}
+		_, err := tx.ExecContext(ctx, `UPDATE processing_configs SET retired_at = ? WHERE config_id = ? AND retired_at IS NULL`, c.now(), id)
+
+		return err
+	})
+}
+
+// Register makes replica a member executing configs, with a lease of ttl by the database's clock.
+// It is refused with ErrConfigNotExecuted unless configs holds every configuration not yet retired.
+func (c *Catalog) Register(ctx context.Context, replica string, configs []int64, ttl time.Duration) (Membership, error) {
+	m := Membership{Replica: replica}
+	err := c.inTx(ctx, func(tx *sqlx.Tx) error {
+		if err := c.lockMembership(ctx, tx); err != nil {
+			return err
+		}
+		var unretired []int64
+		if err := tx.SelectContext(ctx, &unretired, `SELECT config_id FROM processing_configs WHERE retired_at IS NULL`); err != nil {
+			return err
+		}
+		for _, id := range unretired {
+			if !slices.Contains(configs, id) {
+				return fmt.Errorf("%w: configuration %d", ErrConfigNotExecuted, id)
+			}
+		}
+		if err := tx.GetContext(ctx, &m.Generation, `SELECT COALESCE(MAX(generation), 0) + 1 FROM consumers`); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `DELETE FROM consumers WHERE replica_id = ?`, replica); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `DELETE FROM consumer_configs WHERE replica_id = ?`, replica); err != nil {
+			return err
+		}
+		_, err := tx.ExecContext(ctx, `INSERT INTO consumers (replica_id, lease_until, generation, registered_at) VALUES (?, `+c.d.nowNS+` + ?, ?, ?)`,
+			replica, ttl.Nanoseconds(), m.Generation, c.now())
+		if err != nil {
+			return err
+		}
+		for _, id := range configs {
+			if _, err := tx.ExecContext(ctx, `INSERT INTO consumer_configs (replica_id, config_id) VALUES (?, ?)`, replica, id); err != nil {
+				return err
+			}
+		}
+
+		return nil
+	})
+	if err != nil {
+		return Membership{}, fmt.Errorf("catalog: register %s: %w", replica, err)
+	}
+
+	return m, nil
+}
+
+// Renew extends m's lease by ttl from the database's clock; a lapsed lease or a replaced registration returns ErrMembershipLapsed.
+func (c *Catalog) Renew(ctx context.Context, m Membership, ttl time.Duration) error {
+	err := c.inTx(ctx, func(tx *sqlx.Tx) error {
+		if err := c.lockMembership(ctx, tx); err != nil {
+			return err
+		}
+		res, err := tx.ExecContext(ctx, `UPDATE consumers SET lease_until = `+c.d.nowNS+` + ?
+			WHERE replica_id = ? AND generation = ? AND lease_until >= `+c.d.nowNS, ttl.Nanoseconds(), m.Replica, m.Generation)
+
+		return affected(res, err, ErrMembershipLapsed)
+	})
+	if err != nil {
+		return fmt.Errorf("catalog: renew %s: %w", m.Replica, err)
+	}
+
+	return nil
+}
+
+// Leave ends replica's membership.
+func (c *Catalog) Leave(ctx context.Context, replica string) error {
+	return c.inTx(ctx, func(tx *sqlx.Tx) error {
+		if err := c.lockMembership(ctx, tx); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `DELETE FROM consumers WHERE replica_id = ?`, replica); err != nil {
+			return err
+		}
+		_, err := tx.ExecContext(ctx, `DELETE FROM consumer_configs WHERE replica_id = ?`, replica)
+
+		return err
+	})
+}
+
+// lockMembership updates the membership sentinel row: the first statement of every membership change,
+// and of every binding path of Admit after the capture row (catalog.md §7.2, T-32).
+func (c *Catalog) lockMembership(ctx context.Context, tx *sqlx.Tx) error {
+	_, err := tx.ExecContext(ctx, `UPDATE counters SET value = value WHERE name = 'membership'`)
+
+	return err
+}
+
+// bindableConfig returns the newest activated, unretired configuration every leased member supports; ok is false when there is none.
+// The caller holds the membership sentinel.
+func (c *Catalog) bindableConfig(ctx context.Context, tx *sqlx.Tx) (int64, bool, error) {
+	var id sql.NullInt64
+	err := tx.GetContext(ctx, &id, `SELECT MAX(p.config_id) FROM processing_configs p
+		WHERE p.activated_at IS NOT NULL AND p.retired_at IS NULL
+		AND NOT EXISTS (SELECT 1 FROM consumers m WHERE m.lease_until >= `+c.d.nowNS+`
+			AND NOT EXISTS (SELECT 1 FROM consumer_configs mc WHERE mc.replica_id = m.replica_id AND mc.config_id = p.config_id))`)
+
+	return id.Int64, id.Valid, err
+}
+
+// affected turns an update that changed no row into errNone.
+func affected(res sql.Result, err, errNone error) error {
+	if err != nil {
+		return err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return errNone
+	}
+
+	return nil
+}
