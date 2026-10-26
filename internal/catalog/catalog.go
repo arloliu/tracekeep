@@ -59,6 +59,10 @@ type Catalog struct {
 const (
 	// hookRetry runs after an attempt failed with a retryable error, before the next.
 	hookRetry = iota
+	// hookLocked runs once the prologue holds the capture row.
+	hookLocked
+	// hookBeforeCommit runs once a transaction's statements succeeded, before its commit.
+	hookBeforeCommit
 	numHooks
 )
 

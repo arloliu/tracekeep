@@ -87,6 +87,7 @@ func (c *Catalog) attempt(ctx context.Context, fn func(tx *sqlx.Tx) error) error
 	if err := fn(tx); err != nil {
 		return errors.Join(err, rollback(tx))
 	}
+	c.hook(hookBeforeCommit)
 
 	return tx.Commit()
 }
@@ -117,6 +118,7 @@ func (c *Catalog) lockCapture(ctx context.Context, tx *sqlx.Tx, id tracepack.UUI
 	if err != nil {
 		return row, fmt.Errorf("catalog: lock capture: %w", err)
 	}
+	c.hook(hookLocked)
 
 	return row, nil
 }
