@@ -1,35 +1,183 @@
-// Command tracekeep is the traffic-log service, one binary whose first argument names the command.
-//
-// The design is in docs/specs/tracekeep/; dev and migrate exist and do nothing yet.
+// Command tracekeep is the traffic-log service, one binary whose first argument names the role (architecture.md §3.1):
+// migrate, ingest, compact, all, dev, or admin with an operator command (operations.md §10.4).
+// The design is in docs/specs/tracekeep/; the configuration's keys are in docs/guides/configuration.md.
 package main
 
 import (
+	"context"
+	"encoding/json"
+	"errors"
+	"flag"
 	"fmt"
+	"io"
+	"log/slog"
 	"os"
+	"os/signal"
+	"strconv"
+	"syscall"
+
+	"github.com/arloliu/go-secs/tracepack"
+
+	"github.com/arloliu/tracekeep/internal/admin"
+	"github.com/arloliu/tracekeep/internal/config"
+	"github.com/arloliu/tracekeep/internal/service"
 )
 
-const usage = "usage: tracekeep <dev|migrate>"
+const usage = `usage: tracekeep <command> [--config file] [arguments]
 
-// commands maps each command name to its entry point.
-var commands = map[string]func() error{
-	"dev":     func() error { return nil },
-	"migrate": func() error { return nil },
-}
+commands:
+  migrate    ensure the bus's streams and claim bucket and record their incarnations
+  ingest     run the ingest role
+  compact    run the compact role
+  all        run every role in one process
+  dev        run a single-process development loop
+  admin      run an operator command:
+               parked list [capture] | parked terminate <capture> [seq]
+               capture terminate <capture> | capture show <capture>
+               bus adopt-stream <traffic|parking> | object list`
+
+// errUsage marks a command line the binary cannot run; it exits 2.
+var errUsage = errors.New("usage")
 
 func main() {
-	if len(os.Args) != 2 {
-		fmt.Fprintln(os.Stderr, usage)
-		os.Exit(2)
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	code := run(ctx, os.Args[1:], os.Stdout, os.Stderr)
+	stop()
+	os.Exit(code)
+}
+
+// run runs the command line args and returns the exit code.
+func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
+	err := dispatch(ctx, args, stdout, stderr)
+	switch {
+	case err == nil:
+		return 0
+	case errors.Is(err, errUsage):
+		fmt.Fprintf(stderr, "tracekeep: %v\n%s\n", err, usage)
+		return 2
+	default:
+		fmt.Fprintf(stderr, "tracekeep: %v\n", err)
+		return 1
+	}
+}
+
+func dispatch(ctx context.Context, args []string, stdout, stderr io.Writer) error {
+	if len(args) == 0 {
+		return fmt.Errorf("%w: no command", errUsage)
+	}
+	command := args[0]
+	fs := flag.NewFlagSet(command, flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	path := fs.String("config", os.Getenv("TRACEKEEP_CONFIG"), "the configuration file")
+	actor := fs.String("actor", os.Getenv("USER"), "the operator named in an admin command's audit row")
+	if err := fs.Parse(args[1:]); err != nil {
+		return fmt.Errorf("%w: %w", errUsage, err)
+	}
+	if command == "dev" {
+		return runDev(ctx, fs.Args(), stderr)
+	}
+	roles := map[string]func(context.Context, *service.Env) error{
+		"migrate": service.Migrate, "ingest": service.Ingest, "compact": service.Compact, "all": service.All,
+	}
+	role, isRole := roles[command]
+	if !isRole && command != "admin" {
+		return fmt.Errorf("%w: unknown command %q", errUsage, command)
+	}
+	if isRole && fs.NArg() != 0 {
+		return fmt.Errorf("%w: %s takes no arguments", errUsage, command)
+	}
+	cfg, err := config.Load(*path)
+	if err != nil {
+		return err
+	}
+	log := slog.New(slog.NewJSONHandler(stderr, nil)).With("replica", cfg.Replica)
+	e, err := service.Open(ctx, cfg, log)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = e.Close() }()
+	if isRole {
+		log.Info("tracekeep: starting", "command", command)
+		return role(ctx, e)
+	}
+	a := &admin.Admin{Catalog: e.Catalog, Bus: e.JS, Config: e.Bus(), Actor: *actor}
+
+	return runAdmin(ctx, a, fs.Args(), stdout)
+}
+
+// runAdmin runs one operator command and writes its result to stdout as JSON.
+func runAdmin(ctx context.Context, a *admin.Admin, args []string, stdout io.Writer) error {
+	if len(args) < 2 {
+		return fmt.Errorf("%w: admin needs a command", errUsage)
+	}
+	var out any
+	var err error
+	switch cmd := args[0] + " " + args[1]; {
+	case cmd == "parked list" && len(args) <= 3:
+		var capture *tracepack.UUID
+		if len(args) == 3 {
+			id, perr := parseCapture(args[2])
+			if perr != nil {
+				return perr
+			}
+			capture = &id
+		}
+		out, err = a.ParkedList(ctx, capture)
+	case cmd == "parked terminate" && (len(args) == 3 || len(args) == 4),
+		(cmd == "capture terminate" || cmd == "capture show") && len(args) == 3:
+		out, err = onCapture(ctx, a, cmd, args[2:])
+	case cmd == "bus adopt-stream" && len(args) == 3:
+		out, err = a.AdoptStream(ctx, args[2])
+	case cmd == "object list" && len(args) == 2:
+		// Unattributed objects and survivors are what retention leaves, which phase 2 brings.
+		out = []struct{}{}
+	default:
+		return fmt.Errorf("%w: admin %v", errUsage, args)
+	}
+	if err != nil {
+		return err
+	}
+	enc := json.NewEncoder(stdout)
+	enc.SetIndent("", "  ")
+
+	return enc.Encode(out)
+}
+
+// onCapture runs an operator command on one capture, args being the capture and, for parked terminate, a seq.
+func onCapture(ctx context.Context, a *admin.Admin, cmd string, args []string) (any, error) {
+	capture, err := parseCapture(args[0])
+	if err != nil {
+		return nil, err
+	}
+	switch cmd {
+	case "capture terminate":
+		return a.CaptureTerminate(ctx, capture)
+	case "capture show":
+		return a.CaptureShow(ctx, capture)
+	default: // parked terminate
+		var seq *uint64
+		if len(args) == 2 {
+			n, err := strconv.ParseUint(args[1], 10, 64)
+			if err != nil {
+				return nil, fmt.Errorf("%w: seq %q", errUsage, args[1])
+			}
+			seq = &n
+		}
+
+		return a.ParkedTerminate(ctx, capture, seq)
+	}
+}
+
+func parseCapture(s string) (tracepack.UUID, error) {
+	id, err := tracepack.ParseUUID(s)
+	if err != nil {
+		return tracepack.UUID{}, fmt.Errorf("%w: capture %q: %w", errUsage, s, err)
 	}
 
-	run, ok := commands[os.Args[1]]
-	if !ok {
-		fmt.Fprintf(os.Stderr, "tracekeep: unknown command %q\n%s\n", os.Args[1], usage)
-		os.Exit(2)
-	}
+	return id, nil
+}
 
-	if err := run(); err != nil {
-		fmt.Fprintf(os.Stderr, "tracekeep %s: %v\n", os.Args[1], err)
-		os.Exit(1)
-	}
+// runDev is filled in by the dev loop.
+func runDev(context.Context, []string, io.Writer) error {
+	return errors.New("dev is not built yet")
 }

@@ -277,3 +277,27 @@ func TestLeaseLostDuringACycle(t *testing.T) {
 		}
 	})
 }
+
+// A stopping reconciler releases its lease, so a standby takes over at once instead of waiting for it to lapse.
+func TestRunReleasesTheLease(t *testing.T) {
+	t.Parallel()
+	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
+		p := reconcilers(t, c)
+		a := p.a
+		f := &fixture{c: c, s: p.s}
+		orphan := segment(t, f.admit(t), []uint64{1}, false)
+		f.put(t, orphan.key, orphan.data)
+		step(t, a) // the orphan waits for the next cycle, whose read is the stop point
+		ctx, stop := context.WithCancel(t.Context())
+		a.Store = &opening{ObjectStore: p.s, at: orphan.key, hook: func(context.Context) { stop() }}
+		if err := a.Run(ctx); !errors.Is(err, context.Canceled) {
+			t.Fatalf("Run = %v, want its context's end", err)
+		}
+		if a.lease != nil {
+			t.Errorf("a still holds %+v", *a.lease)
+		}
+		if _, ok, err := c.TakeLease(t.Context(), "compactor", "standby", time.Hour); err != nil || !ok {
+			t.Errorf("the standby's take = %v, %v; want the released lease", ok, err)
+		}
+	})
+}
