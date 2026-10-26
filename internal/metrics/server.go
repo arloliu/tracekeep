@@ -27,6 +27,10 @@ type Server struct {
 	reg    *prometheus.Registry
 	mu     sync.Mutex
 	checks map[string]func(context.Context) error
+
+	srv  *http.Server
+	addr net.Addr
+	done chan error
 }
 
 // NewServer returns a server whose registry holds the Go runtime's and the process's collectors.
@@ -84,26 +88,35 @@ func (s *Server) readyz(w http.ResponseWriter, r *http.Request) {
 	_, _ = fmt.Fprintln(w, "ok")
 }
 
-// Serve serves the handler on addr until ctx ends, then shuts the listener down.
-func (s *Server) Serve(ctx context.Context, addr string) error {
+// Start binds addr, failing at once when it cannot, and serves the handler on it in the background until Close.
+func (s *Server) Start(ctx context.Context, addr string) error {
 	l, err := (&net.ListenConfig{}).Listen(ctx, "tcp", addr)
 	if err != nil {
 		return fmt.Errorf("metrics: listen %s: %w", addr, err)
 	}
-	srv := &http.Server{Handler: s.Handler(), ReadHeaderTimeout: 10 * time.Second}
-	done := make(chan error, 1)
-	go func() { done <- srv.Serve(l) }()
-	select {
-	case <-ctx.Done():
-		sctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
-		defer cancel()
-		err := srv.Shutdown(sctx)
-		if serr := <-done; !errors.Is(serr, http.ErrServerClosed) {
-			err = errors.Join(err, serr)
-		}
+	s.srv = &http.Server{Handler: s.Handler(), ReadHeaderTimeout: 10 * time.Second}
+	s.addr = l.Addr()
+	s.done = make(chan error, 1)
+	go func() { s.done <- s.srv.Serve(l) }()
 
-		return err
-	case err := <-done:
-		return fmt.Errorf("metrics: serve %s: %w", addr, err)
+	return nil
+}
+
+// Addr is the address Start bound, nil before it.
+func (s *Server) Addr() net.Addr { return s.addr }
+
+// Close shuts the listener Start opened down and waits for it; it returns the error that ended serving, if any.
+func (s *Server) Close() error {
+	if s.srv == nil {
+		return nil
 	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	err := s.srv.Shutdown(ctx)
+	if serr := <-s.done; !errors.Is(serr, http.ErrServerClosed) {
+		err = errors.Join(err, fmt.Errorf("metrics: serve: %w", serr))
+	}
+	s.srv = nil
+
+	return err
 }
