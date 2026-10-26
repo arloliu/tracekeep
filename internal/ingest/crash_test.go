@@ -368,7 +368,7 @@ func TestFlushLosesToATermination(t *testing.T) {
 		g := p.ingester(slog.New(slog.NewTextHandler(&logged, nil)))
 		capture := tracepack.UUID{10}
 		hs := p.deliver(t, traffic(t, capture))
-		if _, err := c.TerminateCapture(t.Context(), capture, p.x.Incarnation, 100, "op", "c1"); err != nil {
+		if _, err := c.TerminateCapture(t.Context(), capture, 1, 100, "op", "c1"); err != nil {
 			t.Fatal(err)
 		}
 		if err := g.flush(t.Context(), p.b.All()); err != nil {

@@ -41,9 +41,9 @@ func transported(t *testing.T, m Message) Message {
 	return m
 }
 
-// delivered is m as a delivery read from the traffic stream on incarnation 1.
+// delivered is m as a delivery read from its stream.
 func delivered(m Message) *Delivery {
-	d := &Delivery{Msg: m, Incarnation: 1}
+	d := &Delivery{Msg: m}
 	d.Raw, d.Facts = ReadRaw(&d.Msg.Env, d.Msg.Body, 0)
 
 	return d
@@ -239,7 +239,8 @@ func (r *replica) fetch(t *testing.T) (*Delivery, jetstream.Msg) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	d := &Delivery{Msg: msg, Incarnation: r.g.Executor.Incarnation}
+	msg.Incarnation = r.g.Incarnation.ID
+	d := &Delivery{Msg: msg}
 	d.Raw, d.Facts = ReadRaw(&d.Msg.Env, d.Msg.Body, 0)
 
 	return d, m

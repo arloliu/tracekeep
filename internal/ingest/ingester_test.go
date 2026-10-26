@@ -38,7 +38,8 @@ func (c *clock) now() time.Time {
 	return t
 }
 
-func (c *clock) advance(d time.Duration) { c.mu.Lock(); c.t = c.t.Add(d); c.mu.Unlock() }
+// flushInterval advances the clock by one flush interval.
+func (c *clock) flushInterval() { c.mu.Lock(); c.t = c.t.Add(time.Second); c.mu.Unlock() }
 
 // replica is one ingest replica on its own bus, with its stream, catalog and store.
 type replica struct {
@@ -84,7 +85,7 @@ func newReplica(t *testing.T, c *catalog.Catalog) *replica {
 		t.Fatal(err)
 	}
 	clk := &clock{t: time.Unix(0, now)}
-	x := &Executor{Catalog: c, Claims: ObjectClaims{Store: obj}, Incarnation: inc.ID, Horizon: func() int64 { return now - int64(24*time.Hour) }, Configs: configs}
+	x := &Executor{Catalog: c, Claims: ObjectClaims{Store: obj}, Horizon: func() int64 { return now - int64(24*time.Hour) }, Configs: configs}
 	st := store.NewMem()
 	f := &Flusher{
 		Catalog: c, Store: st, WorkDir: t.TempDir(), Configs: configs, Interval: time.Second,
@@ -92,7 +93,7 @@ func newReplica(t *testing.T, c *catalog.Catalog) *replica {
 	}
 	g := &Ingester{
 		Executor: x, Batcher: NewBatcher(time.Second, 1<<20), Flusher: f, Consumer: cons, Stream: s, Log: slog.New(slog.DiscardHandler),
-		Coordinator: &Coordinator{Catalog: c, Bus: js, ParkPrefix: busconfig.DefaultParkPrefix}, Park: true,
+		Coordinator: &Coordinator{Catalog: c, Bus: js, ParkPrefix: busconfig.DefaultParkPrefix}, Park: true, Incarnation: inc,
 		Replica: "r1", Lease: time.Minute, FetchBatch: 100, MaxWait: 200 * time.Millisecond, Heartbeat: 10 * time.Second, Now: clk.now,
 	}
 	if err := g.Join(ctx); err != nil {
@@ -167,7 +168,7 @@ func TestIngesterEndToEnd(t *testing.T) {
 		if err := r.g.Step(t.Context()); err != nil {
 			t.Fatal(err)
 		}
-		r.clk.advance(time.Second) // the flush interval passes
+		r.clk.flushInterval() // the flush interval passes
 		if err := r.g.Step(t.Context()); err != nil {
 			t.Fatal(err)
 		}
@@ -257,10 +258,10 @@ func TestIngesterStopsOnAnotherIncarnation(t *testing.T) {
 			t.Fatalf("%d batches held, want the start's", n)
 		}
 		// A restore of an older snapshot: the stream's last sequence falls below one observed.
-		if err := c.ObserveLastSeq(t.Context(), r.g.Executor.Incarnation, 1000); err != nil {
+		if err := c.ObserveLastSeq(t.Context(), r.g.Incarnation.ID, 1000); err != nil {
 			t.Fatal(err)
 		}
-		r.clk.advance(time.Second)                                      // the batch is due
+		r.clk.flushInterval()                                           // the batch is due
 		ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second) // a Run that does not stop fails, never hangs
 		defer cancel()
 		if err := r.g.Run(ctx); !errors.Is(err, catalog.ErrIncarnationChanged) {
@@ -340,7 +341,7 @@ func TestRunJoinsItsHeartbeat(t *testing.T) {
 					cancel()
 					<-h.nakked // the held batch is not executable here, so its final flush naks it
 				} else {
-					if err := c.ObserveLastSeq(t.Context(), r.g.Executor.Incarnation, 1000); err != nil {
+					if err := c.ObserveLastSeq(t.Context(), r.g.Incarnation.ID, 1000); err != nil {
 						t.Fatal(err)
 					}
 					<-alert.ch
