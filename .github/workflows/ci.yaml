@@ -43,3 +43,16 @@ jobs:
         install_args: go
     - name: make test-latest
       run: make test-latest
+
+  # The s3 store against the S3-compatible stores deployments run, each in a container (T-34);
+  # make ci skips those tests, since they need docker.
+  s3-stores:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v7
+    - name: Setup Go from mise.toml
+      uses: jdx/mise-action@v4
+      with:
+        install_args: go
+    - name: make test-s3
+      run: make test-s3
