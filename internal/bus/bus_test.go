@@ -34,18 +34,24 @@ func jetStream(t *testing.T) jetstream.JetStream {
 	return js
 }
 
-// Ensure creates the traffic stream and the claim bucket with AllowDirect off, and running it again changes nothing.
+// Ensure creates the traffic stream, the parking stream with the traffic stream's replicas, and the claim bucket with AllowDirect off,
+// and running it again changes nothing.
 func TestEnsure(t *testing.T) {
 	t.Parallel()
 	ctx := t.Context()
 	js := jetStream(t)
 	for range 2 {
-		s, err := bus.Ensure(ctx, js, cfg)
+		s, parked, err := bus.Ensure(ctx, js, cfg)
 		if err != nil {
 			t.Fatal(err)
 		}
 		if got := s.CachedInfo().Config; got.Name != busconfig.DefaultTrafficStream || got.Retention != jetstream.WorkQueuePolicy {
 			t.Fatalf("traffic stream %+v", got)
+		}
+		got := parked.CachedInfo().Config
+		if got.Name != busconfig.DefaultParkedStream || got.Retention != jetstream.WorkQueuePolicy || got.MaxAge != 0 ||
+			got.Replicas != s.CachedInfo().Config.Replicas || len(got.Subjects) != 1 || got.Subjects[0] != busconfig.DefaultParkPrefix+".>" {
+			t.Fatalf("parking stream %+v", got)
 		}
 	}
 	claims, err := js.Stream(ctx, busconfig.ClaimStreamName(cfg.ClaimBucket))
@@ -62,11 +68,11 @@ func TestConsumerIsNamedForTheIncarnation(t *testing.T) {
 	t.Parallel()
 	catalogtest.Engines(t, func(t *testing.T, cat *catalog.Catalog) {
 		ctx := t.Context()
-		s, err := bus.Ensure(ctx, jetStream(t), cfg)
+		s, _, err := bus.Ensure(ctx, jetStream(t), cfg)
 		if err != nil {
 			t.Fatal(err)
 		}
-		inc, err := bus.Incarnate(ctx, cat, s)
+		inc, err := bus.Incarnate(ctx, cat, catalog.RoleTraffic, s)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -87,21 +93,21 @@ func TestRecreatedStreamIsAnotherIncarnation(t *testing.T) {
 	catalogtest.Engines(t, func(t *testing.T, cat *catalog.Catalog) {
 		ctx := t.Context()
 		js := jetStream(t)
-		s, err := bus.Ensure(ctx, js, cfg)
+		s, _, err := bus.Ensure(ctx, js, cfg)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err := bus.Incarnate(ctx, cat, s); err != nil {
+		if _, err := bus.Incarnate(ctx, cat, catalog.RoleTraffic, s); err != nil {
 			t.Fatal(err)
 		}
 		if err := js.DeleteStream(ctx, busconfig.DefaultTrafficStream); err != nil {
 			t.Fatal(err)
 		}
 		// Created has a nanosecond resolution; a later creation differs even within the same second.
-		if s, err = bus.Ensure(ctx, js, cfg); err != nil {
+		if s, _, err = bus.Ensure(ctx, js, cfg); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := bus.Incarnate(ctx, cat, s); !errors.Is(err, catalog.ErrIncarnationChanged) {
+		if _, err := bus.Incarnate(ctx, cat, catalog.RoleTraffic, s); !errors.Is(err, catalog.ErrIncarnationChanged) {
 			t.Errorf("Incarnate of the recreated stream = %v, want ErrIncarnationChanged", err)
 		}
 	})
@@ -112,18 +118,18 @@ func TestRewoundStreamIsRefused(t *testing.T) {
 	t.Parallel()
 	catalogtest.Engines(t, func(t *testing.T, cat *catalog.Catalog) {
 		ctx := t.Context()
-		s, err := bus.Ensure(ctx, jetStream(t), cfg)
+		s, _, err := bus.Ensure(ctx, jetStream(t), cfg)
 		if err != nil {
 			t.Fatal(err)
 		}
-		inc, err := bus.Incarnate(ctx, cat, s)
+		inc, err := bus.Incarnate(ctx, cat, catalog.RoleTraffic, s)
 		if err != nil {
 			t.Fatal(err)
 		}
 		if err := cat.ObserveLastSeq(ctx, inc.ID, 50); err != nil { // as if 50 messages had been seen before the restore
 			t.Fatal(err)
 		}
-		if _, err := bus.Incarnate(ctx, cat, s); !errors.Is(err, catalog.ErrIncarnationChanged) {
+		if _, err := bus.Incarnate(ctx, cat, catalog.RoleTraffic, s); !errors.Is(err, catalog.ErrIncarnationChanged) {
 			t.Errorf("Incarnate of the rewound stream = %v, want ErrIncarnationChanged", err)
 		}
 	})
@@ -153,21 +159,21 @@ func TestConcurrentObservationsAreNoRewind(t *testing.T) {
 	catalogtest.Engines(t, func(t *testing.T, cat *catalog.Catalog) {
 		ctx := t.Context()
 		js := jetStream(t)
-		s, err := bus.Ensure(ctx, js, cfg)
+		s, _, err := bus.Ensure(ctx, js, cfg)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err := bus.Incarnate(ctx, cat, s); err != nil {
+		if _, err := bus.Incarnate(ctx, cat, catalog.RoleTraffic, s); err != nil {
 			t.Fatal(err)
 		}
 		first := &paused{Stream: s, read: make(chan struct{}), resume: make(chan struct{})}
 		done := make(chan error, 1)
-		go func() { _, err := bus.Incarnate(ctx, cat, first); done <- err }()
+		go func() { _, err := bus.Incarnate(ctx, cat, catalog.RoleTraffic, first); done <- err }()
 		<-first.read // the first replica read the stream's last sequence
 		if _, err := js.Publish(ctx, cfg.SubjectPrefix+".T1.x", nil); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := bus.Incarnate(ctx, cat, s); err != nil { // the second records the later sequence
+		if _, err := bus.Incarnate(ctx, cat, catalog.RoleTraffic, s); err != nil { // the second records the later sequence
 			t.Fatal(err)
 		}
 		close(first.resume)
@@ -198,7 +204,7 @@ func TestRewindBetweenTheReads(t *testing.T) {
 	t.Parallel()
 	catalogtest.Engines(t, func(t *testing.T, cat *catalog.Catalog) {
 		ctx := t.Context()
-		s, err := bus.Ensure(ctx, jetStream(t), cfg)
+		s, _, err := bus.Ensure(ctx, jetStream(t), cfg)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -211,16 +217,144 @@ func TestRewindBetweenTheReads(t *testing.T) {
 			i.State.LastSeq = seq
 			return &i
 		}
-		if _, err := bus.Incarnate(ctx, cat, &scripted{Stream: s, answers: []*jetstream.StreamInfo{at(10)}}); err != nil {
+		if _, err := bus.Incarnate(ctx, cat, catalog.RoleTraffic, &scripted{Stream: s, answers: []*jetstream.StreamInfo{at(10)}}); err != nil {
 			t.Fatal(err)
 		}
 		rewound := &scripted{Stream: s, answers: []*jetstream.StreamInfo{at(12), at(11)}}
-		if _, err := bus.Incarnate(ctx, cat, rewound); !errors.Is(err, catalog.ErrIncarnationChanged) {
+		if _, err := bus.Incarnate(ctx, cat, catalog.RoleTraffic, rewound); !errors.Is(err, catalog.ErrIncarnationChanged) {
 			t.Errorf("Incarnate across a rewind = %v, want ErrIncarnationChanged", err)
 		}
 		// The refused check recorded what it read first: the stream stays refused.
-		if _, err := bus.Incarnate(ctx, cat, &scripted{Stream: s, answers: []*jetstream.StreamInfo{at(11)}}); !errors.Is(err, catalog.ErrIncarnationChanged) {
+		if _, err := bus.Incarnate(ctx, cat, catalog.RoleTraffic, &scripted{Stream: s, answers: []*jetstream.StreamInfo{at(11)}}); !errors.Is(err, catalog.ErrIncarnationChanged) {
 			t.Errorf("Incarnate after the refusal = %v, want ErrIncarnationChanged", err)
 		}
 	})
+}
+
+// Ensure refuses a park prefix sharing the traffic prefix's first token, though the server would take the two streams,
+// and an existing parking stream CheckParked refuses.
+func TestEnsureRefusesAParkingStream(t *testing.T) {
+	t.Parallel()
+	ctx := t.Context()
+	shared := cfg
+	shared.SubjectPrefix, shared.ParkPrefix = "tk.traffic", "tk.park"
+	if _, _, err := bus.Ensure(ctx, jetStream(t), shared); err == nil {
+		t.Error("Ensure took a park prefix sharing the traffic prefix's first token")
+	}
+	js := jetStream(t)
+	aged := busconfig.ParkedStreamConfig(busconfig.DefaultParkedStream, busconfig.DefaultParkPrefix, 1)
+	aged.MaxAge = time.Hour
+	if _, err := js.CreateStream(ctx, aged); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := bus.Ensure(ctx, js, cfg); err == nil {
+		t.Error("Ensure took an existing parking stream with an age limit")
+	}
+}
+
+// A parking stream is refused when its subjects could match the traffic stream's, when it has fewer replicas,
+// or any age, size or count limit, a mirror, sources or AllowDirect: a parked copy must leave it only by acknowledgement.
+func TestCheckParked(t *testing.T) {
+	t.Parallel()
+	traffic := busconfig.StreamConfig("T", "tk")
+	traffic.Replicas = 3
+	good := busconfig.ParkedStreamConfig("P", "tkpark", 3)
+	if err := bus.CheckParked(traffic, good); err != nil {
+		t.Fatalf("CheckParked of the settings migrate creates = %v", err)
+	}
+	for name, change := range map[string]func(c *jetstream.StreamConfig){
+		"overlapping subjects": func(c *jetstream.StreamConfig) { c.Subjects = append(c.Subjects, "tk.*.x") },
+		"fewer replicas":       func(c *jetstream.StreamConfig) { c.Replicas = 1 },
+		"an age limit":         func(c *jetstream.StreamConfig) { c.MaxAge = time.Hour },
+		"a size limit":         func(c *jetstream.StreamConfig) { c.MaxBytes = 1 << 30 },
+		"a count limit":        func(c *jetstream.StreamConfig) { c.MaxMsgs = 1000 },
+		"a per-subject limit":  func(c *jetstream.StreamConfig) { c.MaxMsgsPerSubject = 1 },
+		"limits retention":     func(c *jetstream.StreamConfig) { c.Retention = jetstream.LimitsPolicy },
+		"memory storage":       func(c *jetstream.StreamConfig) { c.Storage = jetstream.MemoryStorage },
+		"a mirror":             func(c *jetstream.StreamConfig) { c.Mirror = &jetstream.StreamSource{Name: "X"} },
+		"sources":              func(c *jetstream.StreamConfig) { c.Sources = []*jetstream.StreamSource{{Name: "X"}} },
+		"AllowDirect":          func(c *jetstream.StreamConfig) { c.AllowDirect = true },
+	} {
+		c := good
+		c.Subjects = append([]string(nil), good.Subjects...)
+		change(&c)
+		if err := bus.CheckParked(traffic, c); err == nil {
+			t.Errorf("CheckParked took a parking stream with %s", name)
+		}
+	}
+}
+
+// The parked consumer is named for the parking stream's incarnation, and the parking incarnation is recorded under its own role.
+func TestParkedConsumerIsNamedForItsIncarnation(t *testing.T) {
+	t.Parallel()
+	catalogtest.Engines(t, func(t *testing.T, cat *catalog.Catalog) {
+		ctx := t.Context()
+		s, parked, err := bus.Ensure(ctx, jetStream(t), cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		traffic, err := bus.Incarnate(ctx, cat, catalog.RoleTraffic, s)
+		if err != nil {
+			t.Fatal(err)
+		}
+		inc, err := bus.Incarnate(ctx, cat, catalog.RoleParking, parked)
+		if err != nil || inc.ID == traffic.ID || inc.Role != catalog.RoleParking {
+			t.Fatalf("parking incarnation %+v, %v", inc, err)
+		}
+		c, err := bus.Consumer(ctx, parked, inc, bus.ConsumerConfig{AckWait: time.Minute, MaxAckPending: 100})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := c.CachedInfo().Config.Durable; got != "tk-parked-2" {
+			t.Errorf("parked consumer %q, want tk-parked-2", got)
+		}
+	})
+}
+
+// Adoption's bus part deletes every tk- consumer the stream has, a restored snapshot's included, and leaves any other.
+func TestRetireConsumers(t *testing.T) {
+	t.Parallel()
+	ctx := t.Context()
+	s, _, err := bus.Ensure(ctx, jetStream(t), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A work-queue stream takes several consumers only with disjoint filters.
+	for _, name := range []string{"tk-ingest-1", "tk-ingest-2", "tk-parked-3", "audit"} {
+		c := jetstream.ConsumerConfig{Durable: name, AckPolicy: jetstream.AckExplicitPolicy, FilterSubject: cfg.SubjectPrefix + "." + name + ".>"}
+		if _, err := s.CreateConsumer(ctx, c); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := bus.RetireConsumers(ctx, s); err != nil {
+		t.Fatal(err)
+	}
+	var left []string
+	for name := range s.ConsumerNames(ctx).Name() {
+		left = append(left, name)
+	}
+	if len(left) != 1 || left[0] != "audit" {
+		t.Errorf("consumers left %v, want only audit", left)
+	}
+}
+
+// deaf answers every consumer deletion with success and deletes nothing.
+type deaf struct{ jetstream.Stream }
+
+func (deaf) DeleteConsumer(context.Context, string) error { return nil }
+
+// A consumer that survives its deletion fails the adoption: the stream is never taken as fenced.
+func TestRetireConsumersVerifiesNoneRemains(t *testing.T) {
+	t.Parallel()
+	ctx := t.Context()
+	s, _, err := bus.Ensure(ctx, jetStream(t), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.CreateConsumer(ctx, jetstream.ConsumerConfig{Durable: "tk-ingest-1", AckPolicy: jetstream.AckExplicitPolicy}); err != nil {
+		t.Fatal(err)
+	}
+	if err := bus.RetireConsumers(ctx, deaf{s}); err == nil {
+		t.Error("RetireConsumers reported success with a consumer left")
+	}
 }

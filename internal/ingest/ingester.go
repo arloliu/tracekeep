@@ -264,7 +264,7 @@ func (g *Ingester) renew(ctx context.Context) error {
 // checkIncarnation verifies that the traffic stream is still the incarnation the consumer was named for:
 // its creation time, and a last sequence not below one observed (parking.md *incarnations*).
 func (g *Ingester) checkIncarnation(ctx context.Context) error {
-	inc, err := bus.Incarnate(ctx, g.Executor.Catalog, g.Stream)
+	inc, err := bus.Incarnate(ctx, g.Executor.Catalog, catalog.RoleTraffic, g.Stream)
 	if err != nil {
 		return err
 	}

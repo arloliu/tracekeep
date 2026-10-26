@@ -62,11 +62,11 @@ func newReplica(t *testing.T, c *catalog.Catalog) *replica {
 	if err != nil {
 		t.Fatal(err)
 	}
-	s, err := bus.Ensure(ctx, js, bus.Config{SubjectPrefix: prefix, ClaimBucket: bucket})
+	s, _, err := bus.Ensure(ctx, js, bus.Config{SubjectPrefix: prefix, ClaimBucket: bucket})
 	if err != nil {
 		t.Fatal(err)
 	}
-	inc, err := bus.Incarnate(ctx, c, s)
+	inc, err := bus.Incarnate(ctx, c, catalog.RoleTraffic, s)
 	if err != nil {
 		t.Fatal(err)
 	}
