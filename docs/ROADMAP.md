@@ -49,7 +49,9 @@ eqp-hub reviews the SDK's API (`Bus`, `Preflight`, the six guarantees, the `secs
 
 ## Active plans
 
-None. Phase 0 is done (#1, #3, #4, #7, #8); phase 1's plan is written when it starts.
+- [Phase 1 — ingest](plans/phase-1-ingest.md)
+
+Phase 0 is done (#1, #3, #4, #7, #8).
 
 ## Open items
 
