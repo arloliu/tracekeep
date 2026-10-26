@@ -146,6 +146,35 @@ func TestRetireNeedsEveryBoundCaptureQuiescent(t *testing.T) {
 	})
 }
 
+// Identities compare byte for byte on both engines, trailing spaces and case included:
+// a replica id that differs only by them is another member, whose leave keeps the first.
+func TestIdentitiesCompareByteForByte(t *testing.T) {
+	t.Parallel()
+	engines(t, func(t *testing.T, c *Catalog) {
+		ctx := t.Context()
+		ids := []string{"r", "r ", "R"}
+		ms := make([]Membership, len(ids))
+		for i, id := range ids {
+			var err error
+			if ms[i], err = c.Register(ctx, id, nil, ttl); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := c.Leave(ctx, "r "); err != nil {
+			t.Fatal(err)
+		}
+		if err := c.Renew(ctx, ms[0], ttl); err != nil {
+			t.Errorf("leaving %q ended %q: %v", "r ", "r", err)
+		}
+		if err := c.Renew(ctx, ms[2], ttl); err != nil {
+			t.Errorf("leaving %q ended %q: %v", "r ", "R", err)
+		}
+		if n := count(t, c, `SELECT COUNT(*) FROM consumers`); n != 2 {
+			t.Errorf("%d members, want two", n)
+		}
+	})
+}
+
 func TestTakeLeaseOfAnUnknownName(t *testing.T) {
 	t.Parallel()
 	engines(t, func(t *testing.T, c *Catalog) {

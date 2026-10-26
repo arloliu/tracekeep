@@ -17,7 +17,7 @@ trap cleanup EXIT
 start_mariadb() {
 	# Byte-exact strings, as on SQLite: the generated tables carry the server's default collation.
 	container=$(docker run -d -p 127.0.0.1::3306 -e MARIADB_ROOT_PASSWORD=$PASSWORD -e MARIADB_DATABASE=dev "$MARIADB_IMAGE" \
-		--character-set-server=utf8mb4 --collation-server=utf8mb4_bin)
+		--character-set-server=utf8mb4 --collation-server=utf8mb4_nopad_bin)
 	port=$(docker port "$container" 3306 | head -1 | cut -d: -f2)
 	for _ in $(seq 120); do
 		# The image's first start runs a temporary server; healthcheck.sh answers only for the real one.
