@@ -335,14 +335,11 @@ func TestFlushBeyondTheHorizon(t *testing.T) {
 	})
 }
 
-// ingester runs p's flushes on a clock that stands still, its heartbeat never due.
+// ingester runs p's flushes on a clock that stands still.
 func (p *pipeline) ingester(log *slog.Logger) *Ingester {
 	at := time.Unix(0, now)
 
-	return &Ingester{
-		Executor: p.x, Flusher: p.f, Batcher: p.b, Log: log,
-		Heartbeat: time.Hour, Now: func() time.Time { return at }, lastBeat: at,
-	}
+	return &Ingester{Executor: p.x, Flusher: p.f, Batcher: p.b, Log: log, Heartbeat: time.Hour, Now: func() time.Time { return at }}
 }
 
 // otherVersion is another version of a data record at seq.

@@ -66,17 +66,11 @@ func (c *Catalog) Incarnate(ctx context.Context, role, stream string, createdNS 
 	return inc, nil
 }
 
-// ObserveLastSeq records lastSeq as observed on incarnation id;
-// a last sequence below the highest observed, which only a restore of an older snapshot causes, returns ErrIncarnationChanged.
+// ObserveLastSeq records lastSeq as observed on incarnation id when it is above the highest observed.
+// A lower one is not a rewind by itself: another replica may have recorded a later observation meanwhile,
+// so the caller compares a last sequence it read after the incarnation's LastSeqSeen (bus.Incarnate).
 func (c *Catalog) ObserveLastSeq(ctx context.Context, id, lastSeq int64) error {
 	err := c.inTx(ctx, func(tx *sqlx.Tx) error {
-		var seen int64
-		if err := tx.GetContext(ctx, &seen, `SELECT last_seq_seen FROM bus_streams WHERE incarnation_id = ?`, id); err != nil {
-			return err
-		}
-		if lastSeq < seen {
-			return fmt.Errorf("%w: last sequence %d below the %d observed", ErrIncarnationChanged, lastSeq, seen)
-		}
 		_, err := tx.ExecContext(ctx, `UPDATE bus_streams SET last_seq_seen = ? WHERE incarnation_id = ? AND last_seq_seen < ?`, lastSeq, id, lastSeq)
 
 		return err

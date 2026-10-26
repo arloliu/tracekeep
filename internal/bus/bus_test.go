@@ -126,3 +126,39 @@ func TestRewoundStreamIsRefused(t *testing.T) {
 		}
 	})
 }
+
+// Two replicas renewing at once: one reads the stream, the other observes a later sequence and records it,
+// then the first compares; a stream that only grew is no rewind. Not parallel: the seam is the package's.
+func TestConcurrentObservationsAreNoRewind(t *testing.T) {
+	catalogtest.Engines(t, func(t *testing.T, cat *catalog.Catalog) {
+		ctx := t.Context()
+		js := jetStream(t)
+		s, err := bus.Ensure(ctx, js, cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := bus.Incarnate(ctx, cat, s); err != nil {
+			t.Fatal(err)
+		}
+		read, resume := make(chan struct{}), make(chan struct{})
+		bus.SetHookAfterInfo(func() {
+			bus.SetHookAfterInfo(nil)
+			close(read)
+			<-resume
+		})
+		t.Cleanup(func() { bus.SetHookAfterInfo(nil) })
+		done := make(chan error, 1)
+		go func() { _, err := bus.Incarnate(ctx, cat, s); done <- err }()
+		<-read // the first replica read the stream's last sequence
+		if _, err := js.Publish(ctx, cfg.SubjectPrefix+".T1.x", nil); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := bus.Incarnate(ctx, cat, s); err != nil { // the second records the later sequence
+			t.Fatal(err)
+		}
+		close(resume)
+		if err := <-done; err != nil {
+			t.Errorf("the first replica's Incarnate = %v, want no rewind", err)
+		}
+	})
+}

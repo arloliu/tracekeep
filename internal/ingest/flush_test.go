@@ -265,33 +265,41 @@ func TestFlushReceiptOfAnEqualCopy(t *testing.T) {
 	})
 }
 
-// Before each flush, once the heartbeat passed, every held message is kept in progress, those of the batches still to flush included.
-func TestFlushKeepsHeldMessagesInProgress(t *testing.T) {
+// While a flush runs, the heartbeat keeps in progress the messages of the batch it writes, of the batches still to flush
+// and of those the batcher holds (architecture.md §3.1).
+func TestHeartbeatDuringAFlush(t *testing.T) {
 	t.Parallel()
 	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
 		p := newPipeline(t, c)
-		clk := &clock{t: time.Unix(0, now)}
-		g := &Ingester{Flusher: p.f, Batcher: p.b, Log: slog.New(slog.DiscardHandler), Heartbeat: time.Second, Now: clk.now}
-		for _, capture := range []tracepack.UUID{{5}, {6}} {
-			p.feed(t, inline(t, capture, startRecord(t, now), descriptorOf(t, "eqp")))
+		g := p.ingester(slog.New(slog.DiscardHandler))
+		start := func(capture tracepack.UUID) *msg {
+			return p.feed(t, inline(t, capture, startRecord(t, now), descriptorOf(t, "eqp")))
 		}
-		p.f.hooks[hookAfterRegister] = func() error {
-			p.f.hooks[hookAfterRegister] = nil
-			clk.advance(time.Second) // the first flush takes a heartbeat
+		flushing := start(tracepack.UUID{5})
+		batches := p.b.All()
+		waiting := start(tracepack.UUID{6})
+		batches = append(batches, p.b.All()...)
+		held := start(tracepack.UUID{7})
+
+		tick := make(chan time.Time)
+		ctx, cancel := context.WithCancel(t.Context())
+		stopped := make(chan struct{})
+		go func() { g.heartbeats(ctx, tick); close(stopped) }()
+		p.f.hooks[hookAfterPut] = func() error {
+			p.f.hooks[hookAfterPut] = nil
+			tick <- time.Time{}
+			tick <- time.Time{} // taken once the first beat is done
 			return nil
 		}
-		bs := p.b.All()
-		if err := g.flush(t.Context(), bs); err != nil {
+		err := g.flush(t.Context(), batches)
+		cancel()
+		<-stopped
+		if err != nil {
 			t.Fatal(err)
 		}
-		want := [][]string{{"in-progress", "ack"}, {"in-progress", "in-progress", "ack"}}
-		for i, b := range bs {
-			h, ok := b.Entries[0].Msg.(*msg)
-			if !ok {
-				t.Fatalf("batch %d: message %T", i, b.Entries[0].Msg)
-			}
-			if got := h.done(); !slices.Equal(got, want[i]) {
-				t.Errorf("batch %d: %v, want %v", i, got, want[i])
+		for name, h := range map[string]*msg{"the flushing batch's": flushing, "a waiting batch's": waiting, "a held batch's": held} {
+			if got := h.done(); len(got) == 0 || got[0] != "in-progress" {
+				t.Errorf("%s message: %v, want kept in progress during the flush", name, got)
 			}
 		}
 	})
