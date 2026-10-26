@@ -5,8 +5,11 @@ import (
 	"database/sql"
 	"errors"
 	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/nats-io/nats.go"
@@ -246,4 +249,34 @@ func TestTogetherCancelsTheOthers(t *testing.T) {
 	default:
 		t.Error("the running role was not cancelled")
 	}
+}
+
+// Observing a role: the catalog's metrics and readiness are registered, and ingest stays not ready until its consumers joined,
+// here never, since it refuses a traffic stream with direct gets.
+func TestObservedIngestNotReadyUntilJoined(t *testing.T) {
+	t.Parallel()
+	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
+		ctx := t.Context()
+		e := env(t, c)
+		e.Config.Metrics.Listen = "" // nothing served: the handler is read directly
+		if err := e.Observe(ctx); err != nil {
+			t.Fatal(err)
+		}
+		h := e.Metrics.Handler()
+		readyz := func() (int, string) {
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, httptest.NewRequestWithContext(ctx, http.MethodGet, "/readyz", nil))
+			return rec.Code, rec.Body.String()
+		}
+		if code, body := readyz(); code != http.StatusOK {
+			t.Fatalf("/readyz with only the catalog = %d %q, want 200", code, body)
+		}
+		setDirect(t, e.JS, bus.StreamName(e.Bus(), catalog.RoleTraffic), true)
+		if err := Ingest(ctx, e); !errors.Is(err, ErrAllowDirect) {
+			t.Fatalf("Ingest = %v, want ErrAllowDirect", err)
+		}
+		if code, body := readyz(); code != http.StatusServiceUnavailable || !strings.Contains(body, "ingest") {
+			t.Errorf("/readyz after a refused start = %d %q, want 503 naming ingest", code, body)
+		}
+	})
 }

@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"sync/atomic"
 	"time"
 
 	"github.com/nats-io/nats.go"
@@ -20,6 +21,7 @@ import (
 	"github.com/arloliu/tracekeep/internal/compact"
 	"github.com/arloliu/tracekeep/internal/config"
 	"github.com/arloliu/tracekeep/internal/ingest"
+	"github.com/arloliu/tracekeep/internal/metrics"
 	"github.com/arloliu/tracekeep/internal/store"
 	"github.com/arloliu/tracekeep/internal/store/s3store"
 	"github.com/arloliu/tracekeep/producer/busconfig"
@@ -43,6 +45,32 @@ type Env struct {
 	AllowUnversioned bool
 	// Now is the clock; nil takes time.Now.
 	Now func() time.Time
+	// Metrics is the process's metrics and health server; nil records and serves none.
+	Metrics *metrics.Server
+}
+
+// refreshInterval is how often ingest's metrics read the catalog and the bus.
+const refreshInterval = 30 * time.Second
+
+// errNotJoined reports an ingest role whose consumers have not yet joined, for readiness.
+var errNotJoined = errors.New("service: the consumers have not joined yet")
+
+// Observe registers the catalog's metrics and readiness on a new metrics server, and serves it on metrics.listen
+// until ctx ends; with no listen address it serves nothing, the metrics still recorded.
+func (e *Env) Observe(ctx context.Context) error {
+	e.Metrics = metrics.NewServer()
+	if err := metrics.RegisterCatalog(e.Metrics, e.Catalog); err != nil {
+		return err
+	}
+	if addr := e.Config.Metrics.Listen; addr != "" {
+		go func() {
+			if err := e.Metrics.Serve(ctx, addr); err != nil {
+				e.Log.Error("metrics: serve", "error", err)
+			}
+		}()
+	}
+
+	return nil
 }
 
 // Open opens the catalog, the bus connection and the store cfg names.
@@ -188,12 +216,67 @@ func (e *Env) streams(ctx context.Context) (map[string]jetstream.Stream, map[str
 // Ingest runs the ingest role until ctx ends: the traffic stream's consumer and the parking stream's,
 // sharing the executor, the flusher and the parking coordinator, each with its own membership (ingest.md §6, parking.md).
 func Ingest(ctx context.Context, e *Env) error {
+	var joined atomic.Bool
+	if e.Metrics != nil {
+		e.Metrics.Ready("ingest", func(context.Context) error {
+			if !joined.Load() {
+				return errNotJoined
+			}
+			return nil
+		})
+	}
 	gs, err := ingesters(ctx, e)
 	if err != nil {
 		return err
 	}
+	joined.Store(true)
+	if gs[0].Metrics != nil {
+		go e.refresh(ctx, gs[0])
+	}
 
 	return run(ctx, e, gs)
+}
+
+// refresh reads ingest's catalog and bus gauges every refreshInterval until ctx ends.
+func (e *Env) refresh(ctx context.Context, traffic *ingest.Ingester) {
+	t := time.NewTicker(refreshInterval)
+	defer t.Stop()
+	state := busState{js: e.JS, stream: bus.StreamName(e.Bus(), catalog.RoleTraffic), consumer: bus.ConsumerName(traffic.Incarnation)}
+	for {
+		if err := traffic.Metrics.Refresh(ctx, e.Catalog, state); err != nil && ctx.Err() == nil {
+			e.Log.Warn("metrics: refresh", "error", err)
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		}
+	}
+}
+
+// busState reads the traffic consumer's and stream's backlog on handles of its own, never the ingester's.
+type busState struct {
+	js       jetstream.JetStream
+	stream   string
+	consumer string
+}
+
+func (b busState) State(ctx context.Context) (metrics.BusState, error) {
+	s, err := b.js.Stream(ctx, b.stream)
+	if err != nil {
+		return metrics.BusState{}, err
+	}
+	c, err := s.Consumer(ctx, b.consumer)
+	if err != nil {
+		return metrics.BusState{}, err
+	}
+	ci, err := c.Info(ctx)
+	if err != nil {
+		return metrics.BusState{}, err
+	}
+	st := s.CachedInfo().State
+
+	return metrics.BusState{AckPending: uint64(ci.NumAckPending), Messages: st.Msgs, Bytes: st.Bytes}, nil //nolint:gosec // a count is positive
 }
 
 // run runs the joined ingesters until ctx ends, and ends their memberships.
@@ -263,6 +346,13 @@ func ingesters(ctx context.Context, e *Env) (_ []*ingest.Ingester, err error) {
 	if f.WorkDir == "" {
 		f.WorkDir = os.TempDir()
 	}
+	var m *metrics.Ingest
+	if e.Metrics != nil {
+		if m, err = metrics.NewIngest(e.Metrics); err != nil {
+			return nil, err
+		}
+	}
+	f.Metrics = m
 	k := &ingest.Coordinator{Catalog: e.Catalog, Bus: e.JS, ParkPrefix: cmp.Or(c.Bus.ParkPrefix, busconfig.DefaultParkPrefix)}
 	for _, role := range []string{catalog.RoleTraffic, catalog.RoleParking} {
 		cons, err := bus.Consumer(ctx, ss[role], incs[role], bus.ConsumerConfig{AckWait: c.Ingest.AckWait, MaxAckPending: c.Ingest.MaxAckPending})
@@ -273,7 +363,7 @@ func ingesters(ctx context.Context, e *Env) (_ []*ingest.Ingester, err error) {
 			Executor: x, Flusher: f, Coordinator: k, Batcher: ingest.NewBatcher(c.Ingest.FlushInterval, int(c.Ingest.BatchMaxBytes.Int64())),
 			Park: c.Parking.Enabled, Consumer: cons, Stream: ss[role], Incarnation: incs[role], Log: e.Log.With("role", role),
 			Replica: c.Replica, Lease: c.Ingest.Lease, FetchBatch: c.Ingest.FetchBatch, MaxWait: c.Ingest.MaxWait,
-			Heartbeat: c.Ingest.AckWait / 3, Now: e.now,
+			Heartbeat: c.Ingest.AckWait / 3, Now: e.now, Metrics: m,
 		}
 		if role == catalog.RoleParking {
 			g.Replica, g.RedeliveryDelay = c.Replica+"/parked", c.Parking.RedeliveryDelay
@@ -296,6 +386,13 @@ func Compact(ctx context.Context, e *Env) error {
 	r := &compact.Reconciler{
 		Catalog: e.Catalog, Store: e.Store, KeyPrefix: c.Store.KeyPrefix, HorizonHour: func() int64 { return ingest.HourOf(e.horizon()) },
 		Log: e.Log.With("role", "compact"), JS: e.JS, Bus: e.Bus(), Holder: c.Replica, LeaseTTL: c.Compact.LeaseTTL, Interval: c.Compact.Interval,
+	}
+	if e.Metrics != nil {
+		var err error
+		if r.Metrics, err = metrics.NewCompact(e.Metrics); err != nil {
+			return err
+		}
+		e.Metrics.Ready("compact", r.Ready)
 	}
 	err := r.Run(ctx)
 	if ctx.Err() != nil && errors.Is(err, ctx.Err()) {
