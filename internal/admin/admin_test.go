@@ -1,6 +1,7 @@
 package admin_test
 
 import (
+	"bytes"
 	"errors"
 	"io"
 	"net"
@@ -173,9 +174,10 @@ type gate struct {
 	mu     sync.Mutex
 	open   bool
 	opened chan struct{}
-	// holding is closed once the closed gate holds bytes.
+	// holding is closed once the closed gate holds a publish frame.
 	holding chan struct{}
 	once    sync.Once
+	held    []byte
 }
 
 func (g *gate) set(open bool) {
@@ -189,12 +191,19 @@ func (g *gate) set(open bool) {
 	g.open = open
 }
 
-func (g *gate) wait() {
+// wait holds b while the gate is closed; holding is closed once the held bytes include a publish (PUB or HPUB) frame,
+// since a client may send a subscription for the reply first.
+func (g *gate) wait(b []byte) {
 	g.mu.Lock()
 	ch, open := g.opened, g.open
+	if !open {
+		g.held = append(g.held, b...)
+		if bytes.Contains(g.held, []byte("PUB ")) {
+			g.once.Do(func() { close(g.holding) })
+		}
+	}
 	g.mu.Unlock()
 	if !open {
-		g.once.Do(func() { close(g.holding) })
 		<-ch
 	}
 }
@@ -223,7 +232,7 @@ func proxy(t *testing.T, url string, g *gate) string {
 		for {
 			n, err := client.Read(buf)
 			if n > 0 {
-				g.wait()
+				g.wait(buf[:n])
 				if _, err := up.Write(buf[:n]); err != nil {
 					return
 				}
@@ -282,7 +291,7 @@ func TestPublishAcceptedAfterTheCutOffRead(t *testing.T) {
 			}
 			acked <- ack
 		}()
-		<-g.holding // the publish has left the client
+		<-g.holding // the publish has left the client and waits on its way
 		capture := tracepack.UUID{3}
 		res, err := a.CaptureTerminate(ctx, capture)
 		if err != nil {
