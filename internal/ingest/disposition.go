@@ -49,6 +49,8 @@ const (
 	ActTerminate
 	// ActNak returns the message for redelivery after a delay; nothing durable changes.
 	ActNak
+	// ActPark moves a deferral that cannot clear by itself within the nak backoff to the parking stream (parking.md *Parking*).
+	ActPark
 )
 
 // Reasons name a disposition for its metric, its alert and the nak delay.
@@ -109,8 +111,10 @@ type CaptureState int
 
 const (
 	CaptureUnknownState CaptureState = iota // not looked up yet
-	// CaptureUnknown: no row, or a pending one.
+	// CaptureUnknown: no row.
 	CaptureUnknown
+	// CapturePending: a pending row, which an earlier parking of the capture's messages inserted; the capture is still unknown.
+	CapturePending
 	CaptureRejected
 	// CaptureAdmitted: open, stopped or closed.
 	CaptureAdmitted
@@ -169,6 +173,8 @@ type Facts struct {
 	Expired bool
 	// ClaimCheck: the message carries a claim reference.
 	ClaimCheck bool
+	// LastDelay: the message's nak delay reached its last step, so a wait that has not cleared by now is taken as indefinite.
+	LastDelay bool
 
 	Resolution Resolution
 	Framing    Framing
@@ -235,14 +241,25 @@ func Decide(f *Facts) Decision {
 		if f.Capture == CaptureAdmitted {
 			return Decision{Action: ActTerminate, Reason: ReasonBeyondRetention, Alert: true, Audit: true}
 		}
-		// A rejected or unknown capture's record is never terminated by age (G5-251).
-		return nak(ReasonDeferredAged, false)
+		// A rejected or unknown capture's record is never terminated by age (G5-251): it is deferred indefinitely.
+		return park(ReasonDeferredAged, false)
 	}
+
+	return waits(f)
+}
+
+// waits is the wait on the capture's state, once admission and age are decided: a record of a capture that is not admitted waits,
+// on the bus while its start may still come, on the parking stream otherwise; an admitted capture's record goes on.
+func waits(f *Facts) Decision {
 	switch f.Capture {
 	case CaptureUnknown:
+		// Its start may still come: the wait can clear by itself.
 		return nak(ReasonUnknownCapture, false)
+	case CapturePending:
+		// An earlier message of the capture was parked, so this one would wait behind it.
+		return park(ReasonUnknownCapture, false)
 	case CaptureRejected:
-		return nak(ReasonCaptureRejected, false)
+		return park(ReasonCaptureRejected, false)
 	case CaptureUnknownState, CaptureAdmitted:
 	default:
 		panic("ingest: unknown capture state")
@@ -259,7 +276,14 @@ func admission(f *Facts) (Decision, bool) {
 		switch f.Claim {
 		case ClaimUnknown:
 			return step(StepFetchClaim), true
-		case ClaimMissing, ClaimMismatch:
+		case ClaimMissing:
+			// A producer may still be putting the object, so only a wait past the nak backoff is taken as indefinite.
+			if f.LastDelay {
+				return park(ReasonClaimMissing, true), true
+			}
+
+			return nak(ReasonClaimMissing, true), true
+		case ClaimMismatch:
 			return nak(ReasonClaimMissing, true), true
 		case ClaimOK:
 		default:
@@ -280,7 +304,7 @@ func admission(f *Facts) (Decision, bool) {
 	case descriptor == No && !f.Rejected:
 		return step(StepReject), true
 	case descriptor == No:
-		return nak(ReasonCaptureRejected, true), true
+		return park(ReasonCaptureRejected, true), true
 	case !f.Admitted:
 		return step(StepAdmit), true
 	}
@@ -346,4 +370,8 @@ func terminate(reason string, alert bool) Decision {
 
 func nak(reason string, alert bool) Decision {
 	return Decision{Action: ActNak, Reason: reason, Alert: alert}
+}
+
+func park(reason string, alert bool) Decision {
+	return Decision{Action: ActPark, Reason: reason, Alert: alert}
 }

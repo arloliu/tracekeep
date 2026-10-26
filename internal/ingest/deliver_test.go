@@ -84,15 +84,15 @@ func TestDisposeRejectsAnUnacceptedStart(t *testing.T) {
 		x := executor(t, c, newClaims())
 		capture := tracepack.UUID{2}
 		m := inline(t, capture, startRecord(t, now), descriptorOf(t, " "))
-		if _, dec := dispose(t, x, m); dec.Action != ActNak || dec.Reason != ReasonCaptureRejected || !dec.Alert {
-			t.Fatalf("an unaccepted start = %+v, want a nak with the capture-rejected alert", dec)
+		if _, dec := dispose(t, x, m); dec.Action != ActPark || dec.Reason != ReasonCaptureRejected || !dec.Alert {
+			t.Fatalf("an unaccepted start = %+v, want parked with the capture-rejected alert", dec)
 		}
 		if s := state(t, c, capture); s != catalog.StateRejected {
 			t.Fatalf("capture %s, want rejected", s)
 		}
 		old := inline(t, capture, dataRecord(1, now-int64(48*time.Hour)), nil)
-		if _, dec := dispose(t, x, old); dec.Action != ActNak || dec.Reason != ReasonDeferredAged {
-			t.Errorf("an expired record of the rejected capture = %+v, want deferred", dec)
+		if _, dec := dispose(t, x, old); dec.Action != ActPark || dec.Reason != ReasonDeferredAged {
+			t.Errorf("an expired record of the rejected capture = %+v, want parked", dec)
 		}
 	})
 }
@@ -105,8 +105,8 @@ func TestDisposeRejectsAnUndecodableStart(t *testing.T) {
 		capture := tracepack.UUID{3}
 		m := inline(t, capture, startRecord(t, now), nil)
 		m.Env.Descriptor = "not base64!"
-		if _, dec := dispose(t, x, m); dec.Action != ActNak || dec.Reason != ReasonCaptureRejected {
-			t.Fatalf("an undecodable start = %+v, want rejected", dec)
+		if _, dec := dispose(t, x, m); dec.Action != ActPark || dec.Reason != ReasonCaptureRejected {
+			t.Fatalf("an undecodable start = %+v, want rejected and parked", dec)
 		}
 		got, _ := c.Capture(t.Context(), capture)
 		if got.State != catalog.StateRejected || string(got.Descriptor) != "not base64!" {
@@ -219,4 +219,75 @@ func TestAdmissionLosesToATermination(t *testing.T) {
 			})
 		})
 	}
+}
+
+// A record of an unknown capture waits with a nak while the catalog has no row for it,
+// and is parked once an earlier parking left the capture pending;
+// a claim-check record whose object is missing is parked once its nak delay reached the last step.
+func TestDisposeParksIndefiniteDeferrals(t *testing.T) {
+	t.Parallel()
+	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
+		ctx := t.Context()
+		cl := newClaims()
+		x := executor(t, c, cl)
+		capture := tracepack.UUID{12}
+		first := inline(t, capture, dataRecord(1, now), nil)
+		if _, dec := dispose(t, x, first); dec.Action != ActNak || dec.Reason != ReasonUnknownCapture {
+			t.Fatalf("a record of a capture with no row = %+v, want a nak", dec)
+		}
+		d := delivered(first)
+		if _, err := c.BeginParking(ctx, d.identity(), ReasonUnknownCapture, "", 0); err != nil {
+			t.Fatal(err)
+		}
+		if _, dec := dispose(t, x, inline(t, capture, dataRecord(2, now), nil)); dec.Action != ActPark || dec.Reason != ReasonUnknownCapture {
+			t.Errorf("a record of a pending capture = %+v, want parked", dec)
+		}
+
+		missing := claimCheck(t, cl, tracepack.UUID{13}, dataRecord(1, now), nil)
+		cl.mu.Lock()
+		delete(cl.objs, missing.Env.MsgID)
+		cl.mu.Unlock()
+		for delivered, want := range map[uint64]Action{1: ActNak, 5: ActPark} {
+			m := missing
+			m.Delivered = delivered
+			if _, dec := dispose(t, x, m); dec.Action != want || dec.Reason != ReasonClaimMissing {
+				t.Errorf("delivery %d of a record whose object is missing = %+v, want %v", delivered, dec, want)
+			}
+		}
+	})
+}
+
+// An order's application that finds the version staged meanwhile leaves it staged: the delivery is acknowledged as already staged.
+func TestApplyOrderFindsTheVersionStaged(t *testing.T) {
+	t.Parallel()
+	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
+		ctx := t.Context()
+		x := executor(t, c, newClaims())
+		capture := tracepack.UUID{14}
+		if _, dec := dispose(t, x, inline(t, capture, startRecord(t, now), descriptorOf(t, "eqp"))); dec.Action != ActBatch {
+			t.Fatalf("start = %+v", dec)
+		}
+		m := inline(t, capture, dataRecord(1, now), nil)
+		late := delivered(m)
+		late.Msg.StreamSeq = 200 // above the cut-off: parked, then staged
+		if _, err := c.BeginParking(ctx, late.identity(), ReasonWriteFailure, "", 0); err != nil {
+			t.Fatal(err)
+		}
+		id := tracepack.UUID{0x70, 14}
+		p := &catalog.Pack{
+			ID: id, Capture: capture, ToolID: "T1", Hour: HourOf(now), Role: catalog.RoleSegment, Key: "staging/" + id.String(), Size: 1,
+			SeqStart: 1, FormatMinor: 1, Ranges: []catalog.Range{{SeqFrom: 1, SeqTo: 1, TSFrom: now, TSTo: now}},
+		}
+		ev := &catalog.Evidence{Deliveries: []catalog.Identity{*late.identity()}}
+		if out, err := c.RegisterPack(ctx, p, catalog.Registration{Evidence: ev}); err != nil || out != catalog.Registered {
+			t.Fatalf("RegisterPack = %v, %v", out, err)
+		}
+		if _, err := c.TerminateCapture(ctx, capture, x.Incarnation, 100, "op", "c1"); err != nil {
+			t.Fatal(err)
+		}
+		d := delivered(m) // stream seq 2, below the cut-off
+		if err := x.run(ctx, d, StepApplyOrder); err != nil || d.Facts.Resolution != ResolvedStaged {
+			t.Errorf("order application = %v, %v; want the version found staged", d.Facts.Resolution, err)
+		}
+	})
 }

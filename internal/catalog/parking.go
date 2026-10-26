@@ -106,6 +106,22 @@ func readVersionState(ctx context.Context, q sqlx.QueryerContext, v *VersionKey)
 	return s, err
 }
 
+// TerminatedBy returns the action that terminated v, which an acknowledgement under the termination names;
+// a version with no row returns ErrUnknownVersion, and an unterminated one an empty action.
+func (c *Catalog) TerminatedBy(ctx context.Context, v *VersionKey) (string, error) {
+	var by sql.NullString
+	err := c.read.GetContext(ctx, &by, `SELECT terminated_by FROM parked WHERE capture_id = ? AND seq = ? AND header = ? AND payload_digest = ?`,
+		v.Capture[:], int64(v.Seq), v.Header[:], v.Digest[:])
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", ErrUnknownVersion
+	}
+	if err != nil {
+		return "", fmt.Errorf("catalog: terminated by %s.%d: %w", v.Capture, v.Seq, err)
+	}
+
+	return by.String, nil
+}
+
 // AdvanceParked is step (3), parking → parked by compare-and-set, and returns the version's state:
 // a version already past parking is left as it is.
 func (c *Catalog) AdvanceParked(ctx context.Context, v *VersionKey) (VersionState, error) {
@@ -203,12 +219,16 @@ func (c *Catalog) TerminateParked(ctx context.Context, capture tracepack.UUID, s
 		if _, err := c.lockCapture(ctx, tx, capture); err != nil {
 			return err
 		}
+		var evs []event
 		var err error
-		if n, err = c.terminateVersions(ctx, tx, capture, seq, actor, action, "parked-terminate"); err == nil && n == 0 {
-			err = errRollback
+		if n, evs, err = c.terminateVersions(ctx, tx, capture, seq, action); err != nil {
+			return err
+		}
+		if n == 0 {
+			return errRollback
 		}
 
-		return err
+		return c.auditAndEmit(ctx, tx, capture, actor, "parked-terminate", action, n, evs)
 	}))
 	if err != nil {
 		return 0, fmt.Errorf("catalog: terminate parked %s: %w", capture, err)
@@ -231,9 +251,12 @@ func (c *Catalog) TerminateCapture(ctx context.Context, capture tracepack.UUID, 
 		if err != nil {
 			return err
 		}
-		n, err = c.terminateVersions(ctx, tx, capture, nil, actor, action, "capture-terminate")
+		var evs []event
+		if n, evs, err = c.terminateVersions(ctx, tx, capture, nil, action); err != nil {
+			return err
+		}
 
-		return err
+		return c.auditAndEmit(ctx, tx, capture, actor, "capture-terminate", action, n, evs)
 	})
 	if err != nil {
 		return 0, fmt.Errorf("catalog: terminate capture %s: %w", capture, err)
@@ -242,9 +265,9 @@ func (c *Catalog) TerminateCapture(ctx context.Context, capture tracepack.UUID, 
 	return n, nil
 }
 
-// terminateVersions terminates capture's unresolved versions, of seq when it is not nil, under action:
-// each written terminated, one audit row, and the terminated events of their hours, emitted last.
-func (c *Catalog) terminateVersions(ctx context.Context, tx *sqlx.Tx, capture tracepack.UUID, seq *uint64, actor, action, verb string) (int, error) {
+// terminateVersions terminates capture's unresolved versions, of seq when it is not nil, under action,
+// and returns how many with the terminated events of their hours, which the caller emits last.
+func (c *Catalog) terminateVersions(ctx context.Context, tx *sqlx.Tx, capture tracepack.UUID, seq *uint64, action string) (int, []event, error) {
 	where := `capture_id = ? AND state IN ('parking', 'parked', 'evicted-hour')`
 	args := []any{capture[:]}
 	if seq != nil {
@@ -253,25 +276,28 @@ func (c *Catalog) terminateVersions(ctx context.Context, tx *sqlx.Tx, capture tr
 	}
 	var hours []int64
 	if err := tx.SelectContext(ctx, &hours, `SELECT hour FROM parked WHERE `+where, args...); err != nil {
-		return 0, err
+		return 0, nil, err
 	}
 	if len(hours) == 0 {
-		return 0, nil
+		return 0, nil, nil
 	}
 	_, err := tx.ExecContext(ctx, `UPDATE parked SET state = 'terminated', terminated_by = ?, resolved_at = ? WHERE `+where, append([]any{action, c.now()}, args...)...)
 	if err != nil {
-		return 0, err
-	}
-	err = c.auditIn(ctx, tx, AuditEntry{Actor: actor, Action: verb, ActionID: action, Capture: &capture, Detail: fmt.Sprintf("%d versions", len(hours))})
-	if err != nil {
-		return 0, err
+		return 0, nil, err
 	}
 	evs, err := c.terminatedScopes(ctx, tx, capture, hours)
+
+	return len(hours), evs, err
+}
+
+// auditAndEmit writes the operator action's audit row, then its events, the transaction's last statement.
+func (c *Catalog) auditAndEmit(ctx context.Context, tx *sqlx.Tx, capture tracepack.UUID, actor, verb, action string, n int, evs []event) error {
+	err := c.auditIn(ctx, tx, AuditEntry{Actor: actor, Action: verb, ActionID: action, Capture: &capture, Detail: fmt.Sprintf("%d versions", n)})
 	if err != nil {
-		return 0, err
+		return err
 	}
 
-	return len(hours), c.emit(ctx, tx, evs)
+	return c.emit(ctx, tx, evs)
 }
 
 // SpendOrders marks spent the active orders of incarnation whose cut-off the stream's first sequence passed:

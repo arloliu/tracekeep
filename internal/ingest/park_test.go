@@ -235,7 +235,7 @@ func (r *replica) fetch(t *testing.T) (*Delivery, jetstream.Msg) {
 	if !ok {
 		t.Fatal("no delivery")
 	}
-	msg, _, err := readMessage(m)
+	msg, err := readMessage(m)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -17,6 +17,7 @@ import (
 	"github.com/arloliu/tracekeep/internal/catalog/catalogtest"
 	"github.com/arloliu/tracekeep/internal/store"
 	"github.com/arloliu/tracekeep/internal/testbus"
+	"github.com/arloliu/tracekeep/producer/busconfig"
 )
 
 const prefix = "tk"
@@ -91,6 +92,7 @@ func newReplica(t *testing.T, c *catalog.Catalog) *replica {
 	}
 	g := &Ingester{
 		Executor: x, Batcher: NewBatcher(time.Second, 1<<20), Flusher: f, Consumer: cons, Stream: s, Log: slog.New(slog.DiscardHandler),
+		Coordinator: &Coordinator{Catalog: c, Bus: js, ParkPrefix: busconfig.DefaultParkPrefix}, Park: true,
 		Replica: "r1", Lease: time.Minute, FetchBatch: 100, MaxWait: 200 * time.Millisecond, Heartbeat: 10 * time.Second, Now: clk.now,
 	}
 	if err := g.Join(ctx); err != nil {

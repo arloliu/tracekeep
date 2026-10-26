@@ -144,6 +144,26 @@ func (c *Catalog) auditIn(ctx context.Context, q sqlx.ExecerContext, e AuditEntr
 	return nil
 }
 
+// AuditEntries returns the audit rows of capture, oldest first.
+func (c *Catalog) AuditEntries(ctx context.Context, capture tracepack.UUID) ([]AuditEntry, error) {
+	var rows []struct {
+		Actor    string         `db:"actor"`
+		Action   string         `db:"action"`
+		ActionID sql.NullString `db:"action_id"`
+		Detail   sql.NullString `db:"detail"`
+	}
+	err := c.read.SelectContext(ctx, &rows, `SELECT actor, action, action_id, detail FROM audit_log WHERE capture_id = ? ORDER BY at, audit_id`, capture[:])
+	if err != nil {
+		return nil, fmt.Errorf("catalog: audit of %s: %w", capture, err)
+	}
+	out := make([]AuditEntry, len(rows))
+	for i, r := range rows {
+		out[i] = AuditEntry{Actor: r.Actor, Action: r.Action, ActionID: r.ActionID.String, Capture: &capture, Detail: r.Detail.String}
+	}
+
+	return out, nil
+}
+
 func nullString(s string) sql.NullString {
 	return sql.NullString{String: s, Valid: s != ""}
 }
