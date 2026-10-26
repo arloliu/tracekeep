@@ -180,6 +180,12 @@ func TestFaultRotates(t *testing.T) {
 		t.Fatalf("after a fault: reserved entry %+v, want a fresh capture's start", e)
 	}
 	second := e.Cap
+	// The start is queued before its capture is installed: wait for the fault rotation to finish,
+	// or the next fault could signal the old capture and be discarded as stale.
+	if !p.lockLife(time.Now().Add(10 * time.Second)) {
+		t.Fatal("the fault rotation kept the lifecycle lock")
+	}
+	p.unlockLife()
 	if prev := previousOf(t, second); prev == nil || *prev != first.ID {
 		t.Errorf("previous_capture_id = %v, want the faulted capture", prev)
 	}
