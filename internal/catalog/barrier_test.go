@@ -166,7 +166,8 @@ func TestRenewalRacingAnAdmission(t *testing.T) {
 	engines(t, func(t *testing.T, c *Catalog) {
 		ctx := t.Context()
 		v1 := activate(t, c, "v1")
-		const short = 300 * time.Millisecond
+		// Long enough that the renewal starts before the lease lapses on a loaded server, short enough to wait out.
+		const short = 2 * time.Second
 		old, err := c.Register(ctx, "old", []int64{v1}, short)
 		if err != nil {
 			t.Fatal(err)
@@ -178,7 +179,11 @@ func TestRenewalRacingAnAdmission(t *testing.T) {
 		held, release := holdAt(c, hookBeforeCommit)
 		var renewErr error
 		renewed := run(func() { renewErr = c.Renew(ctx, old, ttl) })
-		<-held
+		select {
+		case <-held:
+		case <-renewed:
+			t.Fatalf("the renewal ended before its commit: %v", renewErr)
+		}
 		time.Sleep(2 * short) // the scenario: the old member's committed lease lapses while its renewal is uncommitted
 		var lapsed int
 		if err := c.read.GetContext(ctx, &lapsed, `SELECT COUNT(*) FROM consumers WHERE replica_id = 'old' AND lease_until < `+c.d.nowNS); err != nil || lapsed != 1 {
