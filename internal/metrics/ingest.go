@@ -44,7 +44,7 @@ func NewIngest(s *Server) (*Ingest, error) {
 			Help: "The catalog registration of a segment.", Buckets: prometheus.ExponentialBuckets(0.001, 2, 12)}),
 		refreshFailures: prometheus.NewCounter(prometheus.CounterOpts{Namespace: "tracekeep", Subsystem: "ingest", Name: "refresh_failures_total",
 			Help: "Refreshes of the catalog and bus gauges that failed, the gauges keeping their previous values."}),
-		snap:     &snapshot{},
+		snap:     &snapshot{now: time.Now},
 		deferred: &deferrals{byID: map[string]deferral{}, now: time.Now},
 	}
 	for _, c := range []prometheus.Collector{
@@ -70,13 +70,14 @@ func (m *Ingest) Disposed(disposition string, redelivered bool) {
 	}
 }
 
-// Deferred notes the message id nak'd for reason, from the first time it was for that reason; Settled forgets it once it is decided otherwise.
-// The gauge is per replica: a message another replica receives meanwhile is dropped once this one has not deferred it for deferralStale.
-func (m *Ingest) Deferred(id, reason string) {
+// Deferred notes the message id nak'd for reason, to be redelivered after retry, from the first time it was deferred for that reason;
+// Settled forgets it once it is decided otherwise.
+// The gauge is per replica: a message another replica receives meanwhile is dropped once its redelivery here is deferralGrace overdue.
+func (m *Ingest) Deferred(id, reason string, retry time.Duration) {
 	if m == nil {
 		return
 	}
-	m.deferred.add(id, reason)
+	m.deferred.add(id, reason, retry)
 }
 
 // Settled forgets the message id's deferral.
@@ -139,8 +140,10 @@ type Consumer interface {
 
 // Refresh reads the gauges of the catalog and the bus: the traffic consumer's and stream's backlog,
 // then the unresolved parked versions by reason and the open captures and their unfilled holes by tool.
-// Each source's gauges change together, at once, and only when the whole source was read: a failure keeps its previous values
-// and counts in refresh_failures_total. A pass over every open capture's completeness, it runs on a timer, never per delivery.
+// Each source's gauges change together, at once, and only when the whole source was read,
+// stamping refreshed_timestamp_seconds{source}.
+// A failure keeps the source's previous values and counts in refresh_failures_total.
+// A pass over every open capture's completeness, it runs on a timer, never per delivery.
 func (m *Ingest) Refresh(ctx context.Context, cat *catalog.Catalog, cons Consumer) error {
 	if m == nil {
 		return nil
@@ -197,10 +200,11 @@ func readCatalog(ctx context.Context, cat *catalog.Catalog) (catalogState, error
 
 // snapshot holds the gauges Refresh reads, each source's replaced whole under the mutex, so a scrape never sees a refresh half done.
 type snapshot struct {
-	mu      sync.Mutex
-	bus     BusState
-	busRead bool
-	cat     catalogState
+	mu           sync.Mutex
+	bus          BusState
+	cat          catalogState
+	busAt, catAt time.Time
+	now          func() time.Time
 }
 
 var (
@@ -211,23 +215,25 @@ var (
 		"Messages the traffic consumer delivered and holds unacknowledged.", nil, nil)
 	backlogMessagesDesc = prometheus.NewDesc("tracekeep_ingest_stream_backlog_messages", "Messages on the traffic stream.", nil, nil)
 	backlogBytesDesc    = prometheus.NewDesc("tracekeep_ingest_stream_backlog_bytes", "Bytes on the traffic stream.", nil, nil)
+	refreshedDesc       = prometheus.NewDesc("tracekeep_ingest_refreshed_timestamp_seconds",
+		"When a source's refreshed gauges were last read whole, in Unix seconds, by source.", []string{"source"}, nil)
 )
 
 func (s *snapshot) setBus(b BusState) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.bus, s.busRead = b, true
+	s.bus, s.busAt = b, s.now()
 }
 
 func (s *snapshot) setCatalog(c catalogState) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.cat = c
+	s.cat, s.catAt = c, s.now()
 }
 
 // Describe implements prometheus.Collector.
 func (s *snapshot) Describe(ch chan<- *prometheus.Desc) {
-	for _, d := range []*prometheus.Desc{parkedDesc, capturesOpenDesc, openGapsDesc, ackPendingDesc, backlogMessagesDesc, backlogBytesDesc} {
+	for _, d := range []*prometheus.Desc{parkedDesc, capturesOpenDesc, openGapsDesc, ackPendingDesc, backlogMessagesDesc, backlogBytesDesc, refreshedDesc} {
 		ch <- d
 	}
 }
@@ -235,15 +241,19 @@ func (s *snapshot) Describe(ch chan<- *prometheus.Desc) {
 // Collect implements prometheus.Collector.
 func (s *snapshot) Collect(ch chan<- prometheus.Metric) {
 	s.mu.Lock()
-	b, busRead, c := s.bus, s.busRead, s.cat
+	b, c, busAt, catAt := s.bus, s.cat, s.busAt, s.catAt
 	s.mu.Unlock()
 	gauge := func(d *prometheus.Desc, v float64, labels ...string) {
 		ch <- prometheus.MustNewConstMetric(d, prometheus.GaugeValue, v, labels...)
 	}
-	if busRead {
+	if !busAt.IsZero() {
 		gauge(ackPendingDesc, float64(b.AckPending))
 		gauge(backlogMessagesDesc, float64(b.Messages))
 		gauge(backlogBytesDesc, float64(b.Bytes))
+		gauge(refreshedDesc, float64(busAt.UnixNano())/1e9, "bus")
+	}
+	if !catAt.IsZero() {
+		gauge(refreshedDesc, float64(catAt.UnixNano())/1e9, "catalog")
 	}
 	for reason, n := range c.parked {
 		gauge(parkedDesc, float64(n), reason)
@@ -254,22 +264,26 @@ func (s *snapshot) Collect(ch chan<- prometheus.Metric) {
 	}
 }
 
-// deferralStale is how long a deferral this replica no longer sees is kept: past every nak delay and the redelivery of a parked copy,
-// a message not redelivered here since was redelivered to another replica, or decided there.
-const deferralStale = 10 * time.Minute
+// deferralGrace is how long past its redelivery a deferral this replica has not seen again is kept:
+// by then the message was redelivered to another replica, or decided there.
+const deferralGrace = 10 * time.Minute
+
+// deferralPrune is how often adding a deferral also drops the expired ones, so the map stays bounded with nothing scraping it.
+const deferralPrune = time.Minute
 
 // deferrals are the messages this replica nak'd and has not seen decided otherwise since:
 // deferred_messages{reason} and deferred_oldest_age_seconds{reason}, computed at each scrape.
-// An entry not deferred again within deferralStale is dropped, which bounds the map by the deferral rate.
+// An entry not deferred again by deferralGrace past its redelivery is dropped, which bounds the map by the deferral rate.
 type deferrals struct {
-	mu   sync.Mutex
-	byID map[string]deferral
-	now  func() time.Time
+	mu     sync.Mutex
+	byID   map[string]deferral
+	now    func() time.Time
+	pruned time.Time
 }
 
 type deferral struct {
-	reason      string
-	since, seen time.Time
+	reason         string
+	since, expires time.Time
 }
 
 var (
@@ -279,16 +293,29 @@ var (
 		[]string{"reason"}, nil)
 )
 
-func (d *deferrals) add(id, reason string) {
+func (d *deferrals) add(id, reason string, retry time.Duration) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	now := d.now()
-	old, ok := d.byID[id]
-	if !ok || old.reason != reason {
-		old = deferral{reason: reason, since: now}
+	f, ok := d.byID[id]
+	if !ok || f.reason != reason {
+		f = deferral{reason: reason, since: now}
 	}
-	old.seen = now
-	d.byID[id] = old
+	f.expires = now.Add(retry + deferralGrace)
+	d.byID[id] = f
+	if now.Sub(d.pruned) >= deferralPrune {
+		d.prune(now)
+	}
+}
+
+// prune drops the expired deferrals; d.mu is held.
+func (d *deferrals) prune(now time.Time) {
+	for id, f := range d.byID {
+		if now.After(f.expires) {
+			delete(d.byID, id)
+		}
+	}
+	d.pruned = now
 }
 
 func (d *deferrals) remove(id string) {
@@ -303,16 +330,13 @@ func (d *deferrals) Describe(ch chan<- *prometheus.Desc) {
 	ch <- deferredAgeDesc
 }
 
-// Collect implements prometheus.Collector; it drops the stale entries.
+// Collect implements prometheus.Collector; it drops the expired entries.
 func (d *deferrals) Collect(ch chan<- prometheus.Metric) {
 	d.mu.Lock()
 	now := d.now()
+	d.prune(now)
 	counts, oldest := map[string]int{}, map[string]time.Time{}
-	for id, f := range d.byID {
-		if now.Sub(f.seen) > deferralStale {
-			delete(d.byID, id)
-			continue
-		}
+	for _, f := range d.byID {
 		counts[f.reason]++
 		if o, ok := oldest[f.reason]; !ok || f.since.Before(o) {
 			oldest[f.reason] = f.since

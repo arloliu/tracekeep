@@ -45,7 +45,7 @@ func (s trafficState) State(ctx context.Context) (metrics.BusState, error) {
 }
 
 // The ingest role's metrics recorded by a real flow: dispositions, a segment registered with its put and registration,
-// a deferral with its reason, and on a refresh the open captures, their gaps, the parked versions and the bus's backlog.
+// a deferral with its reason, a loss labelled by the tool of a start admitted then, and on a refresh the open captures, their gaps, the parked versions and the bus's backlog.
 func TestIngestMetrics(t *testing.T) {
 	t.Parallel()
 	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
@@ -62,6 +62,8 @@ func TestIngestMetrics(t *testing.T) {
 			r.publish(t, msg, nil)
 		}
 		r.publish(t, inline(t, tracepack.UUID{71}, dataRecord(1, now), nil), nil) // an unknown capture's record: nak'd
+		// A new capture's start beyond retention: admitted, then terminated, a loss of its tool.
+		r.publish(t, inline(t, tracepack.UUID{72}, startRecord(t, now-int64(48*time.Hour)), descriptorOf(t, "eqp")), nil)
 		r.step(t)
 		r.clk.flushInterval()
 		r.step(t)
@@ -72,11 +74,13 @@ func TestIngestMetrics(t *testing.T) {
 		for _, want := range []string{
 			`tracekeep_ingest_messages_total{disposition="batch"} 4`,
 			`tracekeep_ingest_messages_total{disposition="nak"} 1`,
+			`tracekeep_ingest_messages_total{disposition="terminate"} 1`,
+			`tracekeep_ingest_declared_losses_total{tool_id="T1"} 1`,
 			`tracekeep_ingest_segments_total{tool_id="T1"} 1`,
 			`tracekeep_ingest_put_seconds_count 1`,
 			`tracekeep_ingest_registration_seconds_count 1`,
 			`tracekeep_ingest_deferred_messages{reason="unknown-capture"} 1`,
-			`tracekeep_ingest_captures_open{tool_id="T1"} 1`,
+			`tracekeep_ingest_captures_open{tool_id="T1"} 2`, // the expired start's capture is admitted too
 			`tracekeep_ingest_open_gaps{tool_id="T1"} 0`,
 			`tracekeep_ingest_stream_backlog_messages 1`,
 		} {
@@ -95,7 +99,7 @@ func TestNilMetricsRecordNothing(t *testing.T) {
 	t.Parallel()
 	var m *metrics.Ingest
 	m.Disposed("ack", true)
-	m.Deferred("x", "y")
+	m.Deferred("x", "y", time.Minute)
 	m.Settled("x")
 	m.InProgress(3)
 	m.Lost("T1")

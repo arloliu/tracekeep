@@ -17,6 +17,7 @@ import (
 	"github.com/arloliu/tracekeep/internal/catalog"
 	"github.com/arloliu/tracekeep/internal/catalog/catalogtest"
 	"github.com/arloliu/tracekeep/internal/compact"
+	"github.com/arloliu/tracekeep/internal/metrics"
 	"github.com/arloliu/tracekeep/internal/store"
 )
 
@@ -223,7 +224,8 @@ func TestCrashDuringTheAcks(t *testing.T) {
 }
 
 // A batch the Writer refuses three times is deterministic: the write-failure alert is raised and its messages stay deferred,
-// though records joined the batch between the tries.
+// though records joined the batch between the tries; parking off, they are counted deferred from then,
+// batched again at their redelivery without being settled, and settled once a write registers them.
 func TestWriteFailureThreeTimes(t *testing.T) {
 	t.Parallel()
 	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
@@ -231,10 +233,17 @@ func TestWriteFailureThreeTimes(t *testing.T) {
 		p.f.hooks[hookWrite] = func() error { return fmt.Errorf("refused: %w", tracepack.ErrInvalidRecord) }
 		var logged bytes.Buffer
 		g := p.ingester(slog.New(slog.NewTextHandler(&logged, nil)))
+		s := metrics.NewServer()
+		m, err := metrics.NewIngest(s)
+		if err != nil {
+			t.Fatal(err)
+		}
+		g.Metrics = m
 		capture := tracepack.UUID{4}
 		var last []*msg
+		var msgs []Message
 		for try := 1; try <= writeFailureLimit; try++ {
-			msgs := traffic(t, capture)
+			msgs = traffic(t, capture)
 			for seq := uint64(4); seq < uint64(4+try); seq++ { // the capture is live
 				msgs = append(msgs, inline(t, capture, dataRecord(seq, now+int64(seq)), nil))
 			}
@@ -251,6 +260,24 @@ func TestWriteFailureThreeTimes(t *testing.T) {
 			if got := h.done(); !slices.Equal(got, []string{"nak " + lastNakDelay.String()}) {
 				t.Errorf("message %d after the third refusal: %v, want deferred with the long delay", i, got)
 			}
+		}
+		deferred := fmt.Sprintf(`tracekeep_ingest_deferred_messages{reason="%s"} %d`, ReasonWriteFailure, len(msgs))
+		if b := scrape(t, s); !strings.Contains(b, deferred) {
+			t.Fatalf("after the third refusal /metrics lacks %s", deferred)
+		}
+		for _, again := range msgs { // the redelivery, batched again
+			d, dec := dispose(t, p.x, again)
+			g.act(t.Context(), Entry{D: d, Msg: &msg{}}, dec, 2)
+		}
+		if b := scrape(t, s); !strings.Contains(b, deferred) {
+			t.Errorf("batching the redelivery settled the deferrals: /metrics lacks %s", deferred)
+		}
+		p.f.hooks[hookWrite] = nil
+		if err := g.flush(t.Context(), p.b.All()); err != nil {
+			t.Fatal(err)
+		}
+		if b := scrape(t, s); strings.Contains(b, "tracekeep_ingest_deferred_messages") {
+			t.Errorf("deferrals left after the write registered them:\n%s", b)
 		}
 	})
 }

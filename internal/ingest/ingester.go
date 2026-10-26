@@ -363,21 +363,18 @@ func (g *Ingester) act(ctx context.Context, e Entry, dec Decision, delivered uin
 		g.Log.Warn("ingest: alert", "reason", dec.Reason, "msg_id", e.D.Msg.Env.MsgID)
 	}
 	g.Metrics.Disposed(dec.Action.String(), delivered > 1)
-	if dec.Action == ActNak {
-		g.Metrics.Deferred(e.D.Msg.Env.MsgID, dec.Reason)
-	} else if dec.Action != ActPark { // park records whether the message stays deferred
-		g.Metrics.Settled(e.D.Msg.Env.MsgID)
-	}
 	switch dec.Action {
-	case ActBatch:
+	case ActBatch: // settled once its batch is registered: a batch the Writer refuses keeps it deferred
 		g.mu.Lock()
 		g.Batcher.Add(e, g.Now())
 		g.mu.Unlock()
 	case ActAck:
+		g.Metrics.Settled(e.D.Msg.Env.MsgID)
 		g.acknowledge(ctx, e)
-	case ActPark:
+	case ActPark: // park records whether the message stays deferred
 		g.park(ctx, e, dec.Reason, delivered)
 	case ActTerminate:
+		g.Metrics.Settled(e.D.Msg.Env.MsgID)
 		if e.D.Msg.Parked && dec.Reason == ReasonBeyondRetention {
 			// A parked message is never terminated for its age (G5-267): its version waits for an operator as evicted-hour.
 			g.evict(ctx, e)
@@ -395,10 +392,16 @@ func (g *Ingester) act(ctx context.Context, e Entry, dec Decision, delivered uin
 			g.Metrics.Lost(e.D.ToolID)
 		}
 	case ActNak:
-		_ = e.Msg.NakWithDelay(g.delay(delivered))
+		g.deferMsg(e, dec.Reason, g.delay(delivered))
 	default:
 		panic("ingest: unknown action")
 	}
+}
+
+// deferMsg naks e's message for redelivery after delay, noting it deferred for reason.
+func (g *Ingester) deferMsg(e Entry, reason string, delay time.Duration) {
+	g.Metrics.Deferred(e.D.Msg.Env.MsgID, reason, delay)
+	_ = e.Msg.NakWithDelay(delay)
 }
 
 // acknowledge acknowledges a message of a resolved version through the coordinator, which records it under a termination.
@@ -425,27 +428,23 @@ func (g *Ingester) evict(ctx context.Context, e Entry) {
 func (g *Ingester) park(ctx context.Context, e Entry, reason string, delivered uint64) {
 	id := e.D.Msg.Env.MsgID
 	if !g.Park || e.D.Msg.Parked {
-		g.Metrics.Deferred(id, reason)
-		_ = e.Msg.NakWithDelay(g.delay(delivered))
+		g.deferMsg(e, reason, g.delay(delivered))
 		return
 	}
 	p, err := g.Coordinator.Park(ctx, e, reason, HourOf(g.Executor.Horizon()))
 	switch {
 	case err != nil:
 		g.Log.Warn("ingest: parking failed", "msg_id", id, "error", err)
-		g.Metrics.Deferred(id, reason)
-		_ = e.Msg.NakWithDelay(g.delay(delivered))
+		g.deferMsg(e, reason, g.delay(delivered))
 	case p.Begun.BeyondRetention:
 		g.act(ctx, e, Decision{Action: ActTerminate, Reason: ReasonBeyondRetention, Alert: true, Audit: true}, delivered)
 	case p.Begun.State.Resolved():
 		g.Metrics.Settled(id)
 		g.acknowledge(ctx, e)
 	case p.Confirmation == Suppressed:
-		g.Metrics.Deferred(id, reason)
-		_ = e.Msg.NakWithDelay(suppressedNakDelay)
+		g.deferMsg(e, reason, suppressedNakDelay)
 	case p.Confirmation != Confirmed:
-		g.Metrics.Deferred(id, reason)
-		_ = e.Msg.NakWithDelay(g.delay(delivered))
+		g.deferMsg(e, reason, g.delay(delivered))
 	default: // parked: the original was acknowledged
 		g.Metrics.Settled(id)
 	}
@@ -471,6 +470,7 @@ func (g *Ingester) flush(ctx context.Context, batches []*Batch) error {
 		switch {
 		case err != nil:
 			errs = append(errs, err)
+			g.settled(b.Entries[:out.Acked])
 			if errors.As(err, &refused) && g.refused(refused.batch) >= writeFailureLimit {
 				// Deterministic: the messages stay deferred for an operator (ingest.md §6.1 `write-failure`), parked when parking is on.
 				g.Log.Warn("ingest: alert", "reason", ReasonWriteFailure, "capture", b.Key.Capture.String(), "hour", b.Key.Hour, "error", err)
@@ -478,7 +478,7 @@ func (g *Ingester) flush(ctx context.Context, batches []*Batch) error {
 					if g.Park {
 						g.park(ctx, e, ReasonWriteFailure, 0)
 					} else {
-						_ = e.Msg.NakWithDelay(lastNakDelay)
+						g.deferMsg(e, ReasonWriteFailure, lastNakDelay)
 					}
 				}
 
@@ -498,10 +498,18 @@ func (g *Ingester) flush(ctx context.Context, batches []*Batch) error {
 			}
 		default: // registered and acknowledged
 			delete(g.writeFailures, batchName(b))
+			g.settled(b.Entries)
 		}
 	}
 
 	return errors.Join(errs...)
+}
+
+// settled forgets the deferrals of the entries a flush acknowledged.
+func (g *Ingester) settled(entries []Entry) {
+	for _, e := range entries {
+		g.Metrics.Settled(e.D.Msg.Env.MsgID)
+	}
 }
 
 // refused counts one more refusal of the batch named batch by the Writer and returns the count.
