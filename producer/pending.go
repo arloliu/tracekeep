@@ -13,6 +13,7 @@ type Pending struct{ t *core.PendingTable }
 
 // Token is one registration's handle: safe from any goroutine, never blocking on anything external.
 // Sent, SendFailed and SubmissionFailed report the send's progress and exclude each other;
+// a reply can arrive before the forwarding call returns, so Sent may follow the terminal outcome;
 // Replied, TimedOut and Cancelled are the waiter's terminal outcomes, and the first seals the request.
 // Every report the protocol does not take is a counted no-op.
 type Token interface {
