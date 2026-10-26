@@ -339,7 +339,10 @@ func TestFlushBeyondTheHorizon(t *testing.T) {
 func (p *pipeline) ingester(log *slog.Logger) *Ingester {
 	at := time.Unix(0, now)
 
-	return &Ingester{Executor: p.x, Flusher: p.f, Batcher: p.b, Log: log, Heartbeat: time.Hour, Now: func() time.Time { return at }}
+	return &Ingester{
+		Executor: p.x, Flusher: p.f, Batcher: p.b, Coordinator: &Coordinator{Catalog: p.cat}, Log: log, Heartbeat: time.Hour,
+		Now: func() time.Time { return at },
+	}
 }
 
 // otherVersion is another version of a data record at seq.

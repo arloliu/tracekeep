@@ -14,6 +14,7 @@ import (
 	"github.com/arloliu/go-secs/tracepack"
 	"github.com/arloliu/tracekeep/internal/bus"
 	"github.com/arloliu/tracekeep/internal/catalog"
+	"github.com/arloliu/tracekeep/producer/busconfig"
 )
 
 // Nak delays: a deferral backs off from the first to the last as the message is redelivered (ingest.md §6.1).
@@ -21,6 +22,9 @@ const (
 	firstNakDelay = 5 * time.Second
 	lastNakDelay  = time.Minute
 )
+
+// suppressedNakDelay outwaits the parking stream's duplicate window, which suppressed a copy's publish and stored nothing (parking.md *Confirmation*).
+const suppressedNakDelay = busconfig.DuplicateWindow + firstNakDelay
 
 // writeFailureLimit is how many times the Writer refuses one batch before the refusal counts as deterministic.
 const writeFailureLimit = 3
@@ -42,6 +46,11 @@ type Ingester struct {
 	Executor *Executor
 	Batcher  *Batcher
 	Flusher  *Flusher
+	// Coordinator parks the deferrals that cannot clear by themselves and acknowledges every resolved version.
+	Coordinator *Coordinator
+	// Park enables parking (parking.enabled); without it an indefinite deferral is nak'd like any other,
+	// and the consumer's acknowledgement budget may fill.
+	Park     bool
 	Consumer jetstream.Consumer
 	// Stream is the traffic stream, checked against the catalog's incarnation with every renewal.
 	Stream jetstream.Stream
@@ -282,7 +291,7 @@ func (g *Ingester) handle(ctx context.Context, m jetstream.Msg, generation int64
 		_ = m.NakWithDelay(firstNakDelay)
 		return
 	}
-	msg, delivered, err := readMessage(m)
+	msg, err := readMessage(m)
 	if err != nil {
 		_ = m.NakWithDelay(firstNakDelay)
 		return
@@ -290,11 +299,11 @@ func (g *Ingester) handle(ctx context.Context, m jetstream.Msg, generation int64
 	d, dec, err := g.Executor.Dispose(ctx, msg)
 	if err != nil {
 		g.Log.Warn("ingest: disposition failed", "msg_id", msg.Env.MsgID, "error", err)
-		_ = m.NakWithDelay(nakDelay(delivered))
+		_ = m.NakWithDelay(nakDelay(msg.Delivered))
 
 		return
 	}
-	g.act(ctx, Entry{D: d, Msg: m}, dec, delivered)
+	g.act(ctx, Entry{D: d, Msg: m}, dec, msg.Delivered)
 }
 
 // act carries out a final disposition.
@@ -308,9 +317,9 @@ func (g *Ingester) act(ctx context.Context, e Entry, dec Decision, delivered uin
 		g.Batcher.Add(e, g.Now())
 		g.mu.Unlock()
 	case ActAck:
-		if err := ack(ctx, e); err != nil {
-			g.Log.Warn("ingest: ack failed", "msg_id", e.D.Msg.Env.MsgID, "error", err)
-		}
+		g.acknowledge(ctx, e, dec.Reason == ReasonTerminated)
+	case ActPark:
+		g.park(ctx, e, dec.Reason, delivered)
 	case ActTerminate:
 		if dec.Audit {
 			if err := g.Executor.AuditTermination(ctx, e.D, dec.Reason); err != nil {
@@ -324,6 +333,39 @@ func (g *Ingester) act(ctx context.Context, e Entry, dec Decision, delivered uin
 		_ = e.Msg.NakWithDelay(nakDelay(delivered))
 	default:
 		panic("ingest: unknown action")
+	}
+}
+
+// acknowledge acknowledges a message of a resolved version through the coordinator, under the termination when terminated.
+func (g *Ingester) acknowledge(ctx context.Context, e Entry, terminated bool) {
+	if err := g.Coordinator.Acknowledge(ctx, e.D, e.Msg, terminated); err != nil {
+		// Unacknowledged: the message returns and is acknowledged again under the same resolution.
+		g.Log.Warn("ingest: ack failed", "msg_id", e.D.Msg.Env.MsgID, "error", err)
+	}
+}
+
+// park moves an indefinite deferral to the parking stream and acts on what the coordinator found:
+// a version past the horizon is terminated, a resolved one acknowledged, an unconfirmed copy's original nak'd to be parked again.
+// Without parking, the deferral is nak'd like any other.
+func (g *Ingester) park(ctx context.Context, e Entry, reason string, delivered uint64) {
+	if !g.Park {
+		_ = e.Msg.NakWithDelay(nakDelay(delivered))
+		return
+	}
+	p, err := g.Coordinator.Park(ctx, e, reason, HourOf(g.Executor.Horizon()))
+	switch {
+	case err != nil:
+		g.Log.Warn("ingest: parking failed", "msg_id", e.D.Msg.Env.MsgID, "error", err)
+		_ = e.Msg.NakWithDelay(nakDelay(delivered))
+	case p.Begun.BeyondRetention:
+		g.act(ctx, e, Decision{Action: ActTerminate, Reason: ReasonBeyondRetention, Alert: true, Audit: true}, delivered)
+	case p.Begun.State.Resolved():
+		g.acknowledge(ctx, e, p.Begun.State == catalog.VersionTerminated)
+	case p.Confirmation == Suppressed:
+		_ = e.Msg.NakWithDelay(suppressedNakDelay)
+	case p.Confirmation != Confirmed:
+		_ = e.Msg.NakWithDelay(nakDelay(delivered))
+	default: // parked: the original was acknowledged
 	}
 }
 
@@ -347,14 +389,21 @@ func (g *Ingester) flush(ctx context.Context, batches []*Batch) error {
 		switch {
 		case err != nil:
 			errs = append(errs, err)
-			delay := firstNakDelay
 			if errors.As(err, &refused) && g.refused(refused.batch) >= writeFailureLimit {
-				// Deterministic: the messages stay deferred for an operator (ingest.md §6.1 `write-failure`).
+				// Deterministic: the messages stay deferred for an operator (ingest.md §6.1 `write-failure`), parked when parking is on.
 				g.Log.Warn("ingest: alert", "reason", ReasonWriteFailure, "capture", b.Key.Capture.String(), "hour", b.Key.Hour, "error", err)
-				delay = lastNakDelay
+				for _, e := range b.Entries[out.Acked:] {
+					if g.Park {
+						g.park(ctx, e, ReasonWriteFailure, 0)
+					} else {
+						_ = e.Msg.NakWithDelay(lastNakDelay)
+					}
+				}
+
+				continue
 			}
 			for _, e := range b.Entries[out.Acked:] {
-				_ = e.Msg.NakWithDelay(delay)
+				_ = e.Msg.NakWithDelay(firstNakDelay)
 			}
 		case out.Terminated:
 			// Not a write failure: the redelivery is decided again and finds the termination (T-32).
@@ -383,11 +432,11 @@ func (g *Ingester) refused(batch string) int {
 	return g.writeFailures[batch]
 }
 
-// readMessage reads a delivery's headers, body and stream sequence.
-func readMessage(m jetstream.Msg) (Message, uint64, error) {
+// readMessage reads a delivery's headers, body, stream sequence and delivery count.
+func readMessage(m jetstream.Msg) (Message, error) {
 	md, err := m.Metadata()
 	if err != nil {
-		return Message{}, 0, err
+		return Message{}, err
 	}
 	h := m.Headers()
 	env := tracepack.BusEnvelope{
@@ -395,9 +444,9 @@ func readMessage(m jetstream.Msg) (Message, uint64, error) {
 		PayloadRef: h.Get(tracepack.BusHeaderPayloadRef), PayloadDigest: h.Get(tracepack.BusHeaderPayloadDigest),
 	}
 
-	msg := Message{Env: env, Body: m.Data(), StreamSeq: int64(md.Sequence.Stream), Subject: m.Subject(), Header: h} //nolint:gosec // a stream sequence fits
+	msg := Message{Env: env, Body: m.Data(), StreamSeq: int64(md.Sequence.Stream), Delivered: md.NumDelivered, Subject: m.Subject(), Header: h} //nolint:gosec // a stream sequence fits
 
-	return msg, md.NumDelivered, nil
+	return msg, nil
 }
 
 // nakDelay backs off from five seconds to a minute as the message is redelivered.

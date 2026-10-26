@@ -72,7 +72,7 @@ func (k *Coordinator) Park(ctx context.Context, e Entry, reason string, horizonH
 		return Parking{Begun: b, Confirmation: c}, err
 	}
 
-	return Parking{Begun: b, Confirmation: c}, k.Acknowledge(ctx, e.D, e.Msg)
+	return Parking{Begun: b, Confirmation: c}, k.Acknowledge(ctx, e.D, e.Msg, false)
 }
 
 // Begin is step (1): the version's row and the delivery's copy row, under the capture row; it returns the version's state.
@@ -115,7 +115,23 @@ func (k *Coordinator) Advance(ctx context.Context, d *Delivery) (catalog.Version
 
 // Acknowledge is step (4) for the delivery the caller holds, original or copy:
 // a DoubleAck, then its copy row acked once the server confirmed it.
-func (k *Coordinator) Acknowledge(ctx context.Context, d *Delivery, m Msg) error {
+// A message of a terminated version is acknowledged under the termination: its audit row, naming the action, is written first,
+// so no such acknowledgement goes unrecorded, and a redelivery acknowledged again writes its own (parking.md *Resolution*).
+func (k *Coordinator) Acknowledge(ctx context.Context, d *Delivery, m Msg, terminated bool) error {
+	if terminated {
+		action, err := k.Catalog.TerminatedBy(ctx, d.versionKey())
+		if err != nil {
+			return err
+		}
+		capture := d.Raw.Version.Capture
+		err = k.Catalog.Audit(ctx, catalog.AuditEntry{
+			Actor: "ingest", Action: ReasonTerminated, ActionID: action, Capture: &capture,
+			Detail: fmt.Sprintf("seq %d incarnation %d stream seq %d", d.Raw.Version.Seq, d.Incarnation, d.Msg.StreamSeq),
+		})
+		if err != nil {
+			return err
+		}
+	}
 	if err := m.DoubleAck(ctx); err != nil {
 		return err
 	}

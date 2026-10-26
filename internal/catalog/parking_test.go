@@ -223,6 +223,16 @@ func TestTerminateCapture(t *testing.T) {
 		if got, err := c.Capture(ctx, capture); err != nil || got.State != StatePending {
 			t.Errorf("capture = %+v, %v; want the placeholder kept", got, err)
 		}
+		if n := count(t, c, `SELECT COUNT(*) FROM audit_log WHERE action = 'capture-terminate' AND action_id = 'c1'`); n != 1 {
+			t.Errorf("%d audit rows of the action, want 1", n)
+		}
+		quiet := newID(t)
+		if n, err := c.TerminateCapture(ctx, quiet, 1, 10, "op", "c2"); err != nil || n != 0 {
+			t.Fatalf("TerminateCapture with nothing parked = %d, %v", n, err)
+		}
+		if n := count(t, c, `SELECT COUNT(*) FROM audit_log WHERE action_id = 'c2'`); n != 1 {
+			t.Errorf("an order with nothing parked to terminate was not audited")
+		}
 		orders, err := c.TerminationOrders(ctx, capture)
 		if err != nil || len(orders) != 1 || orders[0] != (TerminationOrder{ActionID: "c1", Incarnation: 1, CutOff: 10, State: "active"}) {
 			t.Fatalf("orders = %+v, %v", orders, err)

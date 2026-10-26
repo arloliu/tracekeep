@@ -23,10 +23,6 @@ var recordKinds = []tracepack.Kind{tracepack.KindData, tracepack.KindControl, tr
 // ErrClaimNotFound reports a claim object the bucket does not hold.
 var ErrClaimNotFound = errors.New("ingest: claim object not found")
 
-// errNoOrders reports a delivery an active termination order covers, which parking's transactions apply (phase 1.4):
-// it is nak'd and decided again.
-var errNoOrders = errors.New("ingest: termination orders are applied by parking")
-
 // ClaimStore reads claim objects: the claim bucket, a NATS object store on the traffic cluster (storage.md §5.2).
 type ClaimStore interface {
 	// Get returns the object named name, or an error wrapping ErrClaimNotFound.
@@ -39,6 +35,8 @@ type Message struct {
 	Body []byte
 	// StreamSeq is the message's sequence on the stream it came from.
 	StreamSeq int64
+	// Delivered counts the message's deliveries, this one included.
+	Delivered uint64
 	// Subject and Header are the message's as the bus delivered them, which its parked copy carries on.
 	Subject string
 	Header  nats.Header
@@ -88,6 +86,7 @@ type Executor struct {
 func (x *Executor) Dispose(ctx context.Context, msg Message) (*Delivery, Decision, error) {
 	d := &Delivery{Msg: msg, Incarnation: x.Incarnation}
 	d.Raw, d.Facts = ReadRaw(&d.Msg.Env, msg.Body, x.Horizon())
+	d.Facts.LastDelay = nakDelay(msg.Delivered) >= lastNakDelay
 	for range maxSteps {
 		dec := Decide(&d.Facts)
 		if dec.Step == StepNone {
@@ -107,7 +106,7 @@ func (x *Executor) run(ctx context.Context, d *Delivery, s Step) error {
 	case StepResolve:
 		return x.resolve(ctx, d)
 	case StepApplyOrder:
-		return errNoOrders
+		return x.applyOrder(ctx, d)
 	case StepFrame:
 		br, err := tracepack.CheckBusMessage(d.Msg.Env, d.Msg.Body)
 		switch {
@@ -175,6 +174,29 @@ func (x *Executor) resolve(ctx context.Context, d *Delivery) error {
 	return nil
 }
 
+// applyOrder terminates the delivery's version under the order that covers it, and records the resolution it finds under the capture row:
+// unresolved again when the order was spent meanwhile.
+func (x *Executor) applyOrder(ctx context.Context, d *Delivery) error {
+	r, err := x.Catalog.ApplyOrder(ctx, d.identity())
+	if err != nil {
+		return err
+	}
+	switch r {
+	case catalog.ResolvedTerminated:
+		d.Facts.Resolution = ResolvedTerminated
+	case catalog.ResolvedStaged:
+		d.Facts.Resolution = ResolvedStaged
+	case catalog.Unresolved:
+		d.Facts.Resolution = Unresolved
+	case catalog.CoveredByOrder:
+		return errors.New("ingest: an applied order returned covered")
+	default:
+		return fmt.Errorf("ingest: unknown resolution %d", r)
+	}
+
+	return nil
+}
+
 func (x *Executor) lookupCapture(ctx context.Context, d *Delivery) error {
 	c, err := x.Catalog.Capture(ctx, d.Raw.Version.Capture)
 	switch {
@@ -183,7 +205,7 @@ func (x *Executor) lookupCapture(ctx context.Context, d *Delivery) error {
 	case err != nil:
 		return err
 	case c.State == catalog.StatePending:
-		d.Facts.Capture = CaptureUnknown
+		d.Facts.Capture = CapturePending
 	case c.State == catalog.StateRejected:
 		d.Facts.Capture = CaptureRejected
 	default:
