@@ -201,12 +201,7 @@ func run(ctx context.Context, e *Env, gs []*ingest.Ingester) error {
 	g, gctx := errgroup.WithContext(ctx)
 	for _, ig := range gs {
 		g.Go(func() error {
-			defer func() {
-				// The membership ends with the process; a lapsed lease would end it too, later.
-				if err := e.Catalog.Leave(context.WithoutCancel(ctx), ig.Replica); err != nil {
-					e.Log.Warn("ingest: leave", "replica", ig.Replica, "error", err)
-				}
-			}()
+			defer e.leave(ig.Replica)
 
 			return ig.Run(gctx)
 		})
@@ -215,8 +210,28 @@ func run(ctx context.Context, e *Env, gs []*ingest.Ingester) error {
 	return g.Wait()
 }
 
-// ingesters builds and joins the traffic and parked ingesters.
-func ingesters(ctx context.Context, e *Env) ([]*ingest.Ingester, error) {
+// leaveTimeout bounds ending a membership, so a stalled catalog never holds a stopping process.
+const leaveTimeout = 5 * time.Second
+
+// leave ends replica's membership; a lapsed lease would end it too, later.
+func (e *Env) leave(replica string) {
+	ctx, cancel := context.WithTimeout(context.Background(), leaveTimeout)
+	defer cancel()
+	if err := e.Catalog.Leave(ctx, replica); err != nil {
+		e.Log.Warn("ingest: leave", "replica", replica, "error", err)
+	}
+}
+
+// ingesters builds and joins the traffic and parked ingesters; a failure leaves the memberships it joined.
+func ingesters(ctx context.Context, e *Env) (_ []*ingest.Ingester, err error) {
+	var gs []*ingest.Ingester
+	defer func() {
+		if err != nil {
+			for _, g := range gs {
+				e.leave(g.Replica)
+			}
+		}
+	}()
 	c := e.Config
 	ss, incs, err := e.streams(ctx)
 	if err != nil {
@@ -249,7 +264,6 @@ func ingesters(ctx context.Context, e *Env) ([]*ingest.Ingester, error) {
 		f.WorkDir = os.TempDir()
 	}
 	k := &ingest.Coordinator{Catalog: e.Catalog, Bus: e.JS, ParkPrefix: cmp.Or(c.Bus.ParkPrefix, busconfig.DefaultParkPrefix)}
-	var gs []*ingest.Ingester
 	for _, role := range []string{catalog.RoleTraffic, catalog.RoleParking} {
 		cons, err := bus.Consumer(ctx, ss[role], incs[role], bus.ConsumerConfig{AckWait: c.Ingest.AckWait, MaxAckPending: c.Ingest.MaxAckPending})
 		if err != nil {
