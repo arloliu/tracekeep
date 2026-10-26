@@ -48,12 +48,12 @@ func Ensure(ctx context.Context, js jetstream.JetStream, cfg Config) (traffic, p
 	if err := busconfig.ValidatePrefixes(cfg.SubjectPrefix, parkPrefix); err != nil {
 		return nil, nil, fmt.Errorf("bus: %w", err)
 	}
-	name := cmp.Or(cfg.Stream, busconfig.DefaultTrafficStream)
+	name := StreamName(cfg, catalog.RoleTraffic)
 	if traffic, err = ensureStream(ctx, js, busconfig.StreamConfig(name, cfg.SubjectPrefix)); err != nil {
 		return nil, nil, fmt.Errorf("bus: traffic stream %s: %w", name, err)
 	}
 	tc := traffic.CachedInfo().Config
-	name = cmp.Or(cfg.ParkedStream, busconfig.DefaultParkedStream)
+	name = StreamName(cfg, catalog.RoleParking)
 	if parked, err = ensureStream(ctx, js, busconfig.ParkedStreamConfig(name, parkPrefix, tc.Replicas)); err != nil {
 		return nil, nil, fmt.Errorf("bus: parking stream %s: %w", name, err)
 	}
@@ -65,6 +65,15 @@ func Ensure(ctx context.Context, js jetstream.JetStream, cfg Config) (traffic, p
 	}
 
 	return traffic, parked, nil
+}
+
+// StreamName is the name of the stream playing role, the traffic stream's or the parking stream's.
+func StreamName(cfg Config, role string) string {
+	if role == catalog.RoleParking {
+		return cmp.Or(cfg.ParkedStream, busconfig.DefaultParkedStream)
+	}
+
+	return cmp.Or(cfg.Stream, busconfig.DefaultTrafficStream)
 }
 
 func ensureStream(ctx context.Context, js jetstream.JetStream, c jetstream.StreamConfig) (jetstream.Stream, error) {

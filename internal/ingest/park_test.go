@@ -62,7 +62,8 @@ func parkingBus(t *testing.T, clustered bool) (jetstream.JetStream, jetstream.St
 		t.Fatal(err)
 	}
 	t.Cleanup(nc.Close)
-	js, err := jetstream.New(nc)
+	// A cluster under a loaded test run answers its API more slowly than a standalone server.
+	js, err := jetstream.New(nc, jetstream.WithDefaultTimeout(30*time.Second))
 	if err != nil {
 		t.Fatal(err)
 	}
