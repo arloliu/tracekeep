@@ -36,7 +36,7 @@ Contract changes go through proposals, which the subject [README.md](README.md) 
 - **`Preflight`**: runs on the producer's own bus, in the background after the connection is up, never delaying the device's `Start`;
   returns a readable list of what is wrong.
 - **What the producer must guarantee**: six items, the whole of an integrator's obligations (§4.7, last paragraph; `.agents/rules/600-invariants.md`).
-- **Versions**: the SDK requires nats.go v1.55.0, which raises a producer's nats.go and Go floor (Go 1.26) when it imports the SDK (§4.7 *Versions*, T-19).
+- **Versions**: the SDK requires nats.go v1.55.0 and go-secs v2.8.0, which raise a producer's nats.go, go-secs and Go floor (Go 1.26) when it imports the SDK (§4.7 *Versions*, T-19).
 - **Open**: the producer-side API is a sketch and fixes no signatures beyond the names above;
   the send-path token protocol behind `Pending()` (`producer.md` §4.6 *Send-path token protocol*) is reviewed with eqp-hub's maintainers before phase G (T-26).
 
@@ -160,6 +160,8 @@ and from v1.55.0 on the SDK raises it only for stability and upstream fixes, nev
 The raise carries more with it:
 nats.go v1.55.0's `go.mod` declares `go 1.26.0`, so a producer builds with Go 1.26 or later, the line the gateway is on (T-14),
 and its own requirements rise (nkeys, `klauspost/compress`, `golang.org/x/crypto`).
+The SDK's go-secs requirement is a floor the same way:
+`producer/v0.1.0` requires go-secs v2.8.0 (its HSMS observers) and tracepack v0.9.0, so importing it also raises the gateway's go-secs from v2.6.0 to v2.8.0 (phase G).
 nats-server is required by the service module (`internal/testbus`) and the SDK's test-only bus module (T-35), never by the SDK, so no producer pulls it in.
 CI runs a sample producer's **resolved** graph (`go list -m all`) at that minimum and at the latest nats.go,
 since producers will usually be newer than the floor;
