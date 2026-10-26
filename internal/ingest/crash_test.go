@@ -225,7 +225,7 @@ func TestCrashDuringTheAcks(t *testing.T) {
 
 // A batch the Writer refuses three times is deterministic: the write-failure alert is raised and its messages stay deferred,
 // though records joined the batch between the tries; parking off, they are counted deferred from then,
-// batched again at their redelivery without being settled, and settled once a write registers them.
+// batched again at their redelivery without being settled, kept while the batch holds them, and settled once a write registers them.
 func TestWriteFailureThreeTimes(t *testing.T) {
 	t.Parallel()
 	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
@@ -234,7 +234,8 @@ func TestWriteFailureThreeTimes(t *testing.T) {
 		var logged bytes.Buffer
 		g := p.ingester(slog.New(slog.NewTextHandler(&logged, nil)))
 		s := metrics.NewServer()
-		m, err := metrics.NewIngest(s)
+		clock := time.Unix(0, now)
+		m, err := metrics.NewIngest(s, func() time.Time { return clock })
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -269,8 +270,17 @@ func TestWriteFailureThreeTimes(t *testing.T) {
 			d, dec := dispose(t, p.x, again)
 			g.act(t.Context(), Entry{D: d, Msg: &msg{}}, dec, 2)
 		}
-		if b := scrape(t, s); !strings.Contains(b, deferred) {
-			t.Errorf("batching the redelivery settled the deferrals: /metrics lacks %s", deferred)
+		// Held in the batch far past the expiry the refusal's nak set, kept by the heartbeat.
+		for range 6 {
+			clock = clock.Add(5 * time.Minute)
+			g.beat()
+		}
+		b := scrape(t, s)
+		if !strings.Contains(b, deferred) {
+			t.Errorf("batching the redelivery settled or expired the deferrals: /metrics lacks %s", deferred)
+		}
+		if age := fmt.Sprintf(`tracekeep_ingest_deferred_oldest_age_seconds{reason="%s"} 1800`, ReasonWriteFailure); !strings.Contains(b, age) {
+			t.Errorf("/metrics lacks %s: the age from the refusal", age)
 		}
 		p.f.hooks[hookWrite] = nil
 		if err := g.flush(t.Context(), p.b.All()); err != nil {
@@ -363,12 +373,19 @@ func TestPutFailsAfterTheFirstSegment(t *testing.T) {
 	})
 }
 
-// A batch whose hour passed the retention horizon at its flush registers nothing, and each message is terminated with its audit row.
+// A batch whose hour passed the retention horizon at its flush registers nothing, and each message is terminated with its audit row,
+// a loss of the capture's tool.
 func TestFlushBeyondTheHorizon(t *testing.T) {
 	t.Parallel()
 	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
 		p := newPipeline(t, c)
 		g := p.ingester(slog.New(slog.DiscardHandler))
+		s := metrics.NewServer()
+		m, err := metrics.NewIngest(s, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		g.Metrics = m
 		capture := tracepack.UUID{8}
 		hs := p.deliver(t, traffic(t, capture))
 		p.f.HorizonHour = func() int64 { return HourOf(now) + 1 }
@@ -385,6 +402,9 @@ func TestFlushBeyondTheHorizon(t *testing.T) {
 		}
 		if got, _ := c.Capture(t.Context(), capture); got.HasHighestSeq {
 			t.Errorf("a segment was registered: %+v", got)
+		}
+		if want := fmt.Sprintf(`tracekeep_ingest_declared_losses_total{tool_id="T1"} %d`, len(hs)); !strings.Contains(scrape(t, s), want) {
+			t.Errorf("/metrics lacks %s", want)
 		}
 	})
 }

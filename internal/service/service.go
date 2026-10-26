@@ -405,7 +405,7 @@ func ingesters(ctx context.Context, e *Env) (_ []*ingest.Ingester, err error) {
 	}
 	var m *metrics.Ingest
 	if e.Metrics != nil {
-		if m, err = metrics.NewIngest(e.Metrics); err != nil {
+		if m, err = metrics.NewIngest(e.Metrics, e.now); err != nil {
 			return nil, err
 		}
 	}

@@ -23,8 +23,11 @@ type Ingest struct {
 	deferred                                            *deferrals
 }
 
-// NewIngest registers the ingest role's collectors on s.
-func NewIngest(s *Server) (*Ingest, error) {
+// NewIngest registers the ingest role's collectors on s; the deferral ages and the refresh stamps are read by now, nil for time.Now.
+func NewIngest(s *Server, now func() time.Time) (*Ingest, error) {
+	if now == nil {
+		now = time.Now
+	}
 	counter := func(name, help string, labels ...string) *prometheus.CounterVec {
 		return prometheus.NewCounterVec(prometheus.CounterOpts{Namespace: "tracekeep", Subsystem: "ingest", Name: name, Help: help}, labels)
 	}
@@ -44,8 +47,8 @@ func NewIngest(s *Server) (*Ingest, error) {
 			Help: "The catalog registration of a segment.", Buckets: prometheus.ExponentialBuckets(0.001, 2, 12)}),
 		refreshFailures: prometheus.NewCounter(prometheus.CounterOpts{Namespace: "tracekeep", Subsystem: "ingest", Name: "refresh_failures_total",
 			Help: "Refreshes of the catalog and bus gauges that failed, the gauges keeping their previous values."}),
-		snap:     &snapshot{now: time.Now},
-		deferred: &deferrals{byID: map[string]deferral{}, now: time.Now},
+		snap:     &snapshot{now: now},
+		deferred: &deferrals{byID: map[string]deferral{}, now: now},
 	}
 	for _, c := range []prometheus.Collector{
 		m.messages, m.segments, m.segmentBytes, m.conflicts, m.losses, m.redelivered, m.inProgress, m.put, m.registration,
@@ -78,6 +81,16 @@ func (m *Ingest) Deferred(id, reason string, retry time.Duration) {
 		return
 	}
 	m.deferred.add(id, reason, retry)
+}
+
+// Held keeps the deferrals of the message ids, held in a batch this replica has not yet written,
+// until deferralGrace from now: a message batched again after a failed write stays deferred, its age kept, while it waits.
+// A message no longer held, its batch abandoned, expires as any other.
+func (m *Ingest) Held(ids []string) {
+	if m == nil {
+		return
+	}
+	m.deferred.hold(ids)
 }
 
 // Settled forgets the message id's deferral.
@@ -316,6 +329,18 @@ func (d *deferrals) prune(now time.Time) {
 		}
 	}
 	d.pruned = now
+}
+
+func (d *deferrals) hold(ids []string) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	until := d.now().Add(deferralGrace)
+	for _, id := range ids {
+		if f, ok := d.byID[id]; ok && f.expires.Before(until) {
+			f.expires = until
+			d.byID[id] = f
+		}
+	}
 }
 
 func (d *deferrals) remove(id string) {

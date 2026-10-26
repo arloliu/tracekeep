@@ -52,7 +52,7 @@ func TestIngestMetrics(t *testing.T) {
 		ctx := t.Context()
 		r := newReplica(t, c)
 		s := metrics.NewServer()
-		m, err := metrics.NewIngest(s)
+		m, err := metrics.NewIngest(s, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -113,7 +113,7 @@ func TestNilMetricsRecordNothing(t *testing.T) {
 func TestParkFallbackKeepsTheDeferralAge(t *testing.T) {
 	t.Parallel()
 	s := metrics.NewServer()
-	m, err := metrics.NewIngest(s)
+	m, err := metrics.NewIngest(s, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

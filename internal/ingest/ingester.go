@@ -82,7 +82,7 @@ type Ingester struct {
 	mu sync.Mutex
 	// flushing are the messages of the batches a flush took from the batcher and has not finished,
 	// copied out, since a flush sorts its batch's entries.
-	flushing []Msg
+	flushing []Entry
 
 	membership catalog.Membership
 	// leaseEnd is when this replica stops trusting its lease: the renewal's start plus the lease,
@@ -216,21 +216,19 @@ func (g *Ingester) take(remove func() []*Batch) []*Batch {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	batches := remove()
-	g.flushing = messages(batches)
+	g.flushing = entries(batches)
 
 	return batches
 }
 
-// messages are the messages of batches' entries.
-func messages(batches []*Batch) []Msg {
-	var msgs []Msg
+// entries are batches' entries.
+func entries(batches []*Batch) []Entry {
+	var es []Entry
 	for _, b := range batches {
-		for _, e := range b.Entries {
-			msgs = append(msgs, e.Msg)
-		}
+		es = append(es, b.Entries...)
 	}
 
-	return msgs
+	return es
 }
 
 // heartbeats keeps the held messages in progress at every tick until ctx ends.
@@ -247,16 +245,20 @@ func (g *Ingester) heartbeats(ctx context.Context, tick <-chan time.Time) {
 
 // beat keeps every held message in progress: those the batcher holds and those of the batches a flush has not finished.
 // One racing its message's acknowledgement is harmless: the server ignores progress on a message no longer pending.
+// The deferrals of the held messages, write failures redelivered into a batch, are kept while they are held.
 func (g *Ingester) beat() {
 	g.mu.Lock()
-	var msgs []Msg
-	g.Batcher.Held(func(m Msg) { msgs = append(msgs, m) })
-	msgs = append(msgs, g.flushing...)
+	var held []Entry
+	g.Batcher.Held(func(e Entry) { held = append(held, e) })
+	held = append(held, g.flushing...)
 	g.mu.Unlock()
-	for _, m := range msgs {
-		_ = m.InProgress()
+	ids := make([]string, len(held))
+	for i, e := range held {
+		_ = e.Msg.InProgress()
+		ids[i] = e.D.Msg.Env.MsgID
 	}
-	g.Metrics.InProgress(len(msgs))
+	g.Metrics.InProgress(len(held))
+	g.Metrics.Held(ids)
 }
 
 // renew checks the stream against its incarnation, then renews the membership, or registers again once it lapsed.
@@ -461,7 +463,7 @@ func (g *Ingester) flush(ctx context.Context, batches []*Batch) error {
 	}()
 	var errs []error
 	for i, b := range batches {
-		msgs := messages(batches[i:])
+		msgs := entries(batches[i:])
 		g.mu.Lock()
 		g.flushing = msgs
 		g.mu.Unlock()

@@ -103,12 +103,12 @@ func (b *Batcher) All() []*Batch {
 	return all
 }
 
-// Held calls f for the message of every record a batch holds: in-progress acks keep them from redelivery
+// Held calls f for every record a batch holds: in-progress acks keep their messages from redelivery
 // while the batch waits (architecture.md §3.1).
-func (b *Batcher) Held(f func(Msg)) {
+func (b *Batcher) Held(f func(Entry)) {
 	for _, bt := range b.batches {
 		for _, e := range bt.Entries {
-			f(e.Msg)
+			f(e)
 		}
 	}
 }
