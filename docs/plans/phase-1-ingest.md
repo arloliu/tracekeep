@@ -1,6 +1,6 @@
 # Phase 1 — ingest
 
-Status: active (2026-10-27) — phase 1.5 next
+Status: active (2026-10-27) — phase 1.5 in progress
 
 Milestone 1 of the [roadmap](../ROADMAP.md):
 the `ingest` role with its stores, catalog and reconciler, and `tracekeep dev` as the single-process loop.
@@ -23,7 +23,7 @@ This plan only orders the work.
 | 1.2 — catalog | `schema.hcl`, Atlas migrations per engine, `internal/catalog` on SQLite and MariaDB: the prologue, the lease, membership, `Admit`, `Reject`, `RegisterPack` and the reads ingest needs, barrier schedules on both engines (`catalog.md` §7.1–§7.4, `rollouts.md` §6.4) | done (#11) |
 | 1.3 — ingest | `internal/bus` and `internal/ingest`: the disposition classifier, claim-check fetch, batching, masking with the bound configuration, the write seam, registration, per-message acks, the activation gate (`ingest.md` §6.1–§6.3, `architecture.md` §3.1) | done (#13) |
 | 1.4 — parking | parking, resolution, incarnations, termination orders and their re-check in `Admit`, `Reject` and `RegisterPack`, the parking transactions, `bus adopt-stream` and the termination commands (`parking.md`, `operations.md` §10.4) | done (#14) |
-| 1.5 — reconciler | full verification, quarantine and adoption under the compactor lease (`storage.md` §5.4); a receipt's claim object key is the bucket-qualified `Tpk-Payload-Ref`, while the claim bucket is read by the bare message id | pending |
+| 1.5 — reconciler | full verification, quarantine and adoption under the compactor lease (`storage.md` §5.4); a receipt's claim object key is the bucket-qualified `Tpk-Payload-Ref`, while the claim bucket is read by the bare message id | in-progress |
 | 1.6 — dev and gate | `tracekeep dev` and the role subcommands with their configuration (T-22), each processing configuration named for its classifier's implementation and version, the simulator in the service module, the roadmap's phase 1 gate and checklist items 1–7 | pending |
 
 Only the phase under way is detailed; the others are detailed when they start.
@@ -93,3 +93,30 @@ the parked consumer's wiring into the roles, `parking.enabled` toggled on a runn
 The owner's decisions on the points this phase raised are T-40:
 an order never terminates a seq a registered pack holds (0fc0dcc), a restore changes `Created`,
 and `parked replay` is withdrawn to the deferred proposal P1.
+
+## Phase 1.5 — reconciler
+
+Work on the branch `feat/compact/reconciler`, one commit per step, test first;
+the branch merges by pull request once the whole phase passes an external post-implementation review.
+The reconciler lives in `internal/compact` and runs under the compactor lease;
+its wiring into the `compact` role and the `object adopt` and `object list` commands are phase 1.6.
+Every catalog step runs on both engines, every transaction starts with the capture-row helper (T-32),
+and every concurrent schedule is barrier-controlled.
+The claim-key note of the 1.5 row belongs to survivor deletion (`compactor.md` §8.4), which goes with retention to phase 2.
+
+An orphan is a key under `staging/` or `archive/` that the catalog neither registers nor tombstones.
+The specs give the reconciler no grace period, and adoption may win against `ingest`'s own registration of a healthy flush (`ingest.md` §6.3),
+so a pass adopts a key only when the previous pass also found it unknown:
+this plan's default, which the owner may change, and which costs one pass interval of delay.
+`compact` does not import `ingest`; the reconciler derives a pack's ranges and stop from the records it reads.
+Quarantined and unadmitted orphans are reported (logged, and returned by the pass), never deleted;
+the specs keep no table for them, and the metrics come with the role in phase 1.6.
+
+| Step | Scope | State |
+|---|---|---|
+| 1 | the reconciler's registration guard: an adoption whose pack holds a seq with a `terminated` `parked` row, or whose capture has a termination order in any state, is lost to the termination and its key tombstoned (`storage.md` §5.4); checked before the unadmitted-capture guard; and a read of a key's standing: registered, tombstoned or unknown | pending |
+| 2 | copy-row reconciliation in the catalog: the `waiting` copy rows of resolved versions on an incarnation, and the reconciler's compare-and-set `waiting → acked` under the capture row, which re-reads that the version is resolved and the incarnation not retired (`parking.md` *resolution*) | pending |
+| 3 | the orphan pass: unknown keys listed twice, tombstoned keys deleted again, `tracepack.Verify` in full with quarantine on any outcome but finalized-consistent or any writer defect, the exact seq set, endpoint times, stop and coverage read from the records, the key re-derived from the pack and compared, then `RegisterPack` adopted under the lease; a key beyond the horizon or lost to a termination deleted after the commit | pending |
+| 4 | the copy pass: per role, the current incarnation checked on a refreshed handle (`Created`, `LastSeq` not rewound) and `AllowDirect` off, then `GetMsg` on that handle for each waiting copy of a resolved version at or below `LastSeq`; only not-found marks the row `acked`, anything else advances nothing | pending |
+| 5 | the lease loop: the compactor lease taken and renewed, both passes run under it, the incarnations checked at every renewal; a lost lease or a changed incarnation stops the reconciler | pending |
+| 6 | the gate's reconciliation schedules: checklist item 3, the roadmap row's reconciler cases (the sole parked copy acknowledged at exactly `LastSeq` and reconciled after a restart, a handle created while `AllowDirect` was on reading through the API, a lagging replica on the clustered testbus), and the orphan cases (a crash after the put adopted while `ingest`'s registration is in flight, a pending capture's orphan left unregistered, a terminated orphan tombstoned and deleted, a tombstoned key deleted again, a corrupt, writer-defective or misnamed object quarantined) | pending |
