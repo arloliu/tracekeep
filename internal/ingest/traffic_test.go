@@ -87,7 +87,7 @@ func inline(t *testing.T, capture tracepack.UUID, r tracepack.Record, descriptor
 		t.Fatal(err)
 	}
 
-	return Message{Env: envelope(t, capture, r.Seq, descriptor), Body: body, StreamSeq: int64(r.Seq) + 1}
+	return Message{Env: envelope(t, capture, r.Seq, descriptor), Body: body, Incarnation: 1, StreamSeq: int64(r.Seq) + 1}
 }
 
 // claimCheck is the message of r with its payload put in the claim bucket c.
@@ -104,7 +104,7 @@ func claimCheck(t *testing.T, c *claims, capture tracepack.UUID, r tracepack.Rec
 	env.PayloadRef, env.PayloadDigest = bucket+"/"+env.MsgID, tracepack.BusPayloadDigest(payload)
 	c.put(env.MsgID, payload)
 
-	return Message{Env: env, Body: body, StreamSeq: int64(r.Seq) + 1}
+	return Message{Env: env, Body: body, Incarnation: 1, StreamSeq: int64(r.Seq) + 1}
 }
 
 func envelope(t *testing.T, capture tracepack.UUID, seq uint64, descriptor []byte) tracepack.BusEnvelope {

@@ -126,7 +126,7 @@ func (k *Coordinator) Acknowledge(ctx context.Context, d *Delivery, m Msg, termi
 		capture := d.Raw.Version.Capture
 		err = k.Catalog.Audit(ctx, catalog.AuditEntry{
 			Actor: "ingest", Action: ReasonTerminated, ActionID: action, Capture: &capture,
-			Detail: fmt.Sprintf("seq %d incarnation %d stream seq %d", d.Raw.Version.Seq, d.Incarnation, d.Msg.StreamSeq),
+			Detail: fmt.Sprintf("seq %d incarnation %d stream seq %d", d.Raw.Version.Seq, d.Msg.Incarnation, d.Msg.StreamSeq),
 		})
 		if err != nil {
 			return err

@@ -49,12 +49,16 @@ type Ingester struct {
 	// Coordinator parks the deferrals that cannot clear by themselves and acknowledges every resolved version.
 	Coordinator *Coordinator
 	// Park enables parking (parking.enabled); without it an indefinite deferral is nak'd like any other,
-	// and the consumer's acknowledgement budget may fill.
-	Park     bool
-	Consumer jetstream.Consumer
-	// Stream is the traffic stream, checked against the catalog's incarnation with every renewal.
-	Stream jetstream.Stream
-	Log    *slog.Logger
+	// and the consumer's acknowledgement budget may fill. It stops new moves only: a parked consumer works either way.
+	Park bool
+	// RedeliveryDelay is the parked consumer's nak delay (parking.redelivery_delay), in place of the backoff.
+	RedeliveryDelay time.Duration
+	Consumer        jetstream.Consumer
+	// Stream is the stream the consumer pulls, the traffic stream's or the parking stream's,
+	// checked against Incarnation, the catalog's, with every renewal.
+	Stream      jetstream.Stream
+	Incarnation catalog.Incarnation
+	Log         *slog.Logger
 	// Replica names this replica's membership.
 	Replica string
 	// Lease is the membership lease, renewed before every fetch; a fetch waits at most what remains of it.
@@ -273,12 +277,12 @@ func (g *Ingester) renew(ctx context.Context) error {
 // checkIncarnation verifies that the traffic stream is still the incarnation the consumer was named for:
 // its creation time, and a last sequence not below one observed (parking.md *incarnations*).
 func (g *Ingester) checkIncarnation(ctx context.Context) error {
-	inc, err := bus.Incarnate(ctx, g.Executor.Catalog, catalog.RoleTraffic, g.Stream)
+	inc, err := bus.Incarnate(ctx, g.Executor.Catalog, g.Incarnation.Role, g.Stream)
 	if err != nil {
 		return err
 	}
-	if inc.ID != g.Executor.Incarnation {
-		return fmt.Errorf("%w: incarnation %d, the consumer is named for %d", catalog.ErrIncarnationChanged, inc.ID, g.Executor.Incarnation)
+	if inc.ID != g.Incarnation.ID {
+		return fmt.Errorf("%w: incarnation %d, the consumer is named for %d", catalog.ErrIncarnationChanged, inc.ID, g.Incarnation.ID)
 	}
 
 	return nil
@@ -296,14 +300,50 @@ func (g *Ingester) handle(ctx context.Context, m jetstream.Msg, generation int64
 		_ = m.NakWithDelay(firstNakDelay)
 		return
 	}
+	msg.Incarnation, msg.Parked = g.Incarnation.ID, g.Incarnation.Role == catalog.RoleParking
+	if msg.Parked {
+		if err := g.recordCopy(ctx, msg); err != nil {
+			g.Log.Warn("ingest: copy row failed", "msg_id", msg.Env.MsgID, "error", err)
+			_ = m.NakWithDelay(g.delay(msg.Delivered))
+
+			return
+		}
+	}
 	d, dec, err := g.Executor.Dispose(ctx, msg)
 	if err != nil {
 		g.Log.Warn("ingest: disposition failed", "msg_id", msg.Env.MsgID, "error", err)
-		_ = m.NakWithDelay(nakDelay(msg.Delivered))
+		_ = m.NakWithDelay(g.delay(msg.Delivered))
 
 		return
 	}
 	g.act(ctx, Entry{D: d, Msg: m}, dec, msg.Delivered)
+}
+
+// recordCopy inserts or finds the copy row of the parked copy msg before anything disposes of it, so a redelivery finds its own row,
+// and advances a version still parking, whose original's process stopped between the publish and the advance (parking.md *Two tables*).
+// A message without a version is left to its disposition, which terminates it as malformed.
+func (g *Ingester) recordCopy(ctx context.Context, msg Message) error {
+	d := &Delivery{Msg: msg}
+	d.Raw, d.Facts = ReadRaw(&d.Msg.Env, d.Msg.Body, 0)
+	if !d.Facts.LayoutOK || !d.Facts.MsgIDOK {
+		return nil
+	}
+	state, err := g.Executor.Catalog.RecordCopy(ctx, d.identity())
+	if err != nil || state != catalog.VersionParking {
+		return err
+	}
+	_, err = g.Coordinator.Advance(ctx, d)
+
+	return err
+}
+
+// delay is the nak delay of a message delivered so many times: the parked consumer's redelivery delay, or the backoff.
+func (g *Ingester) delay(delivered uint64) time.Duration {
+	if g.Incarnation.Role == catalog.RoleParking {
+		return g.RedeliveryDelay
+	}
+
+	return nakDelay(delivered)
 }
 
 // act carries out a final disposition.
@@ -321,16 +361,21 @@ func (g *Ingester) act(ctx context.Context, e Entry, dec Decision, delivered uin
 	case ActPark:
 		g.park(ctx, e, dec.Reason, delivered)
 	case ActTerminate:
+		if e.D.Msg.Parked && dec.Reason == ReasonBeyondRetention {
+			// A parked message is never terminated for its age (G5-267): its version waits for an operator as evicted-hour.
+			g.evict(ctx, e)
+			return
+		}
 		if dec.Audit {
 			if err := g.Executor.AuditTermination(ctx, e.D, dec.Reason); err != nil {
 				// No audit row, no termination: the message is decided again at its redelivery.
-				_ = e.Msg.NakWithDelay(nakDelay(delivered))
+				_ = e.Msg.NakWithDelay(g.delay(delivered))
 				return
 			}
 		}
 		_ = e.Msg.Term()
 	case ActNak:
-		_ = e.Msg.NakWithDelay(nakDelay(delivered))
+		_ = e.Msg.NakWithDelay(g.delay(delivered))
 	default:
 		panic("ingest: unknown action")
 	}
@@ -344,19 +389,29 @@ func (g *Ingester) acknowledge(ctx context.Context, e Entry, terminated bool) {
 	}
 }
 
+// evict moves the version of a parked copy whose hour retention evicted from parked to evicted-hour, and returns the copy:
+// it is neither staged nor terminated for its age, and only an operator ends it.
+func (g *Ingester) evict(ctx context.Context, e Entry) {
+	if _, err := g.Executor.Catalog.EvictParked(ctx, e.D.versionKey()); err != nil {
+		g.Log.Warn("ingest: eviction of a parked version failed", "msg_id", e.D.Msg.Env.MsgID, "error", err)
+	}
+	g.Log.Warn("ingest: alert", "reason", ReasonBeyondRetention, "msg_id", e.D.Msg.Env.MsgID, "parked", true)
+	_ = e.Msg.NakWithDelay(g.RedeliveryDelay)
+}
+
 // park moves an indefinite deferral to the parking stream and acts on what the coordinator found:
 // a version past the horizon is terminated, a resolved one acknowledged, an unconfirmed copy's original nak'd to be parked again.
-// Without parking, the deferral is nak'd like any other.
+// Without parking, and for a copy already parked, the deferral is nak'd like any other.
 func (g *Ingester) park(ctx context.Context, e Entry, reason string, delivered uint64) {
-	if !g.Park {
-		_ = e.Msg.NakWithDelay(nakDelay(delivered))
+	if !g.Park || e.D.Msg.Parked {
+		_ = e.Msg.NakWithDelay(g.delay(delivered))
 		return
 	}
 	p, err := g.Coordinator.Park(ctx, e, reason, HourOf(g.Executor.Horizon()))
 	switch {
 	case err != nil:
 		g.Log.Warn("ingest: parking failed", "msg_id", e.D.Msg.Env.MsgID, "error", err)
-		_ = e.Msg.NakWithDelay(nakDelay(delivered))
+		_ = e.Msg.NakWithDelay(g.delay(delivered))
 	case p.Begun.BeyondRetention:
 		g.act(ctx, e, Decision{Action: ActTerminate, Reason: ReasonBeyondRetention, Alert: true, Audit: true}, delivered)
 	case p.Begun.State.Resolved():
@@ -364,7 +419,7 @@ func (g *Ingester) park(ctx context.Context, e Entry, reason string, delivered u
 	case p.Confirmation == Suppressed:
 		_ = e.Msg.NakWithDelay(suppressedNakDelay)
 	case p.Confirmation != Confirmed:
-		_ = e.Msg.NakWithDelay(nakDelay(delivered))
+		_ = e.Msg.NakWithDelay(g.delay(delivered))
 	default: // parked: the original was acknowledged
 	}
 }
@@ -403,12 +458,12 @@ func (g *Ingester) flush(ctx context.Context, batches []*Batch) error {
 				continue
 			}
 			for _, e := range b.Entries[out.Acked:] {
-				_ = e.Msg.NakWithDelay(firstNakDelay)
+				_ = e.Msg.NakWithDelay(g.delay(0))
 			}
 		case out.Terminated:
 			// Not a write failure: the redelivery is decided again and finds the termination (T-32).
 			for _, e := range b.Entries {
-				_ = e.Msg.NakWithDelay(firstNakDelay)
+				_ = e.Msg.NakWithDelay(g.delay(0))
 			}
 		case out.BeyondHorizon:
 			for _, e := range b.Entries {

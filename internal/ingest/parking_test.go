@@ -101,7 +101,7 @@ func TestIngesterAcknowledgesUnderTheTermination(t *testing.T) {
 		ctx := t.Context()
 		r := newReplica(t, c)
 		capture := tracepack.UUID{22}
-		if _, err := c.TerminateCapture(ctx, capture, r.g.Executor.Incarnation, 100, "op", "c1"); err != nil {
+		if _, err := c.TerminateCapture(ctx, capture, r.g.Incarnation.ID, 100, "op", "c1"); err != nil {
 			t.Fatal(err)
 		}
 		start := inline(t, capture, startRecord(t, now), nil)
@@ -164,7 +164,7 @@ func TestIngesterParksAWriteFailure(t *testing.T) {
 				r.g.refused(batchName(b))
 			}
 		}
-		r.clk.advance(time.Second)
+		r.clk.flushInterval()
 		r.step(t)
 		if n := r.pending(t); n != 0 {
 			t.Errorf("the traffic stream holds %d messages, want every original acknowledged", n)

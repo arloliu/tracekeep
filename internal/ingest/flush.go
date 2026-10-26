@@ -151,7 +151,7 @@ func (f *Flusher) Flush(ctx context.Context, b *Batch) (Flushed, error) {
 		return out, err
 	}
 	for _, e := range b.Entries {
-		if err := ack(ctx, e); err != nil {
+		if err := f.ack(ctx, e); err != nil {
 			return out, err // the rest are redelivered, written again and deduplicated by the merge
 		}
 		out.Acked++
@@ -414,7 +414,11 @@ func evidence(entries []Entry) *catalog.Evidence {
 
 // ack acknowledges e's message once a segment holding its record is registered; a claim-check message's acknowledgement is confirmed,
 // since its object's deletion depends on it (architecture.md §3.1).
-func ack(ctx context.Context, e Entry) error {
+// A parked copy, whose version the registration staged, is acknowledged through the coordinator, its copy row acked.
+func (f *Flusher) ack(ctx context.Context, e Entry) error {
+	if e.D.Msg.Parked {
+		return (&Coordinator{Catalog: f.Catalog}).Acknowledge(ctx, e.D, e.Msg, false)
+	}
 	if e.D.Raw.ClaimCheck {
 		return e.Msg.DoubleAck(ctx)
 	}

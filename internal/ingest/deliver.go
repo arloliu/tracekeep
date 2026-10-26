@@ -33,8 +33,11 @@ type ClaimStore interface {
 type Message struct {
 	Env  tracepack.BusEnvelope
 	Body []byte
-	// StreamSeq is the message's sequence on the stream it came from.
-	StreamSeq int64
+	// Incarnation is the incarnation of the stream the message came from, and StreamSeq its sequence there.
+	Incarnation int64
+	StreamSeq   int64
+	// Parked reports a copy delivered from the parking stream.
+	Parked bool
 	// Delivered counts the message's deliveries, this one included.
 	Delivered uint64
 	// Subject and Header are the message's as the bus delivered them, which its parked copy carries on.
@@ -44,11 +47,9 @@ type Message struct {
 
 // Delivery is one delivery being decided: the message, the facts gathered and what the steps found.
 type Delivery struct {
-	Msg Message
-	// Incarnation is the incarnation of the stream the message came from.
-	Incarnation int64
-	Raw         Raw
-	Facts       Facts
+	Msg   Message
+	Raw   Raw
+	Facts Facts
 	// Record is the bus record once framed, with its payload once a claim object was fetched and its derived values once classified.
 	Record tracepack.BusRecord
 	// ConfigID is the capture's processing configuration once it is admitted.
@@ -72,8 +73,6 @@ type Config struct {
 type Executor struct {
 	Catalog *catalog.Catalog
 	Claims  ClaimStore
-	// Incarnation is the traffic stream's incarnation the deliveries come from.
-	Incarnation int64
 	// Horizon returns the retention horizon, in UTC nanoseconds: an older record is expired.
 	Horizon func() int64
 	// Configs are the processing configurations this replica executes, by id.
@@ -84,7 +83,7 @@ type Executor struct {
 // An error is a step that could not run, the catalog or the claim bucket unreachable:
 // nothing durable was decided, and the caller naks the message.
 func (x *Executor) Dispose(ctx context.Context, msg Message) (*Delivery, Decision, error) {
-	d := &Delivery{Msg: msg, Incarnation: x.Incarnation}
+	d := &Delivery{Msg: msg}
 	d.Raw, d.Facts = ReadRaw(&d.Msg.Env, msg.Body, x.Horizon())
 	d.Facts.LastDelay = nakDelay(msg.Delivered) >= lastNakDelay
 	for range maxSteps {
@@ -154,7 +153,7 @@ func (x *Executor) run(ctx context.Context, d *Delivery, s Step) error {
 }
 
 func (x *Executor) resolve(ctx context.Context, d *Delivery) error {
-	r, err := x.Catalog.Resolve(ctx, d.versionKey(), d.Incarnation, d.Msg.StreamSeq)
+	r, err := x.Catalog.Resolve(ctx, d.versionKey(), d.Msg.Incarnation, d.Msg.StreamSeq)
 	if err != nil {
 		return err
 	}
@@ -316,7 +315,7 @@ func (x *Executor) derive(d *Delivery) {
 
 // identity is the delivery's identity, which every transaction re-checking its termination takes (catalog.md §7.2).
 func (d *Delivery) identity() *catalog.Identity {
-	return &catalog.Identity{Version: *d.versionKey(), Incarnation: d.Incarnation, StreamSeq: d.Msg.StreamSeq, Hour: HourOf(d.Raw.TS)}
+	return &catalog.Identity{Version: *d.versionKey(), Incarnation: d.Msg.Incarnation, StreamSeq: d.Msg.StreamSeq, Hour: HourOf(d.Raw.TS)}
 }
 
 func (d *Delivery) versionKey() *catalog.VersionKey {

@@ -30,7 +30,7 @@ func executor(t *testing.T, c *catalog.Catalog, cl *claims) *Executor {
 	}
 
 	return &Executor{
-		Catalog: c, Claims: cl, Incarnation: 1,
+		Catalog: c, Claims: cl,
 		Horizon: func() int64 { return now - int64(24*time.Hour) },
 		Configs: map[int64]Config{cfg: testConfig()},
 	}
@@ -194,7 +194,7 @@ func TestAdmissionLosesToATermination(t *testing.T) {
 			catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
 				x := executor(t, c, newClaims())
 				capture := tracepack.UUID{11}
-				d := &Delivery{Msg: inline(t, capture, startRecord(t, now), descriptorOf(t, tc.device)), Incarnation: x.Incarnation}
+				d := &Delivery{Msg: inline(t, capture, startRecord(t, now), descriptorOf(t, tc.device))}
 				d.Raw, d.Facts = ReadRaw(&d.Msg.Env, d.Msg.Body, x.Horizon())
 				for _, s := range []Step{StepResolve, StepFrame, StepLookupCapture, StepValidateDescriptor} {
 					if err := x.run(t.Context(), d, s); err != nil {
@@ -204,7 +204,7 @@ func TestAdmissionLosesToATermination(t *testing.T) {
 				if dec := Decide(&d.Facts); dec.Step != tc.step {
 					t.Fatalf("Decide = %+v, want step %d", dec, tc.step)
 				}
-				if _, err := c.TerminateCapture(t.Context(), capture, x.Incarnation, 100, "op", "c1"); err != nil {
+				if _, err := c.TerminateCapture(t.Context(), capture, 1, 100, "op", "c1"); err != nil {
 					t.Fatal(err)
 				}
 				if err := x.run(t.Context(), d, tc.step); err != nil {
@@ -282,7 +282,7 @@ func TestApplyOrderFindsTheVersionStaged(t *testing.T) {
 		if out, err := c.RegisterPack(ctx, p, catalog.Registration{Evidence: ev}); err != nil || out != catalog.Registered {
 			t.Fatalf("RegisterPack = %v, %v", out, err)
 		}
-		if _, err := c.TerminateCapture(ctx, capture, x.Incarnation, 100, "op", "c1"); err != nil {
+		if _, err := c.TerminateCapture(ctx, capture, 1, 100, "op", "c1"); err != nil {
 			t.Fatal(err)
 		}
 		d := delivered(m) // stream seq 2, below the cut-off
