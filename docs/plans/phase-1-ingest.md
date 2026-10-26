@@ -23,8 +23,8 @@ This plan only orders the work.
 | 1.2 — catalog | `schema.hcl`, Atlas migrations per engine, `internal/catalog` on SQLite and MariaDB: the prologue, the lease, membership, `Admit`, `Reject`, `RegisterPack` and the reads ingest needs, barrier schedules on both engines (`catalog.md` §7.1–§7.4, `rollouts.md` §6.4) | done (#11) |
 | 1.3 — ingest | `internal/bus` and `internal/ingest`: the disposition classifier, claim-check fetch, batching, masking with the bound configuration, the write seam, registration, per-message acks, the activation gate (`ingest.md` §6.1–§6.3, `architecture.md` §3.1) | in-progress |
 | 1.4 — parking | parking, resolution, incarnations, termination orders and their re-check in `Admit`, `Reject` and `RegisterPack`, the parking transactions, `bus adopt-stream` and the termination commands (`parking.md`, `operations.md` §10.4) | pending |
-| 1.5 — reconciler | full verification, quarantine and adoption under the compactor lease (`storage.md` §5.4) | pending |
-| 1.6 — dev and gate | `tracekeep dev` and the role subcommands with their configuration (T-22), the simulator in the service module, the roadmap's phase 1 gate and checklist items 1–7 | pending |
+| 1.5 — reconciler | full verification, quarantine and adoption under the compactor lease (`storage.md` §5.4); a receipt's claim object key is the bucket-qualified `Tpk-Payload-Ref`, while the claim bucket is read by the bare message id | pending |
+| 1.6 — dev and gate | `tracekeep dev` and the role subcommands with their configuration (T-22), each processing configuration named for its classifier's implementation and version, the simulator in the service module, the roadmap's phase 1 gate and checklist items 1–7 | pending |
 
 Only the phase under way is detailed; the others are detailed when they start.
 
