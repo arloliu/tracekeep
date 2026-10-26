@@ -28,9 +28,10 @@ type Server struct {
 	mu     sync.Mutex
 	checks map[string]func(context.Context) error
 
-	srv  *http.Server
-	addr net.Addr
-	done chan error
+	srv             *http.Server
+	addr            net.Addr
+	done            chan error
+	shutdownTimeout time.Duration
 }
 
 // NewServer returns a server whose registry holds the Go runtime's and the process's collectors.
@@ -38,7 +39,7 @@ func NewServer() *Server {
 	reg := prometheus.NewRegistry()
 	reg.MustRegister(collectors.NewGoCollector(), collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}))
 
-	return &Server{reg: reg, checks: map[string]func(context.Context) error{}}
+	return &Server{reg: reg, checks: map[string]func(context.Context) error{}, shutdownTimeout: 5 * time.Second}
 }
 
 // Registry is the registry the roles register their collectors with.
@@ -88,33 +89,54 @@ func (s *Server) readyz(w http.ResponseWriter, r *http.Request) {
 	_, _ = fmt.Fprintln(w, "ok")
 }
 
-// Start binds addr, failing at once when it cannot, and serves the handler on it in the background until Close.
-func (s *Server) Start(ctx context.Context, addr string) error {
+// ErrServe marks the error that ended serving the metrics before Close.
+var ErrServe = errors.New("metrics: serving ended")
+
+// Start binds addr, failing at once when it cannot, and serves the handler on it in the background until Close;
+// should serving end before Close, failed, if not nil, is called with its error, which ErrServe marks.
+func (s *Server) Start(ctx context.Context, addr string, failed func(error)) error {
 	l, err := (&net.ListenConfig{}).Listen(ctx, "tcp", addr)
 	if err != nil {
 		return fmt.Errorf("metrics: listen %s: %w", addr, err)
 	}
+	s.serve(l, failed)
+
+	return nil
+}
+
+func (s *Server) serve(l net.Listener, failed func(error)) {
 	s.srv = &http.Server{Handler: s.Handler(), ReadHeaderTimeout: 10 * time.Second}
 	s.addr = l.Addr()
 	s.done = make(chan error, 1)
-	go func() { s.done <- s.srv.Serve(l) }()
-
-	return nil
+	go func() {
+		err := s.srv.Serve(l)
+		if !errors.Is(err, http.ErrServerClosed) {
+			err = fmt.Errorf("%w: %s: %w", ErrServe, l.Addr(), err)
+			if failed != nil {
+				failed(err)
+			}
+		}
+		s.done <- err
+	}()
 }
 
 // Addr is the address Start bound, nil before it.
 func (s *Server) Addr() net.Addr { return s.addr }
 
-// Close shuts the listener Start opened down and waits for it; it returns the error that ended serving, if any.
+// Close shuts the listener Start opened down and waits for it, closing the connections still open after shutdownTimeout;
+// it returns the error that ended serving, if any.
 func (s *Server) Close() error {
 	if s.srv == nil {
 		return nil
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), s.shutdownTimeout)
 	defer cancel()
 	err := s.srv.Shutdown(ctx)
+	if err != nil {
+		err = errors.Join(err, s.srv.Close())
+	}
 	if serr := <-s.done; !errors.Is(serr, http.ErrServerClosed) {
-		err = errors.Join(err, fmt.Errorf("metrics: serve: %w", serr))
+		err = errors.Join(err, serr)
 	}
 	s.srv = nil
 

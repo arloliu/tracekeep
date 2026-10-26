@@ -11,7 +11,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
@@ -260,7 +259,7 @@ func TestObservedIngestReadiness(t *testing.T) {
 		ctx := t.Context()
 		e := env(t, c)
 		e.Config.Metrics.Listen = "" // nothing served: the handler is read directly
-		if err := e.Observe(ctx, "ingest"); err != nil {
+		if _, err := e.Observe(ctx, "ingest"); err != nil {
 			t.Fatal(err)
 		}
 		h := e.Metrics.Handler()
@@ -268,18 +267,6 @@ func TestObservedIngestReadiness(t *testing.T) {
 			rec := httptest.NewRecorder()
 			h.ServeHTTP(rec, httptest.NewRequestWithContext(ctx, http.MethodGet, "/readyz", nil))
 			return rec.Code, rec.Body.String()
-		}
-		until := func(what string, ok func(int, string) bool) {
-			t.Helper()
-			for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(10 * time.Millisecond) {
-				code, body := readyz()
-				if ok(code, body) {
-					return
-				}
-				if time.Now().After(deadline) {
-					t.Fatalf("/readyz = %d %q, want %s", code, body, what)
-				}
-			}
 		}
 		if code, body := readyz(); code != http.StatusServiceUnavailable || !strings.Contains(body, errStarting.Error()) {
 			t.Fatalf("/readyz before the role starts = %d %q, want 503 starting", code, body)
@@ -293,26 +280,56 @@ func TestObservedIngestReadiness(t *testing.T) {
 			t.Errorf("/readyz after a refused start = %d %q, want 503 stopped", code, body)
 		}
 		setDirect(t, e.JS, traffic, false)
+		joined := make(chan struct{})
+		e.joined = func() { close(joined) }
 		rctx, stop := context.WithCancel(ctx)
 		done := make(chan error, 1)
 		go func() { done <- Ingest(rctx, e) }()
-		until("200 once joined", func(code int, _ string) bool { return code == http.StatusOK })
-		s, err := e.JS.Stream(ctx, traffic)
+		<-joined
+		if code, body := readyz(); code != http.StatusOK {
+			t.Fatalf("/readyz once joined = %d %q, want 200", code, body)
+		}
+		parked, err := e.JS.Stream(ctx, bus.StreamName(e.Bus(), catalog.RoleParking))
 		if err != nil {
 			t.Fatal(err)
 		}
-		for name := range s.ConsumerNames(ctx).Name() {
-			if err := s.DeleteConsumer(ctx, name); err != nil {
+		for name := range parked.ConsumerNames(ctx).Name() {
+			if err := parked.DeleteConsumer(ctx, name); err != nil {
 				t.Fatal(err)
 			}
 		}
-		until("503 with the traffic consumer gone", func(code int, _ string) bool { return code == http.StatusServiceUnavailable })
+		if code, body := readyz(); code != http.StatusServiceUnavailable {
+			t.Errorf("/readyz with the parked consumer gone = %d %q, want 503", code, body)
+		}
 		stop()
 		if err := <-done; err != nil && !errors.Is(err, context.Canceled) {
 			t.Errorf("Ingest = %v at its context's end", err)
 		}
 		if code, body := readyz(); code != http.StatusServiceUnavailable || !strings.Contains(body, errStopped.Error()) {
 			t.Errorf("/readyz after the role ended = %d %q, want 503 stopped", code, body)
+		}
+	})
+}
+
+// Observe fails when it cannot bind metrics.listen, rather than leaving the process running unobserved;
+// bound, it serves until Env.Close.
+func TestObserveBindsAtStart(t *testing.T) {
+	t.Parallel()
+	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
+		e := env(t, c)
+		e.Config.Metrics.Listen = "127.0.0.1:0"
+		ctx, err := e.Observe(t.Context(), "ingest")
+		if err != nil {
+			t.Fatal(err)
+		}
+		cfg := *e.Config
+		cfg.Metrics.Listen = e.Metrics.Addr().String()
+		taken := &Env{Config: &cfg, Catalog: c, Log: e.Log}
+		if _, err := taken.Observe(t.Context()); err == nil {
+			t.Error("Observe on a bound address = nil, want its error")
+		}
+		if err := e.Metrics.Close(); err != nil || ServeFailed(ctx) != nil {
+			t.Errorf("Close = %v, ServeFailed = %v; want an orderly stop", err, ServeFailed(ctx))
 		}
 	})
 }

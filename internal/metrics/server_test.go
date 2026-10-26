@@ -4,10 +4,12 @@ import (
 	"context"
 	"errors"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 )
@@ -55,10 +57,10 @@ func TestServer(t *testing.T) {
 func TestStartAndClose(t *testing.T) {
 	t.Parallel()
 	s := NewServer()
-	if err := s.Start(t.Context(), "127.0.0.1:0"); err != nil {
+	if err := s.Start(t.Context(), "127.0.0.1:0", nil); err != nil {
 		t.Fatal(err)
 	}
-	if err := NewServer().Start(t.Context(), s.Addr().String()); err == nil {
+	if err := NewServer().Start(t.Context(), s.Addr().String(), nil); err == nil {
 		t.Error("Start on a bound address = nil, want its error")
 	}
 	resp, err := http.Get("http://" + s.Addr().String() + "/healthz") //nolint:noctx // a test against a local listener
@@ -71,5 +73,57 @@ func TestStartAndClose(t *testing.T) {
 	}
 	if _, err := http.Get("http://" + s.Addr().String() + "/healthz"); err == nil { //nolint:noctx,bodyclose // fails to connect
 		t.Error("served after Close")
+	}
+}
+
+// Serving that ends before Close, its listener failing, is reported to failed, and Close returns it too.
+func TestServingFailureReported(t *testing.T) {
+	t.Parallel()
+	s := NewServer()
+	l, err := (&net.ListenConfig{}).Listen(t.Context(), "tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	reported := make(chan error, 1)
+	s.serve(l, func(err error) { reported <- err })
+	_ = l.Close()
+	if err := <-reported; !errors.Is(err, ErrServe) {
+		t.Errorf("reported %v, want ErrServe", err)
+	}
+	if err := s.Close(); !errors.Is(err, ErrServe) {
+		t.Errorf("Close = %v, want the serving error", err)
+	}
+}
+
+// A scrape still running when the shutdown times out is cut off: Close returns and the request's context ends.
+func TestCloseCutsOffABlockedRequest(t *testing.T) {
+	t.Parallel()
+	s := NewServer()
+	s.shutdownTimeout = 10 * time.Millisecond
+	entered, ended := make(chan struct{}), make(chan struct{})
+	s.Ready("blocked", func(ctx context.Context) error {
+		close(entered)
+		<-ctx.Done()
+		close(ended)
+
+		return ctx.Err()
+	})
+	if err := s.Start(t.Context(), "127.0.0.1:0", nil); err != nil {
+		t.Fatal(err)
+	}
+	go func() {
+		req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, "http://"+s.Addr().String()+"/readyz", nil)
+		if resp, err := http.DefaultClient.Do(req); err == nil {
+			_ = resp.Body.Close()
+		}
+	}()
+	<-entered
+	if err := s.Close(); err == nil {
+		t.Error("Close = nil, want the shutdown's timeout")
+	}
+	select {
+	case <-ended:
+	case <-time.After(readyTimeout / 2):
+		t.Error("the blocked request outlived Close")
 	}
 }

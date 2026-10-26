@@ -46,6 +46,9 @@ type Env struct {
 	Now func() time.Time
 	// Metrics is the process's metrics and health server; nil records and serves none.
 	Metrics *metrics.Server
+
+	// joined, when not nil, runs once Ingest's consumers joined and its readiness is registered; a test's barrier.
+	joined func()
 }
 
 // refreshInterval is how often ingest's metrics read the catalog and the bus.
@@ -59,16 +62,32 @@ var (
 
 // Observe registers the catalog's metrics and readiness on a new metrics server, each of roles not ready until it has started,
 // and serves it on metrics.listen until Close, failing when it cannot bind; with no listen address it serves nothing, the metrics still recorded.
-func (e *Env) Observe(ctx context.Context, roles ...string) error {
+// The roles run under the context it returns, which serving that ends before Close cancels with its error (metrics.ErrServe).
+func (e *Env) Observe(ctx context.Context, roles ...string) (context.Context, error) {
 	e.Metrics = metrics.NewServer()
 	if err := metrics.RegisterCatalog(e.Metrics, e.Catalog); err != nil {
-		return err
+		return ctx, err
 	}
 	for _, role := range roles {
 		e.ready(role, failing(errStarting))
 	}
-	if addr := e.Config.Metrics.Listen; addr != "" {
-		return e.Metrics.Start(ctx, addr)
+	addr := e.Config.Metrics.Listen
+	if addr == "" {
+		return ctx, nil
+	}
+	sctx, cancel := context.WithCancelCause(ctx)
+	if err := e.Metrics.Start(ctx, addr, cancel); err != nil {
+		cancel(err)
+		return ctx, err
+	}
+
+	return sctx, nil
+}
+
+// ServeFailed is the error serving the metrics ended with, which cancelled ctx, a context Observe returned; nil otherwise.
+func ServeFailed(ctx context.Context) error {
+	if err := context.Cause(ctx); errors.Is(err, metrics.ErrServe) {
+		return err
 	}
 
 	return nil
@@ -251,10 +270,20 @@ func Ingest(ctx context.Context, e *Env) error {
 
 		return nil
 	})
+	if e.joined != nil {
+		e.joined()
+	}
 	if gs[0].Metrics != nil {
 		rctx, cancel := context.WithCancel(ctx)
-		defer cancel()
-		go e.refresh(rctx, gs[0].Metrics, states[0])
+		refreshed := make(chan struct{})
+		go func() {
+			defer close(refreshed)
+			e.refresh(rctx, gs[0].Metrics, states[0])
+		}()
+		defer func() {
+			cancel()
+			<-refreshed
+		}()
 	}
 
 	return run(ctx, e, gs)

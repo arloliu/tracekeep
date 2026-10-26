@@ -107,13 +107,19 @@ func dispatch(ctx context.Context, args []string, stdout, stderr io.Writer) erro
 	defer func() { _ = e.Close() }()
 	if isRole {
 		log.Info("tracekeep: starting", "command", command)
-		if command != "migrate" {
-			if err := e.Observe(ctx, readiness[command]...); err != nil {
-				return err
-			}
+		if command == "migrate" {
+			return role(ctx, e)
+		}
+		octx, err := e.Observe(ctx, readiness[command]...)
+		if err != nil {
+			return err
+		}
+		err = role(octx, e)
+		if failed := service.ServeFailed(octx); failed != nil {
+			return errors.Join(failed, err)
 		}
 
-		return role(ctx, e)
+		return err
 	}
 	a := &admin.Admin{Catalog: e.Catalog, Bus: e.JS, Config: e.Bus(), Actor: *actor}
 
@@ -221,11 +227,15 @@ func runDev(ctx context.Context, args []string, stderr io.Writer) error {
 	}
 	defer func() { _ = d.Close() }()
 	d.Env.Config.Metrics.Listen = *listen
-	if err := d.Env.Observe(ctx, "ingest", "compact"); err != nil {
+	octx, err := d.Env.Observe(ctx, "ingest", "compact")
+	if err != nil {
 		return err
 	}
 	log.Info("tracekeep dev: running", "data", *dir, "bus", d.URL(), "packs", filepath.Join(*dir, "packs"))
-	err = d.Run(ctx)
+	err = d.Run(octx)
+	if failed := service.ServeFailed(octx); failed != nil {
+		return errors.Join(failed, err)
+	}
 	if ctx.Err() != nil && errors.Is(err, ctx.Err()) {
 		return nil
 	}
