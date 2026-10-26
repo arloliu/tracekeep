@@ -1,6 +1,6 @@
 # Phase 1 — ingest
 
-Status: active (2026-10-27) — phase 1.6 in progress
+Status: active (2026-10-27) — phase 1.7 in progress
 
 Milestone 1 of the [roadmap](../ROADMAP.md):
 the `ingest` role with its stores, catalog and reconciler, and `tracekeep dev` as the single-process loop.
@@ -24,8 +24,8 @@ This plan only orders the work.
 | 1.3 — ingest | `internal/bus` and `internal/ingest`: the disposition classifier, claim-check fetch, batching, masking with the bound configuration, the write seam, registration, per-message acks, the activation gate (`ingest.md` §6.1–§6.3, `architecture.md` §3.1) | done (#13) |
 | 1.4 — parking | parking, resolution, incarnations, termination orders and their re-check in `Admit`, `Reject` and `RegisterPack`, the parking transactions, `bus adopt-stream` and the termination commands (`parking.md`, `operations.md` §10.4) | done (#14) |
 | 1.5 — reconciler | full verification, quarantine and adoption under the compactor lease (`storage.md` §5.4); a receipt's claim object key is the bucket-qualified `Tpk-Payload-Ref`, while the claim bucket is read by the bare message id | done (#16) |
-| 1.6 — dev and roles | `tracekeep dev` and the role subcommands with their configuration (T-22), each processing configuration named for its classifier's implementation and version, the simulator in the service module, the gate's loopback capture | in-progress |
-| 1.7 — completeness and gate | catalog completeness (`catalog.md` §7.3) as a read, and the gate and checklist cases the phases before left open | pending |
+| 1.6 — dev and roles | `tracekeep dev` and the role subcommands with their configuration (T-22), each processing configuration named for its classifier's implementation and version, the simulator in the service module, the gate's loopback capture | done (#17) |
+| 1.7 — completeness and gate | catalog completeness (`catalog.md` §7.3) as a read, and the gate and checklist cases the phases before left open | in-progress |
 | 1.8 — metrics | every role's metrics of `operations.md` §10.4 with their endpoint; the gate names none, so they follow it | pending |
 
 Only the phase under way is detailed; the others are detailed when they start.
@@ -161,3 +161,20 @@ new captures keep binding the newest of them until an operator retires it (`roll
 | 5 | `parking.enabled` turned off on a running service: waiting and evicted-hour copies stay listable and terminable (the gate's case the parking phase left here) | done (0a1758f) |
 | 6 | `tracekeep dev`: an embedded bus, an `fs` store, SQLite, `ingest` and `compact`, and the loopback simulator, in one process | done (c3eb1c0, f2cb656) |
 | 7 | the gate's loopback capture: `dev` run by a test, the simulator's capture registered and read back with the tracepack reader, and once by hand with the tracepack CLI | done (927c9fd) |
+
+## Phase 1.7 — completeness and gate
+
+Work on the branch `feat/catalog/completeness`, one commit per step, test first;
+the branch merges by pull request once the whole phase passes an external post-implementation review, and closes phase 1's gate.
+Completeness is a catalog read of one capture (`catalog.md` §7.3): its producer coverage, frontier and the classification of each seq up to it;
+`ListPacks`, `ListCaptures` and the change cursor, which carry it to readers with no-data hours, unregistered intervals and overlaps, are phase 2's machine API.
+Crash gaps come from closes, which phase 2 writes, so the read reports them once `capture_closes` holds them.
+The remaining cases are those an audit of every gate case against the tests found missing or partial after phase 1.6;
+every catalog schedule runs on both engines and every concurrent one is barrier-controlled.
+
+| Step | Scope | State |
+|---|---|---|
+| 1 | `Completeness(capture)`: producer coverage from exact `pack_ranges` and `evicted_ranges`, the frontier, each seq classified once by retained > evicted > deferred > declared loss > gap up to it, gaps with their time intervals (an open-ended missing prefix from the capture's origin, an evicted neighbour's endpoint), the unknown tail, declared losses from `pack_losses` and terminated versions, and conflicts; the gate's two-pack counterexamples: two packs whose spans cover a seq neither holds, and two packs each filling the other's holes | pending |
+| 2 | ingest cases: a duplicate `start` after a crash before the put staged with its seq in the segment; an initial claim-check `start` at `max_payload` 4140 through ingest; two claim digests at one seq flushed as a conflict segment with two receipts; two inline versions of one seq parked inside one duplicate window; a later copy of a terminated version acknowledged with its own audit row; a terminated `pending` `start` followed by a different-version `start` that admits | pending |
+| 3 | stream cases: a stale handler's late nak racing the acknowledgement of the same original; a stream deleted and recreated while a handler holds an old delivery, its late acknowledgement and nak removing nothing and a reused sequence inheriting nothing at its disposition; the parking stream's stale handler after a restore | pending |
+| 4 | the rest: a `start` with no descriptor header; a termination committed immediately after parking's step (1), held at a barrier; `rejected → open` with a parked copy, then staged, against a consumer whose accepted descriptors the test widens; the traffic and parked consumers processing at once | pending |
