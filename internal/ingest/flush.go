@@ -141,7 +141,7 @@ func (f *Flusher) Flush(ctx context.Context, b *Batch) (Flushed, error) {
 			// Only the first segment can meet it: every segment is judged by the same horizon and hour.
 			return Flushed{BeyondHorizon: true}, nil
 		}
-		if outcome == catalog.VersionTerminated {
+		if outcome == catalog.LostToTermination {
 			// A segment registered before stays; its records are written again at the redelivery and deduplicated by the merge.
 			return Flushed{Packs: out.Packs, Terminated: true}, nil
 		}
@@ -254,7 +254,7 @@ func (f *Flusher) register(ctx context.Context, b *Batch, capture *catalog.Captu
 	switch outcome {
 	case catalog.Registered:
 		return outcome, nil
-	case catalog.BeyondHorizon, catalog.VersionTerminated:
+	case catalog.BeyondHorizon, catalog.LostToTermination:
 		// The key is tombstoned; the object goes, and so would a put delayed across eviction.
 		return outcome, f.Store.Delete(ctx, key)
 	case catalog.AlreadyRegistered, catalog.Tombstoned, catalog.UnadmittedCapture:

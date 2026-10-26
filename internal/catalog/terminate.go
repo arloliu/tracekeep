@@ -5,8 +5,11 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"slices"
 
 	"github.com/jmoiron/sqlx"
+
+	"github.com/arloliu/go-secs/tracepack"
 )
 
 // ApplyOrder terminates the delivery's version under the active termination order that covers it,
@@ -87,9 +90,7 @@ func (c *Catalog) terminateUnder(ctx context.Context, tx *sqlx.Tx, d *Identity, 
 			return err
 		}
 	}
-	_, err = tx.ExecContext(ctx, c.d.insertIgnore+` INTO parked_copies (incarnation_id, stream_seq, capture_id, seq, header, payload_digest, state)
-		VALUES (?, ?, ?, ?, ?, ?, 'waiting')`, d.Incarnation, d.StreamSeq, v.Capture[:], int64(v.Seq), v.Header[:], v.Digest[:])
-	if err != nil {
+	if err := c.insertCopy(ctx, tx, d); err != nil {
 		return err
 	}
 	capture := v.Capture
@@ -100,7 +101,7 @@ func (c *Catalog) terminateUnder(ctx context.Context, tx *sqlx.Tx, d *Identity, 
 	if err != nil {
 		return err
 	}
-	evs, err := c.terminatedScope(ctx, tx, d)
+	evs, err := c.terminatedScopes(ctx, tx, capture, []int64{d.Hour})
 	if err != nil {
 		return err
 	}
@@ -108,26 +109,44 @@ func (c *Catalog) terminateUnder(ctx context.Context, tx *sqlx.Tx, d *Identity, 
 	return c.emit(ctx, tx, evs)
 }
 
-// terminatedScope advances the scope of the delivery's hour, creating it when missing, and returns its terminated event;
-// an hour retention evicted gets neither, since its seqs read from evicted_ranges and parked (catalog.md §7.2).
-func (c *Catalog) terminatedScope(ctx context.Context, tx *sqlx.Tx, d *Identity) ([]event, error) {
-	capture := d.Version.Capture
-	var n int
-	if err := tx.GetContext(ctx, &n, `SELECT COUNT(*) FROM evicted_ranges WHERE capture_id = ? AND hour = ?`, capture[:], d.Hour); err != nil || n > 0 {
-		return nil, err
-	}
-	var rev int64
-	err := tx.GetContext(ctx, &rev, `SELECT revision FROM scopes WHERE capture_id = ? AND hour = ?`, capture[:], d.Hour)
-	if errors.Is(err, sql.ErrNoRows) {
-		rev = 1
-		_, err = tx.ExecContext(ctx, `INSERT INTO scopes (capture_id, hour, state, revision) VALUES (?, ?, 'open', 1)`, capture[:], d.Hour)
-	} else if err == nil {
-		rev++
-		_, err = tx.ExecContext(ctx, `UPDATE scopes SET revision = ? WHERE capture_id = ? AND hour = ?`, rev, capture[:], d.Hour)
-	}
-	if err != nil {
-		return nil, err
+// insertCopy inserts the delivery's copy row waiting, or finds it (parking.md *Two tables*).
+func (c *Catalog) insertCopy(ctx context.Context, tx *sqlx.Tx, d *Identity) error {
+	v := &d.Version
+	_, err := tx.ExecContext(ctx, c.d.insertIgnore+` INTO parked_copies (incarnation_id, stream_seq, capture_id, seq, header, payload_digest, state)
+		VALUES (?, ?, ?, ?, ?, ?, 'waiting')`, d.Incarnation, d.StreamSeq, v.Capture[:], int64(v.Seq), v.Header[:], v.Digest[:])
+
+	return err
+}
+
+// terminatedScopes advances the scope of each of the hours, in ascending order, creating it when missing,
+// and returns its terminated event; an hour retention evicted gets neither,
+// since its seqs read from evicted_ranges and parked (catalog.md §7.2).
+func (c *Catalog) terminatedScopes(ctx context.Context, tx *sqlx.Tx, capture tracepack.UUID, hours []int64) ([]event, error) {
+	hours = slices.Clone(hours)
+	slices.Sort(hours)
+	var evs []event
+	for _, hour := range slices.Compact(hours) {
+		var n int
+		if err := tx.GetContext(ctx, &n, `SELECT COUNT(*) FROM evicted_ranges WHERE capture_id = ? AND hour = ?`, capture[:], hour); err != nil {
+			return nil, err
+		}
+		if n > 0 {
+			continue
+		}
+		var rev int64
+		err := tx.GetContext(ctx, &rev, `SELECT revision FROM scopes WHERE capture_id = ? AND hour = ?`, capture[:], hour)
+		if errors.Is(err, sql.ErrNoRows) {
+			rev = 1
+			_, err = tx.ExecContext(ctx, `INSERT INTO scopes (capture_id, hour, state, revision) VALUES (?, ?, 'open', 1)`, capture[:], hour)
+		} else if err == nil {
+			rev++
+			_, err = tx.ExecContext(ctx, `UPDATE scopes SET revision = ? WHERE capture_id = ? AND hour = ?`, rev, capture[:], hour)
+		}
+		if err != nil {
+			return nil, err
+		}
+		evs = append(evs, event{capture, hour, "terminated", rev})
 	}
 
-	return []event{{capture, d.Hour, "terminated", rev}}, nil
+	return evs, nil
 }

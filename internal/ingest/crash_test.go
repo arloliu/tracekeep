@@ -353,3 +353,37 @@ func otherVersion(t *testing.T, capture tracepack.UUID, seq uint64) Message {
 
 // sameRecord compares two records as stored, payloads included.
 func sameRecord(a, b *tracepack.Record) bool { return reflect.DeepEqual(a, b) }
+
+// A termination committed between a batch's disposition and its registration wins (T-32):
+// the registration tombstones its key, the object is deleted, and every message is returned to be decided again,
+// never counted as a write failure.
+func TestFlushLosesToATermination(t *testing.T) {
+	t.Parallel()
+	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
+		p := newPipeline(t, c)
+		var logged bytes.Buffer
+		g := p.ingester(slog.New(slog.NewTextHandler(&logged, nil)))
+		capture := tracepack.UUID{10}
+		hs := p.deliver(t, traffic(t, capture))
+		if _, err := c.TerminateCapture(t.Context(), capture, p.x.Incarnation, 100, "op", "c1"); err != nil {
+			t.Fatal(err)
+		}
+		if err := g.flush(t.Context(), p.b.All()); err != nil {
+			t.Fatal(err)
+		}
+		for i, h := range hs {
+			if got := h.done(); !slices.Equal(got, []string{"nak " + firstNakDelay.String()}) {
+				t.Errorf("message %d: %v, want returned with the short delay", i, got)
+			}
+		}
+		if ks := keys(t, p.st); len(ks) != 0 {
+			t.Errorf("objects %v, want the segment deleted", ks)
+		}
+		if got, _ := c.Capture(t.Context(), capture); got.HasHighestSeq {
+			t.Errorf("a segment was registered: %+v", got)
+		}
+		if strings.Contains(logged.String(), ReasonWriteFailure) {
+			t.Error("a termination raised the write-failure alert")
+		}
+	})
+}

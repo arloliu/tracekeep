@@ -179,3 +179,44 @@ func TestDisposeIncompatibleConfiguration(t *testing.T) {
 		}
 	})
 }
+
+// An admission or a rejection that loses to a termination committed after the delivery's resolution was read
+// returns terminated: the start is acknowledged under the termination, its capture neither admitted nor rejected (T-32).
+func TestAdmissionLosesToATermination(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name   string
+		device string
+		step   Step
+	}{{"admission", "eqp", StepAdmit}, {"rejection", " ", StepReject}} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
+				x := executor(t, c, newClaims())
+				capture := tracepack.UUID{11}
+				d := &Delivery{Msg: inline(t, capture, startRecord(t, now), descriptorOf(t, tc.device)), Incarnation: x.Incarnation}
+				d.Raw, d.Facts = ReadRaw(&d.Msg.Env, d.Msg.Body, x.Horizon())
+				for _, s := range []Step{StepResolve, StepFrame, StepLookupCapture, StepValidateDescriptor} {
+					if err := x.run(t.Context(), d, s); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if dec := Decide(&d.Facts); dec.Step != tc.step {
+					t.Fatalf("Decide = %+v, want step %d", dec, tc.step)
+				}
+				if _, err := c.TerminateCapture(t.Context(), capture, x.Incarnation, 100, "op", "c1"); err != nil {
+					t.Fatal(err)
+				}
+				if err := x.run(t.Context(), d, tc.step); err != nil {
+					t.Fatal(err)
+				}
+				if dec := Decide(&d.Facts); dec.Action != ActAck || dec.Reason != ReasonTerminated {
+					t.Errorf("Decide = %+v, want acknowledged under the termination", dec)
+				}
+				if s := state(t, c, capture); s != catalog.StatePending {
+					t.Errorf("capture %s, want the placeholder only", s)
+				}
+			})
+		})
+	}
+}
