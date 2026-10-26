@@ -97,7 +97,7 @@ func TestRestoredTrafficStream(t *testing.T) {
 			t.Fatalf("the new incarnation's consumer = %v", err)
 		}
 
-		staleHandler(t, r, held, held2, cons)
+		staleHandler(t, r, r.g.Consumer, held, held2, cons, 3)
 		r.g.Consumer, r.g.Stream, r.g.Incarnation = cons, s, inc
 		if err := r.g.Join(ctx); err != nil {
 			t.Fatal(err)
@@ -114,9 +114,74 @@ func TestRestoredTrafficStream(t *testing.T) {
 	})
 }
 
+// A traffic stream deleted and created again while a handler holds old deliveries (the gate's case): the stream is refused until adopted;
+// the handler's late acknowledgement and nak name the retired consumer and remove nothing from the new stream;
+// a reused sequence inherits nothing, an order of the retired incarnation covering none of the new stream's messages.
+func TestRecreatedTrafficStream(t *testing.T) {
+	t.Parallel()
+	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
+		ctx := t.Context()
+		r := newReplica(t, c)
+		old, renewed := tracepack.UUID{51}, tracepack.UUID{52}
+		for _, m := range traffic(t, old)[:2] {
+			r.publish(t, m, nil)
+		}
+		_, held := r.fetch(t)
+		_, held2 := r.fetch(t)
+		// An order of the retired incarnation, cut off above every sequence the new stream will reuse.
+		if _, err := c.TerminateCapture(ctx, renewed, r.g.Incarnation.ID, 100, "op", "c-old"); err != nil {
+			t.Fatal(err)
+		}
+		cfg := r.stream.CachedInfo().Config
+		if err := r.js.DeleteStream(ctx, cfg.Name); err != nil {
+			t.Fatal(err)
+		}
+		s, err := r.js.CreateStream(ctx, cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := bus.Incarnate(ctx, c, catalog.RoleTraffic, s); !errors.Is(err, catalog.ErrIncarnationChanged) {
+			t.Fatalf("Incarnate of the recreated stream = %v, want ErrIncarnationChanged", err)
+		}
+		if err := c.Leave(ctx, r.g.Replica); err != nil { // every process stopped
+			t.Fatal(err)
+		}
+		inc, err := r.admin().AdoptStream(ctx, catalog.RoleTraffic)
+		if err != nil {
+			t.Fatal(err)
+		}
+		r.stream = s
+		for _, m := range traffic(t, renewed)[:2] { // the new stream's sequences 1 and 2, below the old order's cut-off
+			r.publish(t, m, nil)
+		}
+		cons, err := bus.Consumer(ctx, s, inc, bus.ConsumerConfig{AckWait: 30 * time.Second, MaxAckPending: 1000})
+		if err != nil {
+			t.Fatal(err)
+		}
+		staleHandler(t, r, r.g.Consumer, held, held2, cons, 2)
+
+		r.g.Consumer, r.g.Stream, r.g.Incarnation = cons, s, inc
+		if err := r.g.Join(ctx); err != nil {
+			t.Fatal(err)
+		}
+		r.step(t)
+		r.clk.flushInterval()
+		r.step(t)
+		if got, err := c.Capture(ctx, renewed); err != nil || got.State != catalog.StateOpen || got.HighestSeq != 1 {
+			t.Errorf("capture %+v, %v; want its records ingested as new traffic", got, err)
+		}
+		if es, err := c.AuditEntries(ctx, renewed); err != nil || slices.ContainsFunc(es, func(e catalog.AuditEntry) bool { return e.Action == ReasonTerminated }) {
+			t.Errorf("audit %+v, %v; want no acknowledgement under the old order", es, err)
+		}
+		if n := r.pending(t); n != 0 {
+			t.Errorf("the stream holds %d messages, want none", n)
+		}
+	})
+}
+
 // staleHandler is a process that missed the stop: its buffered acknowledgement and nak, and its pull, name the retired consumer,
-// and leave the new consumer's 3 messages pending and none held.
-func staleHandler(t *testing.T, r *replica, acked, nakd jetstream.Msg, cons jetstream.Consumer) {
+// and leave the new consumer's pending messages pending and none held.
+func staleHandler(t *testing.T, r *replica, retired jetstream.Consumer, acked, nakd jetstream.Msg, cons jetstream.Consumer, pending uint64) {
 	t.Helper()
 	if err := acked.Ack(); err != nil {
 		t.Fatal(err)
@@ -124,7 +189,7 @@ func staleHandler(t *testing.T, r *replica, acked, nakd jetstream.Msg, cons jets
 	if err := nakd.Nak(); err != nil {
 		t.Fatal(err)
 	}
-	if batch, err := r.g.Consumer.Fetch(1, jetstream.FetchMaxWait(200*time.Millisecond)); err == nil {
+	if batch, err := retired.Fetch(1, jetstream.FetchMaxWait(200*time.Millisecond)); err == nil {
 		for range batch.Messages() {
 			t.Error("the retired consumer delivered a message")
 		}
@@ -133,8 +198,8 @@ func staleHandler(t *testing.T, r *replica, acked, nakd jetstream.Msg, cons jets
 		t.Fatal(err)
 	}
 	info, err := cons.Info(t.Context())
-	if err != nil || info.NumPending != 3 || info.NumAckPending != 0 {
-		t.Fatalf("the new consumer: %+v, %v; want the 3 messages pending and none held", info, err)
+	if err != nil || info.NumPending != pending || info.NumAckPending != 0 {
+		t.Fatalf("the new consumer: %+v, %v; want the %d messages pending and none held", info, err, pending)
 	}
 }
 
@@ -147,8 +212,21 @@ func TestRestoredParkingStream(t *testing.T) {
 		r := newReplica(t, c)
 		capture := tracepack.UUID{51}
 		r.publish(t, inline(t, capture, dataRecord(1, now-int64(48*time.Hour)), nil), nil)
+		r.publish(t, inline(t, capture, dataRecord(2, now-int64(48*time.Hour)), nil), nil)
 		r.step(t)
 		pg := r.parkedConsumer(t)
+		retired := pg.Consumer
+		batch, err := retired.Fetch(2, jetstream.FetchMaxWait(5*time.Second)) // copies a parked handler holds when the snapshot is taken
+		if err != nil {
+			t.Fatal(err)
+		}
+		var held []jetstream.Msg
+		for m := range batch.Messages() {
+			held = append(held, m)
+		}
+		if len(held) != 2 {
+			t.Fatalf("held %d copies, want 2", len(held))
+		}
 		parked := r.parked(t)
 		r.restore(t, parked.CachedInfo().Config.Name, func() {})
 		if _, err := bus.Incarnate(ctx, c, catalog.RoleParking, r.parked(t)); !errors.Is(err, catalog.ErrIncarnationChanged) {
@@ -171,6 +249,7 @@ func TestRestoredParkingStream(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		staleHandler(t, r, retired, held[0], held[1], cons, 2) // checklist 1's stale handler, on the parking stream
 		pg.Consumer, pg.Stream, pg.Incarnation = cons, s, inc
 		if err := pg.Join(ctx); err != nil {
 			t.Fatal(err)
@@ -178,8 +257,8 @@ func TestRestoredParkingStream(t *testing.T) {
 		if err := pg.Step(ctx); err != nil {
 			t.Fatal(err)
 		}
-		if got := copyStates(versions(t, c, capture), inc.ID); !slices.Equal(got, []string{"waiting"}) {
-			t.Errorf("copy rows on the new incarnation %v, want the copy's, waiting", got)
+		if got := copyStates(versions(t, c, capture), inc.ID); !slices.Equal(got, []string{"waiting", "waiting"}) {
+			t.Errorf("copy rows on the new incarnation %v, want both copies', waiting", got)
 		}
 	})
 }

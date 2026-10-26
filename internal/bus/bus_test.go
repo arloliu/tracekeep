@@ -358,3 +358,66 @@ func TestRetireConsumersVerifiesNoneRemains(t *testing.T) {
 		t.Error("RetireConsumers reported success with a consumer left")
 	}
 }
+
+// A stale handler's late nak racing the acknowledgement of the same original (the gate's case):
+// handler A holds a delivery past the ack wait, the message is redelivered to handler B, which acknowledges it, confirmed;
+// A's nak then arrives for a sequence the work-queue stream already removed, and brings nothing back.
+func TestLateNakAfterTheAcknowledgement(t *testing.T) {
+	t.Parallel()
+	catalogtest.Engines(t, func(t *testing.T, cat *catalog.Catalog) {
+		ctx := t.Context()
+		js := jetStream(t)
+		s, _, err := bus.Ensure(ctx, js, cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		inc, err := bus.Incarnate(ctx, cat, catalog.RoleTraffic, s)
+		if err != nil {
+			t.Fatal(err)
+		}
+		c, err := bus.Consumer(ctx, s, inc, bus.ConsumerConfig{AckWait: 300 * time.Millisecond, MaxAckPending: 10})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := js.Publish(ctx, "tk.T1.original", []byte("x")); err != nil {
+			t.Fatal(err)
+		}
+		fetch := func() jetstream.Msg {
+			t.Helper()
+			// The redelivery comes once the ack wait has passed; the fetch waits on it, bounded.
+			batch, err := c.Fetch(1, jetstream.FetchMaxWait(5*time.Second))
+			if err != nil {
+				t.Fatal(err)
+			}
+			for m := range batch.Messages() {
+				return m
+			}
+			t.Fatal("no delivery")
+
+			return nil
+		}
+		stale := fetch()   // handler A, which stalls
+		current := fetch() // handler B, after the ack wait
+		if md, _ := current.Metadata(); md == nil || md.NumDelivered != 2 {
+			t.Fatalf("second delivery %+v, want the redelivery of the same message", md)
+		}
+		if err := current.DoubleAck(ctx); err != nil {
+			t.Fatal(err)
+		}
+		if err := stale.Nak(); err != nil {
+			t.Fatal(err)
+		}
+		if err := js.Conn().Flush(); err != nil {
+			t.Fatal(err)
+		}
+		info, err := s.Info(ctx)
+		if err != nil || info.State.Msgs != 0 {
+			t.Errorf("stream %+v, %v; want the message gone despite the late nak", info.State, err)
+		}
+		if batch, err := c.Fetch(1, jetstream.FetchMaxWait(500*time.Millisecond)); err == nil {
+			for range batch.Messages() {
+				t.Error("the late nak brought the message back")
+			}
+		}
+	})
+}
