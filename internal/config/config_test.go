@@ -47,7 +47,8 @@ func TestDefaults(t *testing.T) {
 			t.Errorf("%s = %s, want %s", name, got, want)
 		}
 	}
-	if c.Catalog.Engine != "sqlite" || c.Store.Kind != "s3" || !c.Store.Presign || !c.Parking.Enabled || c.Ingest.BatchMaxBytes.Int64() != 64<<20 {
+	if c.Catalog.Engine != "sqlite" || c.Store.Kind != "s3" || !c.Store.Presign || !c.Parking.Enabled || c.Ingest.BatchMaxBytes.Int64() != 64<<20 ||
+		c.Metrics.Listen != ":9090" {
 		t.Errorf("config %+v, want the defaults", c)
 	}
 	if host, _ := os.Hostname(); c.Replica != host {

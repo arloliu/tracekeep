@@ -21,6 +21,7 @@ type Config struct {
 	Ingest  Ingest  `yaml:"ingest"`
 	Parking Parking `yaml:"parking"`
 	Compact Compact `yaml:"compact"`
+	Metrics Metrics `yaml:"metrics"`
 	// Retention is how long whole hours are kept; a record older than the retention horizon is beyond retention.
 	Retention time.Duration `yaml:"retention" default:"720h" env:"TRACEKEEP_RETENTION" validate:"gt=0"`
 	// Replica names this process in the membership and the compactor lease; empty takes the host name.
@@ -120,6 +121,12 @@ type Compact struct {
 	LeaseTTL time.Duration `yaml:"lease_ttl" default:"1m" env:"TRACEKEEP_COMPACT_LEASE_TTL" validate:"gt=0"`
 	// Interval is the time between two reconciler cycles.
 	Interval time.Duration `yaml:"interval" default:"5m" env:"TRACEKEEP_COMPACT_INTERVAL" validate:"gt=0"`
+}
+
+// Metrics is the metrics and health listener (operations.md §10.4).
+type Metrics struct {
+	// Listen is the address /metrics, /healthz and /readyz are served on; empty serves none.
+	Listen string `yaml:"listen" default:":9090" env:"TRACEKEEP_METRICS_LISTEN"`
 }
 
 // Load reads the configuration from the YAML file path, or from defaults and the environment alone when path is empty,

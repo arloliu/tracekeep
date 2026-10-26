@@ -42,3 +42,4 @@ The tunables of later phases (Q, I, L, D, the masking keys) join this file with 
 | `parking.redelivery_delay` | `60s` | `TRACEKEEP_PARKING_REDELIVERY_DELAY` | how soon a parked copy is tried again; the completion signal is `parked list`, not a time |
 | `compact.lease_ttl` | `1m` | `TRACEKEEP_COMPACT_LEASE_TTL` | the compactor lease: renewed every third of it while a cycle runs; a standby takes over once it lapses |
 | `compact.interval` | `5m` | `TRACEKEEP_COMPACT_INTERVAL` | the time between two reconciler cycles; an orphan is adopted on the second cycle that finds it |
+| `metrics.listen` | `:9090` | `TRACEKEEP_METRICS_LISTEN` | where `/metrics`, `/healthz` and `/readyz` are served (`operations.md` §10.4); empty serves none |
