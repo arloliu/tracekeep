@@ -307,9 +307,17 @@ func Compact(ctx context.Context, e *Env) error {
 
 // All runs every role of this phase in one process, for a standalone host: ingest and compact.
 func All(ctx context.Context, e *Env) error {
+	return together(ctx,
+		func(ctx context.Context) error { return Ingest(ctx, e) },
+		func(ctx context.Context) error { return Compact(ctx, e) })
+}
+
+// together runs roles until each returns; the first to fail cancels the others, and its error is returned.
+func together(ctx context.Context, roles ...func(context.Context) error) error {
 	g, gctx := errgroup.WithContext(ctx)
-	g.Go(func() error { return Ingest(gctx, e) })
-	g.Go(func() error { return Compact(gctx, e) })
+	for _, role := range roles {
+		g.Go(func() error { return role(gctx) })
+	}
 
 	return g.Wait()
 }
