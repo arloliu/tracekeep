@@ -118,6 +118,8 @@ func TestRetryReplaysAfterAWrite(t *testing.T) {
 	engines(t, func(t *testing.T, c *Catalog) {
 		errDeadlock := errors.New("deadlock")
 		c.testRetryable = errDeadlock
+		var observed []string
+		c.OnRetry(func(reason string) { observed = append(observed, reason) })
 		id := newID(t)
 		var revisions []int64
 		err := c.inTx(t.Context(), func(tx *sqlx.Tx) error {
@@ -141,6 +143,10 @@ func TestRetryReplaysAfterAWrite(t *testing.T) {
 		}
 		if n := count(t, c, `SELECT data_revision FROM captures WHERE capture_id = ?`, id[:]); n != 1 {
 			t.Errorf("data revision %d, want 1: one durable effect", n)
+		}
+		want := map[string]string{EngineSQLite: "busy", EngineMariaDB: "deadlock"}[c.Engine()]
+		if len(observed) != 1 || observed[0] != want {
+			t.Errorf("retries observed %v, want one %s", observed, want)
 		}
 	})
 }

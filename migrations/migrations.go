@@ -11,6 +11,7 @@ import (
 	"io/fs"
 	"path"
 	"slices"
+	"strings"
 )
 
 //go:embed sqlite/*.sql mariadb/*.sql
@@ -38,4 +39,15 @@ func Apply(ctx context.Context, db *sql.DB, engine string) error {
 	}
 
 	return nil
+}
+
+// Latest names the newest embedded migration of engine, the schema version this binary was built for.
+func Latest(engine string) (string, error) {
+	names, err := fs.Glob(files, path.Join(engine, "*.sql"))
+	if err != nil || len(names) == 0 {
+		return "", fmt.Errorf("migrations: no migrations for %q", engine)
+	}
+	slices.Sort(names)
+
+	return strings.TrimSuffix(path.Base(names[len(names)-1]), ".sql"), nil
 }

@@ -7,6 +7,7 @@ package catalog
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"net/url"
@@ -57,6 +58,8 @@ type Catalog struct {
 	now        func() int64
 	// hooks are the package's test seams, nil otherwise.
 	hooks [numHooks]func()
+	// retried observes each retry of a transaction with its reason; nil observes none.
+	retried func(reason string)
 	// testRetryable, set only by the package's tests, is an error a transaction retries like a deadlock.
 	testRetryable error
 }
@@ -96,6 +99,25 @@ func Open(ctx context.Context, cfg Config) (*Catalog, error) {
 	}
 
 	return c, nil
+}
+
+// OnRetry observes each retry of a transaction with its reason, busy on SQLite or deadlock on MariaDB, for the retry metric.
+// It is set once, before the catalog runs any transaction.
+func (c *Catalog) OnRetry(f func(reason string)) { c.retried = f }
+
+// Engine is the catalog's engine, EngineSQLite or EngineMariaDB.
+func (c *Catalog) Engine() string { return c.d.name }
+
+// Pools are the catalog's two connection pools, the writer's and the readers', for their usage metrics.
+func (c *Catalog) Pools() (write, read *sql.DB) { return c.write.DB, c.read.DB }
+
+// Ping checks that the catalog answers, for readiness.
+func (c *Catalog) Ping(ctx context.Context) error {
+	if err := c.read.PingContext(ctx); err != nil {
+		return fmt.Errorf("catalog: ping: %w", err)
+	}
+
+	return nil
 }
 
 // Close closes the catalog.
