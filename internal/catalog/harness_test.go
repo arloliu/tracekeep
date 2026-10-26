@@ -35,7 +35,7 @@ func newCatalog(t *testing.T, engine string) *Catalog {
 	switch engine {
 	case EngineSQLite:
 		cfg.DSN = filepath.Join(t.TempDir(), "catalog.db")
-		migrate(t, "sqlite", "file:"+cfg.DSN, engine)
+		migrate(t, "sqlite", SQLiteURI(cfg.DSN), engine)
 	case EngineMariaDB:
 		cfg.DSN = mariadbDatabase(t)
 	default:

@@ -70,7 +70,7 @@ func TestBusyTransactionRetries(t *testing.T) {
 	t.Parallel()
 	c := newCatalogBusy(t, 50*time.Millisecond)
 	// Another connection holds SQLite's write lock.
-	other, err := sql.Open("sqlite", "file:"+c.path+"?_txlock=immediate")
+	other, err := sql.Open("sqlite", SQLiteURI(c.path)+"?_txlock=immediate")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -185,7 +185,7 @@ type busyCatalog struct {
 func newCatalogBusy(t *testing.T, busy time.Duration) busyCatalog {
 	t.Helper()
 	path := t.TempDir() + "/catalog.db"
-	migrate(t, "sqlite", "file:"+path, EngineSQLite)
+	migrate(t, "sqlite", SQLiteURI(path), EngineSQLite)
 	c, err := Open(t.Context(), Config{Engine: EngineSQLite, DSN: path, BusyTimeout: busy})
 	if err != nil {
 		t.Fatal(err)
@@ -193,4 +193,26 @@ func newCatalogBusy(t *testing.T, busy time.Duration) busyCatalog {
 	t.Cleanup(func() { _ = c.Close() })
 
 	return busyCatalog{c, path}
+}
+
+// A database path holding URI characters names its own file: a subtest's "#01" or a "?" in a directory is no fragment or query.
+func TestSQLitePathWithURICharacters(t *testing.T) {
+	t.Parallel()
+	dir := filepath.Join(t.TempDir(), "a#01?b%20c")
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "catalog.db")
+	migrate(t, "sqlite", SQLiteURI(path), EngineSQLite)
+	c, err := Open(t.Context(), Config{Engine: EngineSQLite, DSN: path})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	if _, err := c.ActivateConfig(t.Context(), []byte("c")); err != nil {
+		t.Fatal(err)
+	}
+	if names, _ := filepath.Glob(filepath.Join(filepath.Dir(dir), "*")); len(names) != 1 {
+		t.Errorf("files %v beside the directory, want it alone", names)
+	}
 }

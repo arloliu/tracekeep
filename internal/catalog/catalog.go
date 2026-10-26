@@ -109,6 +109,12 @@ func (c *Catalog) Close() error {
 	return err
 }
 
+// SQLiteURI returns the SQLite URI of the database file at path, its path escaped,
+// so a "#", "?" or "%" in it names the file rather than ending the path or starting a parameter.
+func SQLiteURI(path string) string {
+	return "file:" + (&url.URL{Path: path}).EscapedPath()
+}
+
 func openSQLite(cfg Config) (*Catalog, error) {
 	// The lock is the file's, so a second process, or a second Open in this one, finds it held;
 	// the path is resolved first, so a link to the database names the same lock.
@@ -139,7 +145,7 @@ func openSQLite(cfg Config) (*Catalog, error) {
 	q.Add("_pragma", fmt.Sprintf("busy_timeout(%d)", busy.Milliseconds()))
 	q.Add("_pragma", "journal_mode(WAL)")
 	q.Add("_pragma", "synchronous(FULL)")
-	base := "file:" + path + "?"
+	base := SQLiteURI(path) + "?"
 	// Every write transaction begins IMMEDIATE, taking the write lock first, on the one writer connection.
 	write, err := sqlx.Open("sqlite", base+q.Encode()+"&_txlock=immediate")
 	if err != nil {
