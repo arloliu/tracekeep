@@ -25,7 +25,10 @@ const readAhead = 64 << 10
 // defaultRegion is signed into requests when Config names none; S3-compatible stores accept any.
 const defaultRegion = "us-east-1"
 
-var errNegativeOffset = errors.New("s3store: negative offset")
+var (
+	errNegativeOffset = errors.New("s3store: negative offset")
+	errBodySize       = errors.New("s3store: body length differs from size")
+)
 
 // Config names the bucket and how to reach it.
 type Config struct {
@@ -86,6 +89,10 @@ func (s *Store) Client() *s3.Client {
 
 // Put implements store.ObjectStore with one PutObject, which is atomic and durable when it succeeds.
 func (s *Store) Put(ctx context.Context, key string, r io.ReadSeeker, size int64) error {
+	// A body of another length would go out as a malformed request, which the client retries before failing.
+	if n, err := remaining(r); err != nil || n != size {
+		return fmt.Errorf("s3store: put %s: body of %d bytes, size %d: %w", key, n, size, errors.Join(err, errBodySize))
+	}
 	_, err := s.client.PutObject(ctx, &s3.PutObjectInput{
 		Bucket: &s.bucket, Key: &key, Body: r, ContentLength: &size,
 	})
@@ -134,7 +141,7 @@ func (s *Store) List(ctx context.Context, prefix string, fn func(store.ObjectInf
 		}
 	}
 
-	return nil
+	return ctx.Err()
 }
 
 // Delete implements store.ObjectStore.
@@ -174,6 +181,23 @@ func (s *Store) get(ctx context.Context, key string, from int64, buf []byte) err
 	}
 
 	return nil
+}
+
+// remaining returns the bytes r holds from its current offset, leaving the offset where it was.
+func remaining(r io.Seeker) (int64, error) {
+	cur, err := r.Seek(0, io.SeekCurrent)
+	if err != nil {
+		return 0, err
+	}
+	end, err := r.Seek(0, io.SeekEnd)
+	if err != nil {
+		return 0, err
+	}
+	if _, err := r.Seek(cur, io.SeekStart); err != nil {
+		return 0, err
+	}
+
+	return end - cur, nil
 }
 
 // wrap names the operation, and maps a 404 to store.ErrNotFound unless the bucket is what is missing.
