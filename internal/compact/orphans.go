@@ -268,9 +268,9 @@ func describe(rd *tracepack.Reader, keyPrefix string, info store.ObjectInfo) (*c
 	if m == nil {
 		return nil, "the pack has no metadata"
 	}
-	// shortcut: a close (seq_start 2^64-1, which no segment key spells) is left to the compactor that publishes it;
-	// adopt a close's orphan here once the compactor writes closes.
-	if m.SeqStart > math.MaxInt64 {
+	// shortcut: a close (seq_start 2^63-1, the close sentinel, which no segment's registration takes) is left to the compactor that publishes it;
+	// adopt a close's orphan here, as a close holding no range, once the compactor writes closes.
+	if m.SeqStart == math.MaxInt64 {
 		return nil, "a close, which only its publication registers"
 	}
 	p := &catalog.Pack{
