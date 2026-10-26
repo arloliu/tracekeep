@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/arloliu/go-secs/tracepack"
 	"github.com/prometheus/client_golang/prometheus"
 
 	"github.com/arloliu/tracekeep/internal/catalog"
@@ -157,7 +158,7 @@ type Consumer interface {
 // stamping refreshed_timestamp_seconds{source}.
 // A failure keeps the source's previous values and counts in refresh_failures_total.
 // A pass over every open capture's completeness, it runs on a timer, never per delivery.
-func (m *Ingest) Refresh(ctx context.Context, cat *catalog.Catalog, cons Consumer) error {
+func (m *Ingest) Refresh(ctx context.Context, cat Catalog, cons Consumer) error {
 	if m == nil {
 		return nil
 	}
@@ -189,7 +190,14 @@ type catalogState struct {
 	parked, captures, gaps map[string]int
 }
 
-func readCatalog(ctx context.Context, cat *catalog.Catalog) (catalogState, error) {
+// Catalog is what Refresh reads of the catalog; a *catalog.Catalog is one.
+type Catalog interface {
+	ParkedCounts(ctx context.Context) (map[string]int, error)
+	OpenCaptures(ctx context.Context) ([]catalog.OpenCapture, error)
+	Completeness(ctx context.Context, capture tracepack.UUID) (catalog.Completeness, error)
+}
+
+func readCatalog(ctx context.Context, cat Catalog) (catalogState, error) {
 	parked, err := cat.ParkedCounts(ctx)
 	if err != nil {
 		return catalogState{}, err

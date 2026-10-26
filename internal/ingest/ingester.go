@@ -367,6 +367,7 @@ func (g *Ingester) act(ctx context.Context, e Entry, dec Decision, delivered uin
 	g.Metrics.Disposed(dec.Action.String(), delivered > 1)
 	switch dec.Action {
 	case ActBatch: // settled once its batch is registered: a batch the Writer refuses keeps it deferred
+		g.Metrics.Held([]string{e.D.Msg.Env.MsgID}) // kept from now, the heartbeat keeping it while held
 		g.mu.Lock()
 		g.Batcher.Add(e, g.Now())
 		g.mu.Unlock()
