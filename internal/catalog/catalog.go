@@ -69,6 +69,8 @@ const (
 	hookLocked
 	// hookBeforeCommit runs once a transaction's statements succeeded, before its commit.
 	hookBeforeCommit
+	// hookCompletenessRead runs between the reads of a completeness, inside its snapshot.
+	hookCompletenessRead
 	numHooks
 )
 

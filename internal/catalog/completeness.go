@@ -5,8 +5,11 @@ import (
 	"context"
 	"database/sql"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"slices"
+
+	"github.com/jmoiron/sqlx"
 
 	"github.com/arloliu/go-secs/tracepack"
 )
@@ -20,8 +23,8 @@ type Completeness struct {
 	HasFrontier bool
 	// Retained are the seq runs registered packs hold, with the times of their endpoints.
 	Retained []Range
-	// Evicted are the runs retention evicted that no retained pack also holds.
-	Evicted []Range
+	// Evicted are the runs retention evicted that no retained pack also holds; an endpoint a retained run cut has no time of its own.
+	Evicted []Run
 	// Deferred are the seqs an unresolved parked version holds and nothing retained or evicted does, with the carried record's time.
 	Deferred []Deferred
 	// Gaps are the holes up to the frontier no class explains.
@@ -35,6 +38,12 @@ type Completeness struct {
 	CrashGaps []CrashGap
 	// Conflicts are the conflicting versions the catalog recorded, suspects included.
 	Conflicts []ConflictRange
+}
+
+// Run is a seq run with the times of its endpoint records, nil where the record's time is not known.
+type Run struct {
+	SeqFrom, SeqTo uint64
+	TSFrom, TSTo   *int64
 }
 
 // Deferred is a deferred seq: its version is parking, parked or evicted-hour.
@@ -72,15 +81,18 @@ type ConflictRange struct {
 	State          string
 }
 
-// Completeness reads capture's completeness (catalog.md §7.3).
+// Completeness reads capture's completeness (catalog.md §7.3), every row from one snapshot,
+// so a registration committing meanwhile can never turn a deferred seq into a gap.
 func (c *Catalog) Completeness(ctx context.Context, capture tracepack.UUID) (Completeness, error) {
 	var out Completeness
 	in, err := c.completenessInputs(ctx, capture)
 	if err != nil {
 		return out, fmt.Errorf("catalog: completeness of %s: %w", capture, err)
 	}
+	// The diagnostics stand on their own: a capture with no producer seq may still have a close or a declared loss.
+	out.Losses, out.CrashGaps, out.Conflicts = slices.Clone(in.losses), in.crashGaps, in.conflicts
 	out.Retained = coalesce(in.retained)
-	out.Evicted = subtract(coalesce(in.evicted), out.Retained)
+	out.Evicted = subtract(asRuns(coalesce(in.evicted)), out.Retained)
 	frontier, ok := in.highest, in.hasHighest
 	for _, p := range in.parked {
 		if !ok || p.seq > frontier {
@@ -91,33 +103,30 @@ func (c *Catalog) Completeness(ctx context.Context, capture tracepack.UUID) (Com
 		return out, nil
 	}
 	out.Frontier, out.HasFrontier, out.UnknownTailFrom = frontier, true, frontier+1
-	covered := slices.Concat(out.Retained, out.Evicted)
-	var lost []Range
+	covered := slices.Concat(out.Retained, in.evicted)
+	// Gaps are timed by the records beside them: the original runs, never a cut endpoint.
+	explained := slices.Concat(asRuns(out.Retained), asRuns(in.evicted))
 	for _, p := range in.parked {
+		ts := p.ts
 		switch {
 		case p.state == VersionTerminated:
 			s := p.seq
-			out.Losses = append(out.Losses, DeclaredLoss{SeqFrom: &s, SeqTo: &s, TSFrom: &p.ts, TSTo: &p.ts, ActionID: p.action})
-			lost = append(lost, Range{SeqFrom: p.seq, SeqTo: p.seq, TSFrom: p.ts, TSTo: p.ts})
+			out.Losses = append(out.Losses, DeclaredLoss{SeqFrom: &s, SeqTo: &s, TSFrom: &ts, TSTo: &ts, ActionID: p.action})
+			explained = append(explained, Run{SeqFrom: p.seq, SeqTo: p.seq, TSFrom: &ts, TSTo: &ts})
 		case p.state != VersionStaged && !holds(covered, p.seq):
 			out.Deferred = append(out.Deferred, Deferred{Seq: p.seq, TS: p.ts, State: p.state})
+			explained = append(explained, Run{SeqFrom: p.seq, SeqTo: p.seq, TSFrom: &ts, TSTo: &ts})
 		default:
 			// Staged, or a seq a retained or evicted run already classifies.
 		}
 	}
 	out.Deferred = slices.CompactFunc(out.Deferred, func(a, b Deferred) bool { return a.Seq == b.Seq })
 	for _, l := range in.losses {
-		out.Losses = append(out.Losses, l)
 		if l.SeqFrom != nil && l.SeqTo != nil && *l.SeqFrom <= *l.SeqTo {
-			lost = append(lost, Range{SeqFrom: *l.SeqFrom, SeqTo: *l.SeqTo, TSFrom: deref(l.TSFrom), TSTo: deref(l.TSTo)})
+			explained = append(explained, Run{SeqFrom: *l.SeqFrom, SeqTo: *l.SeqTo, TSFrom: l.TSFrom, TSTo: l.TSTo})
 		}
 	}
-	explained := slices.Concat(covered, lost)
-	for _, d := range out.Deferred {
-		explained = append(explained, Range{SeqFrom: d.Seq, SeqTo: d.Seq, TSFrom: d.TS, TSTo: d.TS})
-	}
-	out.Gaps = gaps(coalesce(explained), frontier, in.origin)
-	out.CrashGaps, out.Conflicts = in.crashGaps, in.conflicts
+	out.Gaps = gaps(coalesceRuns(explained), frontier, in.origin)
 
 	return out, nil
 }
@@ -142,26 +151,36 @@ type completenessInputs struct {
 	conflicts  []ConflictRange
 }
 
-func (c *Catalog) completenessInputs(ctx context.Context, capture tracepack.UUID) (completenessInputs, error) {
-	var in completenessInputs
+func (c *Catalog) completenessInputs(ctx context.Context, capture tracepack.UUID) (in completenessInputs, err error) {
+	// One read-only snapshot: SQLite's from the first read of the transaction, MariaDB's under REPEATABLE READ,
+	// since the catalog's sessions otherwise read committed.
+	opts := &sql.TxOptions{ReadOnly: true}
+	if c.d.name == EngineMariaDB {
+		opts.Isolation = sql.LevelRepeatableRead
+	}
+	tx, err := c.read.BeginTxx(ctx, opts)
+	if err != nil {
+		return in, err
+	}
+	defer func() { err = errors.Join(err, tx.Rollback()) }()
 	var row struct {
 		Highest sql.NullInt64 `db:"highest_seq"`
 		Origin  sql.NullInt64 `db:"origin_ns"`
 	}
-	if err := c.read.GetContext(ctx, &row, `SELECT highest_seq, origin_ns FROM captures WHERE capture_id = ?`, capture[:]); err != nil {
+	if err := tx.GetContext(ctx, &row, `SELECT highest_seq, origin_ns FROM captures WHERE capture_id = ?`, capture[:]); err != nil {
 		return in, err
 	}
 	in.highest, in.hasHighest = uint64(row.Highest.Int64), row.Highest.Valid //nolint:gosec // a stored seq is below 2^63
 	if row.Origin.Valid {
 		in.origin = &row.Origin.Int64
 	}
-	var err error
-	in.retained, err = c.ranges(ctx, `SELECT r.seq_from, r.seq_to, r.ts_from, r.ts_to FROM pack_ranges r JOIN packs k ON k.pack_id = r.pack_id
+	in.retained, err = ranges(ctx, tx, `SELECT r.seq_from, r.seq_to, r.ts_from, r.ts_to FROM pack_ranges r JOIN packs k ON k.pack_id = r.pack_id
 		WHERE r.capture_id = ? AND k.state <> 'deleted'`, capture)
 	if err != nil {
 		return in, err
 	}
-	if in.evicted, err = c.ranges(ctx, `SELECT seq_from, seq_to, ts_from, ts_to FROM evicted_ranges WHERE capture_id = ?`, capture); err != nil {
+	c.hook(hookCompletenessRead)
+	if in.evicted, err = ranges(ctx, tx, `SELECT seq_from, seq_to, ts_from, ts_to FROM evicted_ranges WHERE capture_id = ?`, capture); err != nil {
 		return in, err
 	}
 	var parked []struct {
@@ -170,20 +189,20 @@ func (c *Catalog) completenessInputs(ctx context.Context, capture tracepack.UUID
 		State  VersionState   `db:"state"`
 		By     sql.NullString `db:"terminated_by"`
 	}
-	if err := c.read.SelectContext(ctx, &parked, `SELECT seq, header, state, terminated_by FROM parked WHERE capture_id = ? ORDER BY seq`, capture[:]); err != nil {
+	if err := tx.SelectContext(ctx, &parked, `SELECT seq, header, state, terminated_by FROM parked WHERE capture_id = ? ORDER BY seq`, capture[:]); err != nil {
 		return in, err
 	}
 	for _, p := range parked {
 		in.parked = append(in.parked, parkedSeq{seq: uint64(p.Seq), ts: headerTS(p.Header), state: p.State, action: p.By.String}) //nolint:gosec // a stored seq is below 2^63
 	}
-	if in.losses, err = c.packLosses(ctx, capture); err != nil {
+	if in.losses, err = packLosses(ctx, tx, capture); err != nil {
 		return in, err
 	}
 	var gapRows []struct {
 		Start sql.NullInt64 `db:"gap_start"`
 		End   sql.NullInt64 `db:"gap_end"`
 	}
-	err = c.read.SelectContext(ctx, &gapRows, `SELECT gap_start, gap_end FROM capture_closes
+	err = tx.SelectContext(ctx, &gapRows, `SELECT gap_start, gap_end FROM capture_closes
 		WHERE capture_id = ? AND (gap_start IS NOT NULL OR gap_end IS NOT NULL)`, capture[:])
 	if err != nil {
 		return in, err
@@ -196,7 +215,7 @@ func (c *Catalog) completenessInputs(ctx context.Context, capture tracepack.UUID
 		To    int64  `db:"seq_to"`
 		State string `db:"state"`
 	}
-	if err := c.read.SelectContext(ctx, &conflicts, `SELECT seq_from, seq_to, state FROM conflicts WHERE capture_id = ? ORDER BY seq_from`, capture[:]); err != nil {
+	if err := tx.SelectContext(ctx, &conflicts, `SELECT seq_from, seq_to, state FROM conflicts WHERE capture_id = ? ORDER BY seq_from`, capture[:]); err != nil {
 		return in, err
 	}
 	for _, k := range conflicts {
@@ -206,14 +225,14 @@ func (c *Catalog) completenessInputs(ctx context.Context, capture tracepack.UUID
 	return in, nil
 }
 
-func (c *Catalog) ranges(ctx context.Context, query string, capture tracepack.UUID) ([]Range, error) {
+func ranges(ctx context.Context, q sqlx.QueryerContext, query string, capture tracepack.UUID) ([]Range, error) {
 	var rows []struct {
 		From   int64 `db:"seq_from"`
 		To     int64 `db:"seq_to"`
 		TSFrom int64 `db:"ts_from"`
 		TSTo   int64 `db:"ts_to"`
 	}
-	if err := c.read.SelectContext(ctx, &rows, query, capture[:]); err != nil {
+	if err := sqlx.SelectContext(ctx, q, &rows, query, capture[:]); err != nil {
 		return nil, err
 	}
 	rs := make([]Range, 0, len(rows))
@@ -224,14 +243,14 @@ func (c *Catalog) ranges(ctx context.Context, query string, capture tracepack.UU
 	return rs, nil
 }
 
-func (c *Catalog) packLosses(ctx context.Context, capture tracepack.UUID) ([]DeclaredLoss, error) {
+func packLosses(ctx context.Context, q sqlx.QueryerContext, capture tracepack.UUID) ([]DeclaredLoss, error) {
 	var rows []struct {
 		From   sql.NullInt64 `db:"seq_from"`
 		To     sql.NullInt64 `db:"seq_to"`
 		TSFrom sql.NullInt64 `db:"ts_from"`
 		TSTo   sql.NullInt64 `db:"ts_to"`
 	}
-	err := c.read.SelectContext(ctx, &rows, `SELECT l.seq_from, l.seq_to, l.ts_from, l.ts_to FROM pack_losses l JOIN packs k ON k.pack_id = l.pack_id
+	err := sqlx.SelectContext(ctx, q, &rows, `SELECT l.seq_from, l.seq_to, l.ts_from, l.ts_to FROM pack_losses l JOIN packs k ON k.pack_id = l.pack_id
 		WHERE k.capture_id = ? AND k.state <> 'deleted'`, capture[:])
 	if err != nil {
 		return nil, err
@@ -271,23 +290,53 @@ func coalesce(rs []Range) []Range {
 	return out
 }
 
-// subtract returns the parts of the coalesced runs a that no run of the coalesced b holds; a cut endpoint has no time of its own.
-func subtract(a, b []Range) []Range {
-	var out []Range
+// asRuns are rs with their known endpoint times.
+func asRuns(rs []Range) []Run {
+	out := make([]Run, 0, len(rs))
+	for _, r := range rs {
+		from, to := r.TSFrom, r.TSTo
+		out = append(out, Run{SeqFrom: r.SeqFrom, SeqTo: r.SeqTo, TSFrom: &from, TSTo: &to})
+	}
+
+	return out
+}
+
+// coalesceRuns sorts runs and merges the overlapping and adjacent ones, keeping the outer endpoints' times.
+func coalesceRuns(rs []Run) []Run {
+	rs = slices.Clone(rs)
+	slices.SortFunc(rs, func(a, b Run) int { return cmp.Compare(a.SeqFrom, b.SeqFrom) })
+	var out []Run
+	for _, r := range rs {
+		if n := len(out); n > 0 && r.SeqFrom <= out[n-1].SeqTo+1 {
+			if r.SeqTo > out[n-1].SeqTo {
+				out[n-1].SeqTo, out[n-1].TSTo = r.SeqTo, r.TSTo
+			}
+			continue
+		}
+		out = append(out, r)
+	}
+
+	return out
+}
+
+// subtract returns the parts of the coalesced runs a that no run of the coalesced b holds;
+// an endpoint b cuts has no time of its own, since no record of a sits there.
+func subtract(a []Run, b []Range) []Run {
+	var out []Run
 	for _, r := range a {
-		pieces := []Range{r}
+		pieces := []Run{r}
 		for _, s := range b {
-			var next []Range
+			var next []Run
 			for _, p := range pieces {
 				if s.SeqTo < p.SeqFrom || s.SeqFrom > p.SeqTo {
 					next = append(next, p)
 					continue
 				}
 				if s.SeqFrom > p.SeqFrom {
-					next = append(next, Range{SeqFrom: p.SeqFrom, SeqTo: s.SeqFrom - 1, TSFrom: p.TSFrom, TSTo: s.TSFrom})
+					next = append(next, Run{SeqFrom: p.SeqFrom, SeqTo: s.SeqFrom - 1, TSFrom: p.TSFrom})
 				}
 				if s.SeqTo < p.SeqTo {
-					next = append(next, Range{SeqFrom: s.SeqTo + 1, SeqTo: p.SeqTo, TSFrom: s.TSTo, TSTo: p.TSTo})
+					next = append(next, Run{SeqFrom: s.SeqTo + 1, SeqTo: p.SeqTo, TSTo: p.TSTo})
 				}
 			}
 			pieces = next
@@ -304,7 +353,7 @@ func holds(rs []Range, seq uint64) bool {
 
 // gaps are the holes of the coalesced explained runs between seq 0 and frontier, timed by the runs on either side;
 // a missing prefix starts at origin, open-ended.
-func gaps(explained []Range, frontier uint64, origin *int64) []Gap {
+func gaps(explained []Run, frontier uint64, origin *int64) []Gap {
 	var out []Gap
 	next := uint64(0)
 	var before *int64
@@ -313,15 +362,13 @@ func gaps(explained []Range, frontier uint64, origin *int64) []Gap {
 			break
 		}
 		if r.SeqFrom > next {
-			end := r.TSFrom
-			g := Gap{From: next, To: r.SeqFrom - 1, Start: before, End: &end}
+			g := Gap{From: next, To: r.SeqFrom - 1, Start: before, End: r.TSFrom}
 			if next == 0 {
 				g.Start, g.OpenStart = origin, true
 			}
 			out = append(out, g)
 		}
-		ts := r.TSTo
-		before, next = &ts, r.SeqTo+1
+		before, next = r.TSTo, r.SeqTo+1
 	}
 	if next <= frontier {
 		g := Gap{From: next, To: frontier, Start: before}
@@ -349,12 +396,4 @@ func unsigned(v sql.NullInt64) *uint64 {
 	u := uint64(v.Int64) //nolint:gosec // a stored seq is below 2^63
 
 	return &u
-}
-
-func deref(v *int64) int64 {
-	if v == nil {
-		return 0
-	}
-
-	return *v
 }
