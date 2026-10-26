@@ -41,9 +41,11 @@ type Message struct {
 
 // Delivery is one delivery being decided: the message, the facts gathered and what the steps found.
 type Delivery struct {
-	Msg   Message
-	Raw   Raw
-	Facts Facts
+	Msg Message
+	// Incarnation is the incarnation of the stream the message came from.
+	Incarnation int64
+	Raw         Raw
+	Facts       Facts
 	// Record is the bus record once framed, with its payload once a claim object was fetched and its derived values once classified.
 	Record tracepack.BusRecord
 	// ConfigID is the capture's processing configuration once it is admitted.
@@ -79,7 +81,7 @@ type Executor struct {
 // An error is a step that could not run, the catalog or the claim bucket unreachable:
 // nothing durable was decided, and the caller naks the message.
 func (x *Executor) Dispose(ctx context.Context, msg Message) (*Delivery, Decision, error) {
-	d := &Delivery{Msg: msg}
+	d := &Delivery{Msg: msg, Incarnation: x.Incarnation}
 	d.Raw, d.Facts = ReadRaw(&d.Msg.Env, msg.Body, x.Horizon())
 	for range maxSteps {
 		dec := Decide(&d.Facts)
@@ -148,7 +150,7 @@ func (x *Executor) run(ctx context.Context, d *Delivery, s Step) error {
 }
 
 func (x *Executor) resolve(ctx context.Context, d *Delivery) error {
-	r, err := x.Catalog.Resolve(ctx, d.versionKey(), x.Incarnation, d.Msg.StreamSeq)
+	r, err := x.Catalog.Resolve(ctx, d.versionKey(), d.Incarnation, d.Msg.StreamSeq)
 	if err != nil {
 		return err
 	}
@@ -228,12 +230,14 @@ func (x *Executor) admit(ctx context.Context, d *Delivery) error {
 	if meta.CaptureOriginUTCNs != nil {
 		desc.OriginNS = *meta.CaptureOriginUTCNs
 	}
-	res, err := x.Catalog.Admit(ctx, d.Raw.Version.Capture, desc)
+	res, err := x.Catalog.Admit(ctx, d.identity(), desc)
 	if err != nil {
 		return err
 	}
 	d.Facts.Admitted = true
 	switch res.Outcome {
+	case catalog.Terminated:
+		d.Facts.Resolution = ResolvedTerminated
 	case catalog.Admitted, catalog.Unchanged:
 		d.Facts.Capture, d.ConfigID = CaptureAdmitted, res.ConfigID
 	case catalog.DescriptorConflict:
@@ -248,11 +252,13 @@ func (x *Executor) admit(ctx context.Context, d *Delivery) error {
 }
 
 func (x *Executor) reject(ctx context.Context, d *Delivery) error {
-	res, err := x.Catalog.Reject(ctx, d.Raw.Version.Capture, d.descriptorBytes())
+	res, err := x.Catalog.Reject(ctx, d.identity(), d.descriptorBytes())
 	if err != nil {
 		return err
 	}
 	switch res.Outcome {
+	case catalog.Terminated:
+		d.Facts.Resolution = ResolvedTerminated
 	case catalog.Rejected:
 		d.Facts.Rejected, d.Facts.Capture = true, CaptureRejected
 	case catalog.AlreadyAdmitted:
@@ -279,6 +285,11 @@ func (x *Executor) derive(d *Delivery) {
 		return
 	}
 	d.Facts.Derived = DerivedOK
+}
+
+// identity is the delivery's identity, which every transaction re-checking its termination takes (catalog.md §7.2).
+func (d *Delivery) identity() *catalog.Identity {
+	return &catalog.Identity{Version: *d.versionKey(), Incarnation: d.Incarnation, StreamSeq: d.Msg.StreamSeq, Hour: HourOf(d.Raw.TS)}
 }
 
 func (d *Delivery) versionKey() *catalog.VersionKey {

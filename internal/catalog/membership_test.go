@@ -129,12 +129,12 @@ func TestRetireNeedsEveryBoundCaptureQuiescent(t *testing.T) {
 		ctx := t.Context()
 		cfg := gate(t, c)
 		early := newID(t)
-		if _, err := c.Admit(ctx, early, descriptor(t, "a")); err != nil {
+		if _, err := c.Admit(ctx, start(early), descriptor(t, "a")); err != nil {
 			t.Fatal(err)
 		}
 		observed := []tracepack.UUID{early} // the caller's quiescence check saw this capture only
 		late := newID(t)
-		if _, err := c.Admit(ctx, late, descriptor(t, "b")); err != nil {
+		if _, err := c.Admit(ctx, start(late), descriptor(t, "b")); err != nil {
 			t.Fatal(err)
 		}
 		if err := c.RetireConfig(ctx, cfg, observed); !errors.Is(err, ErrNotQuiescent) {

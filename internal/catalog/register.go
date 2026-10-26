@@ -33,6 +33,9 @@ const (
 	// UnadmittedCapture: the reconciler's orphan belongs to a capture no start has admitted, pending or rejected;
 	// it stays unregistered (storage.md §5.4).
 	UnadmittedCapture
+	// VersionTerminated: a version of the batch is terminated, or an active termination order covers one of its messages (T-32);
+	// the key is now tombstoned, the caller deletes the object and returns the batch for its messages to be decided again.
+	VersionTerminated
 )
 
 // The roles a pack plays.
@@ -75,10 +78,12 @@ type Receipt struct {
 	ObjectSize    int64
 }
 
-// Evidence is what only ingest passes: the receipts of its claim-check records.
+// Evidence is what only ingest passes: the identity of every delivery whose version the pack holds, equal copies included,
+// and the receipts of its claim-check records.
 // A registration without evidence (the reconciler's, a close's) writes coverage only.
 type Evidence struct {
-	Receipts []Receipt
+	Deliveries []Identity
+	Receipts   []Receipt
 }
 
 // Pack is a pack to register.
@@ -116,7 +121,7 @@ type Registration struct {
 var ErrInvalidRegistration = errors.New("catalog: invalid registration")
 
 // RegisterPack registers p, idempotent on its pack_id, in the transaction ingest and the reconciler share (ingest.md §6.3).
-// An outcome other than Registered writes nothing, except BeyondHorizon's tombstone.
+// An outcome other than Registered writes nothing, except the tombstones of BeyondHorizon and VersionTerminated.
 func (c *Catalog) RegisterPack(ctx context.Context, p *Pack, r Registration) (PackOutcome, error) {
 	if err := p.check(r); err != nil {
 		return 0, err
@@ -125,7 +130,7 @@ func (c *Catalog) RegisterPack(ctx context.Context, p *Pack, r Registration) (Pa
 	err := outcome(c.inTx(ctx, func(tx *sqlx.Tx) error {
 		var err error
 		out, err = c.registerIn(ctx, tx, p, r)
-		if err == nil && out != Registered && out != BeyondHorizon {
+		if err == nil && out != Registered && out != BeyondHorizon && out != VersionTerminated {
 			err = errRollback
 		}
 
@@ -172,9 +177,11 @@ func (p *Pack) check(r Registration) error {
 		seqs = append(seqs, v.Seq)
 	}
 	if r.Evidence != nil {
-		for _, rc := range r.Evidence.Receipts {
-			seqs = append(seqs, rc.Seq)
+		evSeqs, err := r.Evidence.seqs(p)
+		if err != nil {
+			return err
 		}
+		seqs = append(seqs, evSeqs...)
 	}
 	for _, seq := range seqs {
 		if seq >= closeSentinel {
@@ -183,6 +190,22 @@ func (p *Pack) check(r Registration) error {
 	}
 
 	return nil
+}
+
+// seqs are the seqs the evidence names; a delivery of another capture than p's is refused.
+func (e *Evidence) seqs(p *Pack) ([]uint64, error) {
+	var seqs []uint64
+	for _, rc := range e.Receipts {
+		seqs = append(seqs, rc.Seq)
+	}
+	for _, d := range e.Deliveries {
+		if d.Version.Capture != p.Capture {
+			return nil, fmt.Errorf("%w: pack %s: a delivery of capture %s", ErrInvalidRegistration, p.ID, d.Version.Capture)
+		}
+		seqs = append(seqs, d.Version.Seq)
+	}
+
+	return seqs, nil
 }
 
 func (c *Catalog) registerIn(ctx context.Context, tx *sqlx.Tx, p *Pack, r Registration) (PackOutcome, error) {
@@ -213,6 +236,9 @@ func (c *Catalog) registerIn(ctx context.Context, tx *sqlx.Tx, p *Pack, r Regist
 	evs = append(evs, conflicts...)
 	if r.Evidence != nil {
 		if err := c.insertReceipts(ctx, tx, p, r.Evidence); err != nil {
+			return 0, err
+		}
+		if err := c.stageParked(ctx, tx, r.Evidence); err != nil {
 			return 0, err
 		}
 	}
@@ -252,6 +278,20 @@ func (c *Catalog) guards(ctx context.Context, tx *sqlx.Tx, p *Pack, r Registrati
 		}
 
 		return BeyondHorizon, true, err
+	}
+	if r.Evidence != nil {
+		for i := range r.Evidence.Deliveries {
+			d := &r.Evidence.Deliveries[i]
+			res, _, err := resolveIn(ctx, tx, &d.Version, d.Incarnation, d.StreamSeq)
+			if err != nil {
+				return 0, true, err
+			}
+			if res == ResolvedTerminated || res == CoveredByOrder {
+				// The termination committed first and wins: the key is tombstoned before the caller deletes the object.
+				_, err := tx.ExecContext(ctx, c.d.insertIgnore+` INTO tombstones (object_key, reason, at) VALUES (?, 'terminated', ?)`, p.Key, c.now())
+				return VersionTerminated, true, err
+			}
+		}
 	}
 	if r.Adopted && row.State != StateOpen && row.State != StateStopped && row.State != StateClosed {
 		return UnadmittedCapture, true, nil
@@ -389,6 +429,23 @@ func (c *Catalog) insertReceipts(ctx context.Context, tx *sqlx.Tx, p *Pack, e *E
 		}
 		_, err = tx.ExecContext(ctx, c.d.insertIgnore+` INTO claim_objects (object_key, capture_id, seq, hour, size, state)
 			VALUES (?, ?, ?, ?, ?, 'live')`, rc.ObjectKey, p.Capture[:], int64(rc.Seq), p.Hour, rc.ObjectSize)
+		if err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// stageParked moves the parked versions of the evidence's deliveries to staged, forward only:
+// the resolution a later copy is acknowledged from, committed with the receipts (parking.md *Resolution*).
+func (c *Catalog) stageParked(ctx context.Context, tx *sqlx.Tx, e *Evidence) error {
+	now := c.now()
+	for _, d := range e.Deliveries {
+		v := &d.Version
+		_, err := tx.ExecContext(ctx, `UPDATE parked SET state = 'staged', resolved_at = ?
+			WHERE capture_id = ? AND seq = ? AND header = ? AND payload_digest = ? AND state IN ('parking', 'parked')`,
+			now, v.Capture[:], int64(v.Seq), v.Header[:], v.Digest[:])
 		if err != nil {
 			return err
 		}

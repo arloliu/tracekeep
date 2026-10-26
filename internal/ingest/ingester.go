@@ -356,6 +356,11 @@ func (g *Ingester) flush(ctx context.Context, batches []*Batch) error {
 			for _, e := range b.Entries[out.Acked:] {
 				_ = e.Msg.NakWithDelay(delay)
 			}
+		case out.Terminated:
+			// Not a write failure: the redelivery is decided again and finds the termination (T-32).
+			for _, e := range b.Entries {
+				_ = e.Msg.NakWithDelay(firstNakDelay)
+			}
 		case out.BeyondHorizon:
 			for _, e := range b.Entries {
 				g.act(ctx, e, Decision{Action: ActTerminate, Reason: ReasonBeyondRetention, Alert: true, Audit: true}, 0)
