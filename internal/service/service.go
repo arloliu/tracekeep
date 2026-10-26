@@ -222,7 +222,13 @@ func ingesters(ctx context.Context, e *Env) ([]*ingest.Ingester, error) {
 	if err != nil {
 		return nil, err
 	}
-	configs, err := ingest.Activate(ctx, e.Catalog, []ingest.Config{builtin})
+	// Every unretired configuration of this classifier is executed, so a changed frame limit never locks the replica out;
+	// another classifier's refuses the start before anything is activated.
+	executable, err := ingest.Executable(ctx, e.Catalog, builtin)
+	if err != nil {
+		return nil, err
+	}
+	configs, err := ingest.Activate(ctx, e.Catalog, executable)
 	if err != nil {
 		return nil, err
 	}

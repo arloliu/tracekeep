@@ -59,6 +59,22 @@ func (c *Catalog) ActivateConfig(ctx context.Context, content []byte) (int64, er
 	return id, nil
 }
 
+// StoredConfig is a processing configuration as the catalog holds it: its id and its content.
+type StoredConfig struct {
+	ID      int64  `db:"config_id"`
+	Content []byte `db:"content"`
+}
+
+// UnretiredConfigs lists the configurations not yet retired, by id: every one of them a replica must execute to register.
+func (c *Catalog) UnretiredConfigs(ctx context.Context) ([]StoredConfig, error) {
+	var cs []StoredConfig
+	if err := c.read.SelectContext(ctx, &cs, `SELECT config_id, content FROM processing_configs WHERE retired_at IS NULL ORDER BY config_id`); err != nil {
+		return nil, fmt.Errorf("catalog: unretired configurations: %w", err)
+	}
+
+	return cs, nil
+}
+
 // RetireConfig retires configuration id: no new capture binds it, and a replica need not execute it to register.
 // quiescent are the captures the caller found producer-quiescent (rollouts.md §6.4);
 // under the membership sentinel, which every binding takes, the retirement is refused with ErrNotQuiescent
