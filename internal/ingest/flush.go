@@ -40,6 +40,30 @@ type Flusher struct {
 	Writer string
 	// Now returns the time a segment's writer_start is stamped with.
 	Now func() time.Time
+
+	// hooks are the package's test seams, each between two side effects of a flush; an error is a crash there.
+	hooks [numFlushHooks]func() error
+}
+
+// Flush hooks: the crash points of ingest.md §6.3.
+const (
+	// hookWrite runs before a segment's records are appended; its error is the Writer's refusal.
+	hookWrite = iota
+	// hookAfterPut runs once a segment is put, before its registration.
+	hookAfterPut
+	// hookAfterRegister runs once every segment is registered, before the first acknowledgement.
+	hookAfterRegister
+	// hookAfterAck runs after each acknowledgement.
+	hookAfterAck
+	numFlushHooks
+)
+
+func (f *Flusher) hook(id int) error {
+	if h := f.hooks[id]; h != nil {
+		return h()
+	}
+
+	return nil
 }
 
 // Flushed is what a flush did.
@@ -83,9 +107,15 @@ func (f *Flusher) Flush(ctx context.Context, b *Batch) (Flushed, error) {
 		}
 		out.Packs = append(out.Packs, seg.id)
 	}
+	if err := f.hook(hookAfterRegister); err != nil {
+		return out, err
+	}
 	for _, e := range b.Entries {
 		if err := ack(ctx, e); err != nil {
 			return out, err // the rest are redelivered, written again and deduplicated by the merge
+		}
+		if err := f.hook(hookAfterAck); err != nil {
+			return out, err
 		}
 	}
 
@@ -165,6 +195,9 @@ func (f *Flusher) writeSegment(ctx context.Context, b *Batch, capture *catalog.C
 	if err := f.Store.Put(ctx, key, tmp, size); err != nil {
 		return 0, err
 	}
+	if err := f.hook(hookAfterPut); err != nil {
+		return 0, err
+	}
 	p := &catalog.Pack{
 		ID: seg.id, Capture: b.Key.Capture, ToolID: capture.ToolID, Hour: b.Key.Hour, Role: seg.role, Key: key, Size: size,
 		SeqStart: first, FormatMinor: int(minor), Ranges: ranges(seg.entries), Stop: hasStop(seg.entries), Conflicts: seg.others,
@@ -206,6 +239,9 @@ func (f *Flusher) write(w *os.File, b *Batch, capture *catalog.Capture, cfg *Con
 		Meta: meta, Facts: facts(seg.entries), PackID: seg.id, CaptureID: b.Key.Capture, Sync: w, Now: f.Now,
 	})
 	if err != nil {
+		return 0, fmt.Errorf("%w: %w", errWrite, err)
+	}
+	if err := f.hook(hookWrite); err != nil {
 		return 0, fmt.Errorf("%w: %w", errWrite, err)
 	}
 	for _, e := range seg.entries {
