@@ -105,6 +105,12 @@ func dispatch(ctx context.Context, args []string, stdout, stderr io.Writer) erro
 	defer func() { _ = e.Close() }()
 	if isRole {
 		log.Info("tracekeep: starting", "command", command)
+		if command != "migrate" {
+			if err := e.Observe(ctx); err != nil {
+				return err
+			}
+		}
+
 		return role(ctx, e)
 	}
 	a := &admin.Admin{Catalog: e.Catalog, Bus: e.JS, Config: e.Bus(), Actor: *actor}
@@ -192,6 +198,7 @@ func runDev(ctx context.Context, args []string, stderr io.Writer) error {
 	port := fs.Int("port", 4222, "the embedded bus's client port, 0 for a free one")
 	flush := fs.Duration("flush", 10*time.Second, "ingest's flush interval")
 	rate := fs.Float64("rate", 10, "the simulator's forwarded requests per second; 0 runs no simulator")
+	listen := fs.String("metrics", "", "where to serve /metrics, /healthz and /readyz; empty serves none")
 	if err := fs.Parse(args); err != nil {
 		return fmt.Errorf("%w: %w", errUsage, err)
 	}
@@ -211,6 +218,10 @@ func runDev(ctx context.Context, args []string, stderr io.Writer) error {
 		return err
 	}
 	defer func() { _ = d.Close() }()
+	d.Env.Config.Metrics.Listen = *listen
+	if err := d.Env.Observe(ctx); err != nil {
+		return err
+	}
 	log.Info("tracekeep dev: running", "data", *dir, "bus", d.URL(), "packs", filepath.Join(*dir, "packs"))
 	err = d.Run(ctx)
 	if ctx.Err() != nil && errors.Is(err, ctx.Err()) {

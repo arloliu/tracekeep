@@ -204,7 +204,7 @@ func Dev(dir, url string, flush time.Duration) (*Config, error) {
 	c.Store.Kind, c.Store.Dir, c.Store.Presign = "fs", filepath.Join(dir, "packs"), false
 	c.Ingest.FlushInterval, c.Ingest.AckWait, c.Ingest.MaxWait = flush, max(time.Minute, 2*flush), time.Second
 	c.Compact.Interval = 30 * time.Second
-	c.Replica = "dev"
+	c.Replica, c.Metrics.Listen = "dev", "" // dev serves metrics only where asked
 	if err := fuda.Validate(&c); err != nil {
 		return nil, fmt.Errorf("config: %w", err)
 	}
