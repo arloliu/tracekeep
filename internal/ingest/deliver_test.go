@@ -147,6 +147,9 @@ func TestDisposeExpiredStart(t *testing.T) {
 		if dec.Action != ActTerminate || dec.Reason != ReasonBeyondRetention || !dec.Audit || state(t, c, capture) != catalog.StateOpen {
 			t.Fatalf("an expired start = %+v, capture %s; want admitted, then terminated with an audit row", dec, state(t, c, capture))
 		}
+		if d.ToolID != "T1" {
+			t.Errorf("the tool of an admitted start = %q, want T1 for the loss it counts", d.ToolID)
+		}
 		if err := x.AuditTermination(t.Context(), d, dec.Reason); err != nil {
 			t.Fatal(err)
 		}

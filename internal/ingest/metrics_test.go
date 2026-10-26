@@ -3,10 +3,14 @@ package ingest
 import (
 	"context"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/arloliu/go-secs/tracepack"
 
@@ -97,5 +101,29 @@ func TestNilMetricsRecordNothing(t *testing.T) {
 	m.Lost("T1")
 	if err := m.Refresh(t.Context(), nil, nil); err != nil {
 		t.Errorf("Refresh on nil = %v", err)
+	}
+}
+
+// A deferral that escalates to parking and falls back to a nak, parking off, stays one deferral from its first nak:
+// its age is never reset by the escalation.
+func TestParkFallbackKeepsTheDeferralAge(t *testing.T) {
+	t.Parallel()
+	s := metrics.NewServer()
+	m, err := metrics.NewIngest(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	g := &Ingester{Metrics: m, Log: slog.New(slog.DiscardHandler)}
+	d := &Delivery{}
+	d.Msg.Env.MsgID = "m1"
+	g.act(t.Context(), Entry{D: d, Msg: &msg{}}, Decision{Action: ActNak, Reason: ReasonUnknownCapture}, 1)
+	time.Sleep(1100 * time.Millisecond)
+	g.act(t.Context(), Entry{D: d, Msg: &msg{}}, Decision{Action: ActPark, Reason: ReasonUnknownCapture}, 9)
+	match := regexp.MustCompile(`tracekeep_ingest_deferred_oldest_age_seconds\{reason="` + ReasonUnknownCapture + `"\} (\S+)`).FindStringSubmatch(scrape(t, s))
+	if match == nil {
+		t.Fatal("the deferral was not kept")
+	}
+	if age, _ := strconv.ParseFloat(match[1], 64); age < 1 {
+		t.Errorf("deferred age %v after a park fallback, want the age from the first nak", age)
 	}
 }
