@@ -133,7 +133,7 @@ The follower schedule reads through a follower but does not induce a replica's l
 Work on the branch `feat/cmd/roles`, one commit per step, test first;
 the branch merges by pull request once the whole phase passes an external post-implementation review.
 Phase 1.7 closes phase 1: catalog completeness and the gate and checklist cases this phase leaves open,
-listed by an audit of every gate case against the tests; this phase owns the gate's loopback capture only.
+listed by an audit of every gate case against the tests, with a schedule of the traffic and parked consumers both processing at once; this phase owns the gate's loopback capture only.
 Of those, `rejected → open` with a parked copy is tested in 1.7 against a consumer whose accepted descriptors the test widens, standing in for a fixed release;
 checklist item 7's close left `abandoned` goes to phase 2 with the closes, and the lagging replica stays the follower schedule of phase 1.5.
 
