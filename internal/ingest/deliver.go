@@ -77,6 +77,9 @@ type Executor struct {
 	Horizon func() int64
 	// Configs are the processing configurations this replica executes, by id.
 	Configs map[int64]Config
+
+	// accepts is the descriptor check, nil for acceptedDescriptor; a test widens it to stand in for a fixed release.
+	accepts func(descriptor []byte) bool
 }
 
 // Dispose decides msg's disposition, running the steps Decide asks for (ingest.md §6.1).
@@ -124,7 +127,11 @@ func (x *Executor) run(ctx context.Context, d *Delivery, s Step) error {
 		return x.fetchClaim(ctx, d)
 	case StepValidateDescriptor:
 		f.Descriptor = No
-		if acceptedDescriptor(d.Record.Descriptor) {
+		accepts := acceptedDescriptor
+		if x.accepts != nil {
+			accepts = x.accepts
+		}
+		if accepts(d.Record.Descriptor) {
 			f.Descriptor = Yes
 		}
 	case StepAdmit:
