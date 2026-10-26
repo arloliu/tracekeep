@@ -28,12 +28,15 @@ type dialect struct {
 	prologue string
 	// retryable reports an error that re-runs the whole transaction: a deadlock or a busy database.
 	retryable func(error) bool
+	// retryReason names this engine's retryable error for the retry metric: busy on SQLite, deadlock on MariaDB.
+	retryReason string
 	// nowNS is the database's clock in UTC nanoseconds, which judges every lease (rollouts.md §6.4, T-32).
 	nowNS string
 }
 
 var sqliteDialect = dialect{
 	name:         EngineSQLite,
+	retryReason:  "busy",
 	insertIgnore: "INSERT OR IGNORE",
 	prologue: `INSERT INTO captures (capture_id, state, data_revision, created_at) VALUES (?, 'pending', 1, ?)
 		ON CONFLICT (capture_id) DO UPDATE SET data_revision = data_revision + 1`,
@@ -51,6 +54,7 @@ var sqliteDialect = dialect{
 
 var mariadbDialect = dialect{
 	name:         EngineMariaDB,
+	retryReason:  "deadlock",
 	insertIgnore: "INSERT IGNORE",
 	prologue: `INSERT INTO captures (capture_id, state, data_revision, created_at) VALUES (?, 'pending', 1, ?)
 		ON DUPLICATE KEY UPDATE data_revision = data_revision + 1`,
@@ -83,6 +87,9 @@ func (c *Catalog) inTx(ctx context.Context, fn func(tx *sqlx.Tx) error) error {
 		err := c.attempt(ctx, fn)
 		if err == nil || !c.retryable(err) || attempt == maxAttempts || ctx.Err() != nil {
 			return err
+		}
+		if c.retried != nil {
+			c.retried(c.d.retryReason)
 		}
 		c.hook(hookRetry)
 	}

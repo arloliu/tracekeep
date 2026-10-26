@@ -65,7 +65,7 @@ check)
 test)
 	start_mariadb
 	TRACEKEEP_MARIADB_DSN="root:$PASSWORD@tcp(127.0.0.1:$port)/catalog" GOWORK=off CGO_ENABLED=1 \
-		go test ./migrations/ ./internal/catalog/... ./internal/bus/... ./internal/ingest/... ./internal/admin/... ./internal/compact/... ./internal/service/... -race -count=1 ${GOTESTFLAGS:-}
+		go test ./migrations/ ./internal/catalog/... ./internal/bus/... ./internal/ingest/... ./internal/admin/... ./internal/compact/... ./internal/service/... ./internal/metrics/... -race -count=1 ${GOTESTFLAGS:-}
 	;;
 *)
 	echo "usage: catalog.sh diff <name> | check | test" >&2
