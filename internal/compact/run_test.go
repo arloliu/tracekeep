@@ -1,6 +1,7 @@
 package compact
 
 import (
+	"context"
 	"errors"
 	"log/slog"
 	"testing"
@@ -178,7 +179,7 @@ func TestLongCycleKeepsTheLease(t *testing.T) {
 	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
 		p := reconcilers(t, c)
 		a := p.a
-		a.LeaseTTL = 300 * time.Millisecond
+		a.LeaseTTL = time.Second
 		f := &fixture{c: c, s: p.s}
 		orphan := segment(t, f.admit(t), []uint64{1}, false)
 		f.put(t, orphan.key, orphan.data)
@@ -186,9 +187,14 @@ func TestLongCycleKeepsTheLease(t *testing.T) {
 		renewed := make(chan struct{}, 16)
 		a.hooks[hookRenewed] = func() { renewed <- struct{}{} }
 		// The hold point: the orphan's read waits until the keeper has renewed the lease past its first expiry.
-		a.Store = &opening{ObjectStore: p.s, at: orphan.key, hook: func() {
+		// A cancelled cycle, the lease lost meanwhile, ends the hold; the assertions below then fail.
+		a.Store = &opening{ObjectStore: p.s, at: orphan.key, hook: func(ctx context.Context) {
 			for range 4 {
-				<-renewed
+				select {
+				case <-renewed:
+				case <-ctx.Done():
+					return
+				}
 			}
 		}}
 		step(t, a)
