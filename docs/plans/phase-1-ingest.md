@@ -41,5 +41,5 @@ The `s3` runs need a store, so they run when an endpoint is configured and skip 
 |---|---|---|
 | 1 | the interface, `ObjectInfo`, not-found, the conformance suite and `mem` | done (1c3d840) |
 | 2 | `fs`: `.partial/` write, fsync, rename, directory fsync; a failed put leaves nothing under the key | done (2f4dc21) |
-| 3 | `s3` on aws-sdk-go-v2: path-style with a custom endpoint, both checksum options `WhenRequired`, a seekable body, ranged reads with a small read-ahead, `Presigner` | pending |
+| 3 | `s3` on aws-sdk-go-v2: path-style with a custom endpoint, both checksum options `WhenRequired`, a seekable body, ranged reads with a small read-ahead, `Presigner` | done (779c77c) |
 | 4 | the suite against MinIO and Ceph RGW: pinned container images, a make target that runs them locally, and a CI job | pending |

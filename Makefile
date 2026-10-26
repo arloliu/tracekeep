@@ -64,6 +64,9 @@ test-latest: ## Run the SDK's and bustest's tests with the latest nats.go
 			CGO_ENABLED=1 go test ./... -short -race -timeout=$(TEST_TIMEOUT) $(VERBOSE_TAG)); \
 	done
 
+test-s3: ## Run the s3 store's tests against MinIO and Ceph RGW in containers (needs docker)
+	@scripts/test-s3.sh
+
 bench: ## Run benchmarks in every module
 	@$(call in_module,go test ./... -run=^$$ -bench=. -benchmem)
 
@@ -72,4 +75,4 @@ bench: ## Run benchmarks in every module
 ci: check docs-check data-check test ## Every gate, plus the service built without the workspace
 	@GOWORK=off go build ./...
 
-.PHONY: help lint fmt vet check docs-check data-check work hooks test test-latest bench ci
+.PHONY: help lint fmt vet check docs-check data-check work hooks test test-latest test-s3 bench ci
