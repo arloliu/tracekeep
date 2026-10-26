@@ -37,7 +37,7 @@ type Reconciler struct {
 	JS  jetstream.JetStream
 	Bus bus.Config
 	// Holder names this process in the compactor lease, LeaseTTL is how long a take or a renewal holds it,
-	// and Interval is the time between two cycles of Run, well below LeaseTTL.
+	// and Interval is the time between two cycles of Run; a lease that lapses between them passes to a standby, harmlessly.
 	Holder   string
 	LeaseTTL time.Duration
 	Interval time.Duration
