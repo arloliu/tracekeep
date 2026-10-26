@@ -252,7 +252,7 @@ func TestChangedIncarnationFoundAtRenewal(t *testing.T) {
 }
 
 // A lease lost in the middle of a cycle, here taken over by another process, cancels the cycle at the keeper's next renewal:
-// the held read ends, Step returns, the holder drops the lease and adopts nothing.
+// the held read ends, Step returns, the holder drops the lease and adopts nothing; its metrics count no success and no lease.
 func TestLeaseLostDuringACycle(t *testing.T) {
 	t.Parallel()
 	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
@@ -260,10 +260,16 @@ func TestLeaseLostDuringACycle(t *testing.T) {
 		p := reconcilers(t, c)
 		a := p.a
 		a.LeaseTTL = time.Second
+		s := metrics.NewServer()
+		var err error
+		if a.Metrics, err = metrics.NewCompact(s); err != nil {
+			t.Fatal(err)
+		}
 		f := &fixture{c: c, s: p.s}
 		orphan := segment(t, f.admit(t), []uint64{1}, false)
 		f.put(t, orphan.key, orphan.data)
 		step(t, a)
+		first := stamp(scrape(t, s))
 		a.Store = &opening{ObjectStore: p.s, at: orphan.key, hook: func(held context.Context) {
 			if err := c.ReleaseLease(ctx, *a.lease); err != nil {
 				t.Error(err)
@@ -279,6 +285,13 @@ func TestLeaseLostDuringACycle(t *testing.T) {
 		}
 		if got, _ := c.KeyStanding(ctx, orphan.key); got != catalog.KeyUnknown {
 			t.Errorf("standing %v, want the held orphan not adopted", got)
+		}
+		m := scrape(t, s)
+		if !strings.Contains(m, "tracekeep_compact_lease_held 0") || !strings.Contains(m, `tracekeep_compact_cycle_seconds_count{task="reconcile"} 2`) {
+			t.Errorf("after the lost cycle, want the lease not held and both cycles observed:\n%s", m)
+		}
+		if got := stamp(m); got != first || first == "" {
+			t.Errorf("last success %q after the lost cycle, want the first cycle's %q", got, first)
 		}
 	})
 }
@@ -349,6 +362,17 @@ func TestReconcilerMetrics(t *testing.T) {
 			t.Error("the standby counts a cycle or holds the lease")
 		}
 	})
+}
+
+// stamp is the reconcile task's last success in a scrape, empty when there is none.
+func stamp(scraped string) string {
+	for line := range strings.Lines(scraped) {
+		if v, ok := strings.CutPrefix(line, `tracekeep_compact_last_success_timestamp{task="reconcile"} `); ok {
+			return strings.TrimSpace(v)
+		}
+	}
+
+	return ""
 }
 
 func scrape(t *testing.T, s *metrics.Server) string {
