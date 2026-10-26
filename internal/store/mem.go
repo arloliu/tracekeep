@@ -91,7 +91,7 @@ func (m *Mem) List(ctx context.Context, prefix string, fn func(ObjectInfo) error
 		}
 	}
 
-	return nil
+	return ctx.Err()
 }
 
 // Delete implements ObjectStore.

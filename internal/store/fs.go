@@ -182,7 +182,7 @@ func (s *FS) List(ctx context.Context, prefix string, fn func(ObjectInfo) error)
 		return fmt.Errorf("store: list %s: %w", prefix, err)
 	}
 
-	return nil
+	return ctx.Err()
 }
 
 // Delete implements ObjectStore.

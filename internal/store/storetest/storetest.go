@@ -20,6 +20,21 @@ const objectSize = 300 << 10
 
 var errBroken = errors.New("storetest: broken body")
 
+// StopsReading checks that a backend reading the body once stops reading it as soon as the put's context ends.
+// An S3 client hashes the whole body before it can look at its context, so only the local backends run it.
+func StopsReading(t *testing.T, s store.ObjectStore) {
+	t.Helper()
+	ctx, stop := context.WithCancel(t.Context())
+	b := &body{data: payload(objectSize), at: objectSize / 2, observe: stop}
+	if err := s.Put(ctx, "staging/stopped", b, objectSize); !errors.Is(err, context.Canceled) {
+		t.Errorf("Put = %v, want context.Canceled", err)
+	}
+	// The read that ended the context finishes; no read starts after it.
+	if n := b.reads - b.observedAt; n != 0 {
+		t.Errorf("the put started %d reads after its context ended", n)
+	}
+}
+
 // Run runs the suite; each subtest gets a store of its own from newStore.
 func Run(t *testing.T, newStore func(t *testing.T) store.ObjectStore) {
 	t.Helper()
@@ -210,8 +225,8 @@ func testCanceled(t *testing.T, s store.ObjectStore) {
 
 	mid, stop := context.WithCancel(t.Context())
 	b := &body{data: payload(objectSize), at: objectSize / 2, observe: stop}
-	if err := s.Put(mid, "staging/canceled-mid", b, objectSize); err == nil {
-		t.Error("Put whose context ended mid-body succeeded")
+	if err := s.Put(mid, "staging/canceled-mid", b, objectSize); !errors.Is(err, context.Canceled) {
+		t.Errorf("Put whose context ended mid-body = %v, want context.Canceled", err)
 	}
 	absent(t, s, "staging/canceled-mid")
 	mid, stop = context.WithCancel(t.Context())
@@ -219,6 +234,11 @@ func testCanceled(t *testing.T, s store.ObjectStore) {
 	err := s.List(mid, "staging/", func(store.ObjectInfo) error { calls++; stop(); return nil })
 	if !errors.Is(err, context.Canceled) || calls != 1 {
 		t.Errorf("List whose context ended in its first callback = %v after %d calls, want context.Canceled after one", err, calls)
+	}
+	// The same when that callback is the listing's last.
+	mid, stop = context.WithCancel(t.Context())
+	if err := s.List(mid, "staging/kept2", func(store.ObjectInfo) error { stop(); return nil }); !errors.Is(err, context.Canceled) {
+		t.Errorf("List whose context ended in its last callback = %v, want context.Canceled", err)
 	}
 
 	ctx, cancel := context.WithCancel(t.Context())
@@ -337,15 +357,19 @@ type body struct {
 	off  int64
 	pass int
 	seen int
+	// reads counts Read calls; observedAt is the count when observe last ran.
+	reads, observedAt int
 }
 
 func (b *body) Read(p []byte) (int, error) {
+	b.reads++
 	if b.off == 0 {
 		b.pass++
 	}
 	if b.off == b.at {
 		if b.seen < b.pass {
 			b.seen = b.pass
+			b.observedAt = b.reads
 			if b.observe != nil {
 				b.observe()
 			}

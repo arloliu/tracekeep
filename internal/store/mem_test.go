@@ -11,3 +11,8 @@ func TestMemConformance(t *testing.T) {
 	t.Parallel()
 	storetest.Run(t, func(*testing.T) store.ObjectStore { return store.NewMem() })
 }
+
+func TestMemStopsReadingWhenCanceled(t *testing.T) {
+	t.Parallel()
+	storetest.StopsReading(t, store.NewMem())
+}

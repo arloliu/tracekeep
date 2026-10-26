@@ -161,3 +161,8 @@ func (r *holdingReader) Read(p []byte) (int, error) {
 }
 
 var _ io.ReadSeeker = (*holdingReader)(nil)
+
+func TestFSStopsReadingWhenCanceled(t *testing.T) {
+	t.Parallel()
+	storetest.StopsReading(t, newFS(t, t.TempDir()))
+}
