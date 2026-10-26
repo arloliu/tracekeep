@@ -284,11 +284,74 @@ func (c *Catalog) guards(ctx context.Context, tx *sqlx.Tx, p *Pack, r Registrati
 			return out, done, err
 		}
 	}
+	if r.Adopted {
+		if out, done, err := c.adoptionGuard(ctx, tx, p); done || err != nil {
+			return out, done, err
+		}
+	}
 	if r.Adopted && row.State != StateOpen && row.State != StateStopped && row.State != StateClosed {
 		return UnadmittedCapture, true, nil
 	}
 
 	return 0, false, nil
+}
+
+// adoptionGuard refuses the reconciler's orphan holding a seq with a terminated parked row, or of a capture with a termination order in any state,
+// and tombstones its key in this transaction: the orphan's messages were never acknowledged and are decided again at their redelivery (storage.md §5.4).
+func (c *Catalog) adoptionGuard(ctx context.Context, tx *sqlx.Tx, p *Pack) (PackOutcome, bool, error) {
+	var n int
+	if err := tx.GetContext(ctx, &n, `SELECT COUNT(*) FROM termination_orders WHERE capture_id = ?`, p.Capture[:]); err != nil {
+		return 0, true, err
+	}
+	for _, rg := range p.Ranges {
+		if n > 0 {
+			break
+		}
+		err := tx.GetContext(ctx, &n, `SELECT COUNT(*) FROM parked WHERE capture_id = ? AND state = 'terminated' AND seq BETWEEN ? AND ?`,
+			p.Capture[:], int64(rg.SeqFrom), int64(rg.SeqTo))
+		if err != nil {
+			return 0, true, err
+		}
+	}
+	if n == 0 {
+		return 0, false, nil
+	}
+	_, err := tx.ExecContext(ctx, c.d.insertIgnore+` INTO tombstones (object_key, reason, at) VALUES (?, 'terminated', ?)`, p.Key, c.now())
+
+	return LostToTermination, true, err
+}
+
+// KeyStanding is what the catalog knows of an object key.
+type KeyStanding int
+
+// The standings of a key.
+const (
+	// KeyUnknown: no pack names the key and no tombstone holds it.
+	KeyUnknown KeyStanding = iota + 1
+	// KeyRegistered: a pack names the key.
+	KeyRegistered
+	// KeyTombstoned: the key was deleted by retention, deletion or a refused registration, and is never registered.
+	KeyTombstoned
+)
+
+// KeyStanding reads key's standing, the reconciler's first look at a listed key (storage.md §5.4).
+// It is a read: the registration's own guards decide under the capture row.
+func (c *Catalog) KeyStanding(ctx context.Context, key string) (KeyStanding, error) {
+	var n int
+	if err := c.read.GetContext(ctx, &n, `SELECT COUNT(*) FROM tombstones WHERE object_key = ?`, key); err != nil {
+		return 0, fmt.Errorf("catalog: key %s: %w", key, err)
+	}
+	if n > 0 {
+		return KeyTombstoned, nil
+	}
+	if err := c.read.GetContext(ctx, &n, `SELECT COUNT(*) FROM packs WHERE object_key = ?`, key); err != nil {
+		return 0, fmt.Errorf("catalog: key %s: %w", key, err)
+	}
+	if n > 0 {
+		return KeyRegistered, nil
+	}
+
+	return KeyUnknown, nil
 }
 
 // evidenceGuard re-reads, under the capture row, the version of every delivery of the evidence:

@@ -250,6 +250,71 @@ func TestOrderSparesASeqAPackHolds(t *testing.T) {
 	})
 }
 
+// The reconciler never adopts an orphan holding a seq with a terminated parked row, or of a capture with a termination order in any state:
+// the key is tombstoned in the transaction, and the orphan's messages are decided again at their redelivery (storage.md §5.4).
+func TestAdoptionLosesToTermination(t *testing.T) {
+	t.Parallel()
+	engines(t, func(t *testing.T, c *Catalog) {
+		ctx := t.Context()
+		lease, _, err := c.TakeLease(ctx, "compactor", "w", ttl)
+		if err != nil {
+			t.Fatal(err)
+		}
+		adopt := func(p *Pack) PackOutcome { return register(t, c, p, Registration{Lease: &lease, Adopted: true}) }
+
+		terminated := admitted(t, c)
+		park(t, c, identity(terminated, 3, 30), "terminated")
+		spent := admitted(t, c)
+		order(t, c, spent, "a1")
+		if _, err := c.write.ExecContext(ctx, `UPDATE termination_orders SET state = 'spent'`); err != nil {
+			t.Fatal(err)
+		}
+		pending := newID(t) // an order on a capture no start admitted is checked before the admission guard
+		if _, err := c.BeginParking(ctx, identity(pending, 2, 2), "unknown-capture", "", 0); err != nil {
+			t.Fatal(err)
+		}
+		order(t, c, pending, "a2")
+		for name, capture := range map[string]tracepack.UUID{"terminated seq": terminated, "spent order": spent, "pending capture": pending} {
+			p := segment(t, capture, 5, 0, 9)
+			if out := adopt(p); out != LostToTermination {
+				t.Errorf("%s: adoption = %v, want lost to the termination", name, out)
+			}
+			if n := count(t, c, `SELECT COUNT(*) FROM tombstones WHERE object_key = ? AND reason = 'terminated'`, p.Key); n != 1 {
+				t.Errorf("%s: the key is not tombstoned", name)
+			}
+		}
+		if n := count(t, c, `SELECT COUNT(*) FROM packs`); n != 0 {
+			t.Errorf("%d packs adopted", n)
+		}
+
+		// A terminated seq outside the pack, and a capture with no order, leave the adoption to go on.
+		for _, p := range []*Pack{segment(t, terminated, 5, 0, 2), segment(t, terminated, 5, 4, 9)} {
+			if out := adopt(p); out != Registered {
+				t.Errorf("adoption of %d-%d beside the terminated seq 3 = %v, want registered", p.Ranges[0].SeqFrom, p.Ranges[0].SeqTo, out)
+			}
+		}
+	})
+}
+
+// A key's standing is what the reconciler's listing reads first: registered, tombstoned or unknown.
+func TestKeyStanding(t *testing.T) {
+	t.Parallel()
+	engines(t, func(t *testing.T, c *Catalog) {
+		ctx := t.Context()
+		capture := admitted(t, c)
+		p := segment(t, capture, 5, 0, 9)
+		register(t, c, p, Registration{Evidence: &Evidence{Deliveries: []Identity{*identity(capture, 0, 1)}}})
+		if _, err := c.write.ExecContext(ctx, `INSERT INTO tombstones (object_key, reason, at) VALUES ('staging/gone', 'deleted', 0)`); err != nil {
+			t.Fatal(err)
+		}
+		for key, want := range map[string]KeyStanding{p.Key: KeyRegistered, "staging/gone": KeyTombstoned, "staging/new": KeyUnknown} {
+			if got, err := c.KeyStanding(ctx, key); err != nil || got != want {
+				t.Errorf("KeyStanding(%s) = %v, %v; want %v", key, got, err, want)
+			}
+		}
+	})
+}
+
 // A registration with evidence aborts and tombstones its key when a version of the batch is terminated
 // or a message of it is covered by an order (T-32), and stages the batch's parked versions.
 func TestRegisterPackRechecksTermination(t *testing.T) {
