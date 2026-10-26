@@ -260,3 +260,51 @@ func TestIngesterSpendsPassedOrders(t *testing.T) {
 		}
 	})
 }
+
+// A new message of a version resolved before is accounted for by its own copy row before its acknowledgement:
+// waiting while the server has not confirmed it, acked once it has.
+func TestAcknowledgementRecordsTheMessage(t *testing.T) {
+	t.Parallel()
+	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
+		ctx := t.Context()
+		r := newReplica(t, c)
+		capture := tracepack.UUID{26}
+		m := inline(t, capture, dataRecord(1, now), nil)
+		earlier := delivered(m)
+		earlier.Msg.Incarnation, earlier.Msg.StreamSeq = r.g.Incarnation.ID, 100
+		if _, err := c.BeginParking(ctx, earlier.identity(), ReasonUnknownCapture, "", 0); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := c.TerminateParked(ctx, capture, nil, "op", "p1"); err != nil {
+			t.Fatal(err)
+		}
+		r.publish(t, m, nil)
+		d, held := r.fetch(t)
+		d, dec, err := r.g.Executor.Dispose(ctx, d.Msg)
+		if err != nil || dec.Action != ActAck || dec.Reason != ReasonTerminated {
+			t.Fatalf("Dispose = %+v, %v", dec, err)
+		}
+		state := func() string {
+			for _, v := range versions(t, c, capture) {
+				for _, cp := range v.Copies {
+					if cp.StreamSeq == d.Msg.StreamSeq {
+						return cp.State
+					}
+				}
+			}
+
+			return "none"
+		}
+		r.g.act(ctx, Entry{D: d, Msg: failingAck{held}}, dec, 1)
+		if s := state(); s != "waiting" {
+			t.Errorf("the message's copy row after an unconfirmed acknowledgement = %s, want waiting", s)
+		}
+		if err := held.NakWithDelay(0); err != nil {
+			t.Fatal(err)
+		}
+		r.step(t)
+		if s := state(); s != "acked" {
+			t.Errorf("the message's copy row after the redelivery = %s, want acked", s)
+		}
+	})
+}
