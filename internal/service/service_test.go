@@ -85,7 +85,7 @@ func TestMigrate(t *testing.T) {
 	})
 }
 
-// Ingest and compact refuse to start against a traffic stream that allows direct gets, or a stream the catalog does not record.
+// Migrate, ingest and compact refuse to start against a traffic stream that allows direct gets, or a stream the catalog does not record.
 func TestRolesRefuseToStart(t *testing.T) {
 	t.Parallel()
 	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
@@ -93,7 +93,7 @@ func TestRolesRefuseToStart(t *testing.T) {
 		e := env(t, c)
 		name := bus.StreamName(e.Bus(), catalog.RoleTraffic)
 		setDirect(t, e.JS, name, true)
-		for role, run := range map[string]func(context.Context, *Env) error{"ingest": Ingest, "compact": Compact} {
+		for role, run := range map[string]func(context.Context, *Env) error{"migrate": Migrate, "ingest": Ingest, "compact": Compact} {
 			if err := run(ctx, e); !errors.Is(err, ErrAllowDirect) {
 				t.Errorf("%s with direct gets = %v, want ErrAllowDirect", role, err)
 			}
@@ -111,7 +111,7 @@ func TestRolesRefuseToStart(t *testing.T) {
 		if _, err := e.JS.CreateStream(ctx, cfg); err != nil {
 			t.Fatal(err)
 		}
-		for role, run := range map[string]func(context.Context, *Env) error{"ingest": Ingest, "compact": Compact} {
+		for role, run := range map[string]func(context.Context, *Env) error{"migrate": Migrate, "ingest": Ingest, "compact": Compact} {
 			if err := run(ctx, e); !errors.Is(err, catalog.ErrIncarnationChanged) {
 				t.Errorf("%s on a recreated stream = %v, want ErrIncarnationChanged", role, err)
 			}

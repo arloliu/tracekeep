@@ -143,6 +143,10 @@ func Migrate(ctx context.Context, e *Env) error {
 	if err != nil {
 		return err
 	}
+	// Ensure leaves an existing traffic stream as it is; one that allows direct gets is refused before either incarnation is recorded.
+	if tc := traffic.CachedInfo().Config; tc.AllowDirect {
+		return fmt.Errorf("%w: %s", ErrAllowDirect, tc.Name)
+	}
 	for role, s := range map[string]jetstream.Stream{catalog.RoleTraffic: traffic, catalog.RoleParking: parked} {
 		if _, err := bus.Incarnate(ctx, e.Catalog, role, s); err != nil {
 			return err
