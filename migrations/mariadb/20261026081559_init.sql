@@ -88,10 +88,12 @@ CREATE TABLE `claim_records` (
 -- Create "conflicts" table
 CREATE TABLE `conflicts` (
   `capture_id` binary(16) NOT NULL,
-  `seq` bigint NOT NULL,
+  `seq_from` bigint NOT NULL,
+  `seq_to` bigint NOT NULL,
   `pack_id` binary(16) NOT NULL,
+  `other_pack_id` binary(16) NOT NULL,
   `state` varchar(16) NOT NULL,
-  PRIMARY KEY (`capture_id`, `seq`, `pack_id`),
+  PRIMARY KEY (`capture_id`, `seq_from`, `pack_id`, `other_pack_id`),
   CONSTRAINT `conflicts_state` CHECK (`state` in ('suspect','confirmed'))
 ) COLLATE utf8mb4_uca1400_ai_ci;
 -- Create "consumers" table

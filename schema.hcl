@@ -324,23 +324,29 @@ table "claim_records" {
   }
 }
 
-# The packs holding each version of a conflicting seq, one row per pack.
+# A run of seqs two packs of one capture both hold: suspect until compact compares them, or confirmed when they differ.
 table "conflicts" {
   schema = schema.main
   column "capture_id" {
     type = sql(var.uuid)
   }
-  column "seq" {
+  column "seq_from" {
+    type = bigint
+  }
+  column "seq_to" {
     type = bigint
   }
   column "pack_id" {
+    type = sql(var.uuid)
+  }
+  column "other_pack_id" {
     type = sql(var.uuid)
   }
   column "state" {
     type = varchar(16)
   }
   primary_key {
-    columns = [column.capture_id, column.seq, column.pack_id]
+    columns = [column.capture_id, column.seq_from, column.pack_id, column.other_pack_id]
   }
   check "conflicts_state" {
     expr = "state IN ('suspect', 'confirmed')"

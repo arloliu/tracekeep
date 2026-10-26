@@ -61,7 +61,7 @@ Contract changes go through proposals, which the subject [README.md](README.md) 
 | `evicted_ranges` | `(capture_id, hour, seq_from, seq_to, ts_from, ts_to)`: seqs whose packs retention deleted, with their hour and endpoint times | §7.3 reports them as evicted, never as gaps, keeps the times a neighbouring gap needs, and tells an evicted hour from a `no-data` hour; a prefix scalar cannot express an hour (§8.3) |
 | `claim_records` | `(capture_id, seq, header44, payload_sha256)` → first `pack_id`: the **receipts** of records that travelled by claim-check, one row per version | version-sensitive staged proof for §6.1 and §8.4; outlives merges and deletions; removed only by retention |
 | `pack_losses` | a pack's `coverage` entries: declared losses | carried into the archive's rows on merge |
-| `conflicts` | `(capture_id, seq)` → the packs holding each version | surfaced by `ListPacks`; blocks the scope's merge |
+| `conflicts` | `(capture_id, seq_from, seq_to)` and the two packs holding versions of that seq run, `suspect` or `confirmed` | surfaced by `ListPacks`; blocks the scope's merge; a run, not a row per seq, since a redelivered batch overlaps its first copy over every seq it holds |
 | `claim_objects` | claim object key, capture, seq, **hour** of the record (from the receipt's header), size; `survivor` with the evicted hour once retention skipped it (§8.4) | deleted when §8.4's predicate holds: with the hour by retention, or later as a survivor by the reconciler |
 | `consumers` | replica id, lease expiry, the configurations it executes | the activation gate and membership leases of §6.4 |
 | `parked`, `parked_copies`, `bus_streams`, `termination_orders` | the parking tables | in [parking.md](parking.md) |
