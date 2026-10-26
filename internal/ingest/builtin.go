@@ -35,7 +35,7 @@ func namedConfig(name string, maxFrameLen uint64, allowUnversioned bool) (Config
 
 // ErrForeignConfiguration refuses a replica that cannot execute a configuration it must, one of another classifier:
 // unretired, which the activation gate requires, or bound by a capture the catalog holds (rollouts.md §6.4).
-var ErrForeignConfiguration = errors.New("ingest: an unretired configuration of another classifier")
+var ErrForeignConfiguration = errors.New("ingest: a required configuration of another classifier")
 
 // Executable is every configuration this replica executes: builtin, and each configuration the catalog requires (RequiredConfigs)
 // of builtin's classifier, whatever its frame limit, since the same classifier runs under any limit:
