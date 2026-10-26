@@ -238,6 +238,75 @@ func (c *Catalog) AckCopy(ctx context.Context, d *Identity) error {
 	return nil
 }
 
+// ResolvedWaitingCopies lists the waiting copy rows on incarnation whose version is staged or terminated, by stream sequence:
+// the messages the reconciler may find acknowledged (parking.md *resolution*). A copy of an unresolved version is never listed.
+func (c *Catalog) ResolvedWaitingCopies(ctx context.Context, incarnation int64) ([]Identity, error) {
+	var rows []struct {
+		StreamSeq int64  `db:"stream_seq"`
+		Capture   []byte `db:"capture_id"`
+		Seq       int64  `db:"seq"`
+		Header    []byte `db:"header"`
+		Digest    []byte `db:"payload_digest"`
+		Hour      int64  `db:"hour"`
+	}
+	err := c.read.SelectContext(ctx, &rows, `SELECT k.stream_seq, k.capture_id, k.seq, k.header, k.payload_digest, v.hour
+		FROM parked_copies k JOIN parked v ON v.capture_id = k.capture_id AND v.seq = k.seq AND v.header = k.header AND v.payload_digest = k.payload_digest
+		WHERE k.incarnation_id = ? AND k.state = 'waiting' AND v.state IN ('staged', 'terminated') ORDER BY k.stream_seq`, incarnation)
+	if err != nil {
+		return nil, fmt.Errorf("catalog: waiting copies of %d: %w", incarnation, err)
+	}
+	out := make([]Identity, 0, len(rows))
+	for _, r := range rows {
+		d := Identity{Incarnation: incarnation, StreamSeq: r.StreamSeq, Hour: r.Hour}
+		d.Version.Capture, d.Version.Seq = tracepack.UUID(r.Capture), uint64(r.Seq) //nolint:gosec // a stored seq is below 2^63
+		copy(d.Version.Header[:], r.Header)
+		copy(d.Version.Digest[:], r.Digest)
+		out = append(out, d)
+	}
+
+	return out, nil
+}
+
+// ReconcileCopy marks the waiting copy row of d acked for the reconciler, which found its message gone from a work-queue stream,
+// and sets the version's acked_at when no copy of it waits any longer.
+// Under the capture row it re-reads that the version is staged or terminated and that d's incarnation is not retired,
+// so it never touches a copy of an unresolved version or of a retired stream; ok reports that it marked the row.
+func (c *Catalog) ReconcileCopy(ctx context.Context, d *Identity) (bool, error) {
+	v := &d.Version
+	var ok bool
+	err := outcome(c.inTx(ctx, func(tx *sqlx.Tx) error {
+		if _, err := c.lockCapture(ctx, tx, v.Capture); err != nil {
+			return err
+		}
+		state, err := readVersionState(ctx, tx, v)
+		if errors.Is(err, ErrUnknownVersion) || (err == nil && !state.Resolved()) {
+			return errRollback
+		}
+		if err != nil {
+			return err
+		}
+		res, err := tx.ExecContext(ctx, `UPDATE parked_copies SET state = 'acked'
+			WHERE incarnation_id = ? AND stream_seq = ? AND state = 'waiting' AND capture_id = ? AND seq = ? AND header = ? AND payload_digest = ?
+			AND EXISTS (SELECT 1 FROM bus_streams s WHERE s.incarnation_id = parked_copies.incarnation_id AND s.retired_at IS NULL)`,
+			d.Incarnation, d.StreamSeq, v.Capture[:], int64(v.Seq), v.Header[:], v.Digest[:])
+		if err := affected(res, err, errRollback); err != nil {
+			return err
+		}
+		ok = true
+		_, err = tx.ExecContext(ctx, `UPDATE parked SET acked_at = ? WHERE capture_id = ? AND seq = ? AND header = ? AND payload_digest = ?
+			AND NOT EXISTS (SELECT 1 FROM parked_copies k WHERE k.capture_id = parked.capture_id AND k.seq = parked.seq
+				AND k.header = parked.header AND k.payload_digest = parked.payload_digest AND k.state = 'waiting')`,
+			c.now(), v.Capture[:], int64(v.Seq), v.Header[:], v.Digest[:])
+
+		return err
+	}))
+	if err != nil {
+		return false, fmt.Errorf("catalog: reconcile copy %d/%d: %w", d.Incarnation, d.StreamSeq, err)
+	}
+
+	return ok, nil
+}
+
 // TerminateParked is the operator's parked terminate (parking.md *Operator termination*):
 // every unresolved version of capture, or of its seq when seq is not nil, written terminated under action,
 // with the action's audit row and a terminated event for each hour it touches. It returns how many it terminated;
