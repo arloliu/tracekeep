@@ -362,7 +362,13 @@ func (e *PendingEntry) reportProgress(failed bool) {
 	t := e.t
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	if !e.liveLocked(t.now()) {
+	now := t.now()
+	// A reply can arrive before the forwarding call returns, so the send's own Sent may follow the outcome.
+	if !failed && e.progress == progressNone && e.state == PendingCompleted && now < e.expires {
+		e.progress = progressSent
+		return
+	}
+	if !e.liveLocked(now) {
 		return
 	}
 	if e.progress != progressNone {

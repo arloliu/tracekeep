@@ -412,6 +412,8 @@ it also serves §4.4's T3 attribution):
   and the mark is made before the binding is recorded.
   The socket is also the epoch source of §4.4.
 - The wire callback looks the outbound primary and the inbound reply up by key (a map read, no body inspection) and attaches the **token** to the record.
+  The key is exact: a reply whose session ID differs from its primary's matches nothing and is kept in full,
+  including one that differs only in the top bit, which eqp-hub accepts as a reply.
   A reply callback that arrives before the outbound callback (go-secs delivers observations out of causal order) finds the entry,
   since it exists before the frame is written, but has **no socket binding yet**:
   it is attached provisionally,
@@ -440,6 +442,8 @@ it also serves §4.4's T3 attribution):
     `SendFailed`, it returned an error;
     `SubmissionFailed`, the request never reached `ForwardDataMessage` (a worker-pool submission failure).
     The three exclude each other, so a second progress report is a counted no-op.
+    A reply can arrive before the forwarding call returns,
+    so a `Sent` that is the token's first progress report is taken on a `completed` entry too, uncounted, and changes nothing.
     A failure removes the entry by token (above) only while the entry is `live` and the failure is its first progress report;
     its key stays in the ambiguity set.
     `Sent` decides nothing: the socket binding comes from the outbound observation alone.
@@ -456,11 +460,11 @@ it also serves §4.4's T3 attribution):
     `Cancelled`, the wait ended any other way (the device stopping, a cancelled context).
   - **One state machine** (T-31): an entry is `live`, `completed`, `removed` or `expired`.
     The first terminal outcome moves `live → completed` and seals the entry, retained until its expiry (above):
-    every later report of either kind is a counted no-op,
+    every later report of either kind, except that first `Sent`, is a counted no-op,
     so a reply racing a timeout yields one T3 event or none, never a T3 event after a reply,
     and a failure reported after a reply removes nothing.
     A failure moves `live → removed`; expiry moves `live` or `completed` to `expired`.
-  - **Competing reports**: any report on a token whose entry is `completed`, `removed` or `expired` is a counted no-op.
+  - **Competing reports**: any report on a token whose entry is `completed`, `removed` or `expired` is a counted no-op, but a first `Sent` on a `completed` one (above).
     A waiter that times out after a send failure or a submission failure therefore emits nothing:
     the entry is gone, which is the case `responseT3Timeout` cannot tell apart (§4.4).
   - **Expiry is not an outcome**: a token that never receives a terminal outcome expires and emits nothing,

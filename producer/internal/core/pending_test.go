@@ -61,6 +61,29 @@ func TestPendingReplySealsTheEntry(t *testing.T) {
 	}
 }
 
+// A reply can arrive before the forwarding call returns: the Sent that follows is the send's own report, not a late one.
+func TestPendingSentAfterTheReplyIsNotIgnored(t *testing.T) {
+	t.Parallel()
+	pt, _ := newTestPending(t, 0)
+	e := pt.Register(1, 100, "c")
+
+	e.Awaiting(time.Minute)
+	e.Replied()
+	e.Sent()
+	if n := ignored(pt, IgnoredSealed); n != 0 {
+		t.Fatalf("sealed no-ops %d after the first Sent, want 0", n)
+	}
+	if e.State() != PendingCompleted || e.Outcome() != OutcomeReplied {
+		t.Fatalf("state %v, outcome %v; want completed, replied", e.State(), e.Outcome())
+	}
+	// A second progress report is still a no-op, counted.
+	e.Sent()
+	e.SendFailed()
+	if n := ignored(pt, IgnoredSealed); n != 2 {
+		t.Fatalf("sealed no-ops %d, want 2", n)
+	}
+}
+
 func TestPendingProgressIsFirstWins(t *testing.T) {
 	t.Parallel()
 	pt, _ := newTestPending(t, 0)
@@ -314,5 +337,18 @@ func TestPendingLiveReportsDoNotAllocate(t *testing.T) {
 	})
 	if n != 0 {
 		t.Fatalf("live reports allocate %v times", n)
+	}
+}
+
+// The key is exact: a reply whose session ID differs only in the top bit, which the gateway accepts, matches nothing.
+func TestPendingKeyIsTheExactSessionID(t *testing.T) {
+	t.Parallel()
+	pt, _ := newTestPending(t, 0)
+	e := pt.Register(0x0001, 100, "c")
+	if got := pt.Lookup(0x0001, 100); got != e {
+		t.Fatalf("Lookup of the registered key = %v, want the entry", got)
+	}
+	if got := pt.Lookup(0x8001, 100); got != nil {
+		t.Errorf("Lookup with the session ID's top bit set = %v, want nothing", got)
 	}
 }
