@@ -91,7 +91,7 @@ func newReplica(t *testing.T, c *catalog.Catalog) *replica {
 	}
 	g := &Ingester{
 		Executor: x, Batcher: NewBatcher(time.Second, 1<<20), Flusher: f, Consumer: cons, Stream: s, Log: slog.New(slog.DiscardHandler),
-		Replica: "r1", Lease: time.Minute, FetchBatch: 100, MaxWait: 200 * time.Millisecond, Now: clk.now,
+		Replica: "r1", Lease: time.Minute, FetchBatch: 100, MaxWait: 200 * time.Millisecond, Heartbeat: 10 * time.Second, Now: clk.now,
 	}
 	if err := g.Join(ctx); err != nil {
 		t.Fatal(err)
@@ -272,6 +272,44 @@ func TestIngesterStopsOnAnotherIncarnation(t *testing.T) {
 		}
 		if n := r.pending(t); n != 1 {
 			t.Errorf("the stream holds %d messages, want the start unacknowledged", n)
+		}
+	})
+}
+
+// failedPull is a pull the server accepted and then ended with an error.
+type failedPull struct {
+	jetstream.Consumer
+	err error
+}
+
+func (f failedPull) Fetch(int, ...jetstream.FetchOpt) (jetstream.MessageBatch, error) {
+	return endedBatch{f.err}, nil
+}
+
+type endedBatch struct{ err error }
+
+func (b endedBatch) Messages() <-chan jetstream.Msg {
+	ch := make(chan jetstream.Msg)
+	close(ch)
+
+	return ch
+}
+
+func (b endedBatch) Error() error { return b.err }
+
+// A pull the server ends with an error is the step's error, so Run backs off rather than pulling again at once.
+func TestIngesterReturnsAFailedPull(t *testing.T) {
+	t.Parallel()
+	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
+		r := newReplica(t, c)
+		ended := errors.New("consumer deleted")
+		r.g.Consumer = failedPull{Consumer: r.g.Consumer, err: ended}
+		if err := r.g.Step(t.Context()); !errors.Is(err, ended) {
+			t.Errorf("Step = %v, want the pull's error", err)
+		}
+		r.g.Consumer = failedPull{Consumer: r.g.Consumer, err: jetstream.ErrNoMessages}
+		if err := r.g.Step(t.Context()); err != nil {
+			t.Errorf("Step = %v after a pull that found nothing, want nil", err)
 		}
 	})
 }

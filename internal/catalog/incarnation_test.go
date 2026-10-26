@@ -25,8 +25,8 @@ func TestIncarnate(t *testing.T) {
 	})
 }
 
-// A last sequence below one already observed is a rewind: a restore of an older snapshot keeps Created.
-func TestObserveLastSeqRefusesARewind(t *testing.T) {
+// The highest last sequence observed is kept: a lower observation may be one another replica overtook.
+func TestObserveLastSeqKeepsTheHighest(t *testing.T) {
 	t.Parallel()
 	engines(t, func(t *testing.T, c *Catalog) {
 		ctx := t.Context()
@@ -34,13 +34,13 @@ func TestObserveLastSeqRefusesARewind(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		for _, seq := range []int64{10, 10, 12} {
+		for _, seq := range []int64{10, 10, 12, 11} {
 			if err := c.ObserveLastSeq(ctx, inc.ID, seq); err != nil {
 				t.Fatalf("ObserveLastSeq(%d): %v", seq, err)
 			}
 		}
-		if err := c.ObserveLastSeq(ctx, inc.ID, 11); !errors.Is(err, ErrIncarnationChanged) {
-			t.Errorf("ObserveLastSeq below the highest = %v, want ErrIncarnationChanged", err)
+		if got, err := c.Incarnate(ctx, RoleTraffic, "TRAFFIC", 100); err != nil || got.LastSeqSeen != 12 {
+			t.Errorf("Incarnate = %+v, %v; want 12 observed", got, err)
 		}
 	})
 }
