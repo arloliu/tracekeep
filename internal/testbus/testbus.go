@@ -6,6 +6,8 @@
 package testbus
 
 import (
+	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
@@ -17,6 +19,7 @@ import (
 	"time"
 
 	"github.com/nats-io/nats-server/v2/server"
+	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 )
 
@@ -231,4 +234,60 @@ func AwaitStream(t testing.TB, js jetstream.JetStream, s jetstream.Stream) {
 
 		return errors.As(err, &api) && api.ErrorCode == jetstream.JSErrCodeStreamWrongLastSequence
 	})
+}
+
+// Snapshot reads a snapshot of stream over nc, its consumers included, as an operator's backup does,
+// and returns the stream's configuration and the snapshot's bytes for Restore.
+func Snapshot(t testing.TB, nc *nats.Conn, stream string) (server.StreamConfig, []byte) {
+	t.Helper()
+	inbox := nc.NewInbox()
+	sub, err := nc.SubscribeSync(inbox)
+	if err != nil {
+		t.Fatalf("testbus: snapshot: %v", err)
+	}
+	defer func() { _ = sub.Unsubscribe() }()
+	req, err := json.Marshal(server.JSApiStreamSnapshotRequest{DeliverSubject: inbox})
+	if err != nil {
+		t.Fatal(err)
+	}
+	m, err := nc.Request(fmt.Sprintf(server.JSApiStreamSnapshotT, stream), req, readyTimeout)
+	if err != nil {
+		t.Fatalf("testbus: snapshot of %s: %v", stream, err)
+	}
+	var resp server.JSApiStreamSnapshotResponse
+	if err := json.Unmarshal(m.Data, &resp); err != nil || resp.Error != nil || resp.Config == nil {
+		t.Fatalf("testbus: snapshot of %s: %v %+v", stream, err, resp.Error)
+	}
+	var data bytes.Buffer
+	for {
+		chunk, err := sub.NextMsg(readyTimeout)
+		if err != nil {
+			t.Fatalf("testbus: snapshot of %s: %v", stream, err)
+		}
+		// The end carries no data, and a status only after an acknowledged chunk or an error; each acknowledged chunk paces the next.
+		if len(chunk.Data) == 0 {
+			if status := chunk.Header.Get("Status"); status != "" && status != "204" {
+				t.Fatalf("testbus: snapshot of %s ended with status %s %s", stream, status, chunk.Header.Get("Description"))
+			}
+
+			return *resp.Config, data.Bytes()
+		}
+		data.Write(chunk.Data)
+		if chunk.Reply == "" { // the last chunk asks for no acknowledgement
+			continue
+		}
+		if err := chunk.Respond(nil); err != nil {
+			t.Fatalf("testbus: snapshot of %s: %v", stream, err)
+		}
+	}
+}
+
+// Restore restores a stream from a snapshot Snapshot read, as an operator restores a backup:
+// the stream must not exist, and it comes back with its messages and its durable consumers,
+// under a new creation time on nats-server v2.15.1.
+func (s *Server) Restore(t testing.TB, cfg server.StreamConfig, data []byte) {
+	t.Helper()
+	if _, err := s.srv.GlobalAccount().RestoreStreamV2(&cfg, bytes.NewReader(data)); err != nil {
+		t.Fatalf("testbus: restore of %s: %v", cfg.Name, err)
+	}
 }
