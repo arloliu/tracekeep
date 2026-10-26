@@ -67,12 +67,23 @@ test-latest: ## Run the SDK's and bustest's tests with the latest nats.go
 test-s3: ## Run the s3 store's tests against MinIO and Ceph RGW in containers (needs docker)
 	@scripts/test-s3.sh
 
+test-catalog: ## Run the catalog's tests on MariaDB in a container (needs docker); make test runs them on SQLite
+	@scripts/catalog.sh test
+
 bench: ## Run benchmarks in every module
 	@$(call in_module,go test ./... -run=^$$ -bench=. -benchmem)
+
+##@ Catalog
+
+migrate-diff: ## Generate both engines' migration from schema.hcl: make migrate-diff NAME=<change> (needs docker and atlas)
+	@scripts/catalog.sh diff $(NAME)
+
+migrate-check: ## Validate both engines' migrations and check schema.hcl for drift (needs docker and atlas)
+	@scripts/catalog.sh check
 
 ##@ CI
 
 ci: check docs-check data-check test ## Every gate, plus the service built without the workspace
 	@GOWORK=off go build ./...
 
-.PHONY: help lint fmt vet check docs-check data-check work hooks test test-latest test-s3 bench ci
+.PHONY: help lint fmt vet check docs-check data-check work hooks test test-latest test-s3 test-catalog migrate-diff migrate-check bench ci

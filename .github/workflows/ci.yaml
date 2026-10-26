@@ -56,3 +56,18 @@ jobs:
         install_args: go
     - name: make test-s3
       run: make test-s3
+
+  # The catalog on MariaDB, and its migrations validated and checked against schema.hcl, each with a MariaDB container;
+  # make ci runs the catalog's tests on SQLite only.
+  catalog:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v7
+    - name: Setup Go and Atlas from mise.toml
+      uses: jdx/mise-action@v4
+      with:
+        install_args: go atlas
+    - name: make migrate-check
+      run: make migrate-check
+    - name: make test-catalog
+      run: make test-catalog
