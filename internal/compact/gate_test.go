@@ -201,7 +201,7 @@ func TestAdoptionAfterIngestRegistered(t *testing.T) {
 		}
 		ev := &catalog.Evidence{Deliveries: []catalog.Identity{{Version: catalog.VersionKey{Capture: capture, Seq: 1}, Incarnation: 1, StreamSeq: 2}}}
 		// The hold point: the reconciler has read the key unknown and opens the object; ingest's registration commits now.
-		f.r.Store = &opening{ObjectStore: f.s, at: b.key, hook: func() {
+		f.r.Store = &opening{ObjectStore: f.s, at: b.key, hook: func(context.Context) {
 			if out, err := c.RegisterPack(ctx, p, catalog.Registration{Evidence: ev}); err != nil || out != catalog.Registered {
 				t.Errorf("ingest's registration = %v, %v", out, err)
 			}
@@ -216,16 +216,16 @@ func TestAdoptionAfterIngestRegistered(t *testing.T) {
 	})
 }
 
-// opening runs hook once, when the object under at is opened.
+// opening runs hook once, with the opening's context, when the object under at is opened.
 type opening struct {
 	store.ObjectStore
 	at   string
-	hook func()
+	hook func(ctx context.Context)
 }
 
 func (o *opening) Open(ctx context.Context, key string) (store.Object, error) {
 	if key == o.at && o.hook != nil {
-		o.hook()
+		o.hook(ctx)
 		o.hook = nil
 	}
 
