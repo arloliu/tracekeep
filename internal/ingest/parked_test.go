@@ -430,8 +430,9 @@ func TestConsumersProcessAtOnce(t *testing.T) {
 		if vs := versions(t, c, parkedCapture); len(vs) != 4 {
 			t.Fatalf("%d versions parked, want 4", len(vs))
 		}
-		for _, m := range traffic(t, live) {
-			r.publish(t, m, nil)
+		cl := newClaims() // claim-check, so the stream reflects the confirmed acknowledgements once a step returns
+		for _, m := range confirmedTraffic(t, cl, live) {
+			r.publish(t, m, cl.objs[m.Env.MsgID])
 		}
 		r.step(t) // the live capture batched
 		pg := r.parkedConsumer(t)
@@ -489,7 +490,9 @@ func TestLateClaimMessageAfterItsObjectIsGone(t *testing.T) {
 		late := claimCheck(t, cl, capture, dataRecord(1, now-int64(48*time.Hour)), nil)
 		r.publish(t, late, cl.objs[late.Env.MsgID])
 		r.step(t) // parked: expired, its capture unknown
-		r.publish(t, inline(t, capture, startRecord(t, now), descriptorOf(t, "eqp")), nil)
+		// The start by claim-check too: its acknowledgement is confirmed, so the stream reflects it once a step returns.
+		start := claimCheck(t, cl, capture, startRecord(t, now), descriptorOf(t, "eqp"))
+		r.publish(t, start, cl.objs[start.Env.MsgID])
 		r.step(t)
 		pg := r.parkedConsumer(t)
 		if err := pg.Step(ctx); err != nil {
