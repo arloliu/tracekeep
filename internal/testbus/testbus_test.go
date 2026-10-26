@@ -86,3 +86,33 @@ func TestRestartKeepsAddressAndStorage(t *testing.T) {
 		t.Fatalf("after restart: %v, %v", msg, err)
 	}
 }
+
+// A cluster replicates a stream of three replicas across its servers.
+func TestStartClusterReplicates(t *testing.T) {
+	t.Parallel()
+	nc, err := nats.Connect(testbus.StartCluster(t, 3))
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	t.Cleanup(nc.Close)
+	js, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := t.Context()
+	s, err := js.CreateStream(ctx, jetstream.StreamConfig{Name: "R3", Subjects: []string{"r3.>"}, Storage: jetstream.FileStorage, Replicas: 3})
+	if err != nil {
+		t.Fatalf("create stream: %v", err)
+	}
+	testbus.AwaitStream(t, js, s)
+	if _, err := js.Publish(ctx, "r3.one", []byte("x")); err != nil {
+		t.Fatalf("publish: %v", err)
+	}
+	info, err := s.Info(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Cluster == nil || len(info.Cluster.Replicas) != 2 || info.State.Msgs != 1 {
+		t.Errorf("stream cluster %+v, %d messages; want a leader and two replicas holding one", info.Cluster, info.State.Msgs)
+	}
+}
