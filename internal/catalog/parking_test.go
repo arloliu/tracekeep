@@ -475,3 +475,76 @@ func TestCopyRowRacingATermination(t *testing.T) {
 		})
 	}
 }
+
+// The reconciler marks acked only the waiting copy rows of resolved versions on an unretired incarnation (parking.md *resolution*):
+// the read lists them, and the compare-and-set re-reads both conditions under the capture row.
+func TestReconcileCopies(t *testing.T) {
+	t.Parallel()
+	engines(t, func(t *testing.T, c *Catalog) {
+		ctx := t.Context()
+		traffic, err := c.Incarnate(ctx, RoleTraffic, "S", 1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		parking, err := c.Incarnate(ctx, RoleParking, "P", 1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		capture := newID(t)
+		on := func(seq uint64, inc, streamSeq int64, state string) *Identity {
+			d := identity(capture, seq, streamSeq)
+			d.Incarnation = inc
+			begin(t, c, d, 0)
+			setState(t, c, d, state)
+			return d
+		}
+		staged := on(1, traffic.ID, 10, "staged")
+		stagedAcked := *staged
+		stagedAcked.StreamSeq = 11
+		if _, err := c.RecordCopy(ctx, &stagedAcked); err != nil {
+			t.Fatal(err)
+		}
+		if err := c.AckCopy(ctx, &stagedAcked); err != nil {
+			t.Fatal(err)
+		}
+		parked := on(2, traffic.ID, 12, "parked")
+		terminated := on(3, parking.ID, 13, "terminated")
+
+		got, err := c.ResolvedWaitingCopies(ctx, traffic.ID)
+		if err != nil || len(got) != 1 || got[0].StreamSeq != 10 || got[0].Version != staged.Version {
+			t.Fatalf("ResolvedWaitingCopies = %+v, %v; want the staged version's waiting copy", got, err)
+		}
+		if ok, err := c.ReconcileCopy(ctx, staged); err != nil || !ok {
+			t.Errorf("ReconcileCopy of a staged version = %v, %v", ok, err)
+		}
+		if n := count(t, c, `SELECT COUNT(*) FROM parked WHERE seq = 1 AND acked_at IS NOT NULL`); n != 1 {
+			t.Errorf("acked_at not set once the staged version's last copy is acked")
+		}
+		if ok, err := c.ReconcileCopy(ctx, staged); err != nil || ok {
+			t.Errorf("ReconcileCopy again = %v, %v; want nothing to do", ok, err)
+		}
+		if ok, err := c.ReconcileCopy(ctx, parked); err != nil || ok {
+			t.Errorf("ReconcileCopy of an unresolved version = %v, %v; want refused", ok, err)
+		}
+		if _, err := c.write.ExecContext(ctx, `UPDATE bus_streams SET retired_at = 1 WHERE incarnation_id = ?`, parking.ID); err != nil {
+			t.Fatal(err)
+		}
+		if ok, err := c.ReconcileCopy(ctx, terminated); err != nil || ok {
+			t.Errorf("ReconcileCopy on a retired incarnation = %v, %v; want refused", ok, err)
+		}
+		if n := count(t, c, `SELECT COUNT(*) FROM parked_copies WHERE state = 'waiting'`); n != 2 {
+			t.Errorf("%d copies waiting, want the parked and the retired ones", n)
+		}
+	})
+}
+
+// setState writes d's version state, as the parking transactions would have.
+func setState(t *testing.T, c *Catalog, d *Identity, state string) {
+	t.Helper()
+	v := &d.Version
+	_, err := c.write.ExecContext(t.Context(), `UPDATE parked SET state = ? WHERE capture_id = ? AND seq = ? AND header = ? AND payload_digest = ?`,
+		state, v.Capture[:], int64(v.Seq), v.Header[:], v.Digest[:])
+	if err != nil {
+		t.Fatal(err)
+	}
+}
