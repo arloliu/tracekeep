@@ -2,6 +2,7 @@ package compact
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"strings"
 	"testing"
@@ -130,10 +131,13 @@ func TestCopiesFromAFollower(t *testing.T) {
 		urls := strings.Split(testbus.StartCluster(t, 3), ",")
 		js := connect(t, strings.Join(urls, ","))
 		cfg := busconfig.ParkedStreamConfig(busconfig.DefaultParkedStream, busconfig.DefaultParkPrefix, 3)
-		s, err := js.CreateStream(ctx, cfg)
-		if err != nil {
-			t.Fatal(err)
-		}
+		var s jetstream.Stream
+		retried(t, func(ctx context.Context) (err error) {
+			if s, err = js.CreateStream(ctx, cfg); errors.Is(err, jetstream.ErrStreamNameAlreadyInUse) {
+				s, err = js.Stream(ctx, cfg.Name)
+			}
+			return err
+		})
 		testbus.AwaitStream(t, js, s)
 		leader := s.CachedInfo().Cluster.Leader
 		var follower string
@@ -144,10 +148,11 @@ func TestCopiesFromAFollower(t *testing.T) {
 			}
 		}
 		fjs := connect(t, follower)
-		fs, err := fjs.Stream(ctx, cfg.Name)
-		if err != nil {
-			t.Fatal(err)
-		}
+		var fs jetstream.Stream
+		retried(t, func(ctx context.Context) (err error) {
+			fs, err = fjs.Stream(ctx, cfg.Name)
+			return err
+		})
 		inc, err := bus.Incarnate(ctx, c, catalog.RoleParking, fs)
 		if err != nil {
 			t.Fatal(err)
@@ -279,4 +284,21 @@ func watchGets(t *testing.T, url, name string) (api, direct *nats.Subscription) 
 	}
 
 	return api, direct
+}
+
+// retried runs the idempotent step f, each try bounded, again when it timed out.
+// shortcut: a request to a cluster just formed sometimes gets no reply, as the ingest tests found; three tries absorb it.
+func retried(t *testing.T, f func(ctx context.Context) error) {
+	t.Helper()
+	for attempt := 1; ; attempt++ {
+		ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+		err := f(ctx)
+		cancel()
+		if err == nil {
+			return
+		}
+		if !errors.Is(err, context.DeadlineExceeded) || attempt == 3 {
+			t.Fatal(err)
+		}
+	}
 }
