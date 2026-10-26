@@ -218,7 +218,7 @@ func TestRegisterPackRechecksTermination(t *testing.T) {
 			}
 			p := segment(t, capture, 5, 0, 9)
 			ev := &Evidence{Deliveries: []Identity{*identity(capture, 2, 20), *tc.d}}
-			if out := register(t, c, p, Registration{Evidence: ev}); out != VersionTerminated {
+			if out := register(t, c, p, Registration{Evidence: ev}); out != LostToTermination {
 				t.Errorf("%s: RegisterPack = %v, want version terminated", tc.name, out)
 			}
 			if n := count(t, c, `SELECT COUNT(*) FROM tombstones WHERE object_key = ? AND reason = 'terminated'`, p.Key); n != 1 {

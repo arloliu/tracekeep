@@ -376,7 +376,7 @@ func TestTerminationRacingARegistration(t *testing.T) {
 				if errR != nil || errT != nil {
 					t.Fatalf("RegisterPack = %v, ApplyOrder = %v", errR, errT)
 				}
-				wantOut, wantR, wantState, packs := VersionTerminated, ResolvedTerminated, "terminated", 0
+				wantOut, wantR, wantState, packs := LostToTermination, ResolvedTerminated, "terminated", 0
 				if !termFirst {
 					wantOut, wantR, wantState, packs = Registered, ResolvedStaged, "staged", 1
 				}

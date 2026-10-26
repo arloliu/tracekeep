@@ -33,9 +33,9 @@ const (
 	// UnadmittedCapture: the reconciler's orphan belongs to a capture no start has admitted, pending or rejected;
 	// it stays unregistered (storage.md §5.4).
 	UnadmittedCapture
-	// VersionTerminated: a version of the batch is terminated, or an active termination order covers one of its messages (T-32);
+	// LostToTermination: a version of the batch is terminated, or an active termination order covers one of its messages (T-32);
 	// the key is now tombstoned, the caller deletes the object and returns the batch for its messages to be decided again.
-	VersionTerminated
+	LostToTermination
 )
 
 // The roles a pack plays.
@@ -121,7 +121,7 @@ type Registration struct {
 var ErrInvalidRegistration = errors.New("catalog: invalid registration")
 
 // RegisterPack registers p, idempotent on its pack_id, in the transaction ingest and the reconciler share (ingest.md §6.3).
-// An outcome other than Registered writes nothing, except the tombstones of BeyondHorizon and VersionTerminated.
+// An outcome other than Registered writes nothing, except the tombstones of BeyondHorizon and LostToTermination.
 func (c *Catalog) RegisterPack(ctx context.Context, p *Pack, r Registration) (PackOutcome, error) {
 	if err := p.check(r); err != nil {
 		return 0, err
@@ -130,7 +130,7 @@ func (c *Catalog) RegisterPack(ctx context.Context, p *Pack, r Registration) (Pa
 	err := outcome(c.inTx(ctx, func(tx *sqlx.Tx) error {
 		var err error
 		out, err = c.registerIn(ctx, tx, p, r)
-		if err == nil && out != Registered && out != BeyondHorizon && out != VersionTerminated {
+		if err == nil && out != Registered && out != BeyondHorizon && out != LostToTermination {
 			err = errRollback
 		}
 
@@ -289,7 +289,7 @@ func (c *Catalog) guards(ctx context.Context, tx *sqlx.Tx, p *Pack, r Registrati
 			if res == ResolvedTerminated || res == CoveredByOrder {
 				// The termination committed first and wins: the key is tombstoned before the caller deletes the object.
 				_, err := tx.ExecContext(ctx, c.d.insertIgnore+` INTO tombstones (object_key, reason, at) VALUES (?, 'terminated', ?)`, p.Key, c.now())
-				return VersionTerminated, true, err
+				return LostToTermination, true, err
 			}
 		}
 	}
