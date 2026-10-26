@@ -276,6 +276,60 @@ func TestIngesterStopsOnAnotherIncarnation(t *testing.T) {
 	})
 }
 
+// stuck is a held message whose first in-progress blocks until released.
+type stuck struct {
+	msg
+	entered, release chan struct{}
+	once             sync.Once
+}
+
+func (m *stuck) InProgress() error {
+	m.once.Do(func() {
+		close(m.entered)
+		<-m.release
+	})
+
+	return m.msg.InProgress()
+}
+
+// Run returns only once its heartbeat stopped, so no progress is sent after it: at its end and on bus-incarnation-changed.
+func TestRunJoinsItsHeartbeat(t *testing.T) {
+	t.Parallel()
+	for _, exit := range []string{"cancelled", "incarnation-changed"} {
+		t.Run(exit, func(t *testing.T) {
+			t.Parallel()
+			catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
+				r := newReplica(t, c)
+				r.g.Heartbeat = time.Millisecond
+				h := &stuck{entered: make(chan struct{}), release: make(chan struct{})}
+				d := &Delivery{Raw: Raw{Version: Version{Capture: tracepack.UUID{9}}, TS: now}}
+				r.g.Batcher.Add(Entry{D: d, Msg: h}, r.clk.now())
+				ctx, cancel := context.WithCancel(t.Context())
+				returned := make(chan error, 1)
+				go func() { returned <- r.g.Run(ctx) }()
+				<-h.entered // a beat is under way
+				if exit == "cancelled" {
+					cancel()
+				} else if err := c.ObserveLastSeq(t.Context(), r.g.Executor.Incarnation, 1000); err != nil {
+					t.Fatal(err)
+				}
+				select {
+				case err := <-returned:
+					close(h.release)
+					t.Fatalf("%s: Run returned %v while its heartbeat was beating", exit, err)
+				case <-time.After(time.Second): // the negative case: Run waits for the beat
+				}
+				close(h.release)
+				err := <-returned
+				if exit == "incarnation-changed" && !errors.Is(err, catalog.ErrIncarnationChanged) {
+					t.Errorf("Run = %v, want ErrIncarnationChanged", err)
+				}
+				cancel()
+			})
+		})
+	}
+}
+
 // failedPull is a pull the server accepted and then ended with an error.
 type failedPull struct {
 	jetstream.Consumer
