@@ -182,3 +182,28 @@ func setDirect(t *testing.T, js jetstream.JetStream, name string, on bool) {
 		t.Fatal(err)
 	}
 }
+
+// One role's end ends all: a stream replaced under a running all stops ingest and compact, and all returns the cause,
+// the stream missing or another incarnation, depending on when a role first looks.
+func TestAllStopsWithOneRole(t *testing.T) {
+	t.Parallel()
+	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
+		e := env(t, c)
+		done := make(chan error, 1)
+		go func() { done <- All(t.Context(), e) }()
+		s, err := e.JS.Stream(t.Context(), bus.StreamName(e.Bus(), catalog.RoleTraffic))
+		if err != nil {
+			t.Fatal(err)
+		}
+		cfg := s.CachedInfo().Config
+		if err := e.JS.DeleteStream(t.Context(), cfg.Name); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := e.JS.CreateStream(t.Context(), cfg); err != nil {
+			t.Fatal(err)
+		}
+		if err := <-done; err == nil {
+			t.Error("All = nil after its traffic stream was replaced, want the role's error")
+		}
+	})
+}
