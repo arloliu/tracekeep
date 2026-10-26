@@ -3,6 +3,7 @@ package ingest
 import (
 	"log/slog"
 	"slices"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -357,6 +358,120 @@ func TestParkingTurnedOff(t *testing.T) {
 		}
 		if got := copyStates(versions(t, c, waiting), pg.Incarnation.ID); !slices.Equal(got, []string{"acked"}) {
 			t.Errorf("the terminated copy's rows %v, want it acknowledged under the termination", got)
+		}
+	})
+}
+
+// rejected → open with a parked copy, then staged (the gate's case): a capture whose descriptor this consumer refuses is rejected
+// and its records parked; a fixed release, which the test stands in for by widening the accepted descriptors,
+// accepts the parked start in a rejected → open transaction, and the copies are staged and acknowledged.
+func TestRejectedCaptureOpensFromItsParkedCopy(t *testing.T) {
+	t.Parallel()
+	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
+		ctx := t.Context()
+		r := newReplica(t, c)
+		capture := tracepack.UUID{49}
+		r.publish(t, inline(t, capture, startRecord(t, now), descriptorOf(t, " ")), nil) // no device name: refused
+		r.step(t)
+		if got, err := c.Capture(ctx, capture); err != nil || got.State != catalog.StateRejected {
+			t.Fatalf("capture %+v, %v; want rejected", got, err)
+		}
+		r.publish(t, inline(t, capture, dataRecord(1, now+1), nil), nil)
+		r.step(t)
+		if vs := versions(t, c, capture); len(vs) != 2 {
+			t.Fatalf("versions %+v, want the start and the record parked", vs)
+		}
+
+		pg := r.parkedConsumer(t)
+		r.g.Executor.accepts = func([]byte) bool { return true } // the fixed release
+		if err := pg.Step(ctx); err != nil {
+			t.Fatal(err)
+		}
+		if got, err := c.Capture(ctx, capture); err != nil || got.State != catalog.StateOpen {
+			t.Fatalf("capture %+v, %v; want rejected → open from the parked start", got, err)
+		}
+		r.clk.flushInterval()
+		if err := pg.Step(ctx); err != nil {
+			t.Fatal(err)
+		}
+		vs := versions(t, c, capture)
+		if len(vs) != 2 || slices.ContainsFunc(vs, func(v catalog.ParkedVersion) bool { return v.State != catalog.VersionStaged }) {
+			t.Errorf("versions %+v, want both staged", vs)
+		}
+		if n := msgs(t, r.parked(t)); n != 0 {
+			t.Errorf("the parking stream holds %d copies, want none", n)
+		}
+	})
+}
+
+// The traffic and parked consumers processing at once over their shared executor, flusher and coordinator (barrier-controlled):
+// the traffic consumer's flush is held between its put and its registration while the parked consumer admits, stages and acknowledges
+// a parked capture through the same flusher; released, the traffic flush completes, and both captures end registered with nothing left.
+func TestConsumersProcessAtOnce(t *testing.T) {
+	t.Parallel()
+	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
+		ctx := t.Context()
+		r := newReplica(t, c)
+		parkedCapture, live := tracepack.UUID{53}, tracepack.UUID{54}
+		// The parked capture: its batch refused by the Writer to the write-failure limit, then parked.
+		r.g.Flusher.hooks[hookWrite] = func() error { return tracepack.ErrInvalidRecord }
+		for _, m := range traffic(t, parkedCapture) {
+			r.publish(t, m, nil)
+		}
+		r.step(t)
+		for _, b := range r.g.Batcher.batches {
+			for range writeFailureLimit - 1 {
+				r.g.refused(batchName(b))
+			}
+		}
+		r.clk.flushInterval()
+		r.step(t)
+		r.g.Flusher.hooks[hookWrite] = nil // the Writer is fixed
+		if vs := versions(t, c, parkedCapture); len(vs) != 4 {
+			t.Fatalf("%d versions parked, want 4", len(vs))
+		}
+		for _, m := range traffic(t, live) {
+			r.publish(t, m, nil)
+		}
+		r.step(t) // the live capture batched
+		pg := r.parkedConsumer(t)
+
+		held, release := make(chan struct{}), make(chan struct{})
+		var first atomic.Bool // only the first put holds; a sync.Once would make the second wait for the first
+		r.g.Flusher.hooks[hookAfterPut] = func() error {
+			if first.CompareAndSwap(false, true) {
+				close(held)
+				<-release
+			}
+			return nil
+		}
+		r.clk.flushInterval()
+		trafficDone := make(chan error, 1)
+		go func() { trafficDone <- r.g.Step(ctx) }() // flushes the due batches, held after the first put
+		<-held
+		if err := pg.Step(ctx); err != nil { // the parked copies batched
+			t.Fatal(err)
+		}
+		r.clk.flushInterval()
+		if err := pg.Step(ctx); err != nil { // its flush runs through the shared flusher while the other is held
+			t.Fatal(err)
+		}
+		if vs := versions(t, c, parkedCapture); slices.ContainsFunc(vs, func(v catalog.ParkedVersion) bool { return v.State != catalog.VersionStaged }) {
+			t.Errorf("parked versions %+v, want every one staged while the traffic flush is held", vs)
+		}
+		close(release)
+		if err := <-trafficDone; err != nil {
+			t.Fatal(err)
+		}
+		r.g.Flusher.hooks[hookAfterPut] = nil
+		r.step(t)
+		for _, capture := range []tracepack.UUID{parkedCapture, live} {
+			if got, err := c.Capture(ctx, capture); err != nil || !got.HasHighestSeq {
+				t.Errorf("capture %s: %+v, %v; want its records registered", capture, got, err)
+			}
+		}
+		if n, m := r.pending(t), msgs(t, r.parked(t)); n != 0 || m != 0 {
+			t.Errorf("%d traffic and %d parked messages left, want none", n, m)
 		}
 	})
 }

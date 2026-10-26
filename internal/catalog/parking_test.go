@@ -557,3 +557,38 @@ func setState(t *testing.T, c *Catalog, d *Identity, state string) {
 		t.Fatal(err)
 	}
 }
+
+// Checklist 7: a termination committed immediately after parking's step (1), held behind it on the capture row:
+// the begin commits the version parking with its copy row, and the termination that follows terminates that version.
+func TestTerminationRightAfterParkingBegins(t *testing.T) {
+	t.Parallel()
+	engines(t, func(t *testing.T, c *Catalog) {
+		capture := newID(t)
+		d := identity(capture, 3, 5)
+		held, release := holdAt(c, hookLocked)
+		var b Begun
+		var err error
+		p := run(func() { b, err = c.BeginParking(t.Context(), d, "unknown-capture", "", 0) })
+		<-held
+		waits := c.write.Stats().WaitCount
+		var n int
+		var terr error
+		a := run(func() { n, terr = c.TerminateCapture(t.Context(), capture, 1, 10, "op", "c1") })
+		waitBlocked(t, c, waits, "INSERT INTO captures", 1)
+		close(release)
+		<-p
+		<-a
+		if err != nil || b.State != VersionParking {
+			t.Errorf("BeginParking = %+v, %v; want the version parking, the termination not yet committed", b, err)
+		}
+		if terr != nil || n != 1 {
+			t.Errorf("TerminateCapture = %d, %v; want the parking version terminated", n, terr)
+		}
+		if state, by := versionState(t, c, d); state != "terminated" || by != "c1" {
+			t.Errorf("version %s by %q, want terminated by c1", state, by)
+		}
+		if k := count(t, c, `SELECT COUNT(*) FROM parked_copies WHERE incarnation_id = 1 AND stream_seq = 5`); k != 1 {
+			t.Errorf("%d copy rows of the original, want the begin's", k)
+		}
+	})
+}

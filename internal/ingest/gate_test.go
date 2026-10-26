@@ -366,6 +366,9 @@ func TestResolutionInputs(t *testing.T) {
 				m.Env.Descriptor = "not base64!"
 				return m
 			},
+			"no descriptor header": func(capture tracepack.UUID) Message {
+				return inline(t, capture, startRecord(t, now), nil) // a start whose message carries no descriptor (checklist 2)
+			},
 			"claim object missing": func(capture tracepack.UUID) Message {
 				m := claimCheck(t, cl, capture, startRecord(t, now), descriptorOf(t, "eqp"))
 				cl.mu.Lock()
