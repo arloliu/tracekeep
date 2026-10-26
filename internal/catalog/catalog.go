@@ -149,6 +149,8 @@ func openMariaDB(cfg Config) (*Catalog, error) {
 		mc.Params = map[string]string{}
 	}
 	mc.Params["transaction_isolation"] = "'READ-COMMITTED'"
+	// Affected rows count the rows an update matched, as on SQLite, so a guard that rewrites a value unchanged still counts.
+	mc.ClientFoundRows = true
 	db, err := sqlx.Open("mysql", mc.FormatDSN())
 	if err != nil {
 		return nil, fmt.Errorf("catalog: %w", err)

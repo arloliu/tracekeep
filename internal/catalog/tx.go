@@ -24,11 +24,14 @@ type dialect struct {
 	insertIgnore string
 	// retryable reports an error that re-runs the whole transaction: a deadlock or a busy database.
 	retryable func(error) bool
+	// nowNS is the database's clock in UTC nanoseconds, which judges every lease (rollouts.md §6.4, T-32).
+	nowNS string
 }
 
 var sqliteDialect = dialect{
 	name:         EngineSQLite,
 	insertIgnore: "INSERT OR IGNORE",
+	nowNS:        "CAST(unixepoch('subsec') * 1000000000 AS INTEGER)",
 	retryable: func(err error) bool {
 		var e *sqlite.Error
 		if !errors.As(err, &e) {
@@ -43,6 +46,7 @@ var sqliteDialect = dialect{
 var mariadbDialect = dialect{
 	name:         EngineMariaDB,
 	insertIgnore: "INSERT IGNORE",
+	nowNS:        "CAST(UNIX_TIMESTAMP(NOW(6)) * 1000000000 AS SIGNED)",
 	retryable: func(err error) bool {
 		var e *mysql.MySQLError
 		// 1213 is a deadlock, 1205 a lock wait timeout; both roll the transaction back.
