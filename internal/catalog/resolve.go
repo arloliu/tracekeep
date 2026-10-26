@@ -123,3 +123,32 @@ func (c *Catalog) Audit(ctx context.Context, e AuditEntry) error {
 func nullString(s string) sql.NullString {
 	return sql.NullString{String: s, Valid: s != ""}
 }
+
+// Conflict is a run of seqs two packs of a capture both hold.
+type Conflict struct {
+	SeqFrom, SeqTo int64
+	Pack, Other    tracepack.UUID
+	// State is suspect until compact compares the packs, or confirmed when they differ.
+	State string
+}
+
+// Conflicts returns the conflicts of capture.
+func (c *Catalog) Conflicts(ctx context.Context, capture tracepack.UUID) ([]Conflict, error) {
+	var rows []struct {
+		From  int64  `db:"seq_from"`
+		To    int64  `db:"seq_to"`
+		Pack  []byte `db:"pack_id"`
+		Other []byte `db:"other_pack_id"`
+		State string `db:"state"`
+	}
+	err := c.read.SelectContext(ctx, &rows, `SELECT seq_from, seq_to, pack_id, other_pack_id, state FROM conflicts WHERE capture_id = ? ORDER BY seq_from`, capture[:])
+	if err != nil {
+		return nil, fmt.Errorf("catalog: conflicts of %s: %w", capture, err)
+	}
+	out := make([]Conflict, len(rows))
+	for i, r := range rows {
+		out[i] = Conflict{SeqFrom: r.From, SeqTo: r.To, Pack: tracepack.UUID(r.Pack), Other: tracepack.UUID(r.Other), State: r.State}
+	}
+
+	return out, nil
+}
