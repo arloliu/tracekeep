@@ -437,3 +437,19 @@ so a gateway's `Sent` often follows the waiter's terminal outcome.
 T-31 counted it as a report on a sealed entry, so every fast reply moved `ignored{reason="sealed"}`.
 A `Sent` that is the token's first progress report is therefore taken on a `completed` entry too, uncounted, and changes nothing (`producer.md` §4.6);
 every other report after the outcome stays a counted no-op.
+
+### T-40 — what phase 1.4 settled about parking (2026-10-27)
+
+The owner's answers to four points phase 1.4 raised.
+**An order never undoes a registration**:
+an inline record staged with no parked row, whose acknowledgement was lost, used to be terminated by an order covering its redelivery while a pack held it;
+a covered message whose seq a registered pack holds now resolves as staged on every path that re-checks the orders (`parking.md` *Operator termination*, `catalog.md` §7.2 `RegisterPack`).
+The check reads `pack_ranges`, which records seqs, not versions, so another version of a held seq also reads staged;
+a per-version receipt for every record was rejected as a write on every registration for a capture the operator has already ended.
+An evicted hour's seqs are no longer held, so an order still covers them.
+**A restore changes `Created`**: on nats-server v2.15.1 a restored stream comes back under a new `StreamInfo.Created`,
+so the earlier text that a restore keeps it was wrong; a changed `Created` or a rewound `LastSeq` is a changed incarnation (`parking.md`).
+**A missing claim object is indefinite once its nak delay reached the last step**,
+since an object a producer is still putting may yet appear (`ingest.md` §6.1); parking at the first miss and never parking were rejected.
+**`parked replay` is withdrawn** from the admin commands:
+the parked consumer retries on its own after `parking.redelivery_delay`, and an early retry needs a design of its own, kept as proposal P1.

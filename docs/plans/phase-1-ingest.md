@@ -65,7 +65,7 @@ a `rejected` capture's records, an expired record of a `rejected` or unknown cap
 a batch at the `write-failure` limit, a record of an unknown capture whose catalog row is already `pending` (an earlier message was parked),
 and a claim-check message of an unknown capture whose object is missing once its nak delay reached the last step.
 Every other deferral stays a nak with delay, as in phase 1.3.
-The claim-missing clause is this plan's reading of "parked when indefinite" (`ingest.md` §6.1),
+The claim-missing clause is the owner's decision T-40 (`ingest.md` §6.1),
 since an object a producer is still putting may yet appear.
 
 Two shapes the steps share:
@@ -90,8 +90,6 @@ Left to later phases from the roadmap row's parking cases:
 the reconciler's per-sequence `acked` marking, its `GetMsg` cases and the sole copy acknowledged at exactly `LastSeq` go to phase 1.5;
 the parked consumer's wiring into the roles, `parking.enabled` toggled on a running service, and `rejected → open` with a parked copy
 (phase 1 accepts one descriptor shape, so no fixed consumer exists to accept a rejected one) go to phase 1.6.
-On nats-server v2.15.1 a restored stream comes back under a new `StreamInfo.Created`,
-so a restore is detected by its creation time as well as by a rewound `LastSeq`.
-
-`parked replay <capture>` has no mechanism in the specs yet (the parked consumer retries on its own after `parking.redelivery_delay`);
-it is left out of this phase and raised with the owner.
+The owner's decisions on the points this phase raised are T-40:
+an order never terminates a seq a registered pack holds (0fc0dcc), a restore changes `Created`,
+and `parked replay` is withdrawn to the deferred proposal P1.

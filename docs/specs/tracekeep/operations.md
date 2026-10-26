@@ -34,7 +34,7 @@ Contract changes go through proposals, which the subject [README.md](README.md) 
 | `conflict acknowledge <capture> <seq>` | closes the incident; the scope stays unmerged for its lifetime (readers take the union and report the conflict, exports flag it, retention evicts it on time); a merge over differing versions is impossible by [STO §4], so no command promises one |
 | `scope exclude-input <pack>` | sets the pack `excluded` under the capture-row serialization, bumps the scope's revision and emits an event, so the next merge snapshot (which takes `staged` packs only) leaves it out; it stays readable and is never deleted by the merge relation; audited |
 | `key verify <key_id>` | re-resolves a key and compares its fingerprint with the binding, for the `key-binding-mismatch` incident |
-| `parked list` / `parked replay <capture>` / `parked terminate <capture>` | the parking stream (§6.1): `list` shows each version's state, `evicted-hour` included, its messages with their states and its survivor object; `terminate` writes the version `terminated` with the audit row; the messages are acknowledged under it at their next delivery (G5-269) |
+| `parked list` / `parked terminate <capture>` | the parking stream (§6.1): `list` shows each version's state, `evicted-hour` included, its messages with their states and its survivor object; `terminate` writes the version `terminated` with the audit row; the messages are acknowledged under it at their next delivery (G5-269) |
 | `bus adopt-stream <role>` | the last step of the stop-the-world replacement procedure of §6.1: allocates the new incarnation, marks the retired one's copy rows `lost` and its termination orders `spent`; refuses to run while any tracekeep lease is live; audited |
 | `capture show <id>` | the capture's versions, copies, survivors and termination orders with their states |
 | `object adopt <key>` / `object list --unattributed` / `object list --survivors` | reconciler decisions made by hand, on unregistered objects only |
@@ -44,7 +44,7 @@ Contract changes go through proposals, which the subject [README.md](README.md) 
 **Runbook**: one section per named incident
 (`capture-rejected`, `descriptor-conflict`, `claim-conflict`, `write-failure`, `incompatible-configuration`, `seq-conflict`, `beyond-retention`, `capture_fault`, `key-binding-mismatch`, `cannot-screen`, `damaged-input`, `parked`, `bus-incarnation-changed`),
 each row of a compact table incident → metric → recovery command → terminal alternative
-(for example `cannot-screen`: `cannot_screen_total` → fix the consumer or the policy, then `parked replay` → `capture terminate`),
+(for example `cannot-screen`: `cannot_screen_total` → fix the consumer or the policy, then let the parked consumer retry after `parking.redelivery_delay` → `capture terminate`),
 each with the alert that raises it, the metric to look at, the admin command that resolves it, and what is lost if it is ignored;
 shipped in `docs/guides/runbook.md` and referenced by the alert annotations.
 
