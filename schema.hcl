@@ -1,7 +1,7 @@
 # The catalog's schema (docs/specs/tracekeep/catalog.md §7.1, parking.md §7.1), one file for both engines:
 # the types the engines spell differently are variables atlas.hcl sets per engine.
 # Times are UTC nanoseconds, hours are hours since the Unix epoch, seqs fit a signed BIGINT.
-# On MariaDB every string compares byte for byte, as on SQLite: scripts/catalog.sh generates against a server whose default collation is utf8mb4_bin.
+# On MariaDB every string compares byte for byte, as on SQLite: scripts/catalog.sh generates against a server whose default collation is utf8mb4_nopad_bin (a binary collation that, unlike utf8mb4_bin, keeps trailing spaces significant).
 # Edit this file, then run `make migrate-diff NAME=<change>`; never edit a generated migration.
 
 variable "uuid" {

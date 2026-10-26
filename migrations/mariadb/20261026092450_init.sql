@@ -9,7 +9,7 @@ CREATE TABLE `audit_log` (
   `detail` text NULL,
   PRIMARY KEY (`audit_id`),
   INDEX `audit_log_at` (`at`)
-) CHARSET utf8mb4 COLLATE utf8mb4_bin;
+) CHARSET utf8mb4 COLLATE utf8mb4_nopad_bin;
 -- Create "bus_streams" table
 CREATE TABLE `bus_streams` (
   `incarnation_id` bigint NOT NULL,
@@ -20,7 +20,7 @@ CREATE TABLE `bus_streams` (
   `retired_at` bigint NULL,
   PRIMARY KEY (`incarnation_id`),
   CONSTRAINT `bus_streams_role` CHECK (`role` in ('traffic','parking'))
-) CHARSET utf8mb4 COLLATE utf8mb4_bin;
+) CHARSET utf8mb4 COLLATE utf8mb4_nopad_bin;
 -- Create "captures" table
 CREATE TABLE `captures` (
   `capture_id` binary(16) NOT NULL,
@@ -43,7 +43,7 @@ CREATE TABLE `captures` (
   INDEX `captures_device` (`tool_id`, `device`, `origin_ns`),
   INDEX `captures_successor` (`tool_id`, `recorder_instance_id`, `origin_ns`),
   CONSTRAINT `captures_state` CHECK (`state` in ('pending','open','stopped','closed','rejected'))
-) CHARSET utf8mb4 COLLATE utf8mb4_bin;
+) CHARSET utf8mb4 COLLATE utf8mb4_nopad_bin;
 -- Create "capture_closes" table
 CREATE TABLE `capture_closes` (
   `capture_id` binary(16) NOT NULL,
@@ -61,7 +61,7 @@ CREATE TABLE `capture_closes` (
   PRIMARY KEY (`capture_id`),
   CONSTRAINT `capture_closes_state` CHECK (`state` in ('pending','published','abandoned')),
   CONSTRAINT `capture_closes_trigger` CHECK (`trigger_kind` in ('inactivity','successor'))
-) CHARSET utf8mb4 COLLATE utf8mb4_bin;
+) CHARSET utf8mb4 COLLATE utf8mb4_nopad_bin;
 -- Create "claim_objects" table
 CREATE TABLE `claim_objects` (
   `object_key` varchar(512) NOT NULL,
@@ -74,7 +74,7 @@ CREATE TABLE `claim_objects` (
   PRIMARY KEY (`object_key`),
   INDEX `claim_objects_capture_hour` (`capture_id`, `hour`),
   CONSTRAINT `claim_objects_state` CHECK (`state` in ('live','survivor','deletable'))
-) CHARSET utf8mb4 COLLATE utf8mb4_bin;
+) CHARSET utf8mb4 COLLATE utf8mb4_nopad_bin;
 -- Create "claim_records" table
 CREATE TABLE `claim_records` (
   `capture_id` binary(16) NOT NULL,
@@ -85,7 +85,7 @@ CREATE TABLE `claim_records` (
   `first_pack_id` binary(16) NOT NULL,
   PRIMARY KEY (`capture_id`, `seq`, `header`, `payload_sha256`),
   INDEX `claim_records_capture_hour` (`capture_id`, `hour`)
-) CHARSET utf8mb4 COLLATE utf8mb4_bin;
+) CHARSET utf8mb4 COLLATE utf8mb4_nopad_bin;
 -- Create "conflicts" table
 CREATE TABLE `conflicts` (
   `capture_id` binary(16) NOT NULL,
@@ -96,7 +96,7 @@ CREATE TABLE `conflicts` (
   `state` varchar(16) NOT NULL,
   PRIMARY KEY (`capture_id`, `seq_from`, `seq_to`, `pack_id`, `other_pack_id`),
   CONSTRAINT `conflicts_state` CHECK (`state` in ('suspect','confirmed'))
-) CHARSET utf8mb4 COLLATE utf8mb4_bin;
+) CHARSET utf8mb4 COLLATE utf8mb4_nopad_bin;
 -- Create "consumers" table
 CREATE TABLE `consumers` (
   `replica_id` varchar(128) NOT NULL,
@@ -104,13 +104,13 @@ CREATE TABLE `consumers` (
   `generation` bigint NOT NULL,
   `registered_at` bigint NOT NULL,
   PRIMARY KEY (`replica_id`)
-) CHARSET utf8mb4 COLLATE utf8mb4_bin;
+) CHARSET utf8mb4 COLLATE utf8mb4_nopad_bin;
 -- Create "consumer_configs" table
 CREATE TABLE `consumer_configs` (
   `replica_id` varchar(128) NOT NULL,
   `config_id` bigint NOT NULL,
   PRIMARY KEY (`replica_id`, `config_id`)
-) CHARSET utf8mb4 COLLATE utf8mb4_bin;
+) CHARSET utf8mb4 COLLATE utf8mb4_nopad_bin;
 -- Create "counters" table
 CREATE TABLE `counters` (
   `name` varchar(32) NOT NULL,
@@ -118,7 +118,7 @@ CREATE TABLE `counters` (
   `low_water` bigint NOT NULL DEFAULT 0,
   `epoch` bigint NOT NULL DEFAULT 0,
   PRIMARY KEY (`name`)
-) CHARSET utf8mb4 COLLATE utf8mb4_bin;
+) CHARSET utf8mb4 COLLATE utf8mb4_nopad_bin;
 -- Create "evicted_ranges" table
 CREATE TABLE `evicted_ranges` (
   `capture_id` binary(16) NOT NULL,
@@ -128,7 +128,7 @@ CREATE TABLE `evicted_ranges` (
   `ts_from` bigint NOT NULL,
   `ts_to` bigint NOT NULL,
   PRIMARY KEY (`capture_id`, `seq_from`)
-) CHARSET utf8mb4 COLLATE utf8mb4_bin;
+) CHARSET utf8mb4 COLLATE utf8mb4_nopad_bin;
 -- Create "key_bindings" table
 CREATE TABLE `key_bindings` (
   `key_id` varchar(128) NOT NULL,
@@ -139,7 +139,7 @@ CREATE TABLE `key_bindings` (
   `bound_at` bigint NOT NULL,
   PRIMARY KEY (`key_id`),
   CONSTRAINT `key_bindings_kind` CHECK (`kind` in ('digest','master','session','download'))
-) CHARSET utf8mb4 COLLATE utf8mb4_bin;
+) CHARSET utf8mb4 COLLATE utf8mb4_nopad_bin;
 -- Create "leases" table
 CREATE TABLE `leases` (
   `name` varchar(64) NOT NULL,
@@ -147,7 +147,7 @@ CREATE TABLE `leases` (
   `fence_token` bigint NOT NULL,
   `until_ns` bigint NOT NULL,
   PRIMARY KEY (`name`)
-) CHARSET utf8mb4 COLLATE utf8mb4_bin;
+) CHARSET utf8mb4 COLLATE utf8mb4_nopad_bin;
 -- Create "merges" table
 CREATE TABLE `merges` (
   `merge_id` binary(16) NOT NULL,
@@ -159,14 +159,14 @@ CREATE TABLE `merges` (
   PRIMARY KEY (`merge_id`),
   INDEX `merges_output` (`output_pack_id`),
   CONSTRAINT `merges_outcome` CHECK (`outcome` in ('committed','failed'))
-) CHARSET utf8mb4 COLLATE utf8mb4_bin;
+) CHARSET utf8mb4 COLLATE utf8mb4_nopad_bin;
 -- Create "merge_inputs" table
 CREATE TABLE `merge_inputs` (
   `merge_id` binary(16) NOT NULL,
   `pack_id` binary(16) NOT NULL,
   PRIMARY KEY (`merge_id`, `pack_id`),
   INDEX `merge_inputs_pack` (`pack_id`)
-) CHARSET utf8mb4 COLLATE utf8mb4_bin;
+) CHARSET utf8mb4 COLLATE utf8mb4_nopad_bin;
 -- Create "packs" table
 CREATE TABLE `packs` (
   `pack_id` binary(16) NOT NULL,
@@ -187,7 +187,7 @@ CREATE TABLE `packs` (
   INDEX `packs_tool_hour` (`tool_id`, `hour`),
   CONSTRAINT `packs_role` CHECK (`role` in ('segment','conflict','archive','close')),
   CONSTRAINT `packs_state` CHECK (`state` in ('staged','merged','excluded','deleted'))
-) CHARSET utf8mb4 COLLATE utf8mb4_bin;
+) CHARSET utf8mb4 COLLATE utf8mb4_nopad_bin;
 -- Create "pack_losses" table
 CREATE TABLE `pack_losses` (
   `pack_id` binary(16) NOT NULL,
@@ -197,7 +197,7 @@ CREATE TABLE `pack_losses` (
   `ts_from` bigint NULL,
   `ts_to` bigint NULL,
   PRIMARY KEY (`pack_id`, `ord`)
-) CHARSET utf8mb4 COLLATE utf8mb4_bin;
+) CHARSET utf8mb4 COLLATE utf8mb4_nopad_bin;
 -- Create "pack_ranges" table
 CREATE TABLE `pack_ranges` (
   `pack_id` binary(16) NOT NULL,
@@ -208,7 +208,7 @@ CREATE TABLE `pack_ranges` (
   `ts_to` bigint NOT NULL,
   PRIMARY KEY (`pack_id`, `seq_from`),
   INDEX `pack_ranges_capture_seq` (`capture_id`, `seq_from`, `seq_to`)
-) CHARSET utf8mb4 COLLATE utf8mb4_bin;
+) CHARSET utf8mb4 COLLATE utf8mb4_nopad_bin;
 -- Create "parked" table
 CREATE TABLE `parked` (
   `capture_id` binary(16) NOT NULL,
@@ -226,7 +226,7 @@ CREATE TABLE `parked` (
   PRIMARY KEY (`capture_id`, `seq`, `header`, `payload_digest`),
   INDEX `parked_capture_hour` (`capture_id`, `hour`),
   CONSTRAINT `parked_state` CHECK (`state` in ('parking','parked','evicted-hour','staged','terminated'))
-) CHARSET utf8mb4 COLLATE utf8mb4_bin;
+) CHARSET utf8mb4 COLLATE utf8mb4_nopad_bin;
 -- Create "parked_copies" table
 CREATE TABLE `parked_copies` (
   `incarnation_id` bigint NOT NULL,
@@ -239,7 +239,7 @@ CREATE TABLE `parked_copies` (
   PRIMARY KEY (`incarnation_id`, `stream_seq`),
   INDEX `parked_copies_version` (`capture_id`, `seq`, `header`, `payload_digest`),
   CONSTRAINT `parked_copies_state` CHECK (`state` in ('waiting','acked','lost'))
-) CHARSET utf8mb4 COLLATE utf8mb4_bin;
+) CHARSET utf8mb4 COLLATE utf8mb4_nopad_bin;
 -- Create "policies" table
 CREATE TABLE `policies` (
   `policy_id` varchar(128) NOT NULL,
@@ -248,7 +248,7 @@ CREATE TABLE `policies` (
   `body` mediumblob NOT NULL,
   `created_at` bigint NOT NULL,
   PRIMARY KEY (`policy_id`, `version`)
-) CHARSET utf8mb4 COLLATE utf8mb4_bin;
+) CHARSET utf8mb4 COLLATE utf8mb4_nopad_bin;
 -- Create "processing_configs" table
 CREATE TABLE `processing_configs` (
   `config_id` bigint NOT NULL,
@@ -259,7 +259,7 @@ CREATE TABLE `processing_configs` (
   `retired_at` bigint NULL,
   PRIMARY KEY (`config_id`),
   UNIQUE INDEX `processing_configs_content` (`content_sha256`)
-) CHARSET utf8mb4 COLLATE utf8mb4_bin;
+) CHARSET utf8mb4 COLLATE utf8mb4_nopad_bin;
 -- Create "scopes" table
 CREATE TABLE `scopes` (
   `capture_id` binary(16) NOT NULL,
@@ -270,7 +270,7 @@ CREATE TABLE `scopes` (
   `merged_at` bigint NULL,
   PRIMARY KEY (`capture_id`, `hour`),
   CONSTRAINT `scopes_state` CHECK (`state` in ('open','settled','reopened'))
-) CHARSET utf8mb4 COLLATE utf8mb4_bin;
+) CHARSET utf8mb4 COLLATE utf8mb4_nopad_bin;
 -- Create "scope_events" table
 CREATE TABLE `scope_events` (
   `seq` bigint NOT NULL,
@@ -281,7 +281,7 @@ CREATE TABLE `scope_events` (
   `at` bigint NOT NULL,
   PRIMARY KEY (`seq`),
   CONSTRAINT `scope_events_event` CHECK (`event` in ('created','settled','reopened','conflict','terminated'))
-) CHARSET utf8mb4 COLLATE utf8mb4_bin;
+) CHARSET utf8mb4 COLLATE utf8mb4_nopad_bin;
 -- Create "termination_orders" table
 CREATE TABLE `termination_orders` (
   `action_id` varchar(64) NOT NULL,
@@ -292,11 +292,11 @@ CREATE TABLE `termination_orders` (
   PRIMARY KEY (`action_id`),
   INDEX `termination_orders_capture` (`capture_id`, `state`),
   CONSTRAINT `termination_orders_state` CHECK (`state` in ('active','spent'))
-) CHARSET utf8mb4 COLLATE utf8mb4_bin;
+) CHARSET utf8mb4 COLLATE utf8mb4_nopad_bin;
 -- Create "tombstones" table
 CREATE TABLE `tombstones` (
   `object_key` varchar(512) NOT NULL,
   `reason` varchar(32) NOT NULL,
   `at` bigint NOT NULL,
   PRIMARY KEY (`object_key`)
-) CHARSET utf8mb4 COLLATE utf8mb4_bin;
+) CHARSET utf8mb4 COLLATE utf8mb4_nopad_bin;

@@ -219,7 +219,7 @@ and the caller acts on it: the merge and the close at the next cycle (§8.1, §8
 - **Recommended stack**: `database/sql` + `sqlx`, hand-written SQL, `go-sql-driver/mysql` and `modernc.org/sqlite` (no cgo).
   A `dialect` value isolates insert-ignore and the upsert clause; both engines use `CHECK` constraints, not `ENUM`;
   the transactions are CAS-based and engine-neutral (§7.2).
-- **MariaDB** 11.1 or later: `READ COMMITTED`, the session in UTC, strings compared byte for byte (`utf8mb4_bin`) as on SQLite; every multi-statement transaction retries whole on deadlock;
+- **MariaDB** 11.1 or later: `READ COMMITTED`, the session in UTC, strings compared byte for byte, trailing spaces included (`utf8mb4_nopad_bin`), as on SQLite; every multi-statement transaction retries whole on deadlock;
   the capture row, the `leases` row and the two `counters` rows are the intended lock waits, always in the order of §7.2.
 - **SQLite**: one writer connection (`MaxOpenConns = 1` on the write pool), `BEGIN IMMEDIATE` for every write transaction, `busy_timeout` set, retry whole on `SQLITE_BUSY`;
   only the `all` process writes, enforced by deployment and checked at start (a second writer refuses to start on SQLite).
