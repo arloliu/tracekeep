@@ -62,7 +62,7 @@ func TestDevLoopbackCapture(t *testing.T) {
 		t.Fatalf("dev = %v", err)
 	}
 
-	got := registered(t, d)
+	got := registered(t, d.Env)
 	if len(got.captures) != 1 || got.start != 1 || got.data == 0 {
 		t.Errorf("registered packs %v hold %d captures, %d starts and %d data records; want one capture with its start and traffic", got.keys, len(got.captures), got.start, got.data)
 	}
@@ -80,19 +80,19 @@ type reading struct {
 	start, data int
 }
 
-// registered reads every registered segment of d's store with the tracepack reader.
-func registered(t *testing.T, d *Dev) reading {
+// registered reads every registered segment of e's store with the tracepack reader.
+func registered(t *testing.T, e *Env) reading {
 	t.Helper()
 	ctx := t.Context()
 	g := reading{captures: map[tracepack.UUID]bool{}}
-	if err := d.Env.Store.List(ctx, "staging/", func(o store.ObjectInfo) error { g.keys = append(g.keys, o.Key); return nil }); err != nil {
+	if err := e.Store.List(ctx, "staging/", func(o store.ObjectInfo) error { g.keys = append(g.keys, o.Key); return nil }); err != nil {
 		t.Fatal(err)
 	}
 	for _, k := range g.keys {
-		if s, err := d.Env.Catalog.KeyStanding(ctx, k); err != nil || s != catalog.KeyRegistered {
+		if s, err := e.Catalog.KeyStanding(ctx, k); err != nil || s != catalog.KeyRegistered {
 			continue // a segment whose flush the stop cut before its registration
 		}
-		obj, err := d.Env.Store.Open(ctx, k)
+		obj, err := e.Store.Open(ctx, k)
 		if err != nil {
 			t.Fatal(err)
 		}

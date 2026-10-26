@@ -80,7 +80,8 @@ func (f *failingPut) Put(ctx context.Context, key string, r io.ReadSeeker, size 
 	return f.ObjectStore.Put(ctx, key, r, size)
 }
 
-// A crash before the put leaves nothing: the redelivery writes the batch.
+// A crash before the put leaves nothing: the redelivery writes the batch,
+// its duplicate start, already admitted, staged in the segment and not lost (the gate's case).
 func TestCrashBeforeThePut(t *testing.T) {
 	t.Parallel()
 	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
@@ -95,12 +96,25 @@ func TestCrashBeforeThePut(t *testing.T) {
 		if ks := keys(t, p.st); len(ks) != 0 {
 			t.Fatalf("objects %v after a crash before the put", ks)
 		}
-		p.deliver(t, traffic(t, capture))
+		hs = p.deliver(t, traffic(t, capture))
 		if _, err := p.flushOne(t); err != nil {
 			t.Fatal(err)
 		}
-		if ks := keys(t, p.st); len(ks) != 1 {
-			t.Errorf("objects %v after the redelivery, want one segment", ks)
+		ks := keys(t, p.st)
+		if len(ks) != 1 {
+			t.Fatalf("objects %v after the redelivery, want one segment", ks)
+		}
+		rs := records(t, p.st, ks[0])
+		if len(rs) != 4 || rs[0].Seq != 0 || rs[0].Kind != tracepack.KindTransportEvent {
+			t.Errorf("segment records %+v, want the start at seq 0 and the traffic", rs)
+		}
+		if got, err := c.Capture(t.Context(), capture); err != nil || !got.HasHighestSeq || got.HighestSeq != 3 {
+			t.Errorf("capture %+v, %v; want the redelivered batch registered", got, err)
+		}
+		for i, h := range hs {
+			if got := h.done(); len(got) != 1 || !strings.HasPrefix(got[0], "ack") {
+				t.Errorf("redelivered message %d: %v, want acknowledged", i, got)
+			}
 		}
 	})
 }
