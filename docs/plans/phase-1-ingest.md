@@ -43,7 +43,7 @@ so CI runs `atlas migrate validate` and checks that `atlas migrate diff` finds n
 
 | Step | Scope | State |
 |---|---|---|
-| 1 | `schema.hcl` with one variable per engine-specific type, `atlas.hcl`, `migrations/sqlite` and `migrations/mariadb` with their `atlas.sum`, embedded for tests; the MariaDB container target and CI job, with validate and the drift check | pending |
+| 1 | `schema.hcl` with one variable per engine-specific type, `atlas.hcl`, `migrations/sqlite` and `migrations/mariadb` with their `atlas.sum`, embedded for tests; the MariaDB container target and CI job, with validate and the drift check | done (4dce2d8) |
 | 2 | `internal/catalog`: opening each engine (SQLite's one-connection write pool, `BEGIN IMMEDIATE`, `busy_timeout`; MariaDB at `READ COMMITTED`), whole-transaction retries, the dialect value, the capture-row prologue, the event-seq allocation, the two-engine test harness | pending |
 | 3 | leases, membership and processing configurations: take and renew a lease with its fence token; register, renew and leave a membership, refused unless it executes every unretired configuration; activate and retire a configuration; each on the `membership` sentinel row | pending |
 | 4 | `Admit` and `Reject`, with the binding of the newest configuration every leased member supports, and the capture lookup | pending |
