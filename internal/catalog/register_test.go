@@ -350,3 +350,27 @@ func TestRegisterConfirmedAndSuspectAtOneSeq(t *testing.T) {
 		}
 	})
 }
+
+// VerifyLease reads whether a lease is still held: by its holder and fence, before it lapses.
+func TestVerifyLease(t *testing.T) {
+	t.Parallel()
+	engines(t, func(t *testing.T, c *Catalog) {
+		ctx := t.Context()
+		lease, ok, err := c.TakeLease(ctx, "compactor", "w", ttl)
+		if err != nil || !ok {
+			t.Fatalf("TakeLease = %v, %v", ok, err)
+		}
+		if err := c.VerifyLease(ctx, lease); err != nil {
+			t.Errorf("VerifyLease of the held lease = %v", err)
+		}
+		stale := lease
+		stale.Fence--
+		if err := c.VerifyLease(ctx, stale); !errors.Is(err, ErrLeaseLost) {
+			t.Errorf("VerifyLease of a stale fence = %v, want ErrLeaseLost", err)
+		}
+		lapse(t, c, `UPDATE leases SET until_ns = 0`)
+		if err := c.VerifyLease(ctx, lease); !errors.Is(err, ErrLeaseLost) {
+			t.Errorf("VerifyLease of a lapsed lease = %v, want ErrLeaseLost", err)
+		}
+	})
+}

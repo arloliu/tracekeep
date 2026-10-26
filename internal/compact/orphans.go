@@ -119,7 +119,7 @@ func (r *Reconciler) settle(ctx context.Context, lease catalog.Lease, info store
 		return nil
 	case catalog.KeyTombstoned:
 		// A delayed upload after retention or a refused registration: never registered.
-		return r.delete(ctx, info.Key, rep)
+		return r.delete(ctx, lease, info.Key, rep)
 	case catalog.KeyUnknown:
 	default:
 		return fmt.Errorf("compact: unknown key standing %d", standing)
@@ -166,7 +166,7 @@ func (r *Reconciler) adopt(ctx context.Context, lease catalog.Lease, p *catalog.
 		// Its registration committed after the listing's look.
 	case catalog.Tombstoned, catalog.BeyondHorizon, catalog.LostToTermination:
 		// The key is tombstoned, so the object goes; an orphan's messages were never acknowledged and are decided again.
-		return r.delete(ctx, p.Key, rep)
+		return r.delete(ctx, lease, p.Key, rep)
 	case catalog.UnadmittedCapture:
 		rep.Unadmitted = append(rep.Unadmitted, Unadmitted{Key: p.Key, Capture: p.Capture})
 		r.Log.Warn("compact: orphan of an unadmitted capture", "key", p.Key, "capture", p.Capture)
@@ -179,7 +179,12 @@ func (r *Reconciler) adopt(ctx context.Context, lease catalog.Lease, p *catalog.
 	return nil
 }
 
-func (r *Reconciler) delete(ctx context.Context, key string, rep *OrphanReport) error {
+// delete deletes the tombstoned key while this process holds lease: a worker that lost it does nothing further (compactor.md §8.1).
+// The lease may be lost between the check and the deletion, which is harmless: a tombstoned key is never registered again.
+func (r *Reconciler) delete(ctx context.Context, lease catalog.Lease, key string, rep *OrphanReport) error {
+	if err := r.Catalog.VerifyLease(ctx, lease); err != nil {
+		return err
+	}
 	if err := r.Store.Delete(ctx, key); err != nil {
 		return err
 	}

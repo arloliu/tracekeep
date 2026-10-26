@@ -376,3 +376,26 @@ func TestOrphanArchiveAdopted(t *testing.T) {
 		}
 	})
 }
+
+// A stale holder deletes nothing, not even a tombstoned key, whose deletion is otherwise safe at any time.
+func TestTombstonedKeyKeptFromAStaleHolder(t *testing.T) {
+	t.Parallel()
+	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
+		f := newFixture(t, c)
+		capture := f.admit(t)
+		gone := segment(t, capture, []uint64{2}, false)
+		tombstone(t, c, capture, gone)
+		f.put(t, gone.key, gone.data)
+		stale := f.lease
+		stale.Fence--
+		if _, err := f.r.Orphans(t.Context(), stale); !errors.Is(err, catalog.ErrLeaseLost) {
+			t.Errorf("Orphans under a stale lease = %v, want ErrLeaseLost", err)
+		}
+		if !f.present(t, gone.key) {
+			t.Errorf("a stale holder deleted the tombstoned key")
+		}
+		if rep := f.pass(t); !slices.Equal(rep.Deleted, []string{gone.key}) {
+			t.Errorf("the holder's pass = %+v, want the key deleted", rep)
+		}
+	})
+}

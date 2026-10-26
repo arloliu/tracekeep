@@ -78,3 +78,20 @@ func (c *Catalog) checkLease(ctx context.Context, tx *sqlx.Tx, l Lease) error {
 
 	return affected(res, err, ErrLeaseLost)
 }
+
+// VerifyLease reports with ErrLeaseLost that l is no longer held, by the database's clock.
+// It is a read, for an effect outside the catalog that a holder must not make once it lost the lease;
+// the effect follows the read, so it must be one that is harmless if the lease is lost in between.
+func (c *Catalog) VerifyLease(ctx context.Context, l Lease) error {
+	var n int
+	err := c.read.GetContext(ctx, &n, `SELECT COUNT(*) FROM leases WHERE name = ? AND holder = ? AND fence_token = ? AND until_ns >= `+c.d.nowNS,
+		l.Name, l.Holder, l.Fence)
+	if err != nil {
+		return fmt.Errorf("catalog: verify lease %s: %w", l.Name, err)
+	}
+	if n == 0 {
+		return fmt.Errorf("catalog: verify lease %s: %w", l.Name, ErrLeaseLost)
+	}
+
+	return nil
+}
