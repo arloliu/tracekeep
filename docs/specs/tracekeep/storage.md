@@ -59,7 +59,7 @@ Contract changes go through proposals, which the subject [README.md](README.md) 
 
 ```go
 type ObjectStore interface {
-    Put(ctx context.Context, key string, r io.Reader, size int64) error
+    Put(ctx context.Context, key string, r io.ReadSeeker, size int64) error
     Open(ctx context.Context, key string) (Object, error) // Object: io.ReaderAt, Size(), Close()
     Stat(ctx context.Context, key string) (ObjectInfo, error)
     List(ctx context.Context, prefix string, fn func(ObjectInfo) error) error
@@ -71,7 +71,7 @@ type ObjectStore interface {
 the object is visible under its key only when complete; a returned nil means durable;
 a returned error means nothing is visible, or the caller treats the key as unknown and the reconciler (§5.4) decides.
 
-- `s3` (aws-sdk-go-v2 `service/s3`, T-34; any S3-compatible store): one `PutObject` with a seekable body, atomic and durable on success;
+- `s3` (aws-sdk-go-v2 `service/s3`, T-34; any S3-compatible store): one `PutObject` with a seekable body, which is why `Put` takes an `io.ReadSeeker`; atomic and durable on success;
   keys are never overwritten ([STO §3]).
   With a custom endpoint it uses path-style addressing and sets `RequestChecksumCalculation` and `ResponseChecksumValidation` to `WhenRequired`,
   since the SDK's default checksums break some S3-compatible stores;
