@@ -49,3 +49,33 @@ Phase 1 binds a processing configuration without a policy, so a batch is classif
 | 4 | batching and the flush: per (capture, hour), sorted, equal copies deduplicated, conflicting copies in conflict segments; classified with the bound configuration; written with `tracepack.NewWriter` to a working file, put, registered with delivery evidence, then each message acknowledged, `DoubleAck` for a claim-check one; in-progress acks while a batch is held | done (498bbfb) |
 | 5 | the activation gate in the process: the configurations the binary executes activated, the membership registered and renewed before every fetch, `MaxWait` within the lease, every delivery checked against the lease and the generation, a record bound to a configuration the replica lacks deferred | done (b83af85) |
 | 6 | the crash points of §6.3 as barrier tests on both engines: before the put, after the put before registration, after registration during the acks; redelivery byte-identical; a batch failing the `Writer` three times stays deferred with `write-failure` | done (6f0a154) |
+
+## Phase 1.4 — parking
+
+Work on the branch `feat/ingest/parking`, one commit per step, test first;
+the branch merges by pull request once the whole phase passes an external post-implementation review.
+The service requires the SDK at `producer/v0.2.0`, whose `busconfig` defines the parking stream and the park prefix.
+Every catalog step runs on both engines, every transaction starts with the capture-row helper (T-32),
+and every concurrent schedule is barrier-controlled.
+The reconciler's per-sequence `acked` check is phase 1.5;
+the command-line wiring of the operator commands is phase 1.6, with the role subcommands.
+
+A deferral is **indefinite**, and parked rather than nak'd, when it cannot clear by itself within the nak backoff:
+a `rejected` capture's records, an expired record of a `rejected` or unknown capture (G5-251),
+a batch at the `write-failure` limit, a record of an unknown capture whose catalog row is already `pending` (an earlier message was parked),
+and a claim-check message of an unknown capture whose object is missing once its nak delay reached the last step.
+Every other deferral stays a nak with delay, as in phase 1.3.
+
+| Step | Scope | State |
+|---|---|---|
+| 1 | the termination re-check: `Admit` and `Reject` take the delivery's identity (version key, incarnation, stream seq) and re-read its resolution and the capture's active orders under the row, returning `terminated` and writing nothing else; an order's application (the version inserted `terminated` under the order's action id with its copy row, the audit row and a `terminated` scope event, T-33) inline and as a transaction of its own; `RegisterPack`'s evidence carries every record's identity, its guard aborts and tombstones on a terminated or order-covered version, and it moves the batch's `parking`/`parked` versions to `staged` by compare-and-set; barrier tests of a termination committed before and after an admission and a registration (checklist 7) | pending |
+| 2 | the parking transactions: *begin* (the `pending` row when none, the state re-read, the horizon guard for an admitted capture, the `parked` and `parked_copies` rows insert-or-find), *advance*, a copy marked `acked`, a copy row inserted by the parked consumer, `parked → evicted-hour`; operator termination of parked versions and of a capture with its order; an order `spent` by `FirstSeq` or by retirement; `bus adopt-stream`'s catalog part (a new incarnation, copies `lost`, orders `spent`, refused while a lease is live); the reads `parked list` and `capture show` need | pending |
+| 3 | the bus: the service on `producer/v0.2.0`; `tracekeep migrate`'s bus part ensures the parking stream with the traffic stream's replicas, refuses prefixes sharing a first token and overlapping subject filters, and records the parking incarnation; the parked consumer `tk-parked-<incarnation>`; `bus adopt-stream`'s bus part deletes every `tk-*` consumer of the stream and verifies none remains | pending |
+| 4 | the parking coordinator: the version token and subject, the copy (body, `Tpk-*` headers and `Nats-Msg-Id` unchanged, `Nats-Expected-Stream` removed), the publish expecting last subject sequence 0, confirmation by a `PubAck` with `Duplicate` false or error 10071 with a strictly positive parsed sequence and nothing else, *advance* and *acknowledge*; the three-outcome test against `internal/testbus`, standalone and clustered, asserted on storage; confirmation failures converging (checklist 6) | pending |
+| 5 | disposition: indefinite deferrals park through the coordinator when `parking.enabled`; a resolved version is acknowledged (as already staged, or under the termination with its audit row and its copy row `acked`); `StepApplyOrder` executed | pending |
+| 6 | the parked consumer: its copy row inserted or found first, the same disposition with `parking.redelivery_delay`, never terminated for age or delivery count; a `parking` row advanced; staging through the flush with evidence; a horizon refusal moving the version to `evicted-hour`; every acknowledgement through the coordinator | pending |
+| 7 | the operator operations as functions the command line calls in phase 1.6: `parked list`, `parked terminate`, `capture terminate` (the cut-off from a fresh `Info` read before the transaction), `capture show`, `bus adopt-stream` | pending |
+| 8 | the gate's parking schedules: checklist items 1, 2, 4, 5 and the roadmap row's parking, termination and incarnation cases | pending |
+
+`parked replay <capture>` has no mechanism in the specs yet (the parked consumer retries on its own after `parking.redelivery_delay`);
+it is left out of this phase and raised with the owner.
