@@ -52,8 +52,13 @@ func TestRestoredTrafficStream(t *testing.T) {
 		ctx := t.Context()
 		r := newReplica(t, c)
 		capture := tracepack.UUID{50}
-		for _, m := range traffic(t, capture)[:3] {
-			r.publish(t, m, nil)
+		// Claim-check records: their acknowledgements are confirmed, so the stream reflects them once a step returns.
+		cl := newClaims()
+		for _, m := range []Message{
+			claimCheck(t, cl, capture, startRecord(t, now), descriptorOf(t, "eqp")),
+			claimCheck(t, cl, capture, dataRecord(1, now+1), nil), claimCheck(t, cl, capture, dataRecord(2, now+2), nil),
+		} {
+			r.publish(t, m, cl.objs[m.Env.MsgID])
 		}
 		_, held := r.fetch(t) // deliveries the old consumer holds when the snapshot is taken
 		_, held2 := r.fetch(t)
@@ -103,15 +108,8 @@ func TestRestoredTrafficStream(t *testing.T) {
 		if got, err := c.Capture(ctx, capture); err != nil || got.State != catalog.StateOpen || got.HighestSeq != 2 {
 			t.Errorf("capture %+v, %v; want the pending start and records ingested", got, err)
 		}
-		// An inline record's acknowledgement is not confirmed, so the server applies it after the flush returned.
-		deadline := time.Now().Add(5 * time.Second)
-		for {
-			if n := r.pending(t); n == 0 {
-				break
-			} else if time.Now().After(deadline) {
-				t.Fatalf("the stream holds %d messages, want none", n)
-			}
-			time.Sleep(10 * time.Millisecond)
+		if n := r.pending(t); n != 0 {
+			t.Errorf("the stream holds %d messages, want none", n)
 		}
 	})
 }
