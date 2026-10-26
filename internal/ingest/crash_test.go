@@ -16,6 +16,7 @@ import (
 	"github.com/arloliu/go-secs/tracepack"
 	"github.com/arloliu/tracekeep/internal/catalog"
 	"github.com/arloliu/tracekeep/internal/catalog/catalogtest"
+	"github.com/arloliu/tracekeep/internal/compact"
 	"github.com/arloliu/tracekeep/internal/store"
 )
 
@@ -387,6 +388,60 @@ func TestFlushLosesToATermination(t *testing.T) {
 		}
 		if strings.Contains(logged.String(), ReasonWriteFailure) {
 			t.Error("a termination raised the write-failure alert")
+		}
+	})
+}
+
+// Adoption wins after the put (ingest.md §6.3): the reconciler, under the compactor lease, registers the orphan between the put and
+// ingest's registration, which finds the pack adopted and leaves every message unacknowledged;
+// the redelivery writes the evidence into another segment, registered and acknowledged.
+func TestAdoptionWinsAfterThePut(t *testing.T) {
+	t.Parallel()
+	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
+		ctx := t.Context()
+		p := newPipeline(t, c)
+		lease, ok, err := c.TakeLease(ctx, "compactor", "reconciler", time.Hour)
+		if err != nil || !ok {
+			t.Fatalf("TakeLease = %v, %v", ok, err)
+		}
+		r := &compact.Reconciler{Catalog: c, Store: p.st, HorizonHour: p.f.HorizonHour, Log: slog.New(slog.DiscardHandler)}
+		// The hold point: the segment is put and not yet registered; two passes adopt it.
+		p.f.hooks[hookAfterPut] = func() error {
+			p.f.hooks[hookAfterPut] = nil
+			for range 2 {
+				if _, err := r.Orphans(ctx, lease); err != nil {
+					return err
+				}
+			}
+
+			return nil
+		}
+		capture := tracepack.UUID{7}
+		hs := p.deliver(t, traffic(t, capture))
+		if _, err := p.flushOne(t); err == nil {
+			t.Fatal("Flush of an adopted pack succeeded, want its batch left unacknowledged")
+		}
+		untouched(t, hs)
+		adopted := keys(t, p.st)
+		if len(adopted) != 1 {
+			t.Fatalf("objects %v, want the adopted segment", adopted)
+		}
+		if got, err := c.KeyStanding(ctx, adopted[0]); err != nil || got != catalog.KeyRegistered {
+			t.Fatalf("standing %v, %v; want the reconciler's registration", got, err)
+		}
+
+		hs = p.deliver(t, traffic(t, capture))
+		fl, err := p.flushOne(t)
+		if err != nil || len(fl.Packs) != 1 {
+			t.Fatalf("Flush of the redelivery = %+v, %v", fl, err)
+		}
+		for i, h := range hs {
+			if got := h.done(); len(got) != 1 || !strings.HasPrefix(got[0], "ack") {
+				t.Errorf("redelivered message %d: %v, want acknowledged", i, got)
+			}
+		}
+		if ks := keys(t, p.st); len(ks) != 2 {
+			t.Errorf("objects %v, want the adopted segment and the redelivery's", ks)
 		}
 	})
 }

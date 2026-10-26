@@ -104,22 +104,7 @@ func TestHandleCreatedWithAllowDirectReadsThroughTheAPI(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		watch, err := nats.Connect(url)
-		if err != nil {
-			t.Fatal(err)
-		}
-		t.Cleanup(watch.Close)
-		api, err := watch.SubscribeSync("$JS.API.STREAM.MSG.GET." + name)
-		if err != nil {
-			t.Fatal(err)
-		}
-		direct, err := watch.SubscribeSync("$JS.API.DIRECT.GET.>")
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err := watch.Flush(); err != nil {
-			t.Fatal(err)
-		}
+		api, direct := watchGets(t, url, name)
 		if n, err := f.r.Copies(ctx, f.lease, catalog.RoleParking, stale); err != nil || n != 0 {
 			t.Fatalf("Copies = %d, %v; want the held copy left", n, err)
 		}
@@ -179,8 +164,19 @@ func TestCopiesFromAFollower(t *testing.T) {
 		if _, err := c.TerminateParked(ctx, capture, nil, "op", "p1"); err != nil {
 			t.Fatal(err)
 		}
+		api, direct := watchGets(t, follower, cfg.Name)
 		if n, err := f.r.Copies(ctx, f.lease, catalog.RoleParking, fs); err != nil || n != 1 {
 			t.Fatalf("Copies through a follower = %d, %v; want the acknowledged copy only", n, err)
+		}
+		// Replication lag itself is not induced, which only a timed schedule could do:
+		// the protection is that every read is the leader's, asserted on the request subject.
+		for range 2 {
+			if _, err := api.NextMsg(5 * time.Second); err != nil {
+				t.Errorf("a read missing on the API's subject: %v", err)
+			}
+		}
+		if n, _, _ := direct.Pending(); n != 0 {
+			t.Errorf("%d direct gets", n)
 		}
 		if a, h := copyState(t, c, acked), copyState(t, c, held); a != "acked" || h != "waiting" {
 			t.Errorf("copies %s and %s, want acked and waiting", a, h)
@@ -262,4 +258,25 @@ func setDirect(t *testing.T, js jetstream.JetStream, name string, on bool) {
 	if _, err := js.UpdateStream(t.Context(), cfg); err != nil {
 		t.Fatal(err)
 	}
+}
+
+// watchGets subscribes, on its own connection to url, to the stream name's API gets and to every direct get.
+func watchGets(t *testing.T, url, name string) (api, direct *nats.Subscription) {
+	t.Helper()
+	watch, err := nats.Connect(url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(watch.Close)
+	if api, err = watch.SubscribeSync("$JS.API.STREAM.MSG.GET." + name); err != nil {
+		t.Fatal(err)
+	}
+	if direct, err = watch.SubscribeSync("$JS.API.DIRECT.GET.>"); err != nil {
+		t.Fatal(err)
+	}
+	if err := watch.Flush(); err != nil {
+		t.Fatal(err)
+	}
+
+	return api, direct
 }
