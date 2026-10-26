@@ -305,6 +305,24 @@ func TestHeartbeatDuringAFlush(t *testing.T) {
 	})
 }
 
+// The batches a flush takes are the heartbeat's in the same step the batcher lets them go: no tick finds them in neither place.
+func TestHeartbeatHoldsTakenBatches(t *testing.T) {
+	t.Parallel()
+	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
+		p := newPipeline(t, c)
+		g := p.ingester(slog.New(slog.DiscardHandler))
+		h := p.feed(t, inline(t, tracepack.UUID{8}, startRecord(t, now), descriptorOf(t, "eqp")))
+		taken := g.take(p.b.All)
+		g.beat() // a tick between the take and the flush
+		if got := h.done(); !slices.Equal(got, []string{"in-progress"}) {
+			t.Errorf("taken message: %v, want kept in progress", got)
+		}
+		if err := g.flush(t.Context(), taken); err != nil {
+			t.Fatal(err)
+		}
+	})
+}
+
 // Records of two hours are two batches, and a batch of an earlier hour is due once a later hour's record arrives.
 func TestBatcherHours(t *testing.T) {
 	t.Parallel()

@@ -1,6 +1,7 @@
 package bus_test
 
 import (
+	"context"
 	"errors"
 	"testing"
 	"time"
@@ -159,6 +160,50 @@ func TestConcurrentObservationsAreNoRewind(t *testing.T) {
 		close(resume)
 		if err := <-done; err != nil {
 			t.Errorf("the first replica's Incarnate = %v, want no rewind", err)
+		}
+	})
+}
+
+// scripted answers Info with each of its answers in turn, the last one ever after.
+type scripted struct {
+	jetstream.Stream
+	answers []*jetstream.StreamInfo
+}
+
+func (s *scripted) Info(context.Context, ...jetstream.StreamInfoOpt) (*jetstream.StreamInfo, error) {
+	a := s.answers[0]
+	if len(s.answers) > 1 {
+		s.answers = s.answers[1:]
+	}
+
+	return a, nil
+}
+
+// A restore between the two reads of one check, which kept the creation time, is a rewind:
+// the second read is below the first, though above every sequence recorded before.
+func TestRewindBetweenTheReads(t *testing.T) {
+	t.Parallel()
+	catalogtest.Engines(t, func(t *testing.T, cat *catalog.Catalog) {
+		ctx := t.Context()
+		s, err := bus.Ensure(ctx, jetStream(t), cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		info, err := s.Info(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		at := func(seq uint64) *jetstream.StreamInfo {
+			i := *info
+			i.State.LastSeq = seq
+			return &i
+		}
+		if _, err := bus.Incarnate(ctx, cat, &scripted{Stream: s, answers: []*jetstream.StreamInfo{at(10)}}); err != nil {
+			t.Fatal(err)
+		}
+		rewound := &scripted{Stream: s, answers: []*jetstream.StreamInfo{at(12), at(11)}}
+		if _, err := bus.Incarnate(ctx, cat, rewound); !errors.Is(err, catalog.ErrIncarnationChanged) {
+			t.Errorf("Incarnate across a rewind = %v, want ErrIncarnationChanged", err)
 		}
 	})
 }

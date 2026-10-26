@@ -121,10 +121,17 @@ func (g *Ingester) Run(ctx context.Context) error {
 		return errors.New("ingest: no heartbeat")
 	}
 	beat, stop := context.WithCancel(context.WithoutCancel(ctx))
-	defer stop()
 	ticker := time.NewTicker(g.Heartbeat)
-	defer ticker.Stop()
-	go g.heartbeats(beat, ticker.C)
+	beating := make(chan struct{})
+	go func() {
+		defer close(beating)
+		g.heartbeats(beat, ticker.C)
+	}()
+	defer func() { // no progress is sent once Run returned
+		stop()
+		ticker.Stop()
+		<-beating
+	}()
 
 	var backoff time.Duration
 	for ctx.Err() == nil {
@@ -146,11 +153,7 @@ func (g *Ingester) Run(ctx context.Context) error {
 		}
 	}
 
-	g.mu.Lock()
-	all := g.Batcher.All()
-	g.mu.Unlock()
-
-	return g.flush(context.WithoutCancel(ctx), all)
+	return g.flush(context.WithoutCancel(ctx), g.take(g.Batcher.All))
 }
 
 // Step renews the membership, fetches one batch of messages within the lease, disposes of each,
@@ -182,14 +185,36 @@ func (g *Ingester) Step(ctx context.Context) error {
 			fetchErr = fmt.Errorf("ingest: fetch ended: %w", err)
 		}
 	}
-	g.mu.Lock()
-	due := g.Batcher.Due(g.Now())
-	g.mu.Unlock()
+	now := g.Now()
+	due := g.take(func() []*Batch { return g.Batcher.Due(now) })
 	if err := g.flush(ctx, due); err != nil {
 		g.Log.Warn("ingest: flush failed", "error", err)
 	}
 
 	return fetchErr
+}
+
+// take removes batches from the batcher with remove and hands their messages to the heartbeat in one step,
+// so no tick finds them in neither place.
+func (g *Ingester) take(remove func() []*Batch) []*Batch {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	batches := remove()
+	g.flushing = messages(batches)
+
+	return batches
+}
+
+// messages are the messages of batches' entries.
+func messages(batches []*Batch) []Msg {
+	var msgs []Msg
+	for _, b := range batches {
+		for _, e := range b.Entries {
+			msgs = append(msgs, e.Msg)
+		}
+	}
+
+	return msgs
 }
 
 // heartbeats keeps the held messages in progress at every tick until ctx ends.
@@ -302,7 +327,8 @@ func (g *Ingester) act(ctx context.Context, e Entry, dec Decision, delivered uin
 	}
 }
 
-// flush flushes each batch, the heartbeat keeping those it has not finished in progress;
+// flush flushes each batch, the heartbeat keeping those it has not finished in progress
+// (batches taken from the batcher by take, whose messages the heartbeat already holds);
 // a batch that fails is nak'd, but for the messages it acknowledged, and written again at its redelivery.
 func (g *Ingester) flush(ctx context.Context, batches []*Batch) error {
 	defer func() {
@@ -312,12 +338,7 @@ func (g *Ingester) flush(ctx context.Context, batches []*Batch) error {
 	}()
 	var errs []error
 	for i, b := range batches {
-		var msgs []Msg
-		for _, rest := range batches[i:] {
-			for _, e := range rest.Entries {
-				msgs = append(msgs, e.Msg)
-			}
-		}
+		msgs := messages(batches[i:])
 		g.mu.Lock()
 		g.flushing = msgs
 		g.mu.Unlock()

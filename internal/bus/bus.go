@@ -68,6 +68,7 @@ func Ensure(ctx context.Context, js jetstream.JetStream, cfg Config) (jetstream.
 //
 // The last sequence compared is read after the highest observed one, so another replica recording a later one meanwhile
 // is never taken for a rewind: a stream's last sequence only grows, unless a restore rewinds it.
+// It is compared with the first read's too, so a rewind between the two reads is caught.
 func Incarnate(ctx context.Context, cat *catalog.Catalog, s jetstream.Stream) (catalog.Incarnation, error) {
 	info, err := s.Info(ctx)
 	if err != nil {
@@ -84,12 +85,13 @@ func Incarnate(ctx context.Context, cat *catalog.Catalog, s jetstream.Stream) (c
 	if err != nil {
 		return catalog.Incarnation{}, fmt.Errorf("bus: stream info: %w", err)
 	}
-	last := int64(fresh.State.LastSeq) //nolint:gosec // a stream sequence fits
+	last := int64(fresh.State.LastSeq)                      //nolint:gosec // a stream sequence fits
+	seen := max(inc.LastSeqSeen, int64(info.State.LastSeq)) //nolint:gosec // a stream sequence fits
 	switch {
 	case !fresh.Created.Equal(info.Created):
 		return catalog.Incarnation{}, fmt.Errorf("%w: %s was created again", catalog.ErrIncarnationChanged, info.Config.Name)
-	case last < inc.LastSeqSeen:
-		return catalog.Incarnation{}, fmt.Errorf("%w: last sequence %d below the %d observed", catalog.ErrIncarnationChanged, last, inc.LastSeqSeen)
+	case last < seen:
+		return catalog.Incarnation{}, fmt.Errorf("%w: last sequence %d below the %d observed", catalog.ErrIncarnationChanged, last, seen)
 	}
 	if err := cat.ObserveLastSeq(ctx, inc.ID, last); err != nil {
 		return catalog.Incarnation{}, err
