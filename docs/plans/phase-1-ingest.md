@@ -1,6 +1,6 @@
 # Phase 1 — ingest
 
-Status: active (2026-10-27) — phase 1.5 in progress
+Status: active (2026-10-27) — phase 1.6 in progress
 
 Milestone 1 of the [roadmap](../ROADMAP.md):
 the `ingest` role with its stores, catalog and reconciler, and `tracekeep dev` as the single-process loop.
@@ -23,8 +23,9 @@ This plan only orders the work.
 | 1.2 — catalog | `schema.hcl`, Atlas migrations per engine, `internal/catalog` on SQLite and MariaDB: the prologue, the lease, membership, `Admit`, `Reject`, `RegisterPack` and the reads ingest needs, barrier schedules on both engines (`catalog.md` §7.1–§7.4, `rollouts.md` §6.4) | done (#11) |
 | 1.3 — ingest | `internal/bus` and `internal/ingest`: the disposition classifier, claim-check fetch, batching, masking with the bound configuration, the write seam, registration, per-message acks, the activation gate (`ingest.md` §6.1–§6.3, `architecture.md` §3.1) | done (#13) |
 | 1.4 — parking | parking, resolution, incarnations, termination orders and their re-check in `Admit`, `Reject` and `RegisterPack`, the parking transactions, `bus adopt-stream` and the termination commands (`parking.md`, `operations.md` §10.4) | done (#14) |
-| 1.5 — reconciler | full verification, quarantine and adoption under the compactor lease (`storage.md` §5.4); a receipt's claim object key is the bucket-qualified `Tpk-Payload-Ref`, while the claim bucket is read by the bare message id | in-progress |
-| 1.6 — dev and gate | `tracekeep dev` and the role subcommands with their configuration (T-22), each processing configuration named for its classifier's implementation and version, the simulator in the service module, the roadmap's phase 1 gate and checklist items 1–7 | pending |
+| 1.5 — reconciler | full verification, quarantine and adoption under the compactor lease (`storage.md` §5.4); a receipt's claim object key is the bucket-qualified `Tpk-Payload-Ref`, while the claim bucket is read by the bare message id | done (#16) |
+| 1.6 — dev and roles | `tracekeep dev` and the role subcommands with their configuration (T-22), each processing configuration named for its classifier's implementation and version, the simulator in the service module, the gate's loopback capture | in-progress |
+| 1.7 — completeness and gate | catalog completeness (`catalog.md` §7.3) as a read, and the gate and checklist cases the phases before left open | pending |
 
 Only the phase under way is detailed; the others are detailed when they start.
 
@@ -125,3 +126,32 @@ Left to later phases:
 the `compact` role's wiring, its metrics (`orphans_adopted_total`, `orphans_quarantined_total`) and the `object adopt` and `object list` commands go to phase 1.6;
 a close's orphan, whose `seq_start` is the close sentinel 2^63−1, is reported and kept, and waits for the compactor that writes closes, phase 2.
 The follower schedule reads through a follower but does not induce a replica's lag; the protection it relies on is that `AllowDirect` is refused and the handle refreshed.
+
+## Phase 1.6 — dev and roles
+
+Work on the branch `feat/cmd/roles`, one commit per step, test first;
+the branch merges by pull request once the whole phase passes an external post-implementation review.
+Phase 1.7 closes phase 1: catalog completeness and the gate and checklist cases this phase leaves open,
+listed by an audit of every gate case against the tests; this phase owns the gate's loopback capture only.
+Of those, `rejected → open` with a parked copy is tested in 1.7 against a consumer whose accepted descriptors the test widens, standing in for a fixed release;
+checklist item 7's close left `abandoned` goes to phase 2 with the closes, and the lagging replica stays the follower schedule of phase 1.5.
+
+The configuration is one struct loaded with fuda v1.7.1 (T-22), its tunables and defaults in `docs/guides/configuration.md`, which `operations.md` points at.
+Two defaults the specs do not fix are this plan's, for the owner to change:
+the retention period, 30 days (`compactor.md` §8.4 sizes the claim bucket for "a month"),
+and `ack_wait`, 7 minutes, the middle of what T-25 leaves between F plus an upload and Q minus F.
+The built-in processing configuration is named `classify.Name`, the go-secs version the binary was built with;
+a role refuses to start when the build reports no version (a workspace build), and only `dev` accepts it.
+`internal/testbus` serves `dev` as well as the tests, so it gains a constructor that takes no `testing.TB`.
+The `object list --unattributed` and `--survivors` commands report data that retention writes in phase 2, and `object adopt` has no defined semantics yet:
+`object list` reports nothing until phase 2, and `object adopt` waits for its specification.
+
+| Step | Scope | State |
+|---|---|---|
+| 1 | `internal/config`: the struct, defaults (T-12, T-25 and the two above), environment overrides, secrets by `ref`, validation; `docs/guides/configuration.md` | pending |
+| 2 | the built-in processing configuration named for its classifier, and the refusal of an unversioned build outside `dev` | pending |
+| 3 | the simulator back in the service module (T-38): its `go.mod` removed, its tests run with the service's | pending |
+| 4 | the roles: `migrate` (the catalog's migrations, the bus's streams and bucket, both incarnations), `ingest` (the traffic and parked consumers sharing the executor, flusher and coordinator, `parking.enabled` read at start), `compact` (the reconciler under the lease, released on stop), `all`, and `admin` over `internal/admin`; each refuses to start against a stream that is not its incarnation or that allows direct gets | pending |
+| 5 | `parking.enabled` turned off on a running service: waiting and evicted-hour copies stay listable and terminable (the gate's case the parking phase left here) | pending |
+| 6 | `tracekeep dev`: an embedded bus, an `fs` store, SQLite, `ingest` and `compact`, and the loopback simulator, in one process | pending |
+| 7 | the gate's loopback capture: `dev` run by a test, the simulator's capture registered and read back with the tracepack reader, and once by hand with the tracepack CLI | pending |
