@@ -78,6 +78,8 @@ a returned error means nothing is visible, or the caller treats the key as unkno
   `Presigner` uses the SDK's presign client.
   Deployments run MinIO and Ceph RGW, so the conformance suite runs the `s3` backend against both, each in a container, in CI (T-34).
 - `fs` (standalone pilots, tests): write to `<root>/.partial/`, fsync the file, rename into place, fsync the directory.
+  The root is provisioned, never created by the store, since a put's durability ends at it;
+  stores sharing a root each write in a directory of their own under `.partial/`, and a store opening removes only those of stores that are gone.
 - `mem` (tests).
 
 Keys of packs are exactly [STO §3];

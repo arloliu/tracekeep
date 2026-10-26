@@ -23,9 +23,13 @@ func NewMem() *Mem {
 }
 
 // Put implements ObjectStore.
-func (m *Mem) Put(_ context.Context, key string, r io.ReadSeeker, size int64) error {
+func (m *Mem) Put(ctx context.Context, key string, r io.ReadSeeker, size int64) error {
 	var buf bytes.Buffer
-	if _, err := io.CopyN(&buf, r, size); err != nil {
+	_, err := io.CopyN(&buf, r, size)
+	if err == nil {
+		err = ctx.Err()
+	}
+	if err != nil {
 		return fmt.Errorf("store: put %s: %w", key, err)
 	}
 	m.mu.Lock()
@@ -36,7 +40,10 @@ func (m *Mem) Put(_ context.Context, key string, r io.ReadSeeker, size int64) er
 }
 
 // Open implements ObjectStore.
-func (m *Mem) Open(_ context.Context, key string) (Object, error) {
+func (m *Mem) Open(ctx context.Context, key string) (Object, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	m.mu.RLock()
 	b, ok := m.objs[key]
 	m.mu.RUnlock()
@@ -48,7 +55,10 @@ func (m *Mem) Open(_ context.Context, key string) (Object, error) {
 }
 
 // Stat implements ObjectStore.
-func (m *Mem) Stat(_ context.Context, key string) (ObjectInfo, error) {
+func (m *Mem) Stat(ctx context.Context, key string) (ObjectInfo, error) {
+	if err := ctx.Err(); err != nil {
+		return ObjectInfo{}, err
+	}
 	m.mu.RLock()
 	b, ok := m.objs[key]
 	m.mu.RUnlock()
@@ -60,7 +70,10 @@ func (m *Mem) Stat(_ context.Context, key string) (ObjectInfo, error) {
 }
 
 // List implements ObjectStore.
-func (m *Mem) List(_ context.Context, prefix string, fn func(ObjectInfo) error) error {
+func (m *Mem) List(ctx context.Context, prefix string, fn func(ObjectInfo) error) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	m.mu.RLock()
 	var infos []ObjectInfo
 	for k, b := range m.objs {
@@ -70,6 +83,9 @@ func (m *Mem) List(_ context.Context, prefix string, fn func(ObjectInfo) error) 
 	}
 	m.mu.RUnlock()
 	for _, info := range infos {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		if err := fn(info); err != nil {
 			return err
 		}
@@ -79,7 +95,10 @@ func (m *Mem) List(_ context.Context, prefix string, fn func(ObjectInfo) error) 
 }
 
 // Delete implements ObjectStore.
-func (m *Mem) Delete(_ context.Context, key string) error {
+func (m *Mem) Delete(ctx context.Context, key string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	m.mu.Lock()
 	delete(m.objs, key)
 	m.mu.Unlock()

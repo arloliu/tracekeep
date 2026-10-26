@@ -14,6 +14,7 @@ import (
 var ErrNotFound = errors.New("store: object not found")
 
 // ObjectStore keeps whole objects under keys.
+// Every method returns ctx's error once ctx is done, and a Put stopped that way leaves nothing visible.
 // Pack keys are exactly the tracepack storage profile's, and no key is overwritten (storage.md §5.2).
 type ObjectStore interface {
 	// Put stores size bytes of r under key.
@@ -22,6 +23,7 @@ type ObjectStore interface {
 	// r is seekable, so a backend can sign or resend the body (T-34).
 	Put(ctx context.Context, key string, r io.ReadSeeker, size int64) error
 	// Open opens the object under key for reading; an absent key returns an error wrapping ErrNotFound.
+	// The object's reads may use ctx, so it must last as long as they do.
 	Open(ctx context.Context, key string) (Object, error)
 	// Stat describes the object under key; an absent key returns an error wrapping ErrNotFound.
 	Stat(ctx context.Context, key string) (ObjectInfo, error)
@@ -43,7 +45,9 @@ type Object interface {
 
 // ObjectInfo describes a stored object.
 type ObjectInfo struct {
-	Key  string
+	// Key is the object's key.
+	Key string
+	// Size is the object's length in bytes.
 	Size int64
 }
 

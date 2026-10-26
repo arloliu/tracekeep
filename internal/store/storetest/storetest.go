@@ -5,7 +5,9 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
+	"io/fs"
 	"slices"
 	"sync"
 	"testing"
@@ -30,7 +32,10 @@ func Run(t *testing.T, newStore func(t *testing.T) store.ObjectStore) {
 		{"Empty", testEmpty},
 		{"NotFound", testNotFound},
 		{"List", testList},
+		{"HiddenWhileWriting", testHiddenWhileWriting},
 		{"FailedBody", testFailedBody},
+		{"FailedUpload", testFailedUpload},
+		{"Canceled", testCanceled},
 		{"ShortBody", testShortBody},
 		{"Delete", testDelete},
 	}
@@ -144,19 +149,76 @@ func testList(t *testing.T, s store.ObjectStore) {
 			t.Errorf("List(%q) = %v, %v; want %v", c.prefix, got, err, want)
 		}
 	}
-	calls := 0
-	if err := s.List(ctx, "staging/", func(store.ObjectInfo) error { calls++; return errBroken }); !errors.Is(err, errBroken) || calls != 1 {
-		t.Errorf("List with a failing fn = %v after %d calls, want its error after one", err, calls)
+	// fn's error comes back as it is, whatever it wraps.
+	for _, fnErr := range []error{errBroken, fmt.Errorf("gone: %w", fs.ErrNotExist), fs.SkipDir, fs.SkipAll} {
+		calls := 0
+		err := s.List(ctx, "staging/", func(store.ObjectInfo) error { calls++; return fnErr })
+		if !errors.Is(err, fnErr) || calls != 1 {
+			t.Errorf("List with fn failing with %v = %v after %d calls, want that error after one", fnErr, err, calls)
+		}
 	}
 }
 
-// A body that fails partway leaves nothing visible.
-func testFailedBody(t *testing.T, s store.ObjectStore) {
+// While a put is in progress its key is invisible, and once it returns the whole object is there.
+func testHiddenWhileWriting(t *testing.T, s store.ObjectStore) {
 	data := payload(objectSize)
-	if err := s.Put(t.Context(), "staging/broken", &brokenReader{data: data, failAt: objectSize / 2}, objectSize); err == nil {
+	b := &body{data: data, at: objectSize / 2, observe: func() { absent(t, s, "staging/writing") }}
+	if err := s.Put(t.Context(), "staging/writing", b, objectSize); err != nil {
+		t.Fatal(err)
+	}
+	if b.seen == 0 {
+		t.Fatal("the put never read past the body's middle")
+	}
+	readAt(t, open(t, s, "staging/writing"), data, 0, objectSize)
+}
+
+// A body that fails on its first pass leaves nothing visible.
+func testFailedBody(t *testing.T, s store.ObjectStore) {
+	b := &body{data: payload(objectSize), at: objectSize / 2, failFrom: 1, observe: func() { absent(t, s, "staging/broken") }}
+	if err := s.Put(t.Context(), "staging/broken", b, objectSize); err == nil {
 		t.Fatal("Put with a failing body succeeded")
 	}
 	absent(t, s, "staging/broken")
+}
+
+// A body that fails from its second pass on fails a backend that reads it twice,
+// as an S3 client hashing the body before sending it does, while the store holds part of the upload;
+// nothing is visible then or after. A backend that reads the body once stores it whole.
+func testFailedUpload(t *testing.T, s store.ObjectStore) {
+	data := payload(objectSize)
+	b := &body{data: data, at: objectSize / 2, failFrom: 2, observe: func() { absent(t, s, "staging/upload") }}
+	err := s.Put(t.Context(), "staging/upload", b, objectSize)
+	t.Logf("the body was read in %d passes; Put = %v", b.pass, err)
+	switch {
+	case b.pass < 2 && err == nil:
+		readAt(t, open(t, s, "staging/upload"), data, 0, objectSize)
+	case b.pass < 2:
+		t.Fatalf("Put of a body read once = %v", err)
+	case err == nil:
+		t.Fatal("Put with a body failing mid-upload succeeded")
+	default:
+		absent(t, s, "staging/upload")
+	}
+}
+
+// Once its context is done, a put leaves nothing visible and every method reports the context's error.
+func testCanceled(t *testing.T, s store.ObjectStore) {
+	put(t, s, "staging/kept", payload(10))
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	if err := s.Put(ctx, "staging/canceled", bytes.NewReader(payload(10)), 10); err == nil {
+		t.Error("Put with a canceled context succeeded")
+	}
+	absent(t, s, "staging/canceled")
+	if _, err := s.Open(ctx, "staging/kept"); !errors.Is(err, context.Canceled) {
+		t.Errorf("Open = %v, want context.Canceled", err)
+	}
+	if _, err := s.Stat(ctx, "staging/kept"); !errors.Is(err, context.Canceled) {
+		t.Errorf("Stat = %v, want context.Canceled", err)
+	}
+	if err := s.List(ctx, "", func(store.ObjectInfo) error { return nil }); !errors.Is(err, context.Canceled) {
+		t.Errorf("List = %v, want context.Canceled", err)
+	}
 }
 
 // A body shorter than its declared size leaves nothing visible.
@@ -197,7 +259,8 @@ func open(t *testing.T, s store.ObjectStore, key string) store.Object {
 func readAt(t *testing.T, obj store.Object, data []byte, off, n int64) {
 	t.Helper()
 	p := make([]byte, n)
-	if got, err := obj.ReadAt(p, off); got != int(n) || (err != nil && !errors.Is(err, io.EOF)) {
+	// io.EOF may come with a full read only at the end of the object.
+	if got, err := obj.ReadAt(p, off); got != int(n) || (err != nil && (!errors.Is(err, io.EOF) || off+n != int64(len(data)))) {
 		t.Errorf("ReadAt(%d bytes at %d) = %d, %v", n, off, got, err)
 
 		return
@@ -217,11 +280,16 @@ func absent(t *testing.T, s store.ObjectStore, key string) {
 	if _, err := s.Open(ctx, key); !errors.Is(err, store.ErrNotFound) {
 		t.Errorf("Open %s = %v, want ErrNotFound", key, err)
 	}
-	_ = s.List(ctx, "", func(info store.ObjectInfo) error {
-		t.Errorf("List shows %+v", info)
+	err := s.List(ctx, "", func(info store.ObjectInfo) error {
+		if info.Key == key {
+			t.Errorf("List shows %+v", info)
+		}
 
 		return nil
 	})
+	if err != nil {
+		t.Errorf("List: %v", err)
+	}
 }
 
 func payload(n int) []byte {
@@ -234,34 +302,59 @@ func payload(n int) []byte {
 	return b
 }
 
-// brokenReader is a seekable body whose reads fail once they reach failAt.
-type brokenReader struct {
-	data   []byte
-	failAt int64
-	off    int64
+// body is a seekable body that pauses each read pass at the offset at:
+// it runs observe there once per pass, then fails from pass failFrom on (0: never).
+// A pass is a run of reads from offset 0; a backend that hashes the body before sending it reads it twice.
+type body struct {
+	data     []byte
+	at       int64
+	failFrom int
+	observe  func()
+
+	off  int64
+	pass int
+	seen int
 }
 
-func (r *brokenReader) Read(p []byte) (int, error) {
-	if r.off >= r.failAt {
-		return 0, errBroken
+func (b *body) Read(p []byte) (int, error) {
+	if b.off == 0 {
+		b.pass++
 	}
-	n := copy(p, r.data[r.off:r.failAt])
-	r.off += int64(n)
+	if b.off == b.at {
+		if b.seen < b.pass {
+			b.seen = b.pass
+			if b.observe != nil {
+				b.observe()
+			}
+		}
+		if b.failFrom > 0 && b.pass >= b.failFrom {
+			return 0, errBroken
+		}
+	}
+	end := int64(len(b.data))
+	if b.off < b.at {
+		end = b.at
+	}
+	if b.off >= end {
+		return 0, io.EOF
+	}
+	n := copy(p, b.data[b.off:end])
+	b.off += int64(n)
 
 	return n, nil
 }
 
-func (r *brokenReader) Seek(offset int64, whence int) (int64, error) {
+func (b *body) Seek(offset int64, whence int) (int64, error) {
 	switch whence {
 	case io.SeekStart:
 	case io.SeekCurrent:
-		offset += r.off
+		offset += b.off
 	case io.SeekEnd:
-		offset += int64(len(r.data))
+		offset += int64(len(b.data))
 	default:
 		return 0, errBroken
 	}
-	r.off = offset
+	b.off = offset
 
 	return offset, nil
 }
