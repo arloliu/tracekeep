@@ -1,6 +1,7 @@
 package busconfig_test
 
 import (
+	"reflect"
 	"slices"
 	"testing"
 
@@ -36,5 +37,62 @@ func TestObjectStoreConfig(t *testing.T) {
 	}
 	if got := busconfig.ClaimStreamName("claims"); got != "OBJ_claims" {
 		t.Fatalf("claim stream %q, want OBJ_claims", got)
+	}
+}
+
+func TestParkedStreamConfig(t *testing.T) {
+	t.Parallel()
+
+	c := busconfig.ParkedStreamConfig(busconfig.DefaultParkedStream, busconfig.DefaultParkPrefix, 3)
+	traffic := busconfig.StreamConfig(busconfig.DefaultParkedStream, busconfig.DefaultParkPrefix)
+	traffic.Replicas = 3
+	if !reflect.DeepEqual(c, traffic) {
+		t.Fatalf("got %+v, want the traffic stream's settings on the park prefix with 3 replicas", c)
+	}
+}
+
+func TestValidatePrefixes(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		traffic, park string
+		ok            bool
+	}{
+		{"tpk", busconfig.DefaultParkPrefix, true},
+		{"tpk.site", "tkpark.site", true},
+		{"tk.traffic", "tk.park", false}, // one first token: the subjects separate only below it
+		{"tpk", "tpk", false},
+		{"*", "tkpark", false},
+		{"", "tkpark", false},
+	} {
+		if err := busconfig.ValidatePrefixes(tc.traffic, tc.park); (err == nil) != tc.ok {
+			t.Errorf("ValidatePrefixes(%q, %q) = %v, want ok %v", tc.traffic, tc.park, err, tc.ok)
+		}
+	}
+}
+
+func TestSubjectsOverlap(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		a, b string
+		want bool
+	}{
+		{"tpk.>", "tkpark.>", false},
+		{"tpk.>", "tpk.t.c", true},
+		{">", "tkpark.>", true},
+		{"*.>", "tkpark.>", true},
+		{"tpk.*", "tpk.a.b", false},
+		{"tpk.*", "tpk.>", true},
+		{"tpk", "tpk.>", false}, // ">" needs one token more
+		{"tpk.a", "tpk.b", false},
+		{"tpk.*.c", "tpk.b.*", true},
+	} {
+		if got := busconfig.SubjectsOverlap([]string{tc.a}, []string{tc.b}); got != tc.want {
+			t.Errorf("SubjectsOverlap(%q, %q) = %v, want %v", tc.a, tc.b, got, tc.want)
+		}
+		if got := busconfig.SubjectsOverlap([]string{tc.b}, []string{tc.a}); got != tc.want {
+			t.Errorf("SubjectsOverlap(%q, %q) = %v, want %v", tc.b, tc.a, got, tc.want)
+		}
 	}
 }

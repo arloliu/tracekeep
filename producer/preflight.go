@@ -15,7 +15,7 @@ import (
 
 // Problem is one thing Preflight found wrong with the bus or the capture.
 type Problem struct {
-	// Check names what was checked: "stream", "bucket", "max_payload", "tls", "reconnect_buffer" or "start".
+	// Check names what was checked: "stream", "bucket", "parking", "max_payload", "tls", "reconnect_buffer" or "start".
 	Check string
 	// Detail says what is wrong, for a person to read.
 	Detail string
@@ -24,6 +24,7 @@ type Problem struct {
 // Preflight checks the bus the producer publishes on and its current capture's start,
 // and returns a readable list of what is wrong (docs/specs/tracekeep/producer-sdk.md §4.7):
 // the traffic stream and the claim bucket's stream against busconfig's settings,
+// the parking stream against the traffic stream (docs/specs/tracekeep/parking.md *Parking*),
 // max_payload against tracepack's minimum, the connection's TLS and reconnect buffer,
 // and the current capture's start message within the header-block and max_payload limits.
 // Begin and Rotate already refuse a descriptor without tool_id or recorder_instance_name.
@@ -46,7 +47,11 @@ func (p *Producer) Preflight(ctx context.Context) ([]Problem, error) {
 	}
 
 	want := busconfig.StreamConfig(p.stream, p.prefix)
-	traffic, err := streamProblems(ctx, bus, p.stream, func(s *StreamInfo) []string { return trafficProblems(s, &want) })
+	var trafficInfo *StreamInfo
+	traffic, err := streamProblems(ctx, bus, p.stream, func(s *StreamInfo) []string {
+		trafficInfo = s
+		return trafficProblems(s, &want)
+	})
 	if err != nil {
 		return problems, err
 	}
@@ -56,6 +61,11 @@ func (p *Producer) Preflight(ctx context.Context) ([]Problem, error) {
 		return problems, err
 	}
 	add("bucket", claim)
+	parked, err := streamProblems(ctx, bus, p.parked, func(s *StreamInfo) []string { return parkedProblems(s, trafficInfo) })
+	if err != nil {
+		return problems, err
+	}
+	add("parking", parked)
 
 	maxPayload := bus.MaxPayload()
 	if maxPayload < tracepack.BusMinMaxPayload {
@@ -128,7 +138,36 @@ func claimProblems(s *StreamInfo) []string {
 	return append(out, sharedProblems(s)...)
 }
 
-// sharedProblems checks what the traffic stream and the claim bucket share:
+// parkedProblems checks the parking stream (docs/specs/tracekeep/parking.md *Parking*):
+// work-queue retention and file storage, its own sequences, no limit and no direct reads, as the traffic stream;
+// and, against the traffic stream when it exists, no subject either stream's filter shares with the other's,
+// since a different stream name alone separates nothing, and no fewer replicas.
+func parkedProblems(s, traffic *StreamInfo) []string {
+	var out []string
+	for _, f := range []struct{ name, got, want string }{
+		{"retention", s.Retention, jetstream.WorkQueuePolicy.String()},
+		{"storage", s.Storage, jetstream.FileStorage.String()},
+	} {
+		if f.got != f.want {
+			out = append(out, fmt.Sprintf("stream %s has %s %s, want %s", s.Name, f.name, f.got, f.want))
+		}
+	}
+	if s.Derived {
+		out = append(out, fmt.Sprintf("stream %s has a mirror or sources, whose sequences are not its own", s.Name))
+	}
+	if traffic != nil {
+		if busconfig.SubjectsOverlap(s.Subjects, traffic.Subjects) {
+			out = append(out, fmt.Sprintf("stream %s takes subjects %q, which overlap the traffic stream's %q", s.Name, s.Subjects, traffic.Subjects))
+		}
+		if s.Replicas < traffic.Replicas {
+			out = append(out, fmt.Sprintf("stream %s has %d replicas, fewer than the traffic stream's %d", s.Name, s.Replicas, traffic.Replicas))
+		}
+	}
+
+	return append(out, sharedProblems(s)...)
+}
+
+// sharedProblems checks what the traffic stream, the parking stream and the claim bucket share:
 // no age, size, count or per-subject limit, since an object's chunks share one subject and a limit would evict them,
 // and AllowDirect off, so every read is the stream leader's.
 func sharedProblems(s *StreamInfo) []string {

@@ -30,6 +30,7 @@ func claimStream() jetstream.StreamConfig {
 func configured(bus *producertest.Bus) {
 	bus.SetStream(busconfig.StreamConfig(busconfig.DefaultTrafficStream, "tpk"))
 	bus.SetStream(claimStream())
+	bus.SetStream(busconfig.ParkedStreamConfig(busconfig.DefaultParkedStream, busconfig.DefaultParkPrefix, 1))
 }
 
 func checks(problems []producer.Problem) []string {
@@ -59,6 +60,13 @@ func TestPreflightNamesEachMisconfiguration(t *testing.T) {
 	traffic := func(f func(c *jetstream.StreamConfig)) func(*producertest.Bus) {
 		return func(b *producertest.Bus) {
 			c := busconfig.StreamConfig(busconfig.DefaultTrafficStream, "tpk")
+			f(&c)
+			b.SetStream(c)
+		}
+	}
+	parked := func(f func(c *jetstream.StreamConfig)) func(*producertest.Bus) {
+		return func(b *producertest.Bus) {
+			c := busconfig.ParkedStreamConfig(busconfig.DefaultParkedStream, busconfig.DefaultParkPrefix, 1)
 			f(&c)
 			b.SetStream(c)
 		}
@@ -94,6 +102,15 @@ func TestPreflightNamesEachMisconfiguration(t *testing.T) {
 		{"claim memory storage", claim(func(c *jetstream.StreamConfig) { c.Storage = jetstream.MemoryStorage }), "bucket"},
 		{"claim interest retention", claim(func(c *jetstream.StreamConfig) { c.Retention = jetstream.InterestPolicy }), "bucket"},
 		{"claim per-subject limit", claim(func(c *jetstream.StreamConfig) { c.MaxMsgsPerSubject = 1 }), "bucket"},
+		{"parking stream missing", func(b *producertest.Bus) { b.DeleteStream(busconfig.DefaultParkedStream) }, "parking"},
+		{"parking limits retention", parked(func(c *jetstream.StreamConfig) { c.Retention = jetstream.LimitsPolicy }), "parking"},
+		{"parking memory storage", parked(func(c *jetstream.StreamConfig) { c.Storage = jetstream.MemoryStorage }), "parking"},
+		{"parking age limit", parked(func(c *jetstream.StreamConfig) { c.MaxAge = time.Hour }), "parking"},
+		{"parking count limit", parked(func(c *jetstream.StreamConfig) { c.MaxMsgs = 1000 }), "parking"},
+		{"parking direct reads", parked(func(c *jetstream.StreamConfig) { c.AllowDirect = true }), "parking"},
+		{"parking mirror", parked(func(c *jetstream.StreamConfig) { c.Mirror = &jetstream.StreamSource{Name: "UP"} }), "parking"},
+		{"parking takes traffic subjects", parked(func(c *jetstream.StreamConfig) { c.Subjects = []string{"*.>"} }), "parking"},
+		{"parking fewer replicas", traffic(func(c *jetstream.StreamConfig) { c.Replicas = 3 }), "parking"},
 		{"small max_payload", func(b *producertest.Bus) { b.SetMaxPayload(4000) }, "max_payload"},
 		{"connection", func(b *producertest.Bus) {
 			b.SetConnProblems([]producer.Problem{{Check: "tls", Detail: "not in use"}})

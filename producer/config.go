@@ -52,6 +52,9 @@ type Config struct {
 	SubjectPrefix string
 	// Stream is the traffic stream every publish expects; empty takes busconfig.DefaultTrafficStream.
 	Stream string
+	// ParkedStream is the parking stream of the same cluster, which Preflight checks against the traffic stream;
+	// empty takes busconfig.DefaultParkedStream.
+	ParkedStream string
 	// ClaimBucket is the object store large records are put into.
 	ClaimBucket string
 	// Tunables bounds the lanes and the publisher; every zero field takes its default.
