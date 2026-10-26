@@ -3,6 +3,7 @@ package bus_test
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -128,9 +129,27 @@ func TestRewoundStreamIsRefused(t *testing.T) {
 	})
 }
 
+// paused holds its first Info's caller after the read until resumed.
+type paused struct {
+	jetstream.Stream
+	once         sync.Once
+	read, resume chan struct{}
+}
+
+func (p *paused) Info(ctx context.Context, opts ...jetstream.StreamInfoOpt) (*jetstream.StreamInfo, error) {
+	info, err := p.Stream.Info(ctx, opts...)
+	p.once.Do(func() {
+		close(p.read)
+		<-p.resume
+	})
+
+	return info, err
+}
+
 // Two replicas renewing at once: one reads the stream, the other observes a later sequence and records it,
-// then the first compares; a stream that only grew is no rewind. Not parallel: the seam is the package's.
+// then the first compares; a stream that only grew is no rewind.
 func TestConcurrentObservationsAreNoRewind(t *testing.T) {
+	t.Parallel()
 	catalogtest.Engines(t, func(t *testing.T, cat *catalog.Catalog) {
 		ctx := t.Context()
 		js := jetStream(t)
@@ -141,23 +160,17 @@ func TestConcurrentObservationsAreNoRewind(t *testing.T) {
 		if _, err := bus.Incarnate(ctx, cat, s); err != nil {
 			t.Fatal(err)
 		}
-		read, resume := make(chan struct{}), make(chan struct{})
-		bus.SetHookAfterInfo(func() {
-			bus.SetHookAfterInfo(nil)
-			close(read)
-			<-resume
-		})
-		t.Cleanup(func() { bus.SetHookAfterInfo(nil) })
+		first := &paused{Stream: s, read: make(chan struct{}), resume: make(chan struct{})}
 		done := make(chan error, 1)
-		go func() { _, err := bus.Incarnate(ctx, cat, s); done <- err }()
-		<-read // the first replica read the stream's last sequence
+		go func() { _, err := bus.Incarnate(ctx, cat, first); done <- err }()
+		<-first.read // the first replica read the stream's last sequence
 		if _, err := js.Publish(ctx, cfg.SubjectPrefix+".T1.x", nil); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := bus.Incarnate(ctx, cat, s); err != nil { // the second records the later sequence
 			t.Fatal(err)
 		}
-		close(resume)
+		close(first.resume)
 		if err := <-done; err != nil {
 			t.Errorf("the first replica's Incarnate = %v, want no rewind", err)
 		}
@@ -204,6 +217,10 @@ func TestRewindBetweenTheReads(t *testing.T) {
 		rewound := &scripted{Stream: s, answers: []*jetstream.StreamInfo{at(12), at(11)}}
 		if _, err := bus.Incarnate(ctx, cat, rewound); !errors.Is(err, catalog.ErrIncarnationChanged) {
 			t.Errorf("Incarnate across a rewind = %v, want ErrIncarnationChanged", err)
+		}
+		// The refused check recorded what it read first: the stream stays refused.
+		if _, err := bus.Incarnate(ctx, cat, &scripted{Stream: s, answers: []*jetstream.StreamInfo{at(11)}}); !errors.Is(err, catalog.ErrIncarnationChanged) {
+			t.Errorf("Incarnate after the refusal = %v, want ErrIncarnationChanged", err)
 		}
 	})
 }

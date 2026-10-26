@@ -68,14 +68,12 @@ func Ensure(ctx context.Context, js jetstream.JetStream, cfg Config) (jetstream.
 //
 // The last sequence compared is read after the highest observed one, so another replica recording a later one meanwhile
 // is never taken for a rewind: a stream's last sequence only grows, unless a restore rewinds it.
-// It is compared with the first read's too, so a rewind between the two reads is caught.
+// It is compared with the first read's too, so a rewind between the two reads is caught;
+// the first read is recorded before the comparison, so a check after a refusal still finds it.
 func Incarnate(ctx context.Context, cat *catalog.Catalog, s jetstream.Stream) (catalog.Incarnation, error) {
 	info, err := s.Info(ctx)
 	if err != nil {
 		return catalog.Incarnation{}, fmt.Errorf("bus: stream info: %w", err)
-	}
-	if hookAfterInfo != nil {
-		hookAfterInfo()
 	}
 	inc, err := cat.Incarnate(ctx, catalog.RoleTraffic, info.Config.Name, info.Created.UnixNano())
 	if err != nil {
@@ -85,8 +83,11 @@ func Incarnate(ctx context.Context, cat *catalog.Catalog, s jetstream.Stream) (c
 	if err != nil {
 		return catalog.Incarnation{}, fmt.Errorf("bus: stream info: %w", err)
 	}
-	last := int64(fresh.State.LastSeq)                      //nolint:gosec // a stream sequence fits
-	seen := max(inc.LastSeqSeen, int64(info.State.LastSeq)) //nolint:gosec // a stream sequence fits
+	first, last := int64(info.State.LastSeq), int64(fresh.State.LastSeq) //nolint:gosec // a stream sequence fits
+	if err := cat.ObserveLastSeq(ctx, inc.ID, first); err != nil {
+		return catalog.Incarnation{}, err
+	}
+	seen := max(inc.LastSeqSeen, first)
 	switch {
 	case !fresh.Created.Equal(info.Created):
 		return catalog.Incarnation{}, fmt.Errorf("%w: %s was created again", catalog.ErrIncarnationChanged, info.Config.Name)
@@ -99,9 +100,6 @@ func Incarnate(ctx context.Context, cat *catalog.Catalog, s jetstream.Stream) (c
 
 	return inc, nil
 }
-
-// hookAfterInfo is a test seam between the stream's first Info and the catalog's read of the highest observed sequence.
-var hookAfterInfo func()
 
 // Consumer creates or updates ingest's pull consumer on the incarnation inc, named for it,
 // so a handler of a retired incarnation acknowledges nothing on its replacement (parking.md *incarnations*):
