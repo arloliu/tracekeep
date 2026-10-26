@@ -6,7 +6,7 @@ require (
 	github.com/arloliu/go-secs/tracepack v0.9.0
 	github.com/arloliu/go-secs/v2 v2.8.0
 	github.com/arloliu/tracekeep v0.0.0-00010101000000-000000000000
-	github.com/arloliu/tracekeep/producer v0.0.0
+	github.com/arloliu/tracekeep/producer v0.1.0
 	github.com/nats-io/nats.go v1.55.0
 )
 
