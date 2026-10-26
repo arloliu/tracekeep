@@ -27,9 +27,11 @@ func (r *Reconciler) hook(id int) {
 
 // Run runs a cycle every Interval until ctx is done or a stream is no longer the incarnation the catalog records,
 // which stops the reconciler with ErrIncarnationChanged until an operator adopts the stream (parking.md *incarnations*).
+// On its way out it releases the lease it holds, so a standby takes over without waiting for the lease to lapse.
 func (r *Reconciler) Run(ctx context.Context) error {
 	t := time.NewTicker(r.Interval)
 	defer t.Stop()
+	defer r.release()
 	for {
 		if err := r.Step(ctx); errors.Is(err, catalog.ErrIncarnationChanged) || ctx.Err() != nil {
 			return err
@@ -65,7 +67,7 @@ func (r *Reconciler) Step(ctx context.Context) error {
 	err := r.cycle(cctx, lease)
 	cancel(nil)
 	<-kept
-	if cause := context.Cause(cctx); errors.Is(cause, catalog.ErrLeaseLost) {
+	if cause := context.Cause(cctx); errors.Is(cause, catalog.ErrLeaseLost) || errors.Is(cause, catalog.ErrIncarnationChanged) {
 		err = cause
 	}
 	if errors.Is(err, catalog.ErrLeaseLost) {
@@ -78,8 +80,9 @@ func (r *Reconciler) Step(ctx context.Context) error {
 	return err
 }
 
-// keep renews lease every third of LeaseTTL until ctx is done, so a pass longer than the lease keeps it;
-// a lost lease cancels ctx with ErrLeaseLost, and any other failure leaves the next renewal to try again.
+// keep renews lease every third of LeaseTTL until ctx is done, so a pass longer than the lease keeps it,
+// and checks both streams' incarnations with every renewal (parking.md *incarnations*), on handles of its own;
+// a lost lease or a changed stream cancels ctx with its error, and any other failure leaves the next renewal to try again.
 func (r *Reconciler) keep(ctx context.Context, cancel context.CancelCauseFunc, lease catalog.Lease) {
 	t := time.NewTicker(max(r.LeaseTTL/3, time.Millisecond))
 	defer t.Stop()
@@ -101,7 +104,30 @@ func (r *Reconciler) keep(ctx context.Context, cancel context.CancelCauseFunc, l
 		default:
 			// The cycle ended during the renewal.
 		}
+		err = r.incarnations(ctx)
+		switch {
+		case errors.Is(err, catalog.ErrIncarnationChanged):
+			cancel(err)
+			return
+		case err != nil && ctx.Err() == nil:
+			r.Log.Warn("compact: check the streams", "error", err)
+		default:
+		}
 	}
+}
+
+// release ends the lease this process holds, if any.
+func (r *Reconciler) release() {
+	if r.lease == nil {
+		return
+	}
+	// The caller's context is done; the release gets a short one of its own.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := r.Catalog.ReleaseLease(ctx, *r.lease); err != nil {
+		r.Log.Warn("compact: release the compactor lease", "error", err)
+	}
+	r.lease = nil
 }
 
 // incarnations checks both streams against the incarnations the catalog records, each on a handle of its own (parking.md *incarnations*).

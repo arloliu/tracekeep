@@ -219,3 +219,61 @@ func tombstone(t *testing.T, c *catalog.Catalog, capture tracepack.UUID, p built
 		t.Fatalf("RegisterPack = %v, %v; want the key tombstoned", out, err)
 	}
 }
+
+// A stream changed in the middle of a cycle is found by the keeper's next renewal, which cancels the cycle:
+// an orphan whose read was held across the change is not adopted, and the reconciler stops.
+func TestChangedIncarnationFoundAtRenewal(t *testing.T) {
+	t.Parallel()
+	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
+		p := reconcilers(t, c)
+		a := p.a
+		a.LeaseTTL = time.Second
+		f := &fixture{c: c, s: p.s}
+		orphan := segment(t, f.admit(t), []uint64{1}, false)
+		f.put(t, orphan.key, orphan.data)
+		step(t, a)
+		// The hold point: past the cycle's first checks, the parking stream is replaced; the read waits for the cycle to end.
+		a.Store = &opening{ObjectStore: p.s, at: orphan.key, hook: func(ctx context.Context) {
+			recreate(t, p.js, bus.StreamName(a.Bus, catalog.RoleParking))
+			<-ctx.Done()
+		}}
+		if err := a.Step(t.Context()); !errors.Is(err, catalog.ErrIncarnationChanged) {
+			t.Fatalf("Step = %v, want ErrIncarnationChanged", err)
+		}
+		if got, _ := c.KeyStanding(t.Context(), orphan.key); got != catalog.KeyUnknown {
+			t.Errorf("standing %v, want the held orphan not adopted", got)
+		}
+	})
+}
+
+// A lease lost in the middle of a cycle, here taken over by another process, cancels the cycle at the keeper's next renewal:
+// the held read ends, Step returns, the holder drops the lease and adopts nothing.
+func TestLeaseLostDuringACycle(t *testing.T) {
+	t.Parallel()
+	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
+		ctx := t.Context()
+		p := reconcilers(t, c)
+		a := p.a
+		a.LeaseTTL = time.Second
+		f := &fixture{c: c, s: p.s}
+		orphan := segment(t, f.admit(t), []uint64{1}, false)
+		f.put(t, orphan.key, orphan.data)
+		step(t, a)
+		a.Store = &opening{ObjectStore: p.s, at: orphan.key, hook: func(held context.Context) {
+			if err := c.ReleaseLease(ctx, *a.lease); err != nil {
+				t.Error(err)
+			}
+			if _, ok, err := c.TakeLease(ctx, "compactor", "other", time.Hour); err != nil || !ok {
+				t.Errorf("takeover = %v, %v", ok, err)
+			}
+			<-held.Done()
+		}}
+		step(t, a)
+		if a.lease != nil {
+			t.Errorf("a still holds %+v", *a.lease)
+		}
+		if got, _ := c.KeyStanding(ctx, orphan.key); got != catalog.KeyUnknown {
+			t.Errorf("standing %v, want the held orphan not adopted", got)
+		}
+	})
+}

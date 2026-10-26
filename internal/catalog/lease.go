@@ -95,3 +95,18 @@ func (c *Catalog) VerifyLease(ctx context.Context, l Lease) error {
 
 	return nil
 }
+
+// ReleaseLease ends l now, so another holder can take the lease without waiting for it to lapse;
+// a lease l no longer holds is left as it is.
+func (c *Catalog) ReleaseLease(ctx context.Context, l Lease) error {
+	err := c.inTx(ctx, func(tx *sqlx.Tx) error {
+		_, err := tx.ExecContext(ctx, `UPDATE leases SET until_ns = 0 WHERE name = ? AND holder = ? AND fence_token = ?`, l.Name, l.Holder, l.Fence)
+
+		return err
+	})
+	if err != nil {
+		return fmt.Errorf("catalog: release lease %s: %w", l.Name, err)
+	}
+
+	return nil
+}

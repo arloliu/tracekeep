@@ -374,3 +374,28 @@ func TestVerifyLease(t *testing.T) {
 		}
 	})
 }
+
+// ReleaseLease ends a held lease at once, so another holder takes it; a stale holder's release changes nothing.
+func TestReleaseLease(t *testing.T) {
+	t.Parallel()
+	engines(t, func(t *testing.T, c *Catalog) {
+		ctx := t.Context()
+		lease, _, err := c.TakeLease(ctx, "compactor", "a", ttl)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := c.ReleaseLease(ctx, lease); err != nil {
+			t.Fatal(err)
+		}
+		other, ok, err := c.TakeLease(ctx, "compactor", "b", ttl)
+		if err != nil || !ok {
+			t.Fatalf("TakeLease after the release = %v, %v", ok, err)
+		}
+		if err := c.ReleaseLease(ctx, lease); err != nil {
+			t.Fatal(err)
+		}
+		if err := c.VerifyLease(ctx, other); err != nil {
+			t.Errorf("a stale release ended the new holder's lease: %v", err)
+		}
+	})
+}
