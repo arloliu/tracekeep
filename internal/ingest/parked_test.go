@@ -270,3 +270,47 @@ func TestParkedConsumerFlushMeetsAnEviction(t *testing.T) {
 		}
 	})
 }
+
+// parking.enabled turned off on a running service, by a restart without it (gate: the parking phase's case):
+// a new indefinite deferral is nak'd, not parked, while the waiting and evicted-hour versions already parked
+// stay listable and terminable, and a copy delivered after its termination is acknowledged under it.
+func TestParkingTurnedOff(t *testing.T) {
+	t.Parallel()
+	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
+		ctx := t.Context()
+		r := newReplica(t, c)
+		evicted, waiting, after := tracepack.UUID{46}, tracepack.UUID{47}, tracepack.UUID{48}
+		r.publish(t, inline(t, evicted, dataRecord(1, now-int64(48*time.Hour)), nil), nil)
+		r.step(t)
+		r.publish(t, inline(t, evicted, startRecord(t, now), descriptorOf(t, "eqp")), nil)
+		r.step(t)
+		pg := r.parkedConsumer(t)
+		if err := pg.Step(ctx); err != nil { // the evicted capture's copy: admitted meanwhile, its hour beyond the horizon
+			t.Fatal(err)
+		}
+		r.publish(t, inline(t, waiting, dataRecord(1, now-int64(48*time.Hour)), nil), nil)
+		r.step(t)
+
+		r.g.Park, pg.Park = false, false // the restart without parking
+		r.publish(t, inline(t, after, dataRecord(1, now-int64(48*time.Hour)), nil), nil)
+		r.step(t)
+		if vs := versions(t, c, after); len(vs) != 0 {
+			t.Errorf("versions %+v of a deferral after parking was turned off, want none parked", vs)
+		}
+
+		for capture, want := range map[tracepack.UUID]catalog.VersionState{evicted: catalog.VersionEvictedHour, waiting: catalog.VersionParked} {
+			if vs := versions(t, c, capture); len(vs) != 1 || vs[0].State != want {
+				t.Errorf("versions %+v, want one listed %s", vs, want)
+			}
+			if n, err := c.TerminateParked(ctx, capture, nil, "op", "p-"+capture.String()); err != nil || n != 1 {
+				t.Errorf("TerminateParked = %d, %v; want the version terminated", n, err)
+			}
+		}
+		if err := pg.Step(ctx); err != nil { // the waiting version's copy, delivered for the first time since its termination
+			t.Fatal(err)
+		}
+		if got := copyStates(versions(t, c, waiting), pg.Incarnation.ID); !slices.Equal(got, []string{"acked"}) {
+			t.Errorf("the terminated copy's rows %v, want it acknowledged under the termination", got)
+		}
+	})
+}
