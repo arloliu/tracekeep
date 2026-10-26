@@ -97,7 +97,8 @@ and the `counters('scope_events')` row, last (§7.3).
 The catalog's callable interface is the transactions below and the domain reads of §7.3;
 no caller issues a statement, opens a transaction or chooses a lock.
 One unexported helper runs the prologue of §6.3:
-an insert-ignore of a `pending` capture row when the catalog has none for the capture, then the update of the capture's row (`data_revision + 1`);
+one upsert that inserts a `pending` capture row when the catalog has none for the capture and otherwise updates the capture's row (`data_revision + 1`),
+so it takes the row's exclusive lock at once (an insert-ignore followed by the update would hold a shared lock between them on MariaDB, and two transactions doing so on one row deadlock);
 it returns the capture row as read under that lock, which is where the transaction's guard reads begin.
 Every transaction of the table starts with that helper,
 so the capture row is first by construction and no caller restates the lock order.
@@ -216,9 +217,9 @@ and the caller acts on it: the merge and the close at the next cycle (§8.1, §8
 ### 7.4 Engines, transactions and migrations
 
 - **Recommended stack**: `database/sql` + `sqlx`, hand-written SQL, `go-sql-driver/mysql` and `modernc.org/sqlite` (no cgo).
-  A `dialect` value isolates insert-ignore, the upsert clause and `ENUM` versus `CHECK`;
+  A `dialect` value isolates insert-ignore and the upsert clause; both engines use `CHECK` constraints, not `ENUM`;
   the transactions are CAS-based and engine-neutral (§7.2).
-- **MariaDB**: `READ COMMITTED`; every multi-statement transaction retries whole on deadlock;
+- **MariaDB** 11.1 or later: `READ COMMITTED`, the session in UTC, strings compared byte for byte (`utf8mb4_bin`) as on SQLite; every multi-statement transaction retries whole on deadlock;
   the capture row, the `leases` row and the two `counters` rows are the intended lock waits, always in the order of §7.2.
 - **SQLite**: one writer connection (`MaxOpenConns = 1` on the write pool), `BEGIN IMMEDIATE` for every write transaction, `busy_timeout` set, retry whole on `SQLITE_BUSY`;
   only the `all` process writes, enforced by deployment and checked at start (a second writer refuses to start on SQLite).

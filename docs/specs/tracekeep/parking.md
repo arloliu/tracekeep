@@ -71,7 +71,7 @@ since a different stream name alone separates nothing, and refuse a parking stre
 (`tracekeep migrate` creates it with the traffic stream's replica count);
 The **parking protocol** puts the catalog row before the copy, so the row, not the copy, is the protection point,
 and **every branch serializes on the capture row**:
-(1) a transaction whose first statements are an insert-ignore of a `pending` capture row when the catalog has none for the capture, then the update of the capture's row
+(1) a transaction whose first statement is the prologue of §6.3, which inserts a `pending` capture row when the catalog has none for the capture and otherwise updates the capture's row
 (the discipline of §6.3 and §8.3, so admission, retention and parking of one capture serialize on both engines,
 and two first sightings serialize on the primary key),
 which then **re-reads the capture's state under that lock** and chooses its branch:

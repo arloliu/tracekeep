@@ -30,8 +30,9 @@ const (
 	Tombstoned
 	// BeyondHorizon: the pack's hour is past the retention horizon; the key is now tombstoned and the caller deletes the object.
 	BeyondHorizon
-	// PendingCapture: the reconciler's orphan belongs to a capture no start has admitted; it stays unregistered (storage.md §5.4).
-	PendingCapture
+	// UnadmittedCapture: the reconciler's orphan belongs to a capture no start has admitted, pending or rejected;
+	// it stays unregistered (storage.md §5.4).
+	UnadmittedCapture
 )
 
 // The roles a pack plays.
@@ -107,18 +108,33 @@ type Registration struct {
 	HorizonHour int64
 }
 
+// ErrInvalidRegistration refuses a pack or a registration mode the transaction cannot take; nothing was written.
+var ErrInvalidRegistration = errors.New("catalog: invalid registration")
+
 // RegisterPack registers p, idempotent on its pack_id, in the transaction ingest and the reconciler share (ingest.md §6.3).
+// An outcome other than Registered writes nothing, except BeyondHorizon's tombstone.
 func (c *Catalog) RegisterPack(ctx context.Context, p *Pack, r Registration) (PackOutcome, error) {
-	if err := p.check(); err != nil {
+	if err := p.check(r); err != nil {
 		return 0, err
 	}
 	var out PackOutcome
-	err := c.inTx(ctx, func(tx *sqlx.Tx) error {
+	err := outcome(c.inTx(ctx, func(tx *sqlx.Tx) error {
 		var err error
 		out, err = c.registerIn(ctx, tx, p, r)
+		if err == nil && out != Registered {
+			err = errRollback
+		}
 
 		return err
-	})
+	}))
+	if err == nil && out == BeyondHorizon {
+		// The tombstone commits alone, before the caller deletes the object, so a put delayed across eviction never registers.
+		err = c.inTx(ctx, func(tx *sqlx.Tx) error {
+			_, err := tx.ExecContext(ctx, c.d.insertIgnore+` INTO tombstones (object_key, reason, at) VALUES (?, 'beyond-retention', ?)`, p.Key, c.now())
+
+			return err
+		})
+	}
 	if err != nil {
 		return 0, fmt.Errorf("catalog: register pack %s: %w", p.ID, err)
 	}
@@ -126,13 +142,43 @@ func (c *Catalog) RegisterPack(ctx context.Context, p *Pack, r Registration) (Pa
 	return out, nil
 }
 
-func (p *Pack) check() error {
-	if len(p.Ranges) == 0 {
-		return fmt.Errorf("catalog: pack %s holds no range", p.ID)
+// check refuses a pack whose seqs do not fit the catalog, and a registration mode no caller has:
+// ingest passes evidence and no lease; the reconciler and a close register under the lease without evidence, and only the reconciler adopts.
+func (p *Pack) check(r Registration) error {
+	switch {
+	case r.Evidence != nil && (r.Lease != nil || r.Adopted):
+		return fmt.Errorf("%w: evidence with a lease or an adoption", ErrInvalidRegistration)
+	case r.Evidence == nil && r.Lease == nil:
+		return fmt.Errorf("%w: neither evidence nor the lease", ErrInvalidRegistration)
+	case len(p.Ranges) == 0 && p.Role != RoleClose:
+		// A close holds only the sentinel, which is never a range.
+		return fmt.Errorf("%w: pack %s holds no range", ErrInvalidRegistration, p.ID)
 	}
+	// A close starts at the sentinel, its one record; every other seq fits a signed BIGINT below it (catalog.md §7.1).
+	if p.SeqStart > closeSentinel || (p.SeqStart == closeSentinel && p.Role != RoleClose) {
+		return fmt.Errorf("%w: pack %s: seq start %d", ErrInvalidRegistration, p.ID, p.SeqStart)
+	}
+	var seqs []uint64
 	for _, rg := range p.Ranges {
-		if rg.SeqFrom > rg.SeqTo || rg.SeqTo >= closeSentinel {
-			return fmt.Errorf("catalog: pack %s: invalid range %d-%d", p.ID, rg.SeqFrom, rg.SeqTo)
+		if rg.SeqFrom > rg.SeqTo {
+			return fmt.Errorf("%w: pack %s: range %d-%d", ErrInvalidRegistration, p.ID, rg.SeqFrom, rg.SeqTo)
+		}
+		seqs = append(seqs, rg.SeqFrom, rg.SeqTo)
+	}
+	for _, l := range p.Losses {
+		seqs = append(seqs, l.SeqFrom, l.SeqTo)
+	}
+	for _, v := range p.Conflicts {
+		seqs = append(seqs, v.Seq)
+	}
+	if r.Evidence != nil {
+		for _, rc := range r.Evidence.Receipts {
+			seqs = append(seqs, rc.Seq)
+		}
+	}
+	for _, seq := range seqs {
+		if seq >= closeSentinel {
+			return fmt.Errorf("%w: pack %s: seq %d", ErrInvalidRegistration, p.ID, seq)
 		}
 	}
 
@@ -197,13 +243,10 @@ func (c *Catalog) guards(ctx context.Context, tx *sqlx.Tx, p *Pack, r Registrati
 		return Tombstoned, true, nil
 	}
 	if p.Hour < r.HorizonHour {
-		// The tombstone commits alone, before the caller deletes the object, so a delayed put never registers.
-		_, err := tx.ExecContext(ctx, `INSERT INTO tombstones (object_key, reason, at) VALUES (?, 'beyond-retention', ?)`, p.Key, c.now())
-
-		return BeyondHorizon, true, err
+		return BeyondHorizon, true, nil
 	}
-	if r.Evidence == nil && r.Adopted && state == StatePending {
-		return PendingCapture, true, nil
+	if r.Adopted && state != StateOpen && state != StateStopped && state != StateClosed {
+		return UnadmittedCapture, true, nil
 	}
 
 	return 0, false, nil
@@ -271,15 +314,12 @@ func (c *Catalog) upsertScope(ctx context.Context, tx *sqlx.Tx, p *Pack) (scopeC
 // each scope a conflict touches advances its revision and emits a conflict event, the pack's own scope at the revision upsertScope gave it.
 func (c *Catalog) recordConflicts(ctx context.Context, tx *sqlx.Tx, p *Pack, ownRevision int64) ([]event, error) {
 	touched := map[int64]bool{}
+	// The batch's other versions are in conflict segments of the same scope (ingest.md §6.2), registered in any order.
 	for _, v := range p.Conflicts {
-		var hour int64
-		if err := tx.GetContext(ctx, &hour, `SELECT hour FROM packs WHERE pack_id = ?`, v.Pack[:]); err != nil {
-			return nil, fmt.Errorf("conflicting pack %s: %w", v.Pack, err)
-		}
 		if err := c.insertConflict(ctx, tx, p, int64(v.Seq), int64(v.Seq), v.Pack, "confirmed"); err != nil {
 			return nil, err
 		}
-		touched[hour] = true
+		touched[p.Hour] = true
 	}
 	for _, rg := range p.Ranges {
 		var overlaps []struct {
@@ -350,17 +390,13 @@ func (c *Catalog) insertReceipts(ctx context.Context, tx *sqlx.Tx, p *Pack, e *E
 }
 
 // updateCapture records the registration on the capture: its time, its highest producer seq with that record's time,
-// and a stop, which moves an open capture to stopped (a closed one stays closed).
+// and a stop, which moves an open capture to stopped (a closed one stays closed); a close, which holds no range, moves no seq.
 func (c *Catalog) updateCapture(ctx context.Context, tx *sqlx.Tx, p *Pack, row captureRow) error {
-	top := p.Ranges[0]
-	for _, rg := range p.Ranges[1:] {
-		if rg.SeqTo > top.SeqTo {
-			top = rg
-		}
-	}
 	seq, ts := row.HighestSeq, row.HighestSeqTS
-	if !seq.Valid || int64(top.SeqTo) > seq.Int64 {
-		seq, ts = sql.NullInt64{Int64: int64(top.SeqTo), Valid: true}, sql.NullInt64{Int64: top.TSTo, Valid: true}
+	for _, rg := range p.Ranges {
+		if !seq.Valid || int64(rg.SeqTo) > seq.Int64 {
+			seq, ts = sql.NullInt64{Int64: int64(rg.SeqTo), Valid: true}, sql.NullInt64{Int64: rg.TSTo, Valid: true}
+		}
 	}
 	state := row.State
 	stop := row.StopSeen || p.Stop

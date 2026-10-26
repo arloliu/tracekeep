@@ -92,16 +92,16 @@ func (c *Catalog) Admit(ctx context.Context, id tracepack.UUID, d *Descriptor) (
 		case StateRejected:
 			if !bytes.Equal(row.Descriptor, d.Bytes) {
 				res = Result{Outcome: DescriptorConflict}
-				return nil
+				return errRollback
 			}
 		default: // admitted
 			if !bytes.Equal(row.Descriptor, d.Bytes) {
 				res = Result{Outcome: DescriptorConflict}
-				return nil
+				return errRollback
 			}
 			res = Result{Outcome: Unchanged, ConfigID: row.ConfigID.Int64}
 
-			return nil
+			return errRollback
 		}
 		// Binding: the membership sentinel after the capture row, before the members and configurations are read.
 		if err := c.lockMembership(ctx, tx); err != nil {
@@ -125,7 +125,7 @@ func (c *Catalog) Admit(ctx context.Context, id tracepack.UUID, d *Descriptor) (
 
 		return err
 	})
-	if err != nil {
+	if err = outcome(err); err != nil {
 		return Result{}, fmt.Errorf("catalog: admit %s: %w", id, err)
 	}
 
@@ -154,14 +154,14 @@ func (c *Catalog) Reject(ctx context.Context, id tracepack.UUID, descriptor []by
 		default:
 			if !bytes.Equal(row.Descriptor, descriptor) {
 				res = Result{Outcome: DescriptorConflict}
-				return nil
+				return errRollback
 			}
 			res = Result{Outcome: AlreadyAdmitted, ConfigID: row.ConfigID.Int64}
 		}
 
-		return nil
+		return errRollback
 	})
-	if err != nil {
+	if err = outcome(err); err != nil {
 		return Result{}, fmt.Errorf("catalog: reject %s: %w", id, err)
 	}
 

@@ -23,10 +23,11 @@ func holdAt(c *Catalog, id int) (held, release chan struct{}) {
 	return held, release
 }
 
-// waitBlocked waits until a second transaction waits on the one held:
-// on SQLite for the one writer connection, on MariaDB inside stmt, the statement that needs the held lock.
+// waitBlocked waits until another transaction waits on the one held:
+// on SQLite for the one writer connection, on MariaDB inside stmt, the statement that needs the held lock,
+// which n transactions must be inside.
 // (INNODB_TRX is a cached view that can miss a short wait, so MariaDB's wait is read from the process list.)
-func waitBlocked(t *testing.T, c *Catalog, waitsBefore int64, stmt string) {
+func waitBlocked(t *testing.T, c *Catalog, waitsBefore int64, stmt string, n int) {
 	t.Helper()
 	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
@@ -36,13 +37,13 @@ func waitBlocked(t *testing.T, c *Catalog, waitsBefore int64, stmt string) {
 				return
 			}
 		default:
-			var n int
-			err := c.read.GetContext(t.Context(), &n, `SELECT COUNT(*) FROM information_schema.PROCESSLIST
+			var inside int
+			err := c.read.GetContext(t.Context(), &inside, `SELECT COUNT(*) FROM information_schema.PROCESSLIST
 				WHERE DB = DATABASE() AND INFO LIKE ?`, stmt+"%")
 			if err != nil {
 				t.Fatal(err)
 			}
-			if n > 0 {
+			if inside >= n {
 				return
 			}
 		}
@@ -77,7 +78,7 @@ func TestTwoFirstSightings(t *testing.T) {
 		<-held
 		waits := c.write.Stats().WaitCount
 		b := run(func() { second, err2 = c.Admit(t.Context(), id, d) })
-		waitBlocked(t, c, waits, "INSERT IGNORE INTO captures")
+		waitBlocked(t, c, waits, "INSERT INTO captures", 1)
 		close(release)
 		<-a
 		<-b
@@ -107,7 +108,7 @@ func TestOverlappingRegistrationsNeverMissTheSuspect(t *testing.T) {
 		b := run(func() {
 			out2, err2 = c.RegisterPack(t.Context(), segment(t, capture, 2, 5, 14), Registration{Evidence: &Evidence{}})
 		})
-		waitBlocked(t, c, waits, "INSERT IGNORE INTO captures")
+		waitBlocked(t, c, waits, "INSERT INTO captures", 1)
 		close(release)
 		<-a
 		<-b
@@ -137,7 +138,7 @@ func TestEventAllocationWaitsForAnUncommittedEarlierOne(t *testing.T) {
 		b := run(func() {
 			_, err2 = c.RegisterPack(t.Context(), segment(t, other, 1, 0, 9), Registration{Evidence: &Evidence{}})
 		})
-		waitBlocked(t, c, waits, "UPDATE counters SET value = value + ? WHERE name = 'scope_events'")
+		waitBlocked(t, c, waits, "UPDATE counters SET value = value + ? WHERE name = 'scope_events'", 1)
 		if n := count(t, c, `SELECT COUNT(*) FROM scope_events`); n != 0 {
 			t.Errorf("a reader sees %d events while the first is uncommitted, want none", n)
 		}
@@ -179,12 +180,16 @@ func TestRenewalRacingAnAdmission(t *testing.T) {
 		renewed := run(func() { renewErr = c.Renew(ctx, old, ttl) })
 		<-held
 		time.Sleep(2 * short) // the scenario: the old member's committed lease lapses while its renewal is uncommitted
+		var lapsed int
+		if err := c.read.GetContext(ctx, &lapsed, `SELECT COUNT(*) FROM consumers WHERE replica_id = 'old' AND lease_until < `+c.d.nowNS); err != nil || lapsed != 1 {
+			t.Fatalf("the committed lease has not lapsed (%d, %v)", lapsed, err)
+		}
 
 		waits := c.write.Stats().WaitCount
 		var res Result
 		var admitErr error
 		admitted := run(func() { res, admitErr = c.Admit(ctx, newID(t), descriptor(t, "d")) })
-		waitBlocked(t, c, waits, "UPDATE counters SET value = value WHERE name = 'membership'")
+		waitBlocked(t, c, waits, "UPDATE counters SET value = value WHERE name = 'membership'", 1)
 		close(release)
 		<-renewed
 		<-admitted
@@ -193,6 +198,43 @@ func TestRenewalRacingAnAdmission(t *testing.T) {
 		}
 		if res.ConfigID != v1 {
 			t.Errorf("the admission bound %d, want v1, which the renewed member executes", res.ConfigID)
+		}
+	})
+}
+
+// Transactions waiting on one existing capture's row take it in turn, never deadlocking:
+// the prologue is one upsert, so no waiter holds a shared lock it must later upgrade.
+func TestWaitersOnAnExistingCaptureDoNotDeadlock(t *testing.T) {
+	t.Parallel()
+	engines(t, func(t *testing.T, c *Catalog) {
+		capture := admitted(t, c)
+		var retries atomic.Int32
+		c.hooks[hookRetry] = func() { retries.Add(1) }
+		held, release := holdAt(c, hookLocked)
+		errs := make([]error, 3)
+		var done []<-chan struct{}
+		done = append(done, run(func() {
+			_, errs[0] = c.RegisterPack(t.Context(), segment(t, capture, 1, 0, 9), Registration{Evidence: &Evidence{}})
+		}))
+		<-held
+		for i := 1; i < 3; i++ {
+			waits := c.write.Stats().WaitCount
+			done = append(done, run(func() {
+				_, errs[i] = c.RegisterPack(t.Context(), segment(t, capture, 1, uint64(10*i), uint64(10*i+9)), Registration{Evidence: &Evidence{}})
+			}))
+			waitBlocked(t, c, waits, "INSERT INTO captures", i)
+		}
+		close(release)
+		for _, d := range done {
+			<-d
+		}
+		for i, err := range errs {
+			if err != nil {
+				t.Errorf("registration %d: %v", i, err)
+			}
+		}
+		if n := retries.Load(); n != 0 {
+			t.Errorf("%d retries, want none: the waiters deadlocked", n)
 		}
 	})
 }

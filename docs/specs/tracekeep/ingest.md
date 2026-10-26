@@ -178,7 +178,7 @@ the cases prove the decision, the schedules prove the re-reads under the capture
 | after a confirmed ack | nothing left to recover: the receipt, the `claim_objects` row and, for a parked record, the `staged` state of its `parked` row were written at registration; a crash between that commit and the acknowledgement redelivers a message whose row is resolved (§6.1 *resolution*) | — |
 
 The registration transaction is idempotent on `pack_id` and runs the same way for `ingest` and for the reconciler.
-Its **prologue** is an insert-ignore of a `pending` capture row when the catalog has none for the capture, then the update of the capture's row (`data_revision + 1`);
+Its **prologue** is one upsert that inserts a `pending` capture row when the catalog has none for the capture and otherwise updates the capture's row (`data_revision + 1`);
 every transaction that admits (§6.1), parks, registers, deletes, tombstones or evicts a pack of a capture, merges a scope of it or publishes its close starts with that same update (§8),
 so on MariaDB READ COMMITTED they serialize on that row before reading any predicate,
 and on SQLite the single writer serializes them;

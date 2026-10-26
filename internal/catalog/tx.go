@@ -22,6 +22,10 @@ type dialect struct {
 	name string
 	// insertIgnore starts an insert that skips a row whose key exists.
 	insertIgnore string
+	// prologue inserts a pending capture row or advances the existing row's data revision, in one statement,
+	// so it takes the row's exclusive lock at once: an insert-ignore followed by an update would hold a shared lock between them on MariaDB,
+	// and two transactions doing so on one existing row deadlock.
+	prologue string
 	// retryable reports an error that re-runs the whole transaction: a deadlock or a busy database.
 	retryable func(error) bool
 	// nowNS is the database's clock in UTC nanoseconds, which judges every lease (rollouts.md §6.4, T-32).
@@ -31,7 +35,9 @@ type dialect struct {
 var sqliteDialect = dialect{
 	name:         EngineSQLite,
 	insertIgnore: "INSERT OR IGNORE",
-	nowNS:        "CAST(unixepoch('subsec') * 1000000000 AS INTEGER)",
+	prologue: `INSERT INTO captures (capture_id, state, data_revision, created_at) VALUES (?, 'pending', 1, ?)
+		ON CONFLICT (capture_id) DO UPDATE SET data_revision = data_revision + 1`,
+	nowNS: "CAST(unixepoch('subsec') * 1000000000 AS INTEGER)",
 	retryable: func(err error) bool {
 		var e *sqlite.Error
 		if !errors.As(err, &e) {
@@ -46,11 +52,14 @@ var sqliteDialect = dialect{
 var mariadbDialect = dialect{
 	name:         EngineMariaDB,
 	insertIgnore: "INSERT IGNORE",
-	nowNS:        "CAST(UNIX_TIMESTAMP(NOW(6)) * 1000000000 AS SIGNED)",
+	prologue: `INSERT INTO captures (capture_id, state, data_revision, created_at) VALUES (?, 'pending', 1, ?)
+		ON DUPLICATE KEY UPDATE data_revision = data_revision + 1`,
+	nowNS: "CAST(UNIX_TIMESTAMP(NOW(6)) * 1000000000 AS SIGNED)",
 	retryable: func(err error) bool {
 		var e *mysql.MySQLError
-		// 1213 is a deadlock, 1205 a lock wait timeout; both roll the transaction back.
-		return errors.As(err, &e) && (e.Number == 1213 || e.Number == 1205)
+		// 1213 is a deadlock, which rolls the transaction back; a lock wait timeout (1205) is not retried,
+		// since a holder stuck that long would keep the caller retrying for minutes.
+		return errors.As(err, &e) && e.Number == 1213
 	},
 }
 
@@ -72,11 +81,28 @@ type captureRow struct {
 func (c *Catalog) inTx(ctx context.Context, fn func(tx *sqlx.Tx) error) error {
 	for attempt := 1; ; attempt++ {
 		err := c.attempt(ctx, fn)
-		if err == nil || !c.d.retryable(err) || attempt == maxAttempts || ctx.Err() != nil {
+		if err == nil || !c.retryable(err) || attempt == maxAttempts || ctx.Err() != nil {
 			return err
 		}
 		c.hook(hookRetry)
 	}
+}
+
+func (c *Catalog) retryable(err error) bool {
+	return c.d.retryable(err) || (c.testRetryable != nil && errors.Is(err, c.testRetryable))
+}
+
+// errRollback ends a transaction whose outcome writes nothing, so even the prologue's update is undone;
+// the caller reports the outcome its closure recorded.
+var errRollback = errors.New("catalog: rolled back")
+
+// outcome turns errRollback, which carries an outcome rather than a failure, into nil.
+func outcome(err error) error {
+	if errors.Is(err, errRollback) {
+		return nil
+	}
+
+	return err
 }
 
 func (c *Catalog) attempt(ctx context.Context, fn func(tx *sqlx.Tx) error) error {
@@ -101,19 +127,14 @@ func rollback(tx *sqlx.Tx) error {
 }
 
 // lockCapture is the prologue of every transaction that changes a capture (ingest.md §6.3):
-// a pending row inserted when the catalog has none, then the update of the row, which locks it on MariaDB
-// before any predicate is read; it returns the row as read under that lock.
+// one statement that inserts a pending row when the catalog has none and otherwise advances the row's data revision,
+// which locks it on MariaDB before any predicate is read; it returns the row as read under that lock.
 func (c *Catalog) lockCapture(ctx context.Context, tx *sqlx.Tx, id tracepack.UUID) (captureRow, error) {
 	var row captureRow
-	_, err := tx.ExecContext(ctx, c.d.insertIgnore+` INTO captures (capture_id, state, created_at) VALUES (?, 'pending', ?)`,
-		id[:], c.now())
-	if err != nil {
+	if _, err := tx.ExecContext(ctx, c.d.prologue, id[:], c.now()); err != nil {
 		return row, fmt.Errorf("catalog: lock capture: %w", err)
 	}
-	if _, err := tx.ExecContext(ctx, `UPDATE captures SET data_revision = data_revision + 1 WHERE capture_id = ?`, id[:]); err != nil {
-		return row, fmt.Errorf("catalog: lock capture: %w", err)
-	}
-	err = tx.GetContext(ctx, &row, `SELECT state, descriptor, tool_id, config_id, data_revision, highest_seq, highest_seq_ts,
+	err := tx.GetContext(ctx, &row, `SELECT state, descriptor, tool_id, config_id, data_revision, highest_seq, highest_seq_ts,
 		stop_seen, last_registered_at FROM captures WHERE capture_id = ?`, id[:])
 	if err != nil {
 		return row, fmt.Errorf("catalog: lock capture: %w", err)
