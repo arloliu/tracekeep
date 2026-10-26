@@ -190,11 +190,14 @@ and `tracekeep status`, an admin command over the reads the machine API brings, 
 a component records through a pointer to its struct, nil recording nothing, so the tests and `dev` need no metrics;
 `tool_id` is the only bounded label beside the reasons and outcomes, and `capture_id` is never one.
 The service requires `github.com/prometheus/client_golang` v1.25.0; the SDK keeps its own `Metrics` interface and no Prometheus dependency.
+Two ingest metrics go to phase 2: `gap_observations_total`, a hole first seen at registration, which needs the registration to compare coverage;
+and `captures_with_unknown_tail`, which every open capture has until a close bounds it.
+`declared_losses_total` counts the losses ingest declares, records beyond retention; an operator's terminations are in the audit log.
 
 | Step | Scope | State |
 |---|---|---|
-| 1 | the facility: the registry, the listener on `metrics.listen` (default `:9090`, empty for none), `/healthz`, and `/readyz` answering every readiness check a role registers; the configuration key in `docs/guides/configuration.md` | pending |
-| 2 | catalog: both pools' usage, transaction retries by `busy` and `deadlock`, the embedded migrations' latest version; readiness by a ping | pending |
-| 3 | ingest: `messages_total{disposition}`, `deferred_messages{reason}`, `deferred_oldest_age_seconds{reason}`, `parked_messages{reason}`, `segments_total{tool_id}`, `segment_bytes_total{tool_id}`, `put_seconds`, `registration_seconds`, `in_progress_acks_total`, `redelivered_total`, `conflicts_total{tool_id}`, `declared_losses_total{tool_id}`, `consumer_ack_pending`, `stream_backlog_messages`, `stream_backlog_bytes`; and on a periodic pass over open captures, `captures_open{tool_id}`, `open_gaps{tool_id}`, `captures_with_unknown_tail{tool_id}`, `gap_observations_total{tool_id}`; readiness once both consumers joined | pending |
-| 4 | compact: `cycle_seconds{task=reconcile}`, `last_success_timestamp{task=reconcile}`, `lease_held`, `orphans_adopted_total`, `orphans_quarantined_total`, `tombstones_total`; readiness while the lease is held or a standby waits for it | pending |
-| 5 | the roles wired: each serves the listener and registers its collectors and readiness; `dev` and `all` serve one listener for both roles | pending |
+| 1 | the facility: the registry, the listener on `metrics.listen` (default `:9090`, empty for none), `/healthz`, and `/readyz` answering every readiness check a role registers; the configuration key in `docs/guides/configuration.md` | done (829c0a5) |
+| 2 | catalog: both pools' usage, transaction retries by `busy` and `deadlock`, the embedded migrations' latest version; readiness by a ping | done (63ac5bb) |
+| 3 | ingest: `messages_total{disposition}`, `deferred_messages{reason}`, `deferred_oldest_age_seconds{reason}`, `parked_messages{reason}`, `segments_total{tool_id}`, `segment_bytes_total{tool_id}`, `put_seconds`, `registration_seconds`, `in_progress_acks_total`, `redelivered_total`, `conflicts_total{tool_id}`, `declared_losses_total{tool_id}`, `consumer_ack_pending`, `stream_backlog_messages`, `stream_backlog_bytes`; and on a periodic pass over open captures, `captures_open{tool_id}`, `open_gaps{tool_id}`; readiness once both consumers joined | done (a28368f) |
+| 4 | compact: `cycle_seconds{task=reconcile}`, `last_success_timestamp{task=reconcile}`, `lease_held`, `orphans_adopted_total`, `orphans_quarantined_total`, `tombstones_total`; readiness while the lease is held or a standby waits for it | done (5c7610f) |
+| 5 | the roles wired: each serves the listener and registers its collectors and readiness; `dev` and `all` serve one listener for both roles | done (82c23fd) |
