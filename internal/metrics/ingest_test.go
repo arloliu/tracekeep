@@ -126,8 +126,21 @@ func TestDeferralsHeldWhileBatched(t *testing.T) {
 	}
 }
 
-// A refresh publishes each source whole, under a controlled schedule: while the bus's read is held,
-// a scrape sees the previous refresh of both sources; once it returns, the next refresh of both.
+// heldCatalog holds its first read at a barrier: reading closes when it is reached, release lets it go on.
+type heldCatalog struct {
+	*catalog.Catalog
+	reading, release chan struct{}
+}
+
+func (h heldCatalog) ParkedCounts(ctx context.Context) (map[string]int, error) {
+	close(h.reading)
+	<-h.release
+
+	return h.Catalog.ParkedCounts(ctx)
+}
+
+// A refresh publishes each source whole, under a controlled schedule: while the bus's read is held, a scrape sees the previous refresh
+// of both sources; while the catalog's read is held, the new bus values and the previous catalog values; once it returns, the new of both.
 func TestRefreshPublishesWhole(t *testing.T) {
 	t.Parallel()
 	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
@@ -152,34 +165,39 @@ func TestRefreshPublishesWhole(t *testing.T) {
 			t.Fatal(err)
 		}
 		admit(2)
-		reading, release := make(chan struct{}), make(chan struct{})
+		busReading, busRelease := make(chan struct{}), make(chan struct{})
+		held := heldCatalog{Catalog: c, reading: make(chan struct{}), release: make(chan struct{})}
 		done := make(chan error, 1)
 		go func() {
-			done <- m.Refresh(ctx, c, busFunc(func(context.Context) (BusState, error) {
-				close(reading)
-				<-release
+			done <- m.Refresh(ctx, held, busFunc(func(context.Context) (BusState, error) {
+				close(busReading)
+				<-busRelease
 
 				return BusState{AckPending: 2, Messages: 2, Bytes: 2}, nil
 			}))
 		}()
-		<-reading
-		want := func(n int) {
+		want := func(stage string, bus, captures int) {
 			t.Helper()
 			b := body(t, s)
 			for _, line := range []string{
-				fmt.Sprintf("tracekeep_ingest_consumer_ack_pending %d", n), fmt.Sprintf("tracekeep_ingest_stream_backlog_messages %d", n),
-				fmt.Sprintf("tracekeep_ingest_stream_backlog_bytes %d", n), fmt.Sprintf(`tracekeep_ingest_captures_open{tool_id="T1"} %d`, n),
+				fmt.Sprintf("tracekeep_ingest_consumer_ack_pending %d", bus), fmt.Sprintf("tracekeep_ingest_stream_backlog_messages %d", bus),
+				fmt.Sprintf("tracekeep_ingest_stream_backlog_bytes %d", bus),
+				fmt.Sprintf(`tracekeep_ingest_captures_open{tool_id="T1"} %d`, captures), `tracekeep_ingest_open_gaps{tool_id="T1"} 0`,
 			} {
 				if !strings.Contains(b, line) {
-					t.Errorf("/metrics lacks %s", line)
+					t.Errorf("%s: /metrics lacks %s", stage, line)
 				}
 			}
 		}
-		want(1)
-		close(release)
+		<-busReading
+		want("the bus's read held", 1, 1)
+		close(busRelease)
+		<-held.reading
+		want("the catalog's read held", 2, 1)
+		close(held.release)
 		if err := <-done; err != nil {
 			t.Fatal(err)
 		}
-		want(2)
+		want("the refresh done", 2, 2)
 	})
 }

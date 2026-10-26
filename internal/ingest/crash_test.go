@@ -266,20 +266,26 @@ func TestWriteFailureThreeTimes(t *testing.T) {
 		if b := scrape(t, s); !strings.Contains(b, deferred) {
 			t.Fatalf("after the third refusal /metrics lacks %s", deferred)
 		}
-		for _, again := range msgs { // the redelivery, batched again
+		// The redelivery arrives just before the expiry the refusal's nak set, at 11 minutes, and is batched again.
+		clock = clock.Add(10*time.Minute + 30*time.Second)
+		for _, again := range msgs {
 			d, dec := dispose(t, p.x, again)
 			g.act(t.Context(), Entry{D: d, Msg: &msg{}}, dec, 2)
 		}
-		// Held in the batch far past the expiry the refusal's nak set, kept by the heartbeat.
+		clock = clock.Add(time.Minute) // past that expiry, before any heartbeat
+		if b := scrape(t, s); !strings.Contains(b, deferred) {
+			t.Errorf("before the first heartbeat, batching the redelivery settled or expired the deferrals: /metrics lacks %s", deferred)
+		}
+		// Held in the batch far longer, kept by the heartbeat.
 		for range 6 {
 			clock = clock.Add(5 * time.Minute)
 			g.beat()
 		}
 		b := scrape(t, s)
 		if !strings.Contains(b, deferred) {
-			t.Errorf("batching the redelivery settled or expired the deferrals: /metrics lacks %s", deferred)
+			t.Errorf("held in the batch, the deferrals expired: /metrics lacks %s", deferred)
 		}
-		if age := fmt.Sprintf(`tracekeep_ingest_deferred_oldest_age_seconds{reason="%s"} 1800`, ReasonWriteFailure); !strings.Contains(b, age) {
+		if age := fmt.Sprintf(`tracekeep_ingest_deferred_oldest_age_seconds{reason="%s"} 2490`, ReasonWriteFailure); !strings.Contains(b, age) {
 			t.Errorf("/metrics lacks %s: the age from the refusal", age)
 		}
 		p.f.hooks[hookWrite] = nil
