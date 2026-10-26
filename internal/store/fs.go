@@ -21,6 +21,9 @@ const (
 	partialLock = partialDir + "/.lock"
 )
 
+// beforeClear, set only by the package's tests, runs before clearDead looks at an entry.
+var beforeClear func(name string)
+
 // FS is an ObjectStore on a local directory, for standalone pilots and tests (storage.md §5.2):
 // a put is written under .partial/, synced, renamed into place, and its directories synced.
 // Several FS values, in one process or many, may share a root.
@@ -140,23 +143,12 @@ func (s *FS) List(ctx context.Context, prefix string, fn func(ObjectInfo) error)
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	// Walk only the directory the prefix names, and filter by the rest.
-	start := "."
-	if i := strings.LastIndexByte(prefix, '/'); i >= 0 {
-		start = prefix[:i]
-	}
-	if !fs.ValidPath(start) {
-		return nil // no key lies under it
-	}
-	if info, err := s.root.Stat(start); err != nil || !info.IsDir() {
-		if err == nil || errors.Is(err, fs.ErrNotExist) {
-			return nil
-		}
-
-		return fmt.Errorf("store: list %s: %w", prefix, err)
+	start, ok, err := s.listStart(prefix)
+	if !ok || err != nil {
+		return err
 	}
 	var fnErr error
-	err := fs.WalkDir(s.root.FS(), start, func(p string, d fs.DirEntry, err error) error {
+	err = fs.WalkDir(s.root.FS(), start, func(p string, d fs.DirEntry, err error) error {
 		switch {
 		case err != nil && p != start && errors.Is(err, fs.ErrNotExist):
 			return nil // removed while the walk ran
@@ -240,6 +232,27 @@ func (s *FS) putFile(ctx context.Context, key string, r io.Reader, size int64) e
 	}
 }
 
+// listStart returns the directory a listing of prefix walks, the deepest one the prefix names;
+// ok is false when no key can lie under it.
+func (s *FS) listStart(prefix string) (start string, ok bool, err error) {
+	start = "."
+	if i := strings.LastIndexByte(prefix, '/'); i >= 0 {
+		start = prefix[:i]
+	}
+	if !fs.ValidPath(start) || start == partialDir || strings.HasPrefix(start, partialDir+"/") {
+		return "", false, nil
+	}
+	info, err := s.root.Stat(start)
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+		return "", false, nil
+	case err != nil:
+		return "", false, fmt.Errorf("store: list %s: %w", prefix, err)
+	}
+
+	return start, info.IsDir(), nil
+}
+
 func (s *FS) write(name string, r io.Reader, size int64) error {
 	f, err := s.root.OpenFile(name, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {
@@ -279,8 +292,13 @@ func clearDead(root *os.Root) error {
 			continue
 		}
 		name := path.Join(partialDir, e.Name())
+		if beforeClear != nil {
+			beforeClear(name)
+		}
 		f, err := root.Open(name)
-		if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			continue // its store closed since the listing
+		} else if err != nil {
 			return err
 		}
 		err = flock(f, syscall.LOCK_EX|syscall.LOCK_NB)

@@ -125,6 +125,9 @@ func (s *Store) List(ctx context.Context, prefix string, fn func(store.ObjectInf
 			return fmt.Errorf("s3store: list %s: %w", prefix, err)
 		}
 		for _, o := range page.Contents {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
 			if err := fn(store.ObjectInfo{Key: aws.ToString(o.Key), Size: aws.ToInt64(o.Size)}); err != nil {
 				return err
 			}
