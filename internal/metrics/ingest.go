@@ -2,6 +2,7 @@ package metrics
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -17,8 +18,8 @@ type Ingest struct {
 	messages, segments, segmentBytes, conflicts, losses *prometheus.CounterVec
 	redelivered, inProgress                             prometheus.Counter
 	put, registration                                   prometheus.Histogram
-	parked, capturesOpen, openGaps                      *prometheus.GaugeVec
-	ackPending, backlogMessages, backlogBytes           prometheus.Gauge
+	refreshFailures                                     prometheus.Counter
+	snap                                                *snapshot
 	deferred                                            *deferrals
 }
 
@@ -26,12 +27,6 @@ type Ingest struct {
 func NewIngest(s *Server) (*Ingest, error) {
 	counter := func(name, help string, labels ...string) *prometheus.CounterVec {
 		return prometheus.NewCounterVec(prometheus.CounterOpts{Namespace: "tracekeep", Subsystem: "ingest", Name: name, Help: help}, labels)
-	}
-	gauge := func(name, help string, labels ...string) *prometheus.GaugeVec {
-		return prometheus.NewGaugeVec(prometheus.GaugeOpts{Namespace: "tracekeep", Subsystem: "ingest", Name: name, Help: help}, labels)
-	}
-	one := func(name, help string) prometheus.Gauge {
-		return prometheus.NewGauge(prometheus.GaugeOpts{Namespace: "tracekeep", Subsystem: "ingest", Name: name, Help: help})
 	}
 	m := &Ingest{
 		messages:     counter("messages_total", "Deliveries disposed, by disposition.", "disposition"),
@@ -47,17 +42,14 @@ func NewIngest(s *Server) (*Ingest, error) {
 			Help: "The put of a segment to the store.", Buckets: prometheus.ExponentialBuckets(0.01, 2, 12)}),
 		registration: prometheus.NewHistogram(prometheus.HistogramOpts{Namespace: "tracekeep", Subsystem: "ingest", Name: "registration_seconds",
 			Help: "The catalog registration of a segment.", Buckets: prometheus.ExponentialBuckets(0.001, 2, 12)}),
-		parked:          gauge("parked_messages", "Parked versions not yet resolved, by reason.", "reason"),
-		capturesOpen:    gauge("captures_open", "Open captures, by tool.", "tool_id"),
-		openGaps:        gauge("open_gaps", "Holes currently unfilled in the open captures, by tool.", "tool_id"),
-		ackPending:      one("consumer_ack_pending", "Messages the traffic consumer delivered and holds unacknowledged."),
-		backlogMessages: one("stream_backlog_messages", "Messages on the traffic stream."),
-		backlogBytes:    one("stream_backlog_bytes", "Bytes on the traffic stream."),
-		deferred:        &deferrals{byID: map[string]deferral{}, now: time.Now},
+		refreshFailures: prometheus.NewCounter(prometheus.CounterOpts{Namespace: "tracekeep", Subsystem: "ingest", Name: "refresh_failures_total",
+			Help: "Refreshes of the catalog and bus gauges that failed, the gauges keeping their previous values."}),
+		snap:     &snapshot{},
+		deferred: &deferrals{byID: map[string]deferral{}, now: time.Now},
 	}
 	for _, c := range []prometheus.Collector{
 		m.messages, m.segments, m.segmentBytes, m.conflicts, m.losses, m.redelivered, m.inProgress, m.put, m.registration,
-		m.parked, m.capturesOpen, m.openGaps, m.ackPending, m.backlogMessages, m.backlogBytes, m.deferred,
+		m.refreshFailures, m.snap, m.deferred,
 	} {
 		if err := s.Registry().Register(c); err != nil {
 			return nil, fmt.Errorf("metrics: ingest: %w", err)
@@ -78,8 +70,8 @@ func (m *Ingest) Disposed(disposition string, redelivered bool) {
 	}
 }
 
-// Deferred notes the message id nak'd for reason, from the first time it was; Settled forgets it once it is decided otherwise.
-// A message another replica receives meanwhile stays counted here until this replica sees it again: the gauge is per replica.
+// Deferred notes the message id nak'd for reason, from the first time it was for that reason; Settled forgets it once it is decided otherwise.
+// The gauge is per replica: a message another replica receives meanwhile is dropped once this one has not deferred it for deferralStale.
 func (m *Ingest) Deferred(id, reason string) {
 	if m == nil {
 		return
@@ -145,56 +137,130 @@ type Consumer interface {
 	State(ctx context.Context) (BusState, error)
 }
 
-// Refresh sets the gauges read from the catalog and the bus: the unresolved parked versions by reason,
-// the open captures and their unfilled holes by tool, and the traffic consumer's and stream's backlog.
-// A pass over every open capture's completeness, it runs on a timer, never per delivery.
+// Refresh reads the gauges of the catalog and the bus: the traffic consumer's and stream's backlog,
+// then the unresolved parked versions by reason and the open captures and their unfilled holes by tool.
+// Each source's gauges change together, at once, and only when the whole source was read: a failure keeps its previous values
+// and counts in refresh_failures_total. A pass over every open capture's completeness, it runs on a timer, never per delivery.
 func (m *Ingest) Refresh(ctx context.Context, cat *catalog.Catalog, cons Consumer) error {
 	if m == nil {
 		return nil
 	}
+	var errs []error
+	if cons != nil {
+		if st, err := cons.State(ctx); err != nil {
+			errs = append(errs, err)
+		} else {
+			m.snap.setBus(st)
+		}
+	}
+	if cat != nil {
+		if c, err := readCatalog(ctx, cat); err != nil {
+			errs = append(errs, err)
+		} else {
+			m.snap.setCatalog(c)
+		}
+	}
+	err := errors.Join(errs...)
+	if err != nil {
+		m.refreshFailures.Inc()
+	}
+
+	return err
+}
+
+// catalogState is the catalog's part of a refresh.
+type catalogState struct {
+	parked, captures, gaps map[string]int
+}
+
+func readCatalog(ctx context.Context, cat *catalog.Catalog) (catalogState, error) {
 	parked, err := cat.ParkedCounts(ctx)
 	if err != nil {
-		return err
-	}
-	m.parked.Reset()
-	for reason, n := range parked {
-		m.parked.WithLabelValues(reason).Set(float64(n))
+		return catalogState{}, err
 	}
 	open, err := cat.OpenCaptures(ctx)
 	if err != nil {
-		return err
+		return catalogState{}, err
 	}
-	captures, gaps := map[string]int{}, map[string]int{}
-	for _, c := range open {
-		cp, err := cat.Completeness(ctx, c.ID)
+	c := catalogState{parked: parked, captures: map[string]int{}, gaps: map[string]int{}}
+	for _, o := range open {
+		cp, err := cat.Completeness(ctx, o.ID)
 		if err != nil {
-			return err
+			return catalogState{}, err
 		}
-		captures[c.ToolID]++
-		gaps[c.ToolID] += len(cp.Gaps)
+		c.captures[o.ToolID]++
+		c.gaps[o.ToolID] += len(cp.Gaps)
 	}
-	m.capturesOpen.Reset()
-	m.openGaps.Reset()
-	for tool, n := range captures {
-		m.capturesOpen.WithLabelValues(tool).Set(float64(n))
-		m.openGaps.WithLabelValues(tool).Set(float64(gaps[tool]))
-	}
-	if cons == nil {
-		return nil
-	}
-	st, err := cons.State(ctx)
-	if err != nil {
-		return err
-	}
-	m.ackPending.Set(float64(st.AckPending))
-	m.backlogMessages.Set(float64(st.Messages))
-	m.backlogBytes.Set(float64(st.Bytes))
 
-	return nil
+	return c, nil
 }
+
+// snapshot holds the gauges Refresh reads, each source's replaced whole under the mutex, so a scrape never sees a refresh half done.
+type snapshot struct {
+	mu      sync.Mutex
+	bus     BusState
+	busRead bool
+	cat     catalogState
+}
+
+var (
+	parkedDesc       = prometheus.NewDesc("tracekeep_ingest_parked_messages", "Parked versions not yet resolved, by reason.", []string{"reason"}, nil)
+	capturesOpenDesc = prometheus.NewDesc("tracekeep_ingest_captures_open", "Open captures, by tool.", []string{"tool_id"}, nil)
+	openGapsDesc     = prometheus.NewDesc("tracekeep_ingest_open_gaps", "Holes currently unfilled in the open captures, by tool.", []string{"tool_id"}, nil)
+	ackPendingDesc   = prometheus.NewDesc("tracekeep_ingest_consumer_ack_pending",
+		"Messages the traffic consumer delivered and holds unacknowledged.", nil, nil)
+	backlogMessagesDesc = prometheus.NewDesc("tracekeep_ingest_stream_backlog_messages", "Messages on the traffic stream.", nil, nil)
+	backlogBytesDesc    = prometheus.NewDesc("tracekeep_ingest_stream_backlog_bytes", "Bytes on the traffic stream.", nil, nil)
+)
+
+func (s *snapshot) setBus(b BusState) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.bus, s.busRead = b, true
+}
+
+func (s *snapshot) setCatalog(c catalogState) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.cat = c
+}
+
+// Describe implements prometheus.Collector.
+func (s *snapshot) Describe(ch chan<- *prometheus.Desc) {
+	for _, d := range []*prometheus.Desc{parkedDesc, capturesOpenDesc, openGapsDesc, ackPendingDesc, backlogMessagesDesc, backlogBytesDesc} {
+		ch <- d
+	}
+}
+
+// Collect implements prometheus.Collector.
+func (s *snapshot) Collect(ch chan<- prometheus.Metric) {
+	s.mu.Lock()
+	b, busRead, c := s.bus, s.busRead, s.cat
+	s.mu.Unlock()
+	gauge := func(d *prometheus.Desc, v float64, labels ...string) {
+		ch <- prometheus.MustNewConstMetric(d, prometheus.GaugeValue, v, labels...)
+	}
+	if busRead {
+		gauge(ackPendingDesc, float64(b.AckPending))
+		gauge(backlogMessagesDesc, float64(b.Messages))
+		gauge(backlogBytesDesc, float64(b.Bytes))
+	}
+	for reason, n := range c.parked {
+		gauge(parkedDesc, float64(n), reason)
+	}
+	for tool, n := range c.captures {
+		gauge(capturesOpenDesc, float64(n), tool)
+		gauge(openGapsDesc, float64(c.gaps[tool]), tool)
+	}
+}
+
+// deferralStale is how long a deferral this replica no longer sees is kept: past every nak delay and the redelivery of a parked copy,
+// a message not redelivered here since was redelivered to another replica, or decided there.
+const deferralStale = 10 * time.Minute
 
 // deferrals are the messages this replica nak'd and has not seen decided otherwise since:
 // deferred_messages{reason} and deferred_oldest_age_seconds{reason}, computed at each scrape.
+// An entry not deferred again within deferralStale is dropped, which bounds the map by the deferral rate.
 type deferrals struct {
 	mu   sync.Mutex
 	byID map[string]deferral
@@ -202,8 +268,8 @@ type deferrals struct {
 }
 
 type deferral struct {
-	reason string
-	since  time.Time
+	reason      string
+	since, seen time.Time
 }
 
 var (
@@ -216,10 +282,13 @@ var (
 func (d *deferrals) add(id, reason string) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	if old, ok := d.byID[id]; ok && old.reason == reason {
-		return
+	now := d.now()
+	old, ok := d.byID[id]
+	if !ok || old.reason != reason {
+		old = deferral{reason: reason, since: now}
 	}
-	d.byID[id] = deferral{reason: reason, since: d.now()}
+	old.seen = now
+	d.byID[id] = old
 }
 
 func (d *deferrals) remove(id string) {
@@ -234,17 +303,21 @@ func (d *deferrals) Describe(ch chan<- *prometheus.Desc) {
 	ch <- deferredAgeDesc
 }
 
-// Collect implements prometheus.Collector.
+// Collect implements prometheus.Collector; it drops the stale entries.
 func (d *deferrals) Collect(ch chan<- prometheus.Metric) {
 	d.mu.Lock()
+	now := d.now()
 	counts, oldest := map[string]int{}, map[string]time.Time{}
-	for _, f := range d.byID {
+	for id, f := range d.byID {
+		if now.Sub(f.seen) > deferralStale {
+			delete(d.byID, id)
+			continue
+		}
 		counts[f.reason]++
 		if o, ok := oldest[f.reason]; !ok || f.since.Before(o) {
 			oldest[f.reason] = f.since
 		}
 	}
-	now := d.now()
 	d.mu.Unlock()
 	for reason, n := range counts {
 		ch <- prometheus.MustNewConstMetric(deferredDesc, prometheus.GaugeValue, float64(n), reason)

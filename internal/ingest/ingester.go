@@ -365,7 +365,7 @@ func (g *Ingester) act(ctx context.Context, e Entry, dec Decision, delivered uin
 	g.Metrics.Disposed(dec.Action.String(), delivered > 1)
 	if dec.Action == ActNak {
 		g.Metrics.Deferred(e.D.Msg.Env.MsgID, dec.Reason)
-	} else {
+	} else if dec.Action != ActPark { // park records whether the message stays deferred
 		g.Metrics.Settled(e.D.Msg.Env.MsgID)
 	}
 	switch dec.Action {
@@ -423,25 +423,31 @@ func (g *Ingester) evict(ctx context.Context, e Entry) {
 // a version past the horizon is terminated, a resolved one acknowledged, an unconfirmed copy's original nak'd to be parked again.
 // Without parking, and for a copy already parked, the deferral is nak'd like any other.
 func (g *Ingester) park(ctx context.Context, e Entry, reason string, delivered uint64) {
+	id := e.D.Msg.Env.MsgID
 	if !g.Park || e.D.Msg.Parked {
-		g.Metrics.Deferred(e.D.Msg.Env.MsgID, reason)
+		g.Metrics.Deferred(id, reason)
 		_ = e.Msg.NakWithDelay(g.delay(delivered))
 		return
 	}
 	p, err := g.Coordinator.Park(ctx, e, reason, HourOf(g.Executor.Horizon()))
 	switch {
 	case err != nil:
-		g.Log.Warn("ingest: parking failed", "msg_id", e.D.Msg.Env.MsgID, "error", err)
+		g.Log.Warn("ingest: parking failed", "msg_id", id, "error", err)
+		g.Metrics.Deferred(id, reason)
 		_ = e.Msg.NakWithDelay(g.delay(delivered))
 	case p.Begun.BeyondRetention:
 		g.act(ctx, e, Decision{Action: ActTerminate, Reason: ReasonBeyondRetention, Alert: true, Audit: true}, delivered)
 	case p.Begun.State.Resolved():
+		g.Metrics.Settled(id)
 		g.acknowledge(ctx, e)
 	case p.Confirmation == Suppressed:
+		g.Metrics.Deferred(id, reason)
 		_ = e.Msg.NakWithDelay(suppressedNakDelay)
 	case p.Confirmation != Confirmed:
+		g.Metrics.Deferred(id, reason)
 		_ = e.Msg.NakWithDelay(g.delay(delivered))
 	default: // parked: the original was acknowledged
+		g.Metrics.Settled(id)
 	}
 }
 

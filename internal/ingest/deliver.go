@@ -56,7 +56,7 @@ type Delivery struct {
 	ConfigID int64
 	// Claim is the claim object of a claim-check record once fetched.
 	Claim []byte
-	// ToolID is the capture's tool once the capture is looked up and admitted, for the metrics labelled by tool.
+	// ToolID is the capture's tool once the capture is looked up and admitted, or its start admitted, for the metrics labelled by tool.
 	ToolID string
 }
 
@@ -265,6 +265,7 @@ func (x *Executor) admit(ctx context.Context, d *Delivery) error {
 	if meta.CaptureOriginUTCNs != nil {
 		desc.OriginNS = *meta.CaptureOriginUTCNs
 	}
+	d.ToolID = meta.ToolID
 	res, err := x.Catalog.Admit(ctx, d.identity(), desc)
 	if err != nil {
 		return err
