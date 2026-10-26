@@ -84,7 +84,8 @@ func resolveIn(ctx context.Context, q sqlx.QueryerContext, v *VersionKey, incarn
 	switch {
 	case err == nil:
 		// An order never undoes a registration: a seq a registered pack holds is staged, even with no parked row
-		// (an inline record whose acknowledgement was lost). An evicted hour's seqs are no longer held, so an order still covers them.
+		// (an inline record whose acknowledgement was lost).
+		// An evicted hour's seqs are no longer held, so an order still covers them.
 		// shortcut: pack_ranges records seqs, not versions, so another version of a held seq also reads staged;
 		// accepted since the operator ended the capture; upgrade to a per-version receipt if that loss ever matters.
 		var held int

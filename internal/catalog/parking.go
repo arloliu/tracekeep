@@ -45,7 +45,8 @@ type Begun struct {
 // BeginParking is step (1) of the parking protocol (parking.md *Parking*, catalog.md §7.2 `BeginParking`) for the delivery d,
 // deferred indefinitely for reason: under the capture row, a pending row for an unknown capture,
 // the termination re-check of Admit, the horizon guard for a new version of an admitted capture,
-// then the version's row inserted parking or found, and the delivery's copy row inserted or found in every branch that parks or resolves.
+// then the version's row inserted parking or found, and the delivery's copy row inserted or found in every branch that parks or resolves;
+// a covered seq a registered pack holds resolves staged with no parked row, and nothing is written.
 // objectKey is the claim object a claim-check record keeps alive, empty for an inline one.
 func (c *Catalog) BeginParking(ctx context.Context, d *Identity, reason, objectKey string, horizonHour int64) (Begun, error) {
 	var b Begun
@@ -114,7 +115,7 @@ func readVersionState(ctx context.Context, q sqlx.QueryerContext, v *VersionKey)
 // its copy row inserted or found, so every message of a parked version is accounted for, and the version's state read;
 // for a terminated version, audit is written in the same transaction naming the termination's action,
 // so the acknowledgement that follows is recorded under the state it was decided on, and a redelivery acknowledged again writes its own.
-// A version with no parked row, staged by a receipt alone, writes nothing and returns an empty state.
+// A version with no parked row, staged by a receipt alone or by a registered pack holding its seq, writes nothing and returns an empty state.
 func (c *Catalog) PrepareAck(ctx context.Context, d *Identity, audit AuditEntry) (VersionState, error) {
 	var state VersionState
 	err := outcome(c.inTx(ctx, func(tx *sqlx.Tx) error {

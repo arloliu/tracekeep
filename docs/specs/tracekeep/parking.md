@@ -82,8 +82,9 @@ it then inserts-or-finds the `parked` row, keyed by the version (capture, seq, t
 so a conflicting version is its own row, in state `parking`;
 a row already **resolved** (`staged` or `terminated`) publishes nothing:
 the original is acknowledged as already staged or under the termination (*resolution* below);
-in every branch the transaction also inserts-or-finds the original's row in **`parked_copies`** (the traffic stream's incarnation, its stream sequence from the delivery's metadata, the version key),
+in every branch that parks or resolves a `parked` row the transaction also inserts-or-finds the original's row in **`parked_copies`** (the traffic stream's incarnation, its stream sequence from the delivery's metadata, the version key),
 so every message of a version is accounted for;
+a message an order covers whose seq a registered pack holds resolves as staged with no `parked` row, and the transaction writes nothing (T-40);
 (2) for a row in `parking`, `parked` or `evicted-hour` state `ingest` publishes the copy on the version's subject with `WithExpectLastSequencePerSubject(0)`
 (nats-server v2.15.1: standalone in `server/stream.go` `processJetStreamMsgWithBatch`, lines 6774–6800,
 clustered in `server/jetstream_batching.go`, lines 766–822:
