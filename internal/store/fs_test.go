@@ -58,6 +58,27 @@ func TestFSOpenDuringAnotherStoresPut(t *testing.T) {
 	go func() { done <- a.Put(t.Context(), "staging/a", r, int64(len(data))) }()
 	<-held // a's temporary file holds half the body
 
+	// No prefix reaches the temporary file, not even one inside .partial/.
+	entries, err := os.ReadDir(filepath.Join(dir, ".partial"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	prefixes := make([]string, 0, 3+len(entries))
+	prefixes = append(prefixes, "", ".partial", ".partial/")
+	for _, e := range entries {
+		prefixes = append(prefixes, ".partial/"+e.Name()+"/")
+	}
+	for _, prefix := range prefixes {
+		show := func(info store.ObjectInfo) error {
+			t.Errorf("List(%q) shows %+v while its put is in progress", prefix, info)
+
+			return nil
+		}
+		if err := a.List(t.Context(), prefix, show); err != nil {
+			t.Errorf("List(%q) = %v", prefix, err)
+		}
+	}
+
 	newFS(t, dir)
 	close(release)
 	if err := <-done; err != nil {

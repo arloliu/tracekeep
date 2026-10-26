@@ -25,7 +25,7 @@ func NewMem() *Mem {
 // Put implements ObjectStore.
 func (m *Mem) Put(ctx context.Context, key string, r io.ReadSeeker, size int64) error {
 	var buf bytes.Buffer
-	_, err := io.CopyN(&buf, r, size)
+	_, err := io.CopyN(&buf, ctxReader{ctx, r}, size)
 	if err == nil {
 		err = ctx.Err()
 	}
