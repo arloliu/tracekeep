@@ -369,3 +369,34 @@ func TestWorkDir(t *testing.T) {
 		t.Error("CleanWorkDir removed a file that is not a working file")
 	}
 }
+
+// Two claim digests at one seq (the gate's case): the claim object, named for the seq, holds one payload,
+// so the version staged first keeps its receipt and the other, whose digest the object no longer matches,
+// is deferred as a claim conflict with an alert, never staged with another version's payload (compactor.md §8.4).
+func TestTwoClaimDigestsAtOneSeq(t *testing.T) {
+	t.Parallel()
+	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
+		p := newPipeline(t, c)
+		capture := tracepack.UUID{5}
+		p.feed(t, inline(t, capture, startRecord(t, now), descriptorOf(t, "eqp")))
+		first := claimCheck(t, p.cl, capture, dataRecord(1, now), nil)
+		p.feed(t, first)
+		p.flushAll(t)
+
+		other := dataRecord(1, now)
+		other.Payload = append(bytes.Clone(other.Payload), 0xee)
+		second := claimCheck(t, newClaims(), capture, other, nil) // its object never reaches this bucket, which keeps the first's
+		if second.Env.PayloadDigest == first.Env.PayloadDigest {
+			t.Fatal("the two versions share a digest")
+		}
+		_, dec := dispose(t, p.x, second)
+		if dec.Action != ActNak || dec.Reason != ReasonClaimConflict || !dec.Alert {
+			t.Errorf("the second digest's decision %+v, want a claim conflict nak'd with an alert", dec)
+		}
+		d, _ := dispose(t, p.x, first)
+		v := d.versionKey()
+		if m, err := c.Receipt(t.Context(), v); err != nil || m != catalog.ReceiptEqual {
+			t.Errorf("the first version's receipt %v, %v; want it kept", m, err)
+		}
+	})
+}

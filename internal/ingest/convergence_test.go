@@ -131,43 +131,61 @@ func mustSubject(t *testing.T, d *Delivery) string {
 	return s
 }
 
-// Two claim-check versions of one seq parked inside one duplicate window: the first copy is stored and its original acknowledged,
-// the second publish stores nothing and its original stays unacknowledged; neither is lost.
-func TestTwoClaimVersionsInOneWindow(t *testing.T) {
+// Two versions of one seq parked inside one duplicate window, inline and claim-check (the gate's case):
+// the first copy is stored and its original acknowledged, the second publish stores nothing and its original stays unacknowledged;
+// neither is lost.
+func TestTwoVersionsInOneWindow(t *testing.T) {
 	t.Parallel()
-	for _, clustered := range []bool{false, true} {
-		t.Run(map[bool]string{false: "standalone", true: "clustered"}[clustered], func(t *testing.T) {
-			t.Parallel()
-			catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
-				ctx := t.Context()
-				js, parked := parkingBus(t, clustered)
-				k := &Coordinator{Catalog: c, Bus: js, ParkPrefix: busconfig.DefaultParkPrefix}
-				cl := newClaims()
-				capture := tracepack.UUID{92}
-				other := dataRecord(1, now)
-				other.Payload = append(slices.Clone(other.Payload), 0xff)
-				a := delivered(transported(t, claimCheck(t, cl, capture, dataRecord(1, now), nil)))
-				b := delivered(transported(t, claimCheck(t, cl, capture, other, nil)))
-				b.Msg.StreamSeq++ // another message of the traffic stream
-				ha, hb := &msg{}, &msg{}
-				pa, err := k.Park(ctx, Entry{D: a, Msg: ha}, ReasonClaimMissing, 0)
-				if err != nil || pa.Confirmation != Confirmed || !slices.Equal(ha.done(), []string{"double-ack"}) {
-					t.Fatalf("Park of the first version = %+v, %v, %v", pa, err, ha.done())
-				}
-				pb, err := k.Park(ctx, Entry{D: b, Msg: hb}, ReasonClaimMissing, 0)
-				if err != nil || pb.Confirmation != Suppressed || len(hb.done()) != 0 {
-					t.Fatalf("Park of the second version = %+v, %v, %v; want suppressed, unacknowledged", pb, err, hb.done())
-				}
-				if stored(t, parked, mustSubject(t, a)) == nil || stored(t, parked, mustSubject(t, b)) != nil || msgs(t, parked) != 1 {
-					t.Errorf("the parking stream holds %d copies; want the first version's only", msgs(t, parked))
-				}
-				vs := versions(t, c, capture)
-				if len(vs) != 2 || vs[0].State == vs[1].State {
-					t.Errorf("versions %+v; want one parked, the other still parking", vs)
-				}
+	for _, kind := range []string{"inline", "claim-check"} {
+		for _, clustered := range []bool{false, true} {
+			t.Run(kind+"/"+map[bool]string{false: "standalone", true: "clustered"}[clustered], func(t *testing.T) {
+				t.Parallel()
+				twoVersionsInOneWindow(t, kind == "claim-check", clustered)
 			})
-		})
+		}
 	}
+}
+
+func twoVersionsInOneWindow(t *testing.T, claim, clustered bool) {
+	t.Helper()
+	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
+		ctx := t.Context()
+		js, parked := parkingBus(t, clustered)
+		k := &Coordinator{Catalog: c, Bus: js, ParkPrefix: busconfig.DefaultParkPrefix}
+		cl := newClaims()
+		capture := tracepack.UUID{92}
+		other := dataRecord(1, now)
+		other.Payload = append(slices.Clone(other.Payload), 0xff)
+		message := func(r tracepack.Record) Message {
+			if claim {
+				return claimCheck(t, cl, capture, r, nil)
+			}
+			return inline(t, capture, r, nil)
+		}
+		reason := ReasonUnknownCapture
+		if claim {
+			reason = ReasonClaimMissing
+		}
+		a := delivered(transported(t, message(dataRecord(1, now))))
+		b := delivered(transported(t, message(other)))
+		b.Msg.StreamSeq++ // another message of the traffic stream
+		ha, hb := &msg{}, &msg{}
+		pa, err := k.Park(ctx, Entry{D: a, Msg: ha}, reason, 0)
+		if err != nil || pa.Confirmation != Confirmed || !slices.Equal(ha.done(), []string{"double-ack"}) {
+			t.Fatalf("Park of the first version = %+v, %v, %v", pa, err, ha.done())
+		}
+		pb, err := k.Park(ctx, Entry{D: b, Msg: hb}, reason, 0)
+		if err != nil || pb.Confirmation != Suppressed || len(hb.done()) != 0 {
+			t.Fatalf("Park of the second version = %+v, %v, %v; want suppressed, unacknowledged", pb, err, hb.done())
+		}
+		if stored(t, parked, mustSubject(t, a)) == nil || stored(t, parked, mustSubject(t, b)) != nil || msgs(t, parked) != 1 {
+			t.Errorf("the parking stream holds %d copies; want the first version's only", msgs(t, parked))
+		}
+		vs := versions(t, c, capture)
+		if len(vs) != 2 || vs[0].State == vs[1].State {
+			t.Errorf("versions %+v; want one parked, the other still parking", vs)
+		}
+	})
 }
 
 // The protocol's crash points on the original's side: after the PubAck and before the advance,
