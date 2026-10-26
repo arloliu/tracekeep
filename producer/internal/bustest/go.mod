@@ -5,7 +5,7 @@ go 1.26.0
 require (
 	github.com/arloliu/go-secs/tracepack v0.9.0
 	github.com/arloliu/tracekeep v0.0.0
-	github.com/arloliu/tracekeep/producer v0.1.0
+	github.com/arloliu/tracekeep/producer v0.2.0
 	github.com/nats-io/nats.go v1.55.0
 )
 
