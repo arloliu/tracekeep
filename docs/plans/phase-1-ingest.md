@@ -1,6 +1,6 @@
 # Phase 1 — ingest
 
-Status: active (2026-10-26) — phase 1.4 next
+Status: active (2026-10-26) — phase 1.4 in progress
 
 Milestone 1 of the [roadmap](../ROADMAP.md):
 the `ingest` role with its stores, catalog and reconciler, and `tracekeep dev` as the single-process loop.
@@ -65,10 +65,19 @@ a `rejected` capture's records, an expired record of a `rejected` or unknown cap
 a batch at the `write-failure` limit, a record of an unknown capture whose catalog row is already `pending` (an earlier message was parked),
 and a claim-check message of an unknown capture whose object is missing once its nak delay reached the last step.
 Every other deferral stays a nak with delay, as in phase 1.3.
+The claim-missing clause is this plan's reading of "parked when indefinite" (`ingest.md` §6.1),
+since an object a producer is still putting may yet appear.
+
+Two shapes the steps share:
+**every acknowledgement of a resolved version goes through the coordinator's *acknowledge***
+(`DoubleAck`, then the message's copy row marked `acked` when it has one), never the plain `Ack` of a batched message;
+**the parked consumer is a second `Ingester`** over the parking stream, sharing the executor, the flusher and the catalog,
+with its own consumer, batcher, nak delay, heartbeat and membership (named for the replica's, `<replica>/parked`),
+renewed before each of its own fetches.
 
 | Step | Scope | State |
 |---|---|---|
-| 1 | the termination re-check: `Admit` and `Reject` take the delivery's identity (version key, incarnation, stream seq) and re-read its resolution and the capture's active orders under the row, returning `terminated` and writing nothing else; an order's application (the version inserted `terminated` under the order's action id with its copy row, the audit row and a `terminated` scope event, T-33) inline and as a transaction of its own; `RegisterPack`'s evidence carries every record's identity, its guard aborts and tombstones on a terminated or order-covered version, and it moves the batch's `parking`/`parked` versions to `staged` by compare-and-set; barrier tests of a termination committed before and after an admission and a registration (checklist 7) | pending |
+| 1 | the termination re-check (a registration aborted by it naks its batch for reclassification, never a `write-failure` count): `Admit` and `Reject` take the delivery's identity (version key, incarnation, stream seq) and re-read its resolution and the capture's active orders under the row, returning `terminated` and writing nothing else; an order's application (the version inserted `terminated` under the order's action id with its copy row, the audit row and a `terminated` scope event, T-33) inline and as a transaction of its own; `RegisterPack`'s evidence carries every record's identity, its guard aborts and tombstones on a terminated or order-covered version, and it moves the batch's `parking`/`parked` versions to `staged` by compare-and-set; barrier tests of a termination committed before and after an admission and a registration (checklist 7) | pending |
 | 2 | the parking transactions: *begin* (the `pending` row when none, the state re-read, the horizon guard for an admitted capture, the `parked` and `parked_copies` rows insert-or-find), *advance*, a copy marked `acked`, a copy row inserted by the parked consumer, `parked → evicted-hour`; operator termination of parked versions and of a capture with its order; an order `spent` by `FirstSeq` or by retirement; `bus adopt-stream`'s catalog part (a new incarnation, copies `lost`, orders `spent`, refused while a lease is live); the reads `parked list` and `capture show` need | pending |
 | 3 | the bus: the service on `producer/v0.2.0`; `tracekeep migrate`'s bus part ensures the parking stream with the traffic stream's replicas, refuses prefixes sharing a first token and overlapping subject filters, and records the parking incarnation; the parked consumer `tk-parked-<incarnation>`; `bus adopt-stream`'s bus part deletes every `tk-*` consumer of the stream and verifies none remains | pending |
 | 4 | the parking coordinator: the version token and subject, the copy (body, `Tpk-*` headers and `Nats-Msg-Id` unchanged, `Nats-Expected-Stream` removed), the publish expecting last subject sequence 0, confirmation by a `PubAck` with `Duplicate` false or error 10071 with a strictly positive parsed sequence and nothing else, *advance* and *acknowledge*; the three-outcome test against `internal/testbus`, standalone and clustered, asserted on storage; confirmation failures converging (checklist 6) | pending |
