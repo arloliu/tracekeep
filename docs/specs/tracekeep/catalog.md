@@ -60,14 +60,14 @@ Contract changes go through proposals, which the subject [README.md](README.md) 
 | `pack_ranges` | `(pack_id, seq_from, seq_to, ts_from, ts_to)`: the exact seq runs a pack holds with their endpoint times | the completeness evidence of §7.3; the close sentinel is never a range |
 | `evicted_ranges` | `(capture_id, hour, seq_from, seq_to, ts_from, ts_to)`: seqs whose packs retention deleted, with their hour and endpoint times | §7.3 reports them as evicted, never as gaps, keeps the times a neighbouring gap needs, and tells an evicted hour from a `no-data` hour; a prefix scalar cannot express an hour (§8.3) |
 | `claim_records` | `(capture_id, seq, header44, payload_sha256)` → first `pack_id`: the **receipts** of records that travelled by claim-check, one row per version | version-sensitive staged proof for §6.1 and §8.4; outlives merges and deletions; removed only by retention |
-| `pack_losses` | a pack's `coverage` entries: declared losses | carried into the archive's rows on merge |
+| `pack_losses` | a pack's `coverage` entries: declared losses, each bound as the entry has it (an unknown upper bound absent) | carried into the archive's rows on merge |
 | `conflicts` | `(capture_id, seq_from, seq_to)` and the two packs holding versions of that seq run, `suspect` or `confirmed` | surfaced by `ListPacks`; blocks the scope's merge; a run, not a row per seq, since a redelivered batch overlaps its first copy over every seq it holds |
 | `claim_objects` | claim object key, capture, seq, **hour** of the record (from the receipt's header), size; `survivor` with the evicted hour once retention skipped it (§8.4) | deleted when §8.4's predicate holds: with the hour by retention, or later as a survivor by the reconciler |
 | `consumers` | replica id, lease expiry, the configurations it executes | the activation gate and membership leases of §6.4 |
 | `parked`, `parked_copies`, `bus_streams`, `termination_orders` | the parking tables | in [parking.md](parking.md) |
 | `scopes` | `(capture_id, hour)`: `state` `open`/`settled`/`reopened`, `revision`, `archive_pack_id`, `merged_at` | CAS on `revision` (§8.1) |
 | `scope_events` | `(seq, capture_id, hour, event, revision, at)`, `seq` from the `counters` row; a `low_water` and an `epoch` in `counters` | the LS-11 cursor (§7.3); pruned by seq prefix only |
-| `counters` | named counters: `scope_events`, and the `membership` sentinel, which holds no value | a row lock serializes allocation with commit order (`scope_events`) and admission with membership changes (`membership`, §6.4, T-32) |
+| `counters` | named counters: `scope_events`, and the `membership` sentinel, whose value counts registrations and numbers each membership's generation, never reused | a row lock serializes allocation with commit order (`scope_events`) and admission with membership changes (`membership`, §6.4, T-32) |
 | `merges`, `merge_inputs` | every merge with its inputs, output and outcome | the deletion relation (§8.3) |
 | `tombstones` | object keys deleted by retention or deletion, with the time | the reconciler never re-registers them |
 | `processing_configs`, `policies` | versioned configurations captures bind to | never updated in place |

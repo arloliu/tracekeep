@@ -37,10 +37,14 @@ const (
 
 // The roles a pack plays.
 const (
-	RoleSegment  = "segment"
+	// RoleSegment is a flush's segment.
+	RoleSegment = "segment"
+	// RoleConflict is a conflict segment: a further version of seqs the flush's segment holds.
 	RoleConflict = "conflict"
-	RoleArchive  = "archive"
-	RoleClose    = "close"
+	// RoleArchive is a merge's output.
+	RoleArchive = "archive"
+	// RoleClose is a close, which holds only the close sentinel.
+	RoleClose = "close"
 )
 
 // Range is an exact run of seqs a pack holds, with the times of its first and last record.
@@ -49,11 +53,11 @@ type Range struct {
 	TSFrom, TSTo   int64
 }
 
-// Loss is one of a pack's coverage entries: a declared loss.
+// Loss is one of a pack's coverage entries: a declared loss, each bound as the entry has it;
+// SeqTo is nil when the upper bound of the lost seqs is unknown, and a carried entry may lack any bound.
 type Loss struct {
-	SeqFrom, SeqTo uint64
+	SeqFrom, SeqTo *uint64
 	TSFrom, TSTo   *int64
-	Reason         string
 }
 
 // Version names the packs a batch saw holding another version of seq: a conflict the batch split (ingest.md §6.2).
@@ -121,20 +125,12 @@ func (c *Catalog) RegisterPack(ctx context.Context, p *Pack, r Registration) (Pa
 	err := outcome(c.inTx(ctx, func(tx *sqlx.Tx) error {
 		var err error
 		out, err = c.registerIn(ctx, tx, p, r)
-		if err == nil && out != Registered {
+		if err == nil && out != Registered && out != BeyondHorizon {
 			err = errRollback
 		}
 
 		return err
 	}))
-	if err == nil && out == BeyondHorizon {
-		// The tombstone commits alone, before the caller deletes the object, so a put delayed across eviction never registers.
-		err = c.inTx(ctx, func(tx *sqlx.Tx) error {
-			_, err := tx.ExecContext(ctx, c.d.insertIgnore+` INTO tombstones (object_key, reason, at) VALUES (?, 'beyond-retention', ?)`, p.Key, c.now())
-
-			return err
-		})
-	}
 	if err != nil {
 		return 0, fmt.Errorf("catalog: register pack %s: %w", p.ID, err)
 	}
@@ -166,7 +162,11 @@ func (p *Pack) check(r Registration) error {
 		seqs = append(seqs, rg.SeqFrom, rg.SeqTo)
 	}
 	for _, l := range p.Losses {
-		seqs = append(seqs, l.SeqFrom, l.SeqTo)
+		for _, b := range []*uint64{l.SeqFrom, l.SeqTo} {
+			if b != nil {
+				seqs = append(seqs, *b)
+			}
+		}
 	}
 	for _, v := range p.Conflicts {
 		seqs = append(seqs, v.Seq)
@@ -195,7 +195,7 @@ func (c *Catalog) registerIn(ctx context.Context, tx *sqlx.Tx, p *Pack, r Regist
 			return 0, err
 		}
 	}
-	if out, done, err := c.guards(ctx, tx, p, r, row.State); done || err != nil {
+	if out, done, err := c.guards(ctx, tx, p, r, row); done || err != nil {
 		return out, err
 	}
 	if err := c.insertPack(ctx, tx, p, r); err != nil {
@@ -224,7 +224,7 @@ func (c *Catalog) registerIn(ctx context.Context, tx *sqlx.Tx, p *Pack, r Regist
 }
 
 // guards runs the checks that end a registration before it writes the pack: done reports that out is final.
-func (c *Catalog) guards(ctx context.Context, tx *sqlx.Tx, p *Pack, r Registration, state string) (PackOutcome, bool, error) {
+func (c *Catalog) guards(ctx context.Context, tx *sqlx.Tx, p *Pack, r Registration, row captureRow) (PackOutcome, bool, error) {
 	var adopted bool
 	err := tx.GetContext(ctx, &adopted, `SELECT adopted FROM packs WHERE pack_id = ?`, p.ID[:])
 	switch {
@@ -243,9 +243,17 @@ func (c *Catalog) guards(ctx context.Context, tx *sqlx.Tx, p *Pack, r Registrati
 		return Tombstoned, true, nil
 	}
 	if p.Hour < r.HorizonHour {
-		return BeyondHorizon, true, nil
+		// The tombstone commits under the capture row, before the caller deletes the object,
+		// so a put delayed across eviction never registers and no registration of the key slips in between.
+		_, err := tx.ExecContext(ctx, c.d.insertIgnore+` INTO tombstones (object_key, reason, at) VALUES (?, 'beyond-retention', ?)`, p.Key, c.now())
+		if err == nil && row.DataRevision == 1 {
+			// Revision 1 under the lock means this transaction inserted the placeholder: a stray leaves none.
+			_, err = tx.ExecContext(ctx, `DELETE FROM captures WHERE capture_id = ? AND state = 'pending' AND data_revision = 1`, p.Capture[:])
+		}
+
+		return BeyondHorizon, true, err
 	}
-	if r.Adopted && state != StateOpen && state != StateStopped && state != StateClosed {
+	if r.Adopted && row.State != StateOpen && row.State != StateStopped && row.State != StateClosed {
 		return UnadmittedCapture, true, nil
 	}
 
@@ -267,8 +275,8 @@ func (c *Catalog) insertPack(ctx context.Context, tx *sqlx.Tx, p *Pack, r Regist
 		}
 	}
 	for i, l := range p.Losses {
-		_, err := tx.ExecContext(ctx, `INSERT INTO pack_losses (pack_id, ord, seq_from, seq_to, ts_from, ts_to, reason) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-			p.ID[:], i, int64(l.SeqFrom), int64(l.SeqTo), l.TSFrom, l.TSTo, l.Reason)
+		_, err := tx.ExecContext(ctx, `INSERT INTO pack_losses (pack_id, ord, seq_from, seq_to, ts_from, ts_to) VALUES (?, ?, ?, ?, ?, ?)`,
+			p.ID[:], i, signed(l.SeqFrom), signed(l.SeqTo), l.TSFrom, l.TSTo)
 		if err != nil {
 			return err
 		}
@@ -407,4 +415,14 @@ func (c *Catalog) updateCapture(ctx context.Context, tx *sqlx.Tx, p *Pack, row c
 		WHERE capture_id = ?`, c.now(), seq, ts, stop, state, p.Capture[:])
 
 	return err
+}
+
+// signed is a checked seq as its column stores it, nil when absent.
+func signed(seq *uint64) *int64 {
+	if seq == nil {
+		return nil
+	}
+	v := int64(*seq)
+
+	return &v
 }

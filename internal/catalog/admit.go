@@ -21,10 +21,15 @@ var ErrUnknownCapture = errors.New("catalog: unknown capture")
 
 // The capture states (catalog.md §7.1).
 const (
-	StatePending  = "pending"
-	StateOpen     = "open"
-	StateStopped  = "stopped"
-	StateClosed   = "closed"
+	// StatePending is a placeholder without descriptor; the capture is unknown.
+	StatePending = "pending"
+	// StateOpen is an admitted capture whose stop has not been registered.
+	StateOpen = "open"
+	// StateStopped is an admitted capture whose stop was registered.
+	StateStopped = "stopped"
+	// StateClosed is an admitted capture the compactor closed.
+	StateClosed = "closed"
+	// StateRejected is a capture whose descriptor no consumer accepted.
 	StateRejected = "rejected"
 )
 

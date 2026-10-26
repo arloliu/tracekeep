@@ -22,7 +22,9 @@ import (
 
 // The engines a catalog runs on.
 const (
-	EngineSQLite  = "sqlite"
+	// EngineSQLite is a SQLite file, written by one process.
+	EngineSQLite = "sqlite"
+	// EngineMariaDB is a MariaDB server.
 	EngineMariaDB = "mariadb"
 )
 

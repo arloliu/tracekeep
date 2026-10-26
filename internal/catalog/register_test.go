@@ -272,7 +272,7 @@ func TestRegisterRefusesInvalidInput(t *testing.T) {
 		}{
 			"range at the sentinel":      {func(p *Pack) { p.Ranges[0].SeqTo = big }, ingest},
 			"seq start overflow":         {func(p *Pack) { p.SeqStart = big + 1 }, ingest},
-			"loss overflow":              {func(p *Pack) { p.Losses = []Loss{{SeqFrom: 1, SeqTo: big + 5, Reason: "x"}} }, ingest},
+			"loss overflow":              {func(p *Pack) { p.Losses = []Loss{{SeqFrom: ptr(uint64(1)), SeqTo: ptr(big + 5)}} }, ingest},
 			"conflict overflow":          {func(p *Pack) { p.Conflicts = []Version{{Seq: big}} }, ingest},
 			"receipt overflow":           {func(*Pack) {}, Registration{Evidence: &Evidence{Receipts: []Receipt{{Seq: big + 1}}}}},
 			"no range":                   {func(p *Pack) { p.Ranges = nil }, ingest},
@@ -308,6 +308,45 @@ func TestRegisterClose(t *testing.T) {
 		}
 		if got, _ := c.Capture(t.Context(), capture); got.HighestSeq != 9 {
 			t.Errorf("highest seq %d after the close, want 9", got.HighestSeq)
+		}
+	})
+}
+
+func ptr[T any](v T) *T { return &v }
+
+// A loss keeps the bounds its coverage entry has: an unknown upper bound, or none at all for a carried entry.
+func TestRegisterOpenEndedLoss(t *testing.T) {
+	t.Parallel()
+	engines(t, func(t *testing.T, c *Catalog) {
+		capture := admitted(t, c)
+		p := segment(t, capture, 1, 0, 9)
+		p.Losses = []Loss{{SeqFrom: ptr(uint64(10)), TSFrom: ptr(int64(5))}, {}}
+		register(t, c, p, Registration{Evidence: &Evidence{}})
+		if n := count(t, c, `SELECT COUNT(*) FROM pack_losses WHERE seq_from = 10 AND seq_to IS NULL`); n != 1 {
+			t.Errorf("%d open-ended losses, want one", n)
+		}
+		if n := count(t, c, `SELECT COUNT(*) FROM pack_losses WHERE seq_from IS NULL AND ts_from IS NULL`); n != 1 {
+			t.Errorf("%d losses without bounds, want one", n)
+		}
+	})
+}
+
+// A confirmed conflict at a seq keeps the suspect run that starts there against the same pack.
+func TestRegisterConfirmedAndSuspectAtOneSeq(t *testing.T) {
+	t.Parallel()
+	engines(t, func(t *testing.T, c *Catalog) {
+		capture := admitted(t, c)
+		first := segment(t, capture, 1, 0, 9)
+		register(t, c, first, Registration{Evidence: &Evidence{}})
+		p := segment(t, capture, 1, 5, 9)
+		p.Role = RoleConflict
+		p.Conflicts = []Version{{Seq: 5, Pack: first.ID}}
+		register(t, c, p, Registration{Evidence: &Evidence{}})
+		if n := count(t, c, `SELECT COUNT(*) FROM conflicts WHERE state = 'confirmed' AND seq_from = 5 AND seq_to = 5`); n != 1 {
+			t.Errorf("%d confirmed conflicts at 5, want one", n)
+		}
+		if n := count(t, c, `SELECT COUNT(*) FROM conflicts WHERE state = 'suspect' AND seq_from = 5 AND seq_to = 9`); n != 1 {
+			t.Errorf("%d suspects over 5-9, want one", n)
 		}
 	})
 }
