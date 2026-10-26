@@ -21,14 +21,14 @@ The tunables of later phases (Q, I, L, D, the masking keys) join this file with 
 | `catalog.dsn`, `catalog.dsn_ref` | — | `TRACEKEEP_CATALOG_DSN`, `…_DSN_REF` | the SQLite file or the MariaDB DSN; with credentials, by reference |
 | `bus.url` | — | `TRACEKEEP_BUS_URL` | the traffic cluster |
 | `bus.user`, `bus.password_ref`, `bus.creds_file` | — | `TRACEKEEP_BUS_…` | user and password, or a credentials file; not both |
-| `bus.ca_file`, `bus.cert_file`, `bus.key_file` | — | `TRACEKEEP_BUS_…` | TLS: the servers' CA, and a client certificate for mutual TLS |
+| `bus.ca_file`, `bus.cert_file`, `bus.key_file` | — | `TRACEKEEP_BUS_…` | TLS: the servers' CA, and a client certificate for mutual TLS, its certificate and key given together |
 | `bus.subject_prefix` | — | `TRACEKEEP_BUS_SUBJECT_PREFIX` | the traffic subjects' prefix, the producers' |
 | `bus.stream`, `bus.parked_stream`, `bus.park_prefix` | `busconfig`'s | `TRACEKEEP_BUS_…` | the traffic and parking streams and the parking prefix |
 | `bus.claim_bucket` | — | `TRACEKEEP_BUS_CLAIM_BUCKET` | the object store large records travel through |
 | `store.kind` | `s3` | `TRACEKEEP_STORE_KIND` | `s3`, or `fs` for a single host |
 | `store.key_prefix` | — | `TRACEKEEP_STORE_KEY_PREFIX` | prefixes every pack key |
 | `store.dir` | — | `TRACEKEEP_STORE_DIR` | the `fs` store's root |
-| `store.s3.endpoint`, `.region`, `.bucket`, `.access_key_id`, `.secret_access_key_ref` | — | `TRACEKEEP_S3_…` | an S3-compatible endpoint (T-34); empty endpoint for AWS |
+| `store.s3.endpoint`, `.region`, `.bucket`, `.access_key_id`, `.secret_access_key_ref` | — | `TRACEKEEP_S3_…` | an S3-compatible endpoint (T-34); empty endpoint for AWS; the bucket and both credentials are required, the store taking static credentials only |
 | `store.presign` | `true` | `TRACEKEEP_STORE_PRESIGN` | readers download by presigned URL (T-33); off for a store whose URLs they cannot use |
 | `ingest.flush_interval` | `5m` | `TRACEKEEP_INGEST_FLUSH_INTERVAL` | F (T-25): longer makes fewer, larger segments and a later registration; Q must exceed F plus `ack_wait` plus slack |
 | `ingest.ack_wait` | `7m` | `TRACEKEEP_INGEST_ACK_WAIT` | must exceed F plus an upload, and with the redelivery slack stay below Q minus F (T-25); 7 minutes, the plan's middle of that range |

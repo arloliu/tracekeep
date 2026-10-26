@@ -161,11 +161,19 @@ func (c *Config) check() error {
 			errs = append(errs, errors.New("store.dir is required for an fs store"))
 		}
 	case "s3":
-		if c.Store.S3.Bucket == "" {
-			errs = append(errs, errors.New("store.s3.bucket is required for an s3 store"))
+		// The store takes static credentials only (T-34).
+		for key, v := range map[string]string{
+			"store.s3.bucket": c.Store.S3.Bucket, "store.s3.access_key_id": c.Store.S3.AccessKeyID, "store.s3.secret_access_key": c.Store.S3.SecretAccessKey,
+		} {
+			if v == "" {
+				errs = append(errs, fmt.Errorf("%s is required for an s3 store", key))
+			}
 		}
 	default:
 		// The kind's own validation names it.
+	}
+	if (c.Bus.CertFile == "") != (c.Bus.KeyFile == "") {
+		errs = append(errs, errors.New("bus.cert_file and bus.key_file go together, for mutual TLS"))
 	}
 	if c.Bus.CredsFile != "" && c.Bus.User != "" {
 		errs = append(errs, errors.New("bus.creds_file and bus.user are exclusive"))

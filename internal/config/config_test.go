@@ -13,7 +13,7 @@ import (
 func yaml(catalog, bus, store, extra string) string {
 	return "catalog:\n" + cmp.Or(catalog, "  dsn: /var/lib/tracekeep/catalog.db\n") +
 		"bus:\n" + cmp.Or(bus, "  url: nats://bus:4222\n  subject_prefix: tk\n  claim_bucket: claims\n") +
-		"store:\n" + cmp.Or(store, "  s3:\n    bucket: packs\n") + extra
+		"store:\n" + cmp.Or(store, "  s3:\n    bucket: packs\n    access_key_id: ak\n    secret_access_key: sk\n") + extra
 }
 
 var minimal = yaml("", "", "", "")
@@ -94,6 +94,10 @@ func TestValidation(t *testing.T) {
 		"fs store, no dir":    {yaml("", "", "  kind: fs\n", ""), "store.dir"},
 		"s3 store, no bucket": {yaml("", "", "  kind: s3\n", ""), "store.s3.bucket"},
 		"two credentials":     {yaml("", "  url: nats://bus:4222\n  subject_prefix: tk\n  claim_bucket: claims\n  user: u\n  creds_file: /c\n", "", ""), "exclusive"},
+		"cert, no key":        {yaml("", "  url: nats://bus:4222\n  subject_prefix: tk\n  claim_bucket: claims\n  cert_file: /c\n", "", ""), "bus.key_file"},
+		"key, no cert":        {yaml("", "  url: nats://bus:4222\n  subject_prefix: tk\n  claim_bucket: claims\n  key_file: /k\n", "", ""), "bus.cert_file"},
+		"s3, no access key":   {yaml("", "", "  s3:\n    bucket: packs\n    secret_access_key: sk\n", ""), "store.s3.access_key_id"},
+		"s3, no secret":       {yaml("", "", "  s3:\n    bucket: packs\n    access_key_id: ak\n", ""), "store.s3.secret_access_key"},
 	} {
 		if _, err := Load(write(t, tc.yaml)); err == nil || !strings.Contains(err.Error(), tc.want) {
 			t.Errorf("%s: Load = %v, want an error naming %s", name, err, tc.want)
