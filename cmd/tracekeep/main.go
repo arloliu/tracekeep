@@ -13,8 +13,10 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strconv"
 	"syscall"
+	"time"
 
 	"github.com/arloliu/go-secs/tracepack"
 
@@ -66,15 +68,15 @@ func dispatch(ctx context.Context, args []string, stdout, stderr io.Writer) erro
 		return fmt.Errorf("%w: no command", errUsage)
 	}
 	command := args[0]
+	if command == "dev" {
+		return runDev(ctx, args[1:], stderr)
+	}
 	fs := flag.NewFlagSet(command, flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	path := fs.String("config", os.Getenv("TRACEKEEP_CONFIG"), "the configuration file")
 	actor := fs.String("actor", os.Getenv("USER"), "the operator named in an admin command's audit row")
 	if err := fs.Parse(args[1:]); err != nil {
 		return fmt.Errorf("%w: %w", errUsage, err)
-	}
-	if command == "dev" {
-		return runDev(ctx, fs.Args(), stderr)
 	}
 	roles := map[string]func(context.Context, *service.Env) error{
 		"migrate": service.Migrate, "ingest": service.Ingest, "compact": service.Compact, "all": service.All,
@@ -177,7 +179,38 @@ func parseCapture(s string) (tracepack.UUID, error) {
 	return id, nil
 }
 
-// runDev is filled in by the dev loop.
-func runDev(context.Context, []string, io.Writer) error {
-	return errors.New("dev is not built yet")
+// runDev runs tracekeep dev: an embedded bus, SQLite, an fs store, ingest, compact and the loopback simulator, in one process.
+func runDev(ctx context.Context, args []string, stderr io.Writer) error {
+	fs := flag.NewFlagSet("dev", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	dir := fs.String("data", "", "the directory that keeps the bus, the catalog and the packs; empty for a fresh temporary one")
+	port := fs.Int("port", 4222, "the embedded bus's client port, 0 for a free one")
+	flush := fs.Duration("flush", 10*time.Second, "ingest's flush interval")
+	rate := fs.Float64("rate", 10, "the simulator's forwarded requests per second; 0 runs no simulator")
+	if err := fs.Parse(args); err != nil {
+		return fmt.Errorf("%w: %w", errUsage, err)
+	}
+	if fs.NArg() != 0 || *flush <= 0 || *rate < 0 {
+		return fmt.Errorf("%w: dev %v", errUsage, args)
+	}
+	if *dir == "" {
+		d, err := os.MkdirTemp("", "tracekeep-dev-")
+		if err != nil {
+			return err
+		}
+		*dir = d
+	}
+	log := slog.New(slog.NewJSONHandler(stderr, nil))
+	d, err := service.NewDev(ctx, service.DevOptions{Dir: *dir, Port: *port, Flush: *flush, Rate: *rate, Log: log})
+	if err != nil {
+		return err
+	}
+	defer func() { _ = d.Close() }()
+	log.Info("tracekeep dev: running", "data", *dir, "bus", d.URL(), "packs", filepath.Join(*dir, "packs"))
+	err = d.Run(ctx)
+	if ctx.Err() != nil && errors.Is(err, ctx.Err()) {
+		return nil
+	}
+
+	return err
 }
