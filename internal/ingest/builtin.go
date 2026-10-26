@@ -33,15 +33,16 @@ func namedConfig(name string, maxFrameLen uint64, allowUnversioned bool) (Config
 	return Config{Classifier: classify.NewNamed(name, maxFrameLen), Name: name, MaxFrameLen: maxFrameLen}, nil
 }
 
-// ErrForeignConfiguration refuses a replica that cannot execute an unretired configuration, one of another classifier:
-// the activation gate keeps it out until that configuration is retired (rollouts.md §6.4).
+// ErrForeignConfiguration refuses a replica that cannot execute a configuration it must, one of another classifier:
+// unretired, which the activation gate requires, or bound by a capture the catalog holds (rollouts.md §6.4).
 var ErrForeignConfiguration = errors.New("ingest: an unretired configuration of another classifier")
 
-// Executable is every configuration this replica executes: builtin, and each unretired configuration of builtin's classifier,
-// whatever its frame limit, since the same classifier runs under any limit; so a limit changed and changed back still registers.
-// An unretired configuration of another classifier is refused before anything is activated, naming it for its retirement.
+// Executable is every configuration this replica executes: builtin, and each configuration the catalog requires (RequiredConfigs)
+// of builtin's classifier, whatever its frame limit, since the same classifier runs under any limit:
+// a limit changed and changed back still registers, and a capture bound to a retired configuration is still executed.
+// A required configuration of another classifier is refused before anything is activated, naming it.
 func Executable(ctx context.Context, cat *catalog.Catalog, builtin Config) ([]Config, error) {
-	stored, err := cat.UnretiredConfigs(ctx)
+	stored, err := cat.RequiredConfigs(ctx)
 	if err != nil {
 		return nil, err
 	}
