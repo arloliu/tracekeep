@@ -30,7 +30,8 @@ a header or convention both sides need goes into the SDK, never into the service
 | Path | Scope |
 |---|---|
 | `cmd/tracekeep` | the one binary: `ingest`, `compact`, `api`, `migrate`, `all`, `dev` (embedded bus, fake S3, SQLite, simulated producer) |
-| `cmd/tracekeep-sim` | the reference producer on the SDK: a go-secs loopback pair with the observers, or replay of tracepack packs; back in the service module since phase 1.6 (T-38) |
+| `cmd/tracekeep-sim` | the reference producer's command line, over `internal/sim`; back in the service module since phase 1.6 (T-38) |
+| `internal/sim` | the reference producer on the SDK: a go-secs loopback pair with the observers, or replay of tracepack packs; run by `cmd/tracekeep-sim` and `tracekeep dev` |
 | `internal/testbus` | embedded nats-server with JetStream for tests and `dev`; service module only, never the SDK |
 | `internal/bus` | JetStream pull consumers, claim-check fetch, message disposition |
 | `internal/ingest` | per-scope batches, sort, dedupe, conflicts, mask, write, register, acknowledge; the parking coordinator and the parked consumer |

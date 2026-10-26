@@ -1,4 +1,8 @@
-package main
+// Package sim is the reference producer on the SDK, which cmd/tracekeep-sim and tracekeep dev run:
+// it drives the SDK exactly as an equipment gateway does, from a go-secs HSMS-SS loopback pair with the SDK's observers.
+// In loopback mode the host forwards requests at a steady rate and the equipment answers them;
+// in replay mode the pair carries a synthetic or masked tracepack pack's frames, each from the side that sent it.
+package sim
 
 import (
 	"context"
