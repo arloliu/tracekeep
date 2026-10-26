@@ -12,6 +12,12 @@ import (
 
 const now = int64(100 * time.Hour)
 
+const maxFrameLen = 1 << 20
+
+func testConfig() Config {
+	return Config{Classifier: classify.NewNamed(classify.Name, maxFrameLen), Name: classify.Name, MaxFrameLen: maxFrameLen}
+}
+
 // executor runs on c with one configuration, executed by a leased member, so admissions bind it.
 func executor(t *testing.T, c *catalog.Catalog, cl *claims) *Executor {
 	t.Helper()
@@ -26,7 +32,7 @@ func executor(t *testing.T, c *catalog.Catalog, cl *claims) *Executor {
 	return &Executor{
 		Catalog: c, Claims: cl, Incarnation: 1,
 		Horizon: func() int64 { return now - int64(24*time.Hour) },
-		Configs: map[int64]tracepack.Classifier{cfg: classify.New(1 << 20)},
+		Configs: map[int64]Config{cfg: testConfig()},
 	}
 }
 
@@ -167,7 +173,7 @@ func TestDisposeIncompatibleConfiguration(t *testing.T) {
 		x := executor(t, c, newClaims())
 		capture := tracepack.UUID{7}
 		dispose(t, x, inline(t, capture, startRecord(t, now), descriptorOf(t, "eqp")))
-		x.Configs = map[int64]tracepack.Classifier{}
+		x.Configs = map[int64]Config{}
 		if _, dec := dispose(t, x, inline(t, capture, dataRecord(1, now), nil)); dec.Action != ActNak || dec.Reason != ReasonIncompatible {
 			t.Errorf("a record of an unexecuted configuration = %+v, want deferred", dec)
 		}

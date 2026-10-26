@@ -52,6 +52,15 @@ type Delivery struct {
 	Claim []byte
 }
 
+// Config is a processing configuration this replica executes (rollouts.md §6.4):
+// the classifier's name, which every pack of a capture bound to it records, its frame bound, and the classifier itself.
+// Phase 1 binds no redaction policy, so nothing is masked.
+type Config struct {
+	Classifier  tracepack.Classifier
+	Name        string
+	MaxFrameLen uint64
+}
+
 // Executor answers Decide's steps for a delivery: the reads, the claim fetch and the admission transactions.
 type Executor struct {
 	Catalog *catalog.Catalog
@@ -60,8 +69,8 @@ type Executor struct {
 	Incarnation int64
 	// Horizon returns the retention horizon, in UTC nanoseconds: an older record is expired.
 	Horizon func() int64
-	// Configs are the processing configurations this replica executes, each with its classifier.
-	Configs map[int64]tracepack.Classifier
+	// Configs are the processing configurations this replica executes, by id.
+	Configs map[int64]Config
 }
 
 // Dispose decides msg's disposition, running the steps Decide asks for (ingest.md §6.1).
@@ -263,7 +272,7 @@ func (x *Executor) derive(d *Delivery) {
 		d.Facts.Derived = DerivedKindInvalid
 		return
 	}
-	if err := tracepack.DeriveBusRecord(&d.Record.Record, x.Configs[d.ConfigID]); err != nil {
+	if err := tracepack.DeriveBusRecord(&d.Record.Record, x.Configs[d.ConfigID].Classifier); err != nil {
 		d.Facts.Derived = DerivedClassifierInvalid
 		return
 	}
