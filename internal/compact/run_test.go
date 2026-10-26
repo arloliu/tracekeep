@@ -3,7 +3,11 @@ package compact
 import (
 	"context"
 	"errors"
+	"io"
 	"log/slog"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -15,6 +19,7 @@ import (
 	"github.com/arloliu/tracekeep/internal/bus"
 	"github.com/arloliu/tracekeep/internal/catalog"
 	"github.com/arloliu/tracekeep/internal/catalog/catalogtest"
+	"github.com/arloliu/tracekeep/internal/metrics"
 	"github.com/arloliu/tracekeep/internal/store"
 	"github.com/arloliu/tracekeep/internal/testbus"
 )
@@ -300,4 +305,57 @@ func TestRunReleasesTheLease(t *testing.T) {
 			t.Errorf("the standby's take = %v, %v; want the released lease", ok, err)
 		}
 	})
+}
+
+// The reconciler's metrics and readiness: the holder adopts, counts its cycles and holds the lease; the standby holds none;
+// neither is ready before it read the lease's state, and both are after.
+func TestReconcilerMetrics(t *testing.T) {
+	t.Parallel()
+	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
+		ctx := t.Context()
+		p := reconcilers(t, c)
+		sa, sb := metrics.NewServer(), metrics.NewServer()
+		var err error
+		if p.a.Metrics, err = metrics.NewCompact(sa); err != nil {
+			t.Fatal(err)
+		}
+		if p.b.Metrics, err = metrics.NewCompact(sb); err != nil {
+			t.Fatal(err)
+		}
+		if err := p.a.Ready(ctx); err == nil {
+			t.Error("ready before reading the lease's state")
+		}
+		f := &fixture{c: c, s: p.s}
+		orphan := segment(t, f.admit(t), []uint64{1}, false)
+		f.put(t, orphan.key, orphan.data)
+		step(t, p.a)
+		step(t, p.a)
+		step(t, p.b)
+		for name, r := range map[string]*Reconciler{"holder": p.a, "standby": p.b} {
+			if err := r.Ready(ctx); err != nil {
+				t.Errorf("%s not ready after reading the lease's state: %v", name, err)
+			}
+		}
+		a, b := scrape(t, sa), scrape(t, sb)
+		for _, want := range []string{
+			"tracekeep_compact_orphans_adopted_total 1", "tracekeep_compact_lease_held 1",
+			`tracekeep_compact_cycle_seconds_count{task="reconcile"} 2`, `tracekeep_compact_last_success_timestamp{task="reconcile"}`,
+		} {
+			if !strings.Contains(a, want) {
+				t.Errorf("the holder's /metrics lacks %s", want)
+			}
+		}
+		if !strings.Contains(b, "tracekeep_compact_lease_held 0") || strings.Contains(b, `cycle_seconds_count{task="reconcile"}`) {
+			t.Error("the standby counts a cycle or holds the lease")
+		}
+	})
+}
+
+func scrape(t *testing.T, s *metrics.Server) string {
+	t.Helper()
+	rec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/metrics", nil))
+	body, _ := io.ReadAll(rec.Body)
+
+	return string(body)
 }
