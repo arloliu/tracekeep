@@ -51,15 +51,25 @@ func TestServer(t *testing.T) {
 	}
 }
 
-// Serve listens until its context ends.
-func TestServe(t *testing.T) {
+// Start binds at once, failing on an address it cannot bind, and serves until Close.
+func TestStartAndClose(t *testing.T) {
 	t.Parallel()
 	s := NewServer()
-	ctx, stop := context.WithCancel(t.Context())
-	done := make(chan error, 1)
-	go func() { done <- s.Serve(ctx, "127.0.0.1:0") }()
-	stop()
-	if err := <-done; err != nil {
-		t.Errorf("Serve = %v, want nil at its context's end", err)
+	if err := s.Start(t.Context(), "127.0.0.1:0"); err != nil {
+		t.Fatal(err)
+	}
+	if err := NewServer().Start(t.Context(), s.Addr().String()); err == nil {
+		t.Error("Start on a bound address = nil, want its error")
+	}
+	resp, err := http.Get("http://" + s.Addr().String() + "/healthz") //nolint:noctx // a test against a local listener
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	if err := s.Close(); err != nil {
+		t.Errorf("Close = %v", err)
+	}
+	if _, err := http.Get("http://" + s.Addr().String() + "/healthz"); err == nil { //nolint:noctx,bodyclose // fails to connect
+		t.Error("served after Close")
 	}
 }

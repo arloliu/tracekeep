@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
-	"sync/atomic"
 	"time"
 
 	"github.com/nats-io/nats.go"
@@ -52,25 +51,38 @@ type Env struct {
 // refreshInterval is how often ingest's metrics read the catalog and the bus.
 const refreshInterval = 30 * time.Second
 
-// errNotJoined reports an ingest role whose consumers have not yet joined, for readiness.
-var errNotJoined = errors.New("service: the consumers have not joined yet")
+// Readiness of a role, before it runs and after it ends.
+var (
+	errStarting = errors.New("service: the role is starting")
+	errStopped  = errors.New("service: the role has stopped")
+)
 
-// Observe registers the catalog's metrics and readiness on a new metrics server, and serves it on metrics.listen
-// until ctx ends; with no listen address it serves nothing, the metrics still recorded.
-func (e *Env) Observe(ctx context.Context) error {
+// Observe registers the catalog's metrics and readiness on a new metrics server, each of roles not ready until it has started,
+// and serves it on metrics.listen until Close, failing when it cannot bind; with no listen address it serves nothing, the metrics still recorded.
+func (e *Env) Observe(ctx context.Context, roles ...string) error {
 	e.Metrics = metrics.NewServer()
 	if err := metrics.RegisterCatalog(e.Metrics, e.Catalog); err != nil {
 		return err
 	}
+	for _, role := range roles {
+		e.ready(role, failing(errStarting))
+	}
 	if addr := e.Config.Metrics.Listen; addr != "" {
-		go func() {
-			if err := e.Metrics.Serve(ctx, addr); err != nil {
-				e.Log.Error("metrics: serve", "error", err)
-			}
-		}()
+		return e.Metrics.Start(ctx, addr)
 	}
 
 	return nil
+}
+
+// ready registers role's readiness check, when the process is observed.
+func (e *Env) ready(role string, check func(context.Context) error) {
+	if e.Metrics != nil {
+		e.Metrics.Ready(role, check)
+	}
+}
+
+func failing(err error) func(context.Context) error {
+	return func(context.Context) error { return err }
 }
 
 // Open opens the catalog, the bus connection and the store cfg names.
@@ -96,6 +108,9 @@ func Open(ctx context.Context, cfg *config.Config, log *slog.Logger) (*Env, erro
 // Close closes what Open opened.
 func (e *Env) Close() error {
 	var errs []error
+	if e.Metrics != nil {
+		errs = append(errs, e.Metrics.Close())
+	}
 	if c, ok := e.Store.(interface{ Close() error }); ok {
 		errs = append(errs, c.Close())
 	}
@@ -215,37 +230,46 @@ func (e *Env) streams(ctx context.Context) (map[string]jetstream.Stream, map[str
 
 // Ingest runs the ingest role until ctx ends: the traffic stream's consumer and the parking stream's,
 // sharing the executor, the flusher and the parking coordinator, each with its own membership (ingest.md §6, parking.md).
+// Ingest is ready once both consumers joined, while both are still on the bus.
 func Ingest(ctx context.Context, e *Env) error {
-	var joined atomic.Bool
-	if e.Metrics != nil {
-		e.Metrics.Ready("ingest", func(context.Context) error {
-			if !joined.Load() {
-				return errNotJoined
-			}
-			return nil
-		})
-	}
+	e.ready("ingest", failing(errStarting))
+	defer e.ready("ingest", failing(errStopped))
 	gs, err := ingesters(ctx, e)
 	if err != nil {
 		return err
 	}
-	joined.Store(true)
+	states := make([]busState, len(gs))
+	for i, g := range gs {
+		states[i] = e.busState(g)
+	}
+	e.ready("ingest", func(ctx context.Context) error {
+		for _, s := range states {
+			if _, err := s.State(ctx); err != nil {
+				return err
+			}
+		}
+
+		return nil
+	})
 	if gs[0].Metrics != nil {
-		go e.refresh(ctx, gs[0])
+		rctx, cancel := context.WithCancel(ctx)
+		defer cancel()
+		go e.refresh(rctx, gs[0].Metrics, states[0])
 	}
 
 	return run(ctx, e, gs)
 }
 
-// refresh reads ingest's catalog and bus gauges every refreshInterval until ctx ends.
-func (e *Env) refresh(ctx context.Context, traffic *ingest.Ingester) {
+// refresh reads ingest's catalog and bus gauges every refreshInterval until ctx ends, each pass bounded by the interval.
+func (e *Env) refresh(ctx context.Context, m *metrics.Ingest, traffic busState) {
 	t := time.NewTicker(refreshInterval)
 	defer t.Stop()
-	state := busState{js: e.JS, stream: bus.StreamName(e.Bus(), catalog.RoleTraffic), consumer: bus.ConsumerName(traffic.Incarnation)}
 	for {
-		if err := traffic.Metrics.Refresh(ctx, e.Catalog, state); err != nil && ctx.Err() == nil {
+		pctx, cancel := context.WithTimeout(ctx, refreshInterval)
+		if err := m.Refresh(pctx, e.Catalog, traffic); err != nil && ctx.Err() == nil {
 			e.Log.Warn("metrics: refresh", "error", err)
 		}
+		cancel()
 		select {
 		case <-ctx.Done():
 			return
@@ -254,11 +278,15 @@ func (e *Env) refresh(ctx context.Context, traffic *ingest.Ingester) {
 	}
 }
 
-// busState reads the traffic consumer's and stream's backlog on handles of its own, never the ingester's.
+// busState reads a consumer's and its stream's backlog on handles of its own, never the ingester's.
 type busState struct {
 	js       jetstream.JetStream
 	stream   string
 	consumer string
+}
+
+func (e *Env) busState(g *ingest.Ingester) busState {
+	return busState{js: e.JS, stream: g.Stream.CachedInfo().Config.Name, consumer: bus.ConsumerName(g.Incarnation)}
 }
 
 func (b busState) State(ctx context.Context) (metrics.BusState, error) {
@@ -379,6 +407,8 @@ func ingesters(ctx context.Context, e *Env) (_ []*ingest.Ingester, err error) {
 
 // Compact runs the compact role until ctx ends; for now its reconciler, under the compactor lease (storage.md §5.4).
 func Compact(ctx context.Context, e *Env) error {
+	e.ready("compact", failing(errStarting))
+	defer e.ready("compact", failing(errStopped))
 	if _, _, err := e.streams(ctx); err != nil {
 		return err
 	}

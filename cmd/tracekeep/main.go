@@ -82,6 +82,8 @@ func dispatch(ctx context.Context, args []string, stdout, stderr io.Writer) erro
 	roles := map[string]func(context.Context, *service.Env) error{
 		"migrate": service.Migrate, "ingest": service.Ingest, "compact": service.Compact, "all": service.All,
 	}
+	// The roles each command runs, not ready until each has started.
+	readiness := map[string][]string{"ingest": {"ingest"}, "compact": {"compact"}, "all": {"ingest", "compact"}}
 	role, isRole := roles[command]
 	if !isRole && command != "admin" {
 		return fmt.Errorf("%w: unknown command %q", errUsage, command)
@@ -106,7 +108,7 @@ func dispatch(ctx context.Context, args []string, stdout, stderr io.Writer) erro
 	if isRole {
 		log.Info("tracekeep: starting", "command", command)
 		if command != "migrate" {
-			if err := e.Observe(ctx); err != nil {
+			if err := e.Observe(ctx, readiness[command]...); err != nil {
 				return err
 			}
 		}
@@ -219,7 +221,7 @@ func runDev(ctx context.Context, args []string, stderr io.Writer) error {
 	}
 	defer func() { _ = d.Close() }()
 	d.Env.Config.Metrics.Listen = *listen
-	if err := d.Env.Observe(ctx); err != nil {
+	if err := d.Env.Observe(ctx, "ingest", "compact"); err != nil {
 		return err
 	}
 	log.Info("tracekeep dev: running", "data", *dir, "bus", d.URL(), "packs", filepath.Join(*dir, "packs"))

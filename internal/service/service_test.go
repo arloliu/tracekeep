@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
@@ -251,15 +252,15 @@ func TestTogetherCancelsTheOthers(t *testing.T) {
 	}
 }
 
-// Observing a role: the catalog's metrics and readiness are registered, and ingest stays not ready until its consumers joined,
-// here never, since it refuses a traffic stream with direct gets.
-func TestObservedIngestNotReadyUntilJoined(t *testing.T) {
+// An observed ingest role is not ready before it starts, nor after a refused start; once joined it is ready while both consumers are on the bus,
+// and not once one is gone or the role has stopped.
+func TestObservedIngestReadiness(t *testing.T) {
 	t.Parallel()
 	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
 		ctx := t.Context()
 		e := env(t, c)
 		e.Config.Metrics.Listen = "" // nothing served: the handler is read directly
-		if err := e.Observe(ctx); err != nil {
+		if err := e.Observe(ctx, "ingest"); err != nil {
 			t.Fatal(err)
 		}
 		h := e.Metrics.Handler()
@@ -268,15 +269,50 @@ func TestObservedIngestNotReadyUntilJoined(t *testing.T) {
 			h.ServeHTTP(rec, httptest.NewRequestWithContext(ctx, http.MethodGet, "/readyz", nil))
 			return rec.Code, rec.Body.String()
 		}
-		if code, body := readyz(); code != http.StatusOK {
-			t.Fatalf("/readyz with only the catalog = %d %q, want 200", code, body)
+		until := func(what string, ok func(int, string) bool) {
+			t.Helper()
+			for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(10 * time.Millisecond) {
+				code, body := readyz()
+				if ok(code, body) {
+					return
+				}
+				if time.Now().After(deadline) {
+					t.Fatalf("/readyz = %d %q, want %s", code, body, what)
+				}
+			}
 		}
-		setDirect(t, e.JS, bus.StreamName(e.Bus(), catalog.RoleTraffic), true)
+		if code, body := readyz(); code != http.StatusServiceUnavailable || !strings.Contains(body, errStarting.Error()) {
+			t.Fatalf("/readyz before the role starts = %d %q, want 503 starting", code, body)
+		}
+		traffic := bus.StreamName(e.Bus(), catalog.RoleTraffic)
+		setDirect(t, e.JS, traffic, true)
 		if err := Ingest(ctx, e); !errors.Is(err, ErrAllowDirect) {
 			t.Fatalf("Ingest = %v, want ErrAllowDirect", err)
 		}
-		if code, body := readyz(); code != http.StatusServiceUnavailable || !strings.Contains(body, "ingest") {
-			t.Errorf("/readyz after a refused start = %d %q, want 503 naming ingest", code, body)
+		if code, body := readyz(); code != http.StatusServiceUnavailable || !strings.Contains(body, errStopped.Error()) {
+			t.Errorf("/readyz after a refused start = %d %q, want 503 stopped", code, body)
+		}
+		setDirect(t, e.JS, traffic, false)
+		rctx, stop := context.WithCancel(ctx)
+		done := make(chan error, 1)
+		go func() { done <- Ingest(rctx, e) }()
+		until("200 once joined", func(code int, _ string) bool { return code == http.StatusOK })
+		s, err := e.JS.Stream(ctx, traffic)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for name := range s.ConsumerNames(ctx).Name() {
+			if err := s.DeleteConsumer(ctx, name); err != nil {
+				t.Fatal(err)
+			}
+		}
+		until("503 with the traffic consumer gone", func(code int, _ string) bool { return code == http.StatusServiceUnavailable })
+		stop()
+		if err := <-done; err != nil && !errors.Is(err, context.Canceled) {
+			t.Errorf("Ingest = %v at its context's end", err)
+		}
+		if code, body := readyz(); code != http.StatusServiceUnavailable || !strings.Contains(body, errStopped.Error()) {
+			t.Errorf("/readyz after the role ended = %d %q, want 503 stopped", code, body)
 		}
 	})
 }
