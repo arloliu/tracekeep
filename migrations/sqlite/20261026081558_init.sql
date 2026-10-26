@@ -112,10 +112,12 @@ CREATE INDEX `claim_records_capture_hour` ON `claim_records` (`capture_id`, `hou
 -- Create "conflicts" table
 CREATE TABLE `conflicts` (
   `capture_id` blob NOT NULL,
-  `seq` bigint NOT NULL,
+  `seq_from` bigint NOT NULL,
+  `seq_to` bigint NOT NULL,
   `pack_id` blob NOT NULL,
+  `other_pack_id` blob NOT NULL,
   `state` varchar NOT NULL,
-  PRIMARY KEY (`capture_id`, `seq`, `pack_id`),
+  PRIMARY KEY (`capture_id`, `seq_from`, `pack_id`, `other_pack_id`),
   CONSTRAINT `conflicts_state` CHECK (state IN ('suspect', 'confirmed'))
 );
 -- Create "claim_objects" table

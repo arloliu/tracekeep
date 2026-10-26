@@ -11,9 +11,9 @@ import (
 const ttl = time.Minute
 
 // lapse ends a lease now by the database's clock, as time passing would.
-func lapse(t *testing.T, c *Catalog, query string, args ...any) {
+func lapse(t *testing.T, c *Catalog, query string) {
 	t.Helper()
-	if _, err := c.write.ExecContext(t.Context(), query, args...); err != nil {
+	if _, err := c.write.ExecContext(t.Context(), query); err != nil {
 		t.Fatal(err)
 	}
 }
