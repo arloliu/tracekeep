@@ -1,6 +1,6 @@
 # Phase 1 — ingest
 
-Status: active (2026-10-26) — phase 1.1 in progress
+Status: active (2026-10-26) — phase 1.2 in progress
 
 Milestone 1 of the [roadmap](../ROADMAP.md):
 the `ingest` role with its stores, catalog and reconciler, and `tracekeep dev` as the single-process loop.
@@ -19,27 +19,33 @@ This plan only orders the work.
 
 | Phase | Scope | State |
 |---|---|---|
-| 1.1 — stores | `internal/store`: `ObjectStore`, `mem`, `fs`, `s3` with `Presigner` and ranged reads, the conformance suite against MinIO and Ceph RGW in CI (`storage.md` §5.1–§5.3, T-34) | in-progress |
-| 1.2 — catalog | `schema.hcl`, Atlas migrations per engine, `internal/catalog` on SQLite and MariaDB: the prologue, the lease, membership, `Admit`, `Reject`, `RegisterPack` and the reads ingest needs, barrier schedules on both engines (`catalog.md` §7.1–§7.4, `rollouts.md` §6.4) | pending |
+| 1.1 — stores | `internal/store`: `ObjectStore`, `mem`, `fs`, `s3` with `Presigner` and ranged reads, the conformance suite against MinIO and Ceph RGW in CI (`storage.md` §5.1–§5.3, T-34) | done (#9) |
+| 1.2 — catalog | `schema.hcl`, Atlas migrations per engine, `internal/catalog` on SQLite and MariaDB: the prologue, the lease, membership, `Admit`, `Reject`, `RegisterPack` and the reads ingest needs, barrier schedules on both engines (`catalog.md` §7.1–§7.4, `rollouts.md` §6.4) | in-progress |
 | 1.3 — ingest | `internal/bus` and `internal/ingest`: the disposition classifier, claim-check fetch, batching, masking with the bound configuration, the write seam, registration, per-message acks, the activation gate (`ingest.md` §6.1–§6.3, `architecture.md` §3.1) | pending |
-| 1.4 — parking | parking, resolution, incarnations, termination orders, the parking tables, `bus adopt-stream` and the termination commands (`parking.md`, `operations.md` §10.4) | pending |
+| 1.4 — parking | parking, resolution, incarnations, termination orders and their re-check in `Admit`, `Reject` and `RegisterPack`, the parking transactions, `bus adopt-stream` and the termination commands (`parking.md`, `operations.md` §10.4) | pending |
 | 1.5 — reconciler | full verification, quarantine and adoption under the compactor lease (`storage.md` §5.4) | pending |
 | 1.6 — dev and gate | `tracekeep dev` and the role subcommands with their configuration (T-22), the simulator in the service module, the roadmap's phase 1 gate and checklist items 1–7 | pending |
 
 Only the phase under way is detailed; the others are detailed when they start.
 
-## Phase 1.1 — stores
+## Phase 1.2 — catalog
 
-Work on the branch `feat/store/backends`, one commit per step, test first;
+Work on the branch `feat/catalog/core`, one commit per step, test first;
 the branch merges by pull request once the whole phase passes an external post-implementation review.
-The conformance suite is one exported function every backend's test calls, so `mem`, `fs` and `s3` are held to the same postconditions:
-a `Put` visible only when complete, an error that leaves nothing visible (a body that fails mid-stream), `Open`'s `ReadAt` at every offset and in parallel, `Stat`, `List` by prefix, `Delete`, and not-found from each.
-The `s3` runs need a store, so they run when an endpoint is configured and skip otherwise;
-`make test` stays offline, and a separate target and CI job start the containers.
+Every catalog test runs on SQLite and on MariaDB (`300-testing.md`):
+MariaDB runs when a server is configured and is skipped otherwise, so `make test` stays offline,
+and a make target and a CI job start a MariaDB container for it, as `make test-s3` does for the stores.
+The schema holds every table of §7.1, the parking rows included, so later phases add transactions, not tables.
+The termination re-checks of `Admit`, `Reject` and `RegisterPack`, and the parked versions a registration stages, land with phase 1.4, which writes the rows they read;
+nothing before it can create a termination order or a parked version.
+`atlas migrate lint` is available only to Atlas Pro users since Atlas v0.38,
+so CI runs `atlas migrate validate` and checks that `atlas migrate diff` finds nothing to add, on both engines (`catalog.md` §7.4 amended).
 
 | Step | Scope | State |
 |---|---|---|
-| 1 | the interface, `ObjectInfo`, not-found, the conformance suite and `mem` | done (1c3d840) |
-| 2 | `fs`: `.partial/` write, fsync, rename, directory fsync; a failed put leaves nothing under the key | done (2f4dc21) |
-| 3 | `s3` on aws-sdk-go-v2: path-style with a custom endpoint, both checksum options `WhenRequired`, a seekable body, ranged reads with a small read-ahead, `Presigner` | done (779c77c) |
-| 4 | the suite against MinIO and Ceph RGW: pinned container images, a make target that runs them locally, and a CI job | done (b6fab06) |
+| 1 | `schema.hcl` with one variable per engine-specific type, `atlas.hcl`, `migrations/sqlite` and `migrations/mariadb` with their `atlas.sum`, embedded for tests; the MariaDB container target and CI job, with validate and the drift check | pending |
+| 2 | `internal/catalog`: opening each engine (SQLite's one-connection write pool, `BEGIN IMMEDIATE`, `busy_timeout`; MariaDB at `READ COMMITTED`), whole-transaction retries, the dialect value, the capture-row prologue, the event-seq allocation, the two-engine test harness | pending |
+| 3 | leases, membership and processing configurations: take and renew a lease with its fence token; register, renew and leave a membership, refused unless it executes every unretired configuration; activate and retire a configuration; each on the `membership` sentinel row | pending |
+| 4 | `Admit` and `Reject`, with the binding of the newest configuration every leased member supports, and the capture lookup | pending |
+| 5 | `RegisterPack`: idempotent on `pack_id`, `adopted` for a caller with evidence, the tombstone and horizon guards, ranges, losses, suspects with the touched scopes' revisions and events, receipts, the capture's highest seq and stop, the scope upsert and its event | pending |
+| 6 | barrier schedules on both engines: two first sightings of one capture, two overlapping registrations of one capture (the suspect is never missed), event allocation with an uncommitted earlier transaction, a membership renewal racing an admission | pending |
