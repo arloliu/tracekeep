@@ -17,7 +17,7 @@ The tunables of later phases (Q, I, L, D, the masking keys) join this file with 
 |---|---|---|---|
 | `retention` | `720h` | `TRACEKEEP_RETENTION` | whole hours older than this are evicted, and a record older than the horizon is beyond retention; 30 days, a default the specs leave open (`compactor.md` §8.4 sizes the claim bucket for a month) |
 | `replica` | the host name | `TRACEKEEP_REPLICA` | names this process in the membership and the compactor lease; unique per process |
-| `catalog.engine` | `sqlite` | `TRACEKEEP_CATALOG_ENGINE` | `sqlite` for a single host with every writing role in one process, else `mariadb` (`catalog.md` §7.4) |
+| `catalog.engine` | `sqlite` | `TRACEKEEP_CATALOG_ENGINE` | `sqlite` for a single host with every writing role in one process, else `mariadb` (`catalog.md` §7.4); with `sqlite`, `tracekeep admin` runs only while the service is stopped, the running process holding the catalog |
 | `catalog.dsn`, `catalog.dsn_ref` | — | `TRACEKEEP_CATALOG_DSN`, `…_DSN_REF` | the SQLite file or the MariaDB DSN; with credentials, by reference |
 | `bus.url` | — | `TRACEKEEP_BUS_URL` | the traffic cluster |
 | `bus.user`, `bus.password_ref`, `bus.creds_file` | — | `TRACEKEEP_BUS_…` | user and password, or a credentials file; not both |
