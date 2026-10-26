@@ -5,6 +5,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/arloliu/go-secs/tracepack"
+
 	"github.com/arloliu/tracekeep/internal/catalog"
 	"github.com/arloliu/tracekeep/internal/catalog/catalogtest"
 )
@@ -74,10 +76,56 @@ func TestExecutable(t *testing.T) {
 
 func unretired(t *testing.T, c *catalog.Catalog) int {
 	t.Helper()
-	cs, err := c.UnretiredConfigs(t.Context())
+	cs, err := c.RequiredConfigs(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	return len(cs)
+}
+
+// Retiring a configuration never removes the ability to execute it (rollouts.md §6.4):
+// a capture bound to a retired configuration still has it executed after a restart under another frame limit.
+func TestExecutableKeepsARetiredBoundConfiguration(t *testing.T) {
+	t.Parallel()
+	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
+		ctx := t.Context()
+		start := func(limit uint64) map[int64]Config {
+			b, err := namedConfig("go-secs/v2.8.0", limit, false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			cs, err := Executable(ctx, c, b)
+			if err != nil {
+				t.Fatal(err)
+			}
+			byID, err := Activate(ctx, c, cs)
+			if err != nil {
+				t.Fatal(err)
+			}
+			ids := make([]int64, 0, len(byID))
+			for id := range byID {
+				ids = append(ids, id)
+			}
+			if _, err := c.Register(ctx, "r", ids, time.Minute); err != nil {
+				t.Fatal(err)
+			}
+
+			return byID
+		}
+		first := start(1)
+		capture := tracepack.UUID{9}
+		res, err := c.Admit(ctx, &catalog.Identity{Version: catalog.VersionKey{Capture: capture}, Incarnation: 1, StreamSeq: 1},
+			&catalog.Descriptor{Bytes: []byte("d"), ToolID: "T1", RecorderInstanceID: tracepack.UUID{8}, Device: "eqp", OriginNS: 1})
+		if err != nil || first[res.ConfigID].MaxFrameLen != 1 {
+			t.Fatalf("Admit = %+v, %v; want the capture bound to the first limit", res, err)
+		}
+		start(2)
+		if err := c.RetireConfig(ctx, res.ConfigID, []tracepack.UUID{capture}); err != nil {
+			t.Fatal(err)
+		}
+		if got, ok := start(2)[res.ConfigID]; !ok || got.MaxFrameLen != 1 {
+			t.Errorf("after the retirement, configuration %d = %+v, %v; want the bound capture's still executed", res.ConfigID, got, ok)
+		}
+	})
 }

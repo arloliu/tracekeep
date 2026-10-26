@@ -65,11 +65,15 @@ type StoredConfig struct {
 	Content []byte `db:"content"`
 }
 
-// UnretiredConfigs lists the configurations not yet retired, by id: every one of them a replica must execute to register.
-func (c *Catalog) UnretiredConfigs(ctx context.Context) ([]StoredConfig, error) {
+// RequiredConfigs lists, by id, the configurations a replica must execute:
+// every one not yet retired, which registration requires, and every one a capture the catalog holds is bound to,
+// since retiring a configuration never removes the ability to execute it (rollouts.md §6.4).
+func (c *Catalog) RequiredConfigs(ctx context.Context) ([]StoredConfig, error) {
 	var cs []StoredConfig
-	if err := c.read.SelectContext(ctx, &cs, `SELECT config_id, content FROM processing_configs WHERE retired_at IS NULL ORDER BY config_id`); err != nil {
-		return nil, fmt.Errorf("catalog: unretired configurations: %w", err)
+	err := c.read.SelectContext(ctx, &cs, `SELECT p.config_id, p.content FROM processing_configs p
+		WHERE p.retired_at IS NULL OR EXISTS (SELECT 1 FROM captures k WHERE k.config_id = p.config_id) ORDER BY p.config_id`)
+	if err != nil {
+		return nil, fmt.Errorf("catalog: required configurations: %w", err)
 	}
 
 	return cs, nil
