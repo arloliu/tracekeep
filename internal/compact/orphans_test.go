@@ -6,7 +6,9 @@ import (
 	"crypto/rand"
 	"errors"
 	"log/slog"
+	"math"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -483,3 +485,38 @@ type failingObject struct {
 }
 
 func (o failingObject) ReadAt([]byte, int64) (int, error) { return 0, o.err }
+
+// A close's orphan, whose seq_start is the close sentinel, is reported and kept: only its publication registers it.
+func TestCloseOrphanLeftForItsPublication(t *testing.T) {
+	t.Parallel()
+	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
+		f := newFixture(t, c)
+		capture := f.admit(t)
+		meta := writeWith(t, capture, tracepack.PackRoleSegment, []uint64{1}, false, func(*tracepack.PackMeta) {})
+		rd, err := tracepack.Open(t.Context(), bytes.NewReader(meta.data), int64(len(meta.data)), tracepack.ReaderOptions{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var buf bytes.Buffer
+		id, err := tracepack.WriteClose(&buf, tracepack.CloseOptions{
+			Meta: rd.Header().Meta, CaptureID: capture, Trigger: time.Unix(0, hour*nsPerHour+10), PackID: newID(t),
+			Now: func() time.Time { return time.Unix(0, hour*nsPerHour+10) },
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		key, err := tracepack.SegmentKey("", tool, capture, math.MaxInt64, id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		f.put(t, key, buf.Bytes())
+		f.pass(t)
+		rep := f.pass(t)
+		if len(rep.Quarantined) != 1 || rep.Quarantined[0].Key != key || !strings.Contains(rep.Quarantined[0].Reason, "close") {
+			t.Errorf("pass = %+v, want the close reported as one", rep)
+		}
+		if got, _ := c.KeyStanding(t.Context(), key); got != catalog.KeyUnknown || !f.present(t, key) {
+			t.Errorf("standing %v, want the close unregistered and kept", got)
+		}
+	})
+}

@@ -123,5 +123,5 @@ the specs keep no table for them, and the metrics come with the role in phase 1.
 
 Left to later phases:
 the `compact` role's wiring, its metrics (`orphans_adopted_total`, `orphans_quarantined_total`) and the `object adopt` and `object list` commands go to phase 1.6;
-a close's orphan, whose `seq_start` no segment key spells, waits for the compactor that writes closes, phase 2.
+a close's orphan, whose `seq_start` is the close sentinel 2^63−1, is reported and kept, and waits for the compactor that writes closes, phase 2.
 The follower schedule reads through a follower but does not induce a replica's lag; the protection it relies on is that `AllowDirect` is refused and the handle refreshed.
