@@ -2,7 +2,11 @@ package admin_test
 
 import (
 	"errors"
+	"io"
+	"net"
 	"slices"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -160,6 +164,143 @@ func TestAdoptStream(t *testing.T) {
 		}
 		if again, err := bus.Incarnate(ctx, c, catalog.RoleTraffic, traffic); err != nil || again.ID != inc.ID {
 			t.Errorf("the stream answers as %+v, %v; want the adopted incarnation", again, err)
+		}
+	})
+}
+
+// gate forwards a client's bytes to the server while open; closed, it holds them, as a network delays a publish already sent.
+type gate struct {
+	mu     sync.Mutex
+	open   bool
+	opened chan struct{}
+	// holding is closed once the closed gate holds bytes.
+	holding chan struct{}
+	once    sync.Once
+}
+
+func (g *gate) set(open bool) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if open && !g.open {
+		close(g.opened)
+	} else if !open && g.open {
+		g.opened = make(chan struct{})
+	}
+	g.open = open
+}
+
+func (g *gate) wait() {
+	g.mu.Lock()
+	ch, open := g.opened, g.open
+	g.mu.Unlock()
+	if !open {
+		g.once.Do(func() { close(g.holding) })
+		<-ch
+	}
+}
+
+// proxy listens for one client and relays it to the server at url, its client-to-server bytes through g.
+func proxy(t *testing.T, url string, g *gate) string {
+	t.Helper()
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = l.Close() })
+	server := strings.TrimPrefix(url, "nats://")
+	go func() {
+		client, err := l.Accept()
+		if err != nil {
+			return
+		}
+		up, err := net.Dial("tcp", server)
+		if err != nil {
+			_ = client.Close()
+			return
+		}
+		go func() { _, _ = io.Copy(client, up) }()
+		buf := make([]byte, 32<<10)
+		for {
+			n, err := client.Read(buf)
+			if n > 0 {
+				g.wait()
+				if _, err := up.Write(buf[:n]); err != nil {
+					return
+				}
+			}
+			if err != nil {
+				_ = up.Close()
+				return
+			}
+		}
+	}()
+
+	return "nats://" + l.Addr().String()
+}
+
+// Checklist 4: a publish sent before capture terminate's fresh Info and accepted after it carries a sequence above the cut-off,
+// so the order covers it not, and it is handled as new traffic.
+func TestPublishAcceptedAfterTheCutOffRead(t *testing.T) {
+	t.Parallel()
+	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
+		ctx := t.Context()
+		srv := testbus.StartServer(t, testbus.Options{})
+		nc, err := nats.Connect(srv.URL())
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(nc.Close)
+		js, err := jetstream.New(nc)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, _, err := bus.Ensure(ctx, js, cfg); err != nil {
+			t.Fatal(err)
+		}
+		a := &admin.Admin{Catalog: c, Bus: js, Config: cfg, Actor: "op"}
+		if _, err := js.Publish(ctx, "tk.T1.x", nil); err != nil {
+			t.Fatal(err)
+		}
+
+		g := &gate{open: true, opened: make(chan struct{}), holding: make(chan struct{})}
+		close(g.opened)
+		late, err := nats.Connect(proxy(t, srv.URL(), g))
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(late.Close)
+		ljs, err := jetstream.New(late)
+		if err != nil {
+			t.Fatal(err)
+		}
+		g.set(false)
+		acked := make(chan *jetstream.PubAck, 1)
+		go func() {
+			ack, err := ljs.Publish(ctx, "tk.T1.x", nil) // sent now, held on its way to the server
+			if err != nil {
+				t.Error(err)
+			}
+			acked <- ack
+		}()
+		<-g.holding // the publish has left the client
+		capture := tracepack.UUID{3}
+		res, err := a.CaptureTerminate(ctx, capture)
+		if err != nil {
+			t.Fatal(err)
+		}
+		g.set(true)
+		ack := <-acked
+		show, err := a.CaptureShow(ctx, capture)
+		if err != nil || len(show.Orders) != 1 || show.Orders[0].ActionID != res.ActionID {
+			t.Fatalf("CaptureShow = %+v, %v", show, err)
+		}
+		o := show.Orders[0]
+		if ack == nil || int64(ack.Sequence) <= o.CutOff { //nolint:gosec // a stream sequence fits
+			t.Fatalf("the held publish was accepted at %+v, at or below the cut-off %d", ack, o.CutOff)
+		}
+		seq := int64(ack.Sequence) //nolint:gosec // a stream sequence fits
+		if r, err := c.Resolve(ctx, &identity(capture, 9, o.Incarnation, seq).Version, o.Incarnation, seq); err != nil || r != catalog.Unresolved {
+			t.Errorf("the held publish's message = %v, %v; want new traffic", r, err)
 		}
 	})
 }

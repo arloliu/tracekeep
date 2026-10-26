@@ -240,7 +240,7 @@ func TestParkedConsumerFlushMeetsAnEviction(t *testing.T) {
 		if conf, err := r.g.Coordinator.Publish(ctx, d, b.State); err != nil || conf != Confirmed {
 			t.Fatalf("Publish = %v, %v", conf, err)
 		}
-		if err := r.g.Coordinator.Acknowledge(ctx, d, m, false); err != nil {
+		if err := r.g.Coordinator.Acknowledge(ctx, d, m); err != nil {
 			t.Fatal(err)
 		}
 		r.publish(t, inline(t, capture, startRecord(t, now), descriptorOf(t, "eqp")), nil)

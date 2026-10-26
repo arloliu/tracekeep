@@ -106,20 +106,44 @@ func readVersionState(ctx context.Context, q sqlx.QueryerContext, v *VersionKey)
 	return s, err
 }
 
-// TerminatedBy returns the action that terminated v, which an acknowledgement under the termination names;
-// a version with no row returns ErrUnknownVersion, and an unterminated one an empty action.
-func (c *Catalog) TerminatedBy(ctx context.Context, v *VersionKey) (string, error) {
-	var by sql.NullString
-	err := c.read.GetContext(ctx, &by, `SELECT terminated_by FROM parked WHERE capture_id = ? AND seq = ? AND header = ? AND payload_digest = ?`,
-		v.Capture[:], int64(v.Seq), v.Header[:], v.Digest[:])
-	if errors.Is(err, sql.ErrNoRows) {
-		return "", ErrUnknownVersion
-	}
+// PrepareAck readies the acknowledgement of the delivery d under the capture row (parking.md *Resolution*):
+// its copy row inserted or found, so every message of a parked version is accounted for, and the version's state read;
+// for a terminated version, audit is written in the same transaction naming the termination's action,
+// so the acknowledgement that follows is recorded under the state it was decided on, and a redelivery acknowledged again writes its own.
+// A version with no parked row, staged by a receipt alone, writes nothing and returns an empty state.
+func (c *Catalog) PrepareAck(ctx context.Context, d *Identity, audit AuditEntry) (VersionState, error) {
+	var state VersionState
+	err := outcome(c.inTx(ctx, func(tx *sqlx.Tx) error {
+		if _, err := c.lockCapture(ctx, tx, d.Version.Capture); err != nil {
+			return err
+		}
+		var err error
+		state, err = readVersionState(ctx, tx, &d.Version)
+		if errors.Is(err, ErrUnknownVersion) {
+			state = ""
+			return errRollback
+		}
+		if err != nil {
+			return err
+		}
+		if err := c.insertCopy(ctx, tx, d); err != nil || state != VersionTerminated {
+			return err
+		}
+		v := &d.Version
+		err = tx.GetContext(ctx, &audit.ActionID, `SELECT terminated_by FROM parked WHERE capture_id = ? AND seq = ? AND header = ? AND payload_digest = ?`,
+			v.Capture[:], int64(v.Seq), v.Header[:], v.Digest[:])
+		if err != nil {
+			return err
+		}
+		audit.Capture = &v.Capture
+
+		return c.auditIn(ctx, tx, audit)
+	}))
 	if err != nil {
-		return "", fmt.Errorf("catalog: terminated by %s.%d: %w", v.Capture, v.Seq, err)
+		return "", fmt.Errorf("catalog: prepare ack %d/%d: %w", d.Incarnation, d.StreamSeq, err)
 	}
 
-	return by.String, nil
+	return state, nil
 }
 
 // AdvanceParked is step (3), parking → parked by compare-and-set, and returns the version's state:

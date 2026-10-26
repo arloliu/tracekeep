@@ -364,7 +364,7 @@ func (g *Ingester) act(ctx context.Context, e Entry, dec Decision, delivered uin
 		g.Batcher.Add(e, g.Now())
 		g.mu.Unlock()
 	case ActAck:
-		g.acknowledge(ctx, e, dec.Reason == ReasonTerminated)
+		g.acknowledge(ctx, e)
 	case ActPark:
 		g.park(ctx, e, dec.Reason, delivered)
 	case ActTerminate:
@@ -388,9 +388,9 @@ func (g *Ingester) act(ctx context.Context, e Entry, dec Decision, delivered uin
 	}
 }
 
-// acknowledge acknowledges a message of a resolved version through the coordinator, under the termination when terminated.
-func (g *Ingester) acknowledge(ctx context.Context, e Entry, terminated bool) {
-	if err := g.Coordinator.Acknowledge(ctx, e.D, e.Msg, terminated); err != nil {
+// acknowledge acknowledges a message of a resolved version through the coordinator, which records it under a termination.
+func (g *Ingester) acknowledge(ctx context.Context, e Entry) {
+	if err := g.Coordinator.Acknowledge(ctx, e.D, e.Msg); err != nil {
 		// Unacknowledged: the message returns and is acknowledged again under the same resolution.
 		g.Log.Warn("ingest: ack failed", "msg_id", e.D.Msg.Env.MsgID, "error", err)
 	}
@@ -422,7 +422,7 @@ func (g *Ingester) park(ctx context.Context, e Entry, reason string, delivered u
 	case p.Begun.BeyondRetention:
 		g.act(ctx, e, Decision{Action: ActTerminate, Reason: ReasonBeyondRetention, Alert: true, Audit: true}, delivered)
 	case p.Begun.State.Resolved():
-		g.acknowledge(ctx, e, p.Begun.State == catalog.VersionTerminated)
+		g.acknowledge(ctx, e)
 	case p.Confirmation == Suppressed:
 		_ = e.Msg.NakWithDelay(suppressedNakDelay)
 	case p.Confirmation != Confirmed:

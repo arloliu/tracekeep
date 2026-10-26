@@ -337,3 +337,37 @@ func TestParkMeetsATerminationDuringThePublish(t *testing.T) {
 		}
 	})
 }
+
+// A termination committed between the advance and the acknowledgement is found by the acknowledgement under the capture row,
+// which is then recorded under it, with its audit row.
+func TestAcknowledgementMeetsATerminationAfterTheAdvance(t *testing.T) {
+	t.Parallel()
+	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
+		ctx := t.Context()
+		r := newReplica(t, c)
+		k := r.g.Coordinator
+		capture := tracepack.UUID{6}
+		r.publish(t, inline(t, capture, dataRecord(1, now), nil), nil)
+		d, m := r.fetch(t)
+		b, err := k.Begin(ctx, d, ReasonUnknownCapture, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if conf, err := k.Publish(ctx, d, b.State); err != nil || conf != Confirmed {
+			t.Fatalf("Publish = %v, %v", conf, err)
+		}
+		if s, err := k.Advance(ctx, d); err != nil || s != catalog.VersionParked {
+			t.Fatalf("Advance = %v, %v", s, err)
+		}
+		if _, err := c.TerminateParked(ctx, capture, nil, "op", "p1"); err != nil {
+			t.Fatal(err)
+		}
+		if err := k.Acknowledge(ctx, d, m); err != nil {
+			t.Fatal(err)
+		}
+		es, err := c.AuditEntries(ctx, capture)
+		if err != nil || !slices.ContainsFunc(es, func(e catalog.AuditEntry) bool { return e.Action == ReasonTerminated && e.ActionID == "p1" }) {
+			t.Errorf("audit %+v, %v; want the acknowledgement recorded under p1", es, err)
+		}
+	})
+}

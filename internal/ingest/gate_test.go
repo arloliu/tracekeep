@@ -103,8 +103,15 @@ func TestRestoredTrafficStream(t *testing.T) {
 		if got, err := c.Capture(ctx, capture); err != nil || got.State != catalog.StateOpen || got.HighestSeq != 2 {
 			t.Errorf("capture %+v, %v; want the pending start and records ingested", got, err)
 		}
-		if info, err := s.Info(ctx); err != nil || info.State.Msgs != 0 {
-			t.Errorf("the stream holds %v messages, want none", info.State.Msgs)
+		// An inline record's acknowledgement is not confirmed, so the server applies it after the flush returned.
+		deadline := time.Now().Add(5 * time.Second)
+		for {
+			if n := r.pending(t); n == 0 {
+				break
+			} else if time.Now().After(deadline) {
+				t.Fatalf("the stream holds %d messages, want none", n)
+			}
+			time.Sleep(10 * time.Millisecond)
 		}
 	})
 }
