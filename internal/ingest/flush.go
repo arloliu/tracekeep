@@ -417,7 +417,7 @@ func evidence(entries []Entry) *catalog.Evidence {
 // A parked copy, whose version the registration staged, is acknowledged through the coordinator, its copy row acked.
 func (f *Flusher) ack(ctx context.Context, e Entry) error {
 	if e.D.Msg.Parked {
-		return (&Coordinator{Catalog: f.Catalog}).Acknowledge(ctx, e.D, e.Msg, false)
+		return (&Coordinator{Catalog: f.Catalog}).Acknowledge(ctx, e.D, e.Msg)
 	}
 	if e.D.Raw.ClaimCheck {
 		return e.Msg.DoubleAck(ctx)
