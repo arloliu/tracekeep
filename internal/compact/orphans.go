@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"math"
 	"slices"
@@ -196,14 +197,15 @@ func (r *Reconciler) delete(ctx context.Context, lease catalog.Lease, key string
 // read verifies the object of info in full and reads the pack it holds;
 // a non-empty reason quarantines it, and an error leaves it for the next pass.
 func (r *Reconciler) read(ctx context.Context, info store.ObjectInfo) (*catalog.Pack, string, error) {
-	obj, err := r.Store.Open(ctx, info.Key)
+	opened, err := r.Store.Open(ctx, info.Key)
 	if err != nil {
 		return nil, "", err
 	}
-	defer obj.Close()
+	defer opened.Close()
+	obj := reading{opened}
 	vr, err := tracepack.Verify(ctx, obj, obj.Size(), tracepack.VerifyOptions{})
 	if err != nil {
-		if ctx.Err() != nil || errors.Is(err, store.ErrNotFound) {
+		if ctx.Err() != nil || errors.Is(err, errStoreRead) || errors.Is(err, store.ErrNotFound) {
 			return nil, "", err
 		}
 		// A pack Verify cannot open is no finalized pack.
@@ -228,6 +230,22 @@ func (r *Reconciler) read(ctx context.Context, info store.ObjectInfo) (*catalog.
 	}
 
 	return p, "", nil
+}
+
+// errStoreRead marks a failure of the store's own read, which the next pass retries;
+// any other error of Verify is the object's, which is quarantined.
+var errStoreRead = errors.New("compact: store read")
+
+// reading tags the read errors of an object, its end apart, as the store's.
+type reading struct{ store.Object }
+
+func (o reading) ReadAt(b []byte, off int64) (int, error) {
+	n, err := o.Object.ReadAt(b, off)
+	if err != nil && !errors.Is(err, io.EOF) {
+		err = fmt.Errorf("%w: %w", errStoreRead, err)
+	}
+
+	return n, err
 }
 
 // judge is the quarantine rule of storage.md §5.4 on a verification: anything but finalized-consistent, or any writer defect.
