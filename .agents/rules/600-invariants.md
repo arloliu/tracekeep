@@ -24,7 +24,7 @@ Section numbers are those of the specs in `docs/specs/tracekeep/`, whose `README
   Every lock the rotation needs is taken before it, by a `TryLock` loop bounded by the operation's deadline;
   nothing is acquired after it, and a rotation abandoned before it installs nothing.
   `producer.md` §4.2 *Rotation* and *Lifecycle serialization*.
-- **A forwarded request's token takes one terminal outcome**: the first of reply, timeout and cancellation seals the entry, and every later report of any kind is a counted no-op;
+- **A forwarded request's token takes one terminal outcome**: the first of reply, timeout and cancellation seals the entry, and every later report of any kind is a counted no-op, except the send's own first `Sent`, which a reply may precede;
   expiry follows the wait the waiter reports opening and is no outcome,
   so T3 of a forwarded request comes only from the waiter's typed timeout on an unambiguous entry its outbound observation bound to a socket,
   and carries the epoch the capture current at the timeout holds for that socket.

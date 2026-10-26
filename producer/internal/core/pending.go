@@ -56,7 +56,7 @@ const (
 	IgnoredDuplicateProgress IgnoredReason = iota
 	// IgnoredDuplicateAwaiting is an Awaiting after the token's first.
 	IgnoredDuplicateAwaiting
-	// IgnoredSealed is any report after the first terminal outcome.
+	// IgnoredSealed is any report after the first terminal outcome, except the first Sent, which a reply may precede.
 	IgnoredSealed
 	// IgnoredRemoved is any report after a failure removed the entry.
 	IgnoredRemoved
