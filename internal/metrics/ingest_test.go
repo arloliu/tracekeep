@@ -3,9 +3,8 @@ package metrics
 import (
 	"context"
 	"errors"
-	"regexp"
+	"fmt"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -27,7 +26,7 @@ func body(t *testing.T, s *Server) string {
 func TestDeferralsAgeAndExpire(t *testing.T) {
 	t.Parallel()
 	s := NewServer()
-	m, err := NewIngest(s)
+	m, err := NewIngest(s, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -74,7 +73,7 @@ func TestRefreshKeepsTheLastValuesOnFailure(t *testing.T) {
 			t.Fatal(err)
 		}
 		s := NewServer()
-		m, err := NewIngest(s)
+		m, err := NewIngest(s, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -101,34 +100,86 @@ func TestRefreshKeepsTheLastValuesOnFailure(t *testing.T) {
 	})
 }
 
-// A scrape during refreshes sees each source's values from one refresh, never some from one and some from the next.
-func TestRefreshPublishesWhole(t *testing.T) {
+// A message held in a batch keeps its deferral while it is held, past the expiry its nak set, its age kept;
+// once no longer held, its batch abandoned, it expires deferralGrace after the last hold. Holding a message never deferred adds nothing.
+func TestDeferralsHeldWhileBatched(t *testing.T) {
 	t.Parallel()
 	s := NewServer()
-	m, err := NewIngest(s)
+	m, err := NewIngest(s, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	const passes = 200
-	var wg sync.WaitGroup
-	wg.Go(func() {
-		for n := range uint64(passes) {
-			_ = m.Refresh(t.Context(), nil, busFunc(func(context.Context) (BusState, error) {
-				return BusState{AckPending: n, Messages: n, Bytes: n}, nil
-			}))
+	t0 := time.Unix(1000, 0)
+	clock := t0
+	m.deferred.now = func() time.Time { return clock }
+	m.Deferred("a", "write-failure", time.Minute) // expires at t0+11m unless held
+	clock = t0.Add(5 * time.Minute)
+	m.Held([]string{"a", "never-deferred"}) // until t0+15m
+	clock = t0.Add(14 * time.Minute)
+	if b := body(t, s); !strings.Contains(b, `tracekeep_ingest_deferred_messages{reason="write-failure"} 1`) ||
+		!strings.Contains(b, `tracekeep_ingest_deferred_oldest_age_seconds{reason="write-failure"} 840`) {
+		t.Fatalf("a held deferral expired, or lost its age:\n%s", b)
+	}
+	clock = t0.Add(16 * time.Minute)
+	if b := body(t, s); strings.Contains(b, "tracekeep_ingest_deferred_messages") {
+		t.Errorf("a deferral no longer held still counted:\n%s", b)
+	}
+}
+
+// A refresh publishes each source whole, under a controlled schedule: while the bus's read is held,
+// a scrape sees the previous refresh of both sources; once it returns, the next refresh of both.
+func TestRefreshPublishesWhole(t *testing.T) {
+	t.Parallel()
+	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
+		ctx := t.Context()
+		if _, err := c.ActivateConfig(ctx, []byte(`{"classifier":"test","max_frame_len":0}`)); err != nil {
+			t.Fatal(err)
 		}
-	})
-	value := regexp.MustCompile(`(?m)^tracekeep_ingest_(?:consumer_ack_pending|stream_backlog_messages|stream_backlog_bytes) (\S+)$`)
-	for range passes {
-		vs := value.FindAllStringSubmatch(body(t, s), -1)
-		if len(vs) == 0 {
-			continue // no refresh yet
-		}
-		for _, v := range vs[1:] {
-			if v[1] != vs[0][1] {
-				t.Fatalf("one scrape mixes refreshes: %v", vs)
+		admit := func(capture byte) {
+			start := &catalog.Identity{Version: catalog.VersionKey{Capture: tracepack.UUID{capture}}, Incarnation: 1, StreamSeq: int64(capture)}
+			desc := &catalog.Descriptor{Bytes: []byte("d"), ToolID: "T1", RecorderInstanceID: tracepack.UUID{capture, 1}, Device: "eqp", OriginNS: 1}
+			if _, err := c.Admit(ctx, start, desc); err != nil {
+				t.Fatal(err)
 			}
 		}
-	}
-	wg.Wait()
+		s := NewServer()
+		m, err := NewIngest(s, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		admit(1)
+		if err := m.Refresh(ctx, c, busFunc(func(context.Context) (BusState, error) { return BusState{AckPending: 1, Messages: 1, Bytes: 1}, nil })); err != nil {
+			t.Fatal(err)
+		}
+		admit(2)
+		reading, release := make(chan struct{}), make(chan struct{})
+		done := make(chan error, 1)
+		go func() {
+			done <- m.Refresh(ctx, c, busFunc(func(context.Context) (BusState, error) {
+				close(reading)
+				<-release
+
+				return BusState{AckPending: 2, Messages: 2, Bytes: 2}, nil
+			}))
+		}()
+		<-reading
+		want := func(n int) {
+			t.Helper()
+			b := body(t, s)
+			for _, line := range []string{
+				fmt.Sprintf("tracekeep_ingest_consumer_ack_pending %d", n), fmt.Sprintf("tracekeep_ingest_stream_backlog_messages %d", n),
+				fmt.Sprintf("tracekeep_ingest_stream_backlog_bytes %d", n), fmt.Sprintf(`tracekeep_ingest_captures_open{tool_id="T1"} %d`, n),
+			} {
+				if !strings.Contains(b, line) {
+					t.Errorf("/metrics lacks %s", line)
+				}
+			}
+		}
+		want(1)
+		close(release)
+		if err := <-done; err != nil {
+			t.Fatal(err)
+		}
+		want(2)
+	})
 }

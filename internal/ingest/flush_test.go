@@ -151,7 +151,7 @@ func TestFlushWritesRegistersThenAcks(t *testing.T) {
 			held = append(held, p.feed(t, inline(t, capture, dataRecord(seq, now+int64(seq)), nil)))
 		}
 		var inProgress int
-		p.b.Held(func(m Msg) { inProgress++; _ = m.InProgress() })
+		p.b.Held(func(e Entry) { inProgress++; _ = e.Msg.InProgress() })
 		if inProgress != 4 {
 			t.Errorf("%d held messages kept in progress, want 4", inProgress)
 		}
