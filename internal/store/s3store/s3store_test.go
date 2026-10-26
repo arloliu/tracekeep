@@ -99,3 +99,19 @@ func fetch(t *testing.T, s *s3store.Store, key string) ([]byte, int) {
 
 	return body, resp.StatusCode
 }
+
+// A missing bucket is a misconfiguration, never a missing key: a delete in it fails instead of succeeding quietly.
+func TestMissingBucketIsNotAMissingKey(t *testing.T) {
+	t.Parallel()
+	newStore(t) // skips without a store to test against
+	missing, err := s3store.New(s3store.Config{
+		Endpoint: os.Getenv(envEndpoint), Bucket: "tk-missing-" + strings.ToLower(rand.Text()),
+		AccessKeyID: os.Getenv(envKey), SecretAccessKey: os.Getenv(envSecret),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := missing.Delete(t.Context(), "staging/x"); err == nil {
+		t.Error("Delete in a missing bucket succeeded")
+	}
+}
