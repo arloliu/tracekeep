@@ -1,0 +1,378 @@
+package compact
+
+import (
+	"bytes"
+	"crypto/rand"
+	"errors"
+	"log/slog"
+	"slices"
+	"testing"
+	"time"
+
+	"github.com/arloliu/go-secs/tracepack"
+
+	"github.com/arloliu/tracekeep/internal/catalog"
+	"github.com/arloliu/tracekeep/internal/catalog/catalogtest"
+	"github.com/arloliu/tracekeep/internal/store"
+)
+
+const (
+	tool = "T1"
+	hour = int64(490000) // an hour of 2025
+)
+
+type fixture struct {
+	c     *catalog.Catalog
+	s     *store.Mem
+	r     *Reconciler
+	lease catalog.Lease
+	// horizon is the oldest hour retention keeps.
+	horizon int64
+}
+
+func newFixture(t *testing.T, c *catalog.Catalog) *fixture {
+	t.Helper()
+	f := &fixture{c: c, s: store.NewMem(), horizon: hour - 24}
+	f.r = &Reconciler{Catalog: c, Store: f.s, HorizonHour: func() int64 { return f.horizon }, Log: slog.New(slog.DiscardHandler)}
+	lease, ok, err := c.TakeLease(t.Context(), "compactor", "reconciler", time.Hour)
+	if err != nil || !ok {
+		t.Fatalf("TakeLease = %v, %v", ok, err)
+	}
+	f.lease = lease
+
+	return f
+}
+
+func newID(t *testing.T) tracepack.UUID {
+	t.Helper()
+	var id tracepack.UUID
+	if _, err := rand.Read(id[:]); err != nil {
+		t.Fatal(err)
+	}
+
+	return id
+}
+
+// admit admits a fresh capture, as ingest's admission of its start would.
+func (f *fixture) admit(t *testing.T) tracepack.UUID {
+	t.Helper()
+	ctx := t.Context()
+	cfg, err := f.c.ActivateConfig(ctx, []byte("config"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.c.Register(ctx, "r", []int64{cfg}, time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	id := newID(t)
+	d := &catalog.Identity{Version: catalog.VersionKey{Capture: id}, Incarnation: 1, StreamSeq: 1, Hour: hour}
+	if _, err := f.c.Admit(ctx, d, &catalog.Descriptor{Bytes: []byte("d"), ToolID: tool, RecorderInstanceID: newID(t), Device: "eqp", OriginNS: 1}); err != nil {
+		t.Fatal(err)
+	}
+
+	return id
+}
+
+// pass runs one orphan pass.
+func (f *fixture) pass(t *testing.T) OrphanReport {
+	t.Helper()
+	rep, err := f.r.Orphans(t.Context(), f.lease)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	return rep
+}
+
+func (f *fixture) put(t *testing.T, key string, b []byte) {
+	t.Helper()
+	if err := f.s.Put(t.Context(), key, bytes.NewReader(b), int64(len(b))); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func (f *fixture) present(t *testing.T, key string) bool {
+	t.Helper()
+	_, err := f.s.Stat(t.Context(), key)
+	if err != nil && !errors.Is(err, store.ErrNotFound) {
+		t.Fatal(err)
+	}
+
+	return err == nil
+}
+
+// built is a written pack and its key.
+type built struct {
+	id   tracepack.UUID
+	key  string
+	data []byte
+}
+
+// segment writes a segment of capture in hour holding seqs, the last one a stop when stop is set.
+func segment(t *testing.T, capture tracepack.UUID, seqs []uint64, stop bool) built {
+	t.Helper()
+	b := write(t, capture, tracepack.PackRoleSegment, seqs, stop)
+	key, err := tracepack.SegmentKey("", tool, capture, seqs[0], b.id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b.key = key
+
+	return b
+}
+
+func write(t *testing.T, capture tracepack.UUID, role tracepack.PackRole, seqs []uint64, stop bool) built {
+	t.Helper()
+	name := "eqp"
+	origin, mono, tolerance, interval := int64(1000), int64(0), uint64(time.Second), uint64(5*time.Minute)
+	m := &tracepack.PackMeta{
+		ToolID: tool, Transport: tracepack.TransportHSMSSS, CaptureMethod: tracepack.CaptureMethodRawStream,
+		Vantage: tracepack.VantageHost, Recorder: "test", Writer: "test", TimeSource: tracepack.TimeSourceCaptureClock,
+		CaptureOriginUTCNs: &origin, CaptureOriginMonoNs: &mono, ClockStepToleranceNs: &tolerance,
+		LifecycleCoverage: tracepack.LifecycleCoverageSubscribed, QualityEvaluated: true,
+		RecorderInstanceID: tracepack.UUID{9}, RecorderInstanceName: &name,
+		PackRole: role, SeqStart: seqs[0], PeriodStart: hour * nsPerHour, PeriodEnd: (hour + 1) * nsPerHour,
+		FlushIntervalNs: &interval, ScopeGeneration: new(uint64),
+	}
+	id := newID(t)
+	var buf bytes.Buffer
+	w, err := tracepack.NewWriter(&buf, tracepack.WriterOptions{
+		Meta: m, Facts: tracepack.PackFacts{DurableRecorder: true}, PackID: id, CaptureID: capture,
+		Now: func() time.Time { return time.Unix(0, hour*nsPerHour) },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, seq := range seqs {
+		r := data(seq)
+		if stop && i == len(seqs)-1 {
+			r = stopRecord(t, seq)
+		}
+		if err := w.Append(&r); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	return built{id: id, data: buf.Bytes()}
+}
+
+func data(seq uint64) tracepack.Record {
+	frame := []byte{0, 0, 0, 10, 0, 1, 1, 1, 0, 0, 0, 0, 0, byte(seq)}
+
+	return tracepack.Record{
+		Seq: seq, TSUTCNs: hour*nsPerHour + int64(seq), Kind: tracepack.KindData, Dir: tracepack.DirEquipmentToHost,
+		Fidelity: tracepack.FidelityWireExact, Payload: frame,
+	}
+}
+
+func stopRecord(t *testing.T, seq uint64) tracepack.Record {
+	t.Helper()
+	ev := tracepack.TransportEvent{Event: tracepack.EventCaptureBoundary, BoundaryKind: new(tracepack.BoundaryKindStop)}
+	p, err := ev.MarshalBinary()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	return tracepack.Record{
+		Seq: seq, TSUTCNs: hour*nsPerHour + int64(seq), Kind: tracepack.KindTransportEvent, Dir: tracepack.DirLocal,
+		Fidelity: tracepack.FidelityNotApplicable, Payload: p,
+	}
+}
+
+// An orphan is adopted on the second pass that finds it unknown, with its exact seq set and its stop:
+// coverage only, and an ingest registration of the same pack then finds it adopted (ingest.md §6.3).
+func TestOrphanAdopted(t *testing.T) {
+	t.Parallel()
+	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
+		ctx := t.Context()
+		f := newFixture(t, c)
+		capture := f.admit(t)
+		b := segment(t, capture, []uint64{1, 2, 3, 5, 6}, true)
+		f.put(t, b.key, b.data)
+
+		if rep := f.pass(t); !slices.Equal(rep.Waiting, []string{b.key}) || len(rep.Adopted) != 0 {
+			t.Fatalf("first pass = %+v, want the key waiting", rep)
+		}
+		if rep := f.pass(t); !slices.Equal(rep.Adopted, []string{b.key}) {
+			t.Fatalf("second pass = %+v, want the key adopted", rep)
+		}
+		if got, err := c.KeyStanding(ctx, b.key); err != nil || got != catalog.KeyRegistered {
+			t.Errorf("KeyStanding = %v, %v; want registered", got, err)
+		}
+		got, err := c.Capture(ctx, capture)
+		if err != nil || got.HighestSeq != 6 || got.State != catalog.StateStopped {
+			t.Errorf("capture = %+v, %v; want highest seq 6 and stopped", got, err)
+		}
+		p := &catalog.Pack{
+			ID: b.id, Capture: capture, ToolID: tool, Hour: hour, Role: catalog.RoleSegment, Key: b.key, Size: int64(len(b.data)),
+			SeqStart: 1, FormatMinor: 1, Ranges: []catalog.Range{{SeqFrom: 1, SeqTo: 6}},
+		}
+		ev := &catalog.Evidence{Deliveries: []catalog.Identity{{Version: catalog.VersionKey{Capture: capture, Seq: 1}, Incarnation: 1, StreamSeq: 2}}}
+		if out, err := c.RegisterPack(ctx, p, catalog.Registration{Evidence: ev}); err != nil || out != catalog.FoundAdopted {
+			t.Errorf("ingest's registration = %v, %v; want found adopted", out, err)
+		}
+		if rep := f.pass(t); len(rep.Adopted)+len(rep.Waiting)+len(rep.Deleted)+len(rep.Quarantined) != 0 {
+			t.Errorf("a pass over a registered key = %+v, want nothing", rep)
+		}
+	})
+}
+
+// Every key that cannot be registered is deleted: one beyond the horizon, one lost to a termination,
+// and a tombstoned key that reappears, at once and on every pass.
+func TestOrphanDeleted(t *testing.T) {
+	t.Parallel()
+	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
+		ctx := t.Context()
+		f := newFixture(t, c)
+		old := segment(t, f.admit(t), []uint64{1}, false)
+		terminated := f.admit(t)
+		if _, err := c.TerminateCapture(ctx, terminated, 1, 10, "op", "a1"); err != nil {
+			t.Fatal(err)
+		}
+		lost := segment(t, terminated, []uint64{1}, false)
+		f.put(t, old.key, old.data)
+		f.put(t, lost.key, lost.data)
+		f.pass(t)
+		f.horizon = hour + 1
+		rep := f.pass(t)
+		slices.Sort(rep.Deleted)
+		want := []string{old.key, lost.key}
+		slices.Sort(want)
+		if !slices.Equal(rep.Deleted, want) {
+			t.Fatalf("pass = %+v, want both deleted", rep)
+		}
+		for _, k := range want {
+			if f.present(t, k) {
+				t.Errorf("%s still stored", k)
+			}
+			if got, _ := c.KeyStanding(ctx, k); got != catalog.KeyTombstoned {
+				t.Errorf("%s standing %v, want tombstoned", k, got)
+			}
+		}
+
+		f.put(t, old.key, old.data) // a delayed upload after the tombstone
+		if rep := f.pass(t); !slices.Equal(rep.Deleted, []string{old.key}) || f.present(t, old.key) {
+			t.Errorf("a reappearing tombstoned key = %+v, want deleted at once", rep)
+		}
+	})
+}
+
+// An orphan of a capture no start admitted stays unregistered and stored, and leaves no placeholder capture row.
+func TestOrphanOfAnUnadmittedCapture(t *testing.T) {
+	t.Parallel()
+	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
+		f := newFixture(t, c)
+		capture := newID(t)
+		b := segment(t, capture, []uint64{1}, false)
+		f.put(t, b.key, b.data)
+		f.pass(t)
+		rep := f.pass(t)
+		if !slices.Equal(rep.Unadmitted, []Unadmitted{{Key: b.key, Capture: capture}}) || !f.present(t, b.key) {
+			t.Errorf("pass = %+v, want the orphan reported and kept", rep)
+		}
+		if _, err := c.Capture(t.Context(), capture); !errors.Is(err, catalog.ErrUnknownCapture) {
+			t.Errorf("Capture = %v, want no row", err)
+		}
+	})
+}
+
+// A corrupt or misnamed object is quarantined: reported, never registered, never deleted.
+func TestOrphanQuarantined(t *testing.T) {
+	t.Parallel()
+	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
+		f := newFixture(t, c)
+		capture := f.admit(t)
+		corrupt := segment(t, capture, []uint64{1, 2}, false)
+		corrupt.data = corrupt.data[:len(corrupt.data)-1]
+		misnamed := segment(t, capture, []uint64{3}, false)
+		other := newID(t)
+		misnamed.key, _ = tracepack.SegmentKey("", tool, capture, 3, other)
+		f.put(t, corrupt.key, corrupt.data)
+		f.put(t, misnamed.key, misnamed.data)
+		f.pass(t)
+		rep := f.pass(t)
+		keys := make([]string, 0, len(rep.Quarantined))
+		for _, q := range rep.Quarantined {
+			keys = append(keys, q.Key)
+		}
+		slices.Sort(keys)
+		want := []string{corrupt.key, misnamed.key}
+		slices.Sort(want)
+		if !slices.Equal(keys, want) || len(rep.Adopted) != 0 {
+			t.Fatalf("pass = %+v, want both quarantined", rep)
+		}
+		for _, k := range want {
+			if !f.present(t, k) {
+				t.Errorf("%s deleted", k)
+			}
+			if got, _ := c.KeyStanding(t.Context(), k); got != catalog.KeyUnknown {
+				t.Errorf("%s standing %v, want unknown", k, got)
+			}
+		}
+	})
+}
+
+// The quarantine rule: anything but finalized-consistent, or any writer defect, though the outcome is consistent.
+func TestJudge(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		vr   tracepack.VerifyReport
+		want bool
+	}{
+		{tracepack.VerifyReport{Outcome: tracepack.OutcomeFinalizedConsistent}, false},
+		{tracepack.VerifyReport{Outcome: tracepack.OutcomeFinalizedConsistent, WriterDefects: []tracepack.WriterDefect{{}}}, true},
+		{tracepack.VerifyReport{Outcome: tracepack.OutcomeFinalizedInconsistent}, true},
+		{tracepack.VerifyReport{Outcome: tracepack.OutcomeUnfinalized}, true},
+	} {
+		if got := judge(&tc.vr) != ""; got != tc.want {
+			t.Errorf("judge(%+v) quarantines = %v, want %v", tc.vr, got, tc.want)
+		}
+	}
+}
+
+// A lost lease ends the pass: a worker that lost it does nothing further.
+func TestOrphansUnderALostLease(t *testing.T) {
+	t.Parallel()
+	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
+		f := newFixture(t, c)
+		b := segment(t, f.admit(t), []uint64{1}, false)
+		f.put(t, b.key, b.data)
+		f.pass(t)
+		if _, ok, err := c.TakeLease(t.Context(), "compactor", "other", time.Hour); err != nil || ok {
+			t.Fatalf("a live lease was taken: %v, %v", ok, err)
+		}
+		f.lease.Fence-- // a stale holder
+		if _, err := f.r.Orphans(t.Context(), f.lease); !errors.Is(err, catalog.ErrLeaseLost) {
+			t.Errorf("Orphans under a stale lease = %v, want ErrLeaseLost", err)
+		}
+		if got, _ := c.KeyStanding(t.Context(), b.key); got != catalog.KeyUnknown {
+			t.Errorf("standing %v, want unknown", got)
+		}
+	})
+}
+
+// An archive orphan, a merge's output whose commit was lost, is adopted under its hour's key, here under a key prefix.
+func TestOrphanArchiveAdopted(t *testing.T) {
+	t.Parallel()
+	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
+		f := newFixture(t, c)
+		f.r.KeyPrefix = "tk"
+		capture := f.admit(t)
+		b := write(t, capture, tracepack.PackRoleArchive, []uint64{0, 1, 2}, false)
+		key, err := tracepack.ArchiveKey("tk", tool, capture, hour, b.id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		f.put(t, key, b.data)
+		f.pass(t)
+		if rep := f.pass(t); !slices.Equal(rep.Adopted, []string{key}) {
+			t.Fatalf("pass = %+v, want the archive adopted", rep)
+		}
+		if got, err := c.Capture(t.Context(), capture); err != nil || got.HighestSeq != 2 {
+			t.Errorf("capture = %+v, %v; want highest seq 2", got, err)
+		}
+	})
+}
