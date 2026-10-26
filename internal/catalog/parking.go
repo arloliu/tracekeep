@@ -560,3 +560,21 @@ func (c *Catalog) TerminationOrders(ctx context.Context, capture tracepack.UUID)
 
 	return out, nil
 }
+
+// ParkedCounts counts the parked versions not yet resolved, by the reason they were parked for, for the parked_messages metric.
+func (c *Catalog) ParkedCounts(ctx context.Context) (map[string]int, error) {
+	var rows []struct {
+		Reason string `db:"reason"`
+		N      int    `db:"n"`
+	}
+	err := c.read.SelectContext(ctx, &rows, `SELECT reason, COUNT(*) AS n FROM parked WHERE state IN ('parking', 'parked', 'evicted-hour') GROUP BY reason`)
+	if err != nil {
+		return nil, fmt.Errorf("catalog: parked counts: %w", err)
+	}
+	out := make(map[string]int, len(rows))
+	for _, r := range rows {
+		out[r.Reason] = r.N
+	}
+
+	return out, nil
+}

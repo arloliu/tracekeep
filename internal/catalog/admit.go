@@ -215,3 +215,26 @@ func (c *Catalog) Capture(ctx context.Context, id tracepack.UUID) (Capture, erro
 		StopSeen: row.StopSeen, DataRevision: row.Revision,
 	}, nil
 }
+
+// OpenCapture is an open capture and its tool.
+type OpenCapture struct {
+	ID     tracepack.UUID
+	ToolID string
+}
+
+// OpenCaptures lists the open captures, for the metrics that count them by tool.
+func (c *Catalog) OpenCaptures(ctx context.Context) ([]OpenCapture, error) {
+	var rows []struct {
+		ID   []byte         `db:"capture_id"`
+		Tool sql.NullString `db:"tool_id"`
+	}
+	if err := c.read.SelectContext(ctx, &rows, `SELECT capture_id, tool_id FROM captures WHERE state = ?`, StateOpen); err != nil {
+		return nil, fmt.Errorf("catalog: open captures: %w", err)
+	}
+	out := make([]OpenCapture, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, OpenCapture{ID: tracepack.UUID(r.ID), ToolID: r.Tool.String})
+	}
+
+	return out, nil
+}

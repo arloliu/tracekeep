@@ -592,3 +592,24 @@ func TestTerminationRightAfterParkingBegins(t *testing.T) {
 		}
 	})
 }
+
+// The metrics' reads: unresolved parked versions by reason, and the open captures with their tools.
+func TestParkedCountsAndOpenCaptures(t *testing.T) {
+	t.Parallel()
+	engines(t, func(t *testing.T, c *Catalog) {
+		ctx := t.Context()
+		open := admitted(t, c)
+		capture := newID(t)
+		begin(t, c, identity(capture, 1, 1), 0)
+		begin(t, c, identity(capture, 2, 2), 0)
+		park(t, c, identity(capture, 3, 3), "staged")
+		got, err := c.ParkedCounts(ctx)
+		if err != nil || got["unknown-capture"] != 2 || len(got) != 1 {
+			t.Errorf("ParkedCounts = %v, %v; want the two unresolved versions by their reason", got, err)
+		}
+		cs, err := c.OpenCaptures(ctx)
+		if err != nil || len(cs) != 1 || cs[0].ID != open || cs[0].ToolID != "T1" {
+			t.Errorf("OpenCaptures = %+v, %v; want the admitted capture of T1", cs, err)
+		}
+	})
+}
