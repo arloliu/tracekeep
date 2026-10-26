@@ -118,6 +118,12 @@ func (r *replica) publish(t *testing.T, m Message, claim []byte) {
 			t.Fatal(err)
 		}
 	}
+	r.publishTo(t, subject, m)
+}
+
+// publishTo publishes m, its headers and body, on subject: a copy on the parking stream, as a delayed publish would store it.
+func (r *replica) publishTo(t *testing.T, subject string, m Message) *jetstream.PubAck {
+	t.Helper()
 	nm := nats.NewMsg(subject)
 	nm.Data = m.Body
 	set := func(k, v string) {
@@ -130,9 +136,12 @@ func (r *replica) publish(t *testing.T, m Message, claim []byte) {
 	set(tracepack.BusHeaderDescriptor, m.Env.Descriptor)
 	set(tracepack.BusHeaderPayloadRef, m.Env.PayloadRef)
 	set(tracepack.BusHeaderPayloadDigest, m.Env.PayloadDigest)
-	if _, err := r.js.PublishMsg(t.Context(), nm); err != nil {
+	ack, err := r.js.PublishMsg(t.Context(), nm)
+	if err != nil {
 		t.Fatal(err)
 	}
+
+	return ack
 }
 
 // Raw reads the message's raw facts, for a test that needs its version.

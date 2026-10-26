@@ -10,6 +10,7 @@ import (
 	"github.com/arloliu/tracekeep/internal/bus"
 	"github.com/arloliu/tracekeep/internal/catalog"
 	"github.com/arloliu/tracekeep/internal/catalog/catalogtest"
+	"github.com/arloliu/tracekeep/producer/busconfig"
 )
 
 // redelivery is the parked consumer's nak delay in these tests, parking.redelivery_delay.
@@ -182,7 +183,8 @@ func TestParkedConsumerAcknowledgesUnderTheTermination(t *testing.T) {
 		ctx := t.Context()
 		r := newReplica(t, c)
 		capture := tracepack.UUID{43}
-		r.publish(t, inline(t, capture, dataRecord(1, now-int64(48*time.Hour)), nil), nil)
+		original := inline(t, capture, dataRecord(1, now-int64(48*time.Hour)), nil)
+		r.publish(t, original, nil)
 		r.step(t)
 		if n, err := c.TerminateParked(ctx, capture, nil, "op", "p1"); err != nil || n != 1 {
 			t.Fatalf("TerminateParked = %d, %v", n, err)
@@ -198,9 +200,53 @@ func TestParkedConsumerAcknowledgesUnderTheTermination(t *testing.T) {
 		if got := copyStates(versions(t, c, capture), pg.Incarnation.ID); !slices.Equal(got, []string{"acked"}) {
 			t.Errorf("copy rows on the parking stream %v, want acked", got)
 		}
-		es, err := c.AuditEntries(ctx, capture)
-		if err != nil || !slices.ContainsFunc(es, func(e catalog.AuditEntry) bool { return e.Action == ReasonTerminated && e.ActionID == "p1" }) {
-			t.Errorf("audit %+v, %v; want the acknowledgement under p1", es, err)
+		underP1 := func() int {
+			es, err := c.AuditEntries(ctx, capture)
+			if err != nil {
+				t.Fatal(err)
+			}
+			n := 0
+			for _, e := range es {
+				if e.Action == ReasonTerminated && e.ActionID == "p1" {
+					n++
+				}
+			}
+
+			return n
+		}
+		if n := underP1(); n != 1 {
+			t.Errorf("%d acknowledgements under p1, want 1", n)
+		}
+
+		// A copy of the version published later (the gate's "a day later": after the first was acknowledged, its subject empty),
+		// as a delayed publish would store it, is acknowledged under the same termination with its own audit row.
+		traffic, err := tracepack.BusSubject(prefix, "T1", capture)
+		if err != nil {
+			t.Fatal(err)
+		}
+		subject, err := parkSubject(busconfig.DefaultParkPrefix, traffic, original.Raw().Version)
+		if err != nil {
+			t.Fatal(err)
+		}
+		// The scenario's delay: the late copy comes after the parking stream's duplicate window, here shortened to 100 ms.
+		s := r.parked(t)
+		cfg := s.CachedInfo().Config
+		cfg.Duplicates = 100 * time.Millisecond
+		if _, err := r.js.UpdateStream(ctx, cfg); err != nil {
+			t.Fatal(err)
+		}
+		time.Sleep(2 * cfg.Duplicates)
+		if ack := r.publishTo(t, subject, original); ack.Duplicate {
+			t.Fatal("the late copy was taken for a duplicate; the window has not passed")
+		}
+		if err := pg.Step(ctx); err != nil {
+			t.Fatal(err)
+		}
+		if n := msgs(t, r.parked(t)); n != 0 {
+			t.Errorf("the parking stream holds %d copies, want the late copy acknowledged", n)
+		}
+		if n := underP1(); n != 2 {
+			t.Errorf("%d acknowledgements under p1 after the late copy, want 2", n)
 		}
 	})
 }

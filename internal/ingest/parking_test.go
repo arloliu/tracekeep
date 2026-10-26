@@ -308,3 +308,65 @@ func TestAcknowledgementRecordsTheMessage(t *testing.T) {
 		}
 	})
 }
+
+// A terminated pending start, then a start of another version above the order's cut-off, published later (the gate's case):
+// the first is acknowledged under the termination with no admission effect, the second admits the capture,
+// and the first version delivered again is acknowledged under the termination again.
+func TestTerminatedStartThenAnotherVersion(t *testing.T) {
+	t.Parallel()
+	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
+		ctx := t.Context()
+		r := newReplica(t, c)
+		// The versions share a message id, the capture and seq's: each is published after the traffic stream's duplicate window.
+		cfg := r.stream.CachedInfo().Config
+		cfg.Duplicates = 100 * time.Millisecond
+		if _, err := r.js.UpdateStream(ctx, cfg); err != nil {
+			t.Fatal(err)
+		}
+		later := func(m Message) {
+			time.Sleep(2 * cfg.Duplicates) // the scenario's delay
+			subject, err := tracepack.BusSubject(prefix, "T1", m.Raw().Version.Capture)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if ack := r.publishTo(t, subject, m); ack.Duplicate {
+				t.Fatal("taken for a duplicate; the window has not passed")
+			}
+		}
+		capture := tracepack.UUID{23}
+		first := inline(t, capture, startRecord(t, now), nil)
+		first.Env.Descriptor = "not base64!"
+		r.publish(t, first, nil)
+		if _, err := c.TerminateCapture(ctx, capture, r.g.Incarnation.ID, 1, "op", "c1"); err != nil {
+			t.Fatal(err)
+		}
+		r.step(t)
+		if got, err := c.Capture(ctx, capture); err != nil || got.State != catalog.StatePending {
+			t.Fatalf("capture %+v, %v; want no admission effect", got, err)
+		}
+
+		later(inline(t, capture, startRecord(t, now+1), descriptorOf(t, "eqp"))) // another version, above the cut-off
+		r.step(t)
+		if got, err := c.Capture(ctx, capture); err != nil || got.State != catalog.StateOpen {
+			t.Fatalf("capture %+v, %v; want the other version's start admitting it", got, err)
+		}
+
+		later(first)
+		r.step(t)
+		r.clk.flushInterval() // the admitted start's batch is flushed and acknowledged
+		r.step(t)
+		es, err := c.AuditEntries(ctx, capture)
+		if err != nil {
+			t.Fatal(err)
+		}
+		n := 0
+		for _, e := range es {
+			if e.Action == ReasonTerminated && e.ActionID == "c1" {
+				n++
+			}
+		}
+		if n != 2 || r.pending(t) != 0 {
+			t.Errorf("%d acknowledgements under c1, %d messages pending; want the first version acknowledged twice, nothing left", n, r.pending(t))
+		}
+	})
+}
