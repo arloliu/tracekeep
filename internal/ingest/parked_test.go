@@ -222,3 +222,51 @@ func TestParkedConsumerDelays(t *testing.T) {
 		}
 	})
 }
+
+// A parked copy's version evicted while its batch's put was in flight is never staged by the registration that follows:
+// the key is refused, the version stays evicted-hour and the copy stays on the parking stream, unacknowledged.
+func TestParkedConsumerFlushMeetsAnEviction(t *testing.T) {
+	t.Parallel()
+	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
+		ctx := t.Context()
+		r := newReplica(t, c)
+		capture := tracepack.UUID{45}
+		r.publish(t, inline(t, capture, dataRecord(1, now), nil), nil)
+		d, m := r.fetch(t)
+		b, err := r.g.Coordinator.Begin(ctx, d, ReasonUnknownCapture, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if conf, err := r.g.Coordinator.Publish(ctx, d, b.State); err != nil || conf != Confirmed {
+			t.Fatalf("Publish = %v, %v", conf, err)
+		}
+		if err := r.g.Coordinator.Acknowledge(ctx, d, m, false); err != nil {
+			t.Fatal(err)
+		}
+		r.publish(t, inline(t, capture, startRecord(t, now), descriptorOf(t, "eqp")), nil)
+		r.step(t) // the capture admitted
+
+		pg := r.parkedConsumer(t)
+		if err := pg.Step(ctx); err != nil { // the copy advanced to parked and batched
+			t.Fatal(err)
+		}
+		pg.Flusher.hooks[hookAfterPut] = func() error {
+			pg.Flusher.hooks[hookAfterPut] = nil
+			_, err := c.EvictParked(ctx, d.versionKey()) // retention evicts the hour while the put is in flight
+			return err
+		}
+		r.clk.flushInterval()
+		if err := pg.Step(ctx); err != nil {
+			t.Fatal(err)
+		}
+		if vs := versions(t, c, capture); len(vs) != 1 || vs[0].State != catalog.VersionEvictedHour {
+			t.Fatalf("versions %+v, want evicted-hour", vs)
+		}
+		if n := msgs(t, r.parked(t)); n != 1 {
+			t.Errorf("the parking stream holds %d copies, want the copy unacknowledged", n)
+		}
+		if got := copyStates(versions(t, c, capture), pg.Incarnation.ID); slices.Contains(got, "acked") {
+			t.Errorf("copy rows %v, want none acked", got)
+		}
+	})
+}

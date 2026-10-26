@@ -138,7 +138,7 @@ func (f *Flusher) Flush(ctx context.Context, b *Batch) (Flushed, error) {
 			return Flushed{}, err
 		}
 		if outcome == catalog.BeyondHorizon {
-			// Only the first segment can meet it: every segment is judged by the same horizon and hour.
+			// Every segment is judged by the same horizon and hour, so a later one meets it only when its version's hour was evicted meanwhile.
 			return Flushed{BeyondHorizon: true}, nil
 		}
 		if outcome == catalog.LostToTermination {

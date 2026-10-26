@@ -68,11 +68,12 @@ func (k *Coordinator) Park(ctx context.Context, e Entry, reason string, horizonH
 	if err != nil || c != Confirmed {
 		return Parking{Begun: b, Confirmation: c}, err
 	}
-	if _, err := k.Advance(ctx, e.D); err != nil {
+	state, err := k.Advance(ctx, e.D)
+	if err != nil {
 		return Parking{Begun: b, Confirmation: c}, err
 	}
-
-	return Parking{Begun: b, Confirmation: c}, k.Acknowledge(ctx, e.D, e.Msg, false)
+	// A termination committed since begin is the version's resolution: the original is acknowledged under it.
+	return Parking{Begun: b, Confirmation: c}, k.Acknowledge(ctx, e.D, e.Msg, state == catalog.VersionTerminated)
 }
 
 // Begin is step (1): the version's row and the delivery's copy row, under the capture row; it returns the version's state.
@@ -114,10 +115,15 @@ func (k *Coordinator) Advance(ctx context.Context, d *Delivery) (catalog.Version
 }
 
 // Acknowledge is step (4) for the delivery the caller holds, original or copy:
-// a DoubleAck, then its copy row acked once the server confirmed it.
+// its copy row inserted or found, so every message of a parked version is accounted for, a DoubleAck,
+// then the copy row acked once the server confirmed it.
 // A message of a terminated version is acknowledged under the termination: its audit row, naming the action, is written first,
 // so no such acknowledgement goes unrecorded, and a redelivery acknowledged again writes its own (parking.md *Resolution*).
 func (k *Coordinator) Acknowledge(ctx context.Context, d *Delivery, m Msg, terminated bool) error {
+	// A version with no parked row, staged by a receipt alone, has no copy rows to keep.
+	if _, err := k.Catalog.RecordCopy(ctx, d.identity()); err != nil && !errors.Is(err, catalog.ErrUnknownVersion) {
+		return err
+	}
 	if terminated {
 		action, err := k.Catalog.TerminatedBy(ctx, d.versionKey())
 		if err != nil {

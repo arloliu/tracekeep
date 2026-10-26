@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"slices"
 	"testing"
 	"time"
 
@@ -62,22 +63,33 @@ func parkingBus(t *testing.T, clustered bool) (jetstream.JetStream, jetstream.St
 		t.Fatal(err)
 	}
 	t.Cleanup(nc.Close)
-	// A cluster under a loaded test run answers its API more slowly than a standalone server.
-	js, err := jetstream.New(nc, jetstream.WithDefaultTimeout(30*time.Second))
+	js, err := jetstream.New(nc)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if clustered {
-		// Ensure keeps an existing traffic stream, and gives the parking stream its replicas.
-		c := busconfig.StreamConfig(busconfig.DefaultTrafficStream, prefix)
-		c.Replicas = 3
-		if _, err := js.CreateStream(ctx, c); err != nil {
+	// shortcut: a request to a cluster just formed sometimes gets no reply; both steps are idempotent, so they are retried.
+	var parked jetstream.Stream
+	for attempt := 1; ; attempt++ {
+		actx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		err = nil
+		if clustered {
+			// Ensure keeps an existing traffic stream, and gives the parking stream its replicas.
+			c := busconfig.StreamConfig(busconfig.DefaultTrafficStream, prefix)
+			c.Replicas = 3
+			if _, err = js.CreateStream(actx, c); errors.Is(err, jetstream.ErrStreamNameAlreadyInUse) {
+				err = nil
+			}
+		}
+		if err == nil {
+			_, parked, err = bus.Ensure(actx, js, bus.Config{SubjectPrefix: prefix, ClaimBucket: bucket})
+		}
+		cancel()
+		if err == nil {
+			break
+		}
+		if !errors.Is(err, context.DeadlineExceeded) || attempt == 3 {
 			t.Fatal(err)
 		}
-	}
-	_, parked, err := bus.Ensure(ctx, js, bus.Config{SubjectPrefix: prefix, ClaimBucket: bucket})
-	if err != nil {
-		t.Fatal(err)
 	}
 	if clustered {
 		testbus.AwaitStream(t, js, parked)
@@ -283,6 +295,45 @@ func TestPark(t *testing.T) {
 		vs, err := c.ParkedVersions(ctx, &capture)
 		if err != nil || len(vs) != 1 || vs[0].State != catalog.VersionParked || len(vs[0].Copies) != 1 || vs[0].Copies[0].State != "acked" {
 			t.Errorf("versions = %+v, %v; want parked, the original's copy row acked", vs, err)
+		}
+	})
+}
+
+// terminating commits a termination of capture before each publish, as one committed while the copy's publish was in flight.
+type terminating struct {
+	jetstream.JetStream
+	c       *catalog.Catalog
+	capture tracepack.UUID
+}
+
+func (p terminating) PublishMsg(ctx context.Context, m *nats.Msg, opts ...jetstream.PublishOpt) (*jetstream.PubAck, error) {
+	if _, err := p.c.TerminateParked(ctx, p.capture, nil, "op", "p1"); err != nil {
+		return nil, err
+	}
+
+	return p.JetStream.PublishMsg(ctx, m, opts...)
+}
+
+// A termination committed between begin and advance is the version's resolution:
+// the original is acknowledged under it, with its audit row.
+func TestParkMeetsATerminationDuringThePublish(t *testing.T) {
+	t.Parallel()
+	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
+		ctx := t.Context()
+		r := newReplica(t, c)
+		capture := tracepack.UUID{5}
+		k := &Coordinator{Catalog: c, Bus: terminating{JetStream: r.js, c: c, capture: capture}, ParkPrefix: busconfig.DefaultParkPrefix}
+		r.publish(t, inline(t, capture, dataRecord(1, now), nil), nil)
+		d, m := r.fetch(t)
+		if p, err := k.Park(ctx, Entry{D: d, Msg: m}, ReasonUnknownCapture, 0); err != nil || p.Confirmation != Confirmed {
+			t.Fatalf("Park = %+v, %v", p, err)
+		}
+		es, err := c.AuditEntries(ctx, capture)
+		if err != nil || !slices.ContainsFunc(es, func(e catalog.AuditEntry) bool { return e.Action == ReasonTerminated && e.ActionID == "p1" }) {
+			t.Errorf("audit %+v, %v; want the original's acknowledgement under p1", es, err)
+		}
+		if got := copyStates(versions(t, c, capture), r.g.Incarnation.ID); !slices.Equal(got, []string{"acked"}) {
+			t.Errorf("the original's copy row %v, want acked", got)
 		}
 	})
 }

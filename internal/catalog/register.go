@@ -280,21 +280,48 @@ func (c *Catalog) guards(ctx context.Context, tx *sqlx.Tx, p *Pack, r Registrati
 		return BeyondHorizon, true, err
 	}
 	if r.Evidence != nil {
-		for i := range r.Evidence.Deliveries {
-			d := &r.Evidence.Deliveries[i]
-			res, _, err := resolveIn(ctx, tx, &d.Version, d.Incarnation, d.StreamSeq)
-			if err != nil {
-				return 0, true, err
-			}
-			if res == ResolvedTerminated || res == CoveredByOrder {
-				// The termination committed first and wins: the key is tombstoned before the caller deletes the object.
-				_, err := tx.ExecContext(ctx, c.d.insertIgnore+` INTO tombstones (object_key, reason, at) VALUES (?, 'terminated', ?)`, p.Key, c.now())
-				return LostToTermination, true, err
-			}
+		if out, done, err := c.evidenceGuard(ctx, tx, p, r.Evidence); done || err != nil {
+			return out, done, err
 		}
 	}
 	if r.Adopted && row.State != StateOpen && row.State != StateStopped && row.State != StateClosed {
 		return UnadmittedCapture, true, nil
+	}
+
+	return 0, false, nil
+}
+
+// evidenceGuard re-reads, under the capture row, the version of every delivery of the evidence:
+// one terminated, or a message an active order covers, wins over the registration (T-32);
+// one whose hour retention evicted can no longer be staged (parking.md *Parking*).
+// Either way the key is tombstoned, in this transaction, before the caller deletes the object.
+func (c *Catalog) evidenceGuard(ctx context.Context, tx *sqlx.Tx, p *Pack, e *Evidence) (PackOutcome, bool, error) {
+	for i := range e.Deliveries {
+		d := &e.Deliveries[i]
+		res, _, err := resolveIn(ctx, tx, &d.Version, d.Incarnation, d.StreamSeq)
+		if err != nil {
+			return 0, true, err
+		}
+		out, reason := PackOutcome(0), ""
+		switch res {
+		case ResolvedTerminated, CoveredByOrder:
+			out, reason = LostToTermination, "terminated"
+		case Unresolved:
+			state, err := readVersionState(ctx, tx, &d.Version)
+			if err != nil && !errors.Is(err, ErrUnknownVersion) {
+				return 0, true, err
+			}
+			if state == VersionEvictedHour {
+				out, reason = BeyondHorizon, "beyond-retention"
+			}
+		case ResolvedStaged:
+		default:
+			return 0, true, fmt.Errorf("catalog: unknown resolution %d", res)
+		}
+		if out != 0 {
+			_, err := tx.ExecContext(ctx, c.d.insertIgnore+` INTO tombstones (object_key, reason, at) VALUES (?, ?, ?)`, p.Key, reason, c.now())
+			return out, true, err
+		}
 	}
 
 	return 0, false, nil

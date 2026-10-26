@@ -229,7 +229,21 @@ func TestRegisterPackRechecksTermination(t *testing.T) {
 			t.Errorf("%d packs registered", n)
 		}
 
-		// The batch's parking and parked versions become staged; an evicted-hour one is never staged.
+		// A version whose hour retention evicted can no longer be staged: the key is tombstoned, the version left evicted-hour.
+		evicted := identity(capture, 8, 80)
+		park(t, c, evicted, "evicted-hour")
+		p := segment(t, capture, 5, 0, 9)
+		if out := register(t, c, p, Registration{Evidence: &Evidence{Deliveries: []Identity{*evicted}}}); out != BeyondHorizon {
+			t.Errorf("RegisterPack of an evicted-hour version = %v, want beyond the horizon", out)
+		}
+		if n := count(t, c, `SELECT COUNT(*) FROM tombstones WHERE object_key = ? AND reason = 'beyond-retention'`, p.Key); n != 1 {
+			t.Errorf("the key is not tombstoned")
+		}
+		if state, _ := versionState(t, c, evicted); state != "evicted-hour" {
+			t.Errorf("evicted version = %s, want evicted-hour", state)
+		}
+
+		// The batch's parking and parked versions become staged.
 		parking, parked := identity(capture, 5, 50), identity(capture, 6, 60)
 		park(t, c, parking, "parking")
 		park(t, c, parked, "parked")
