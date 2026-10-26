@@ -4,9 +4,13 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
+	"github.com/go-sql-driver/mysql"
 	"github.com/jmoiron/sqlx"
 )
 
@@ -91,12 +95,64 @@ func TestBusyTransactionRetries(t *testing.T) {
 	}
 }
 
-// A second writer of one SQLite catalog is refused.
+// A second writer of one SQLite catalog is refused, through a link to the file as well.
 func TestSQLiteRefusesASecondWriter(t *testing.T) {
 	t.Parallel()
 	c := newCatalogBusy(t, 0)
 	if _, err := Open(t.Context(), Config{Engine: EngineSQLite, DSN: c.path}); !errors.Is(err, ErrSecondWriter) {
 		t.Errorf("second Open = %v, want ErrSecondWriter", err)
+	}
+	link := filepath.Join(t.TempDir(), "alias.db")
+	if err := os.Symlink(c.path, link); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Open(t.Context(), Config{Engine: EngineSQLite, DSN: link}); !errors.Is(err, ErrSecondWriter) {
+		t.Errorf("Open through a link = %v, want ErrSecondWriter", err)
+	}
+}
+
+// A transaction that fails retryably after it wrote is rolled back and run again whole:
+// its guards are read again and its effect is durable once.
+func TestRetryReplaysAfterAWrite(t *testing.T) {
+	t.Parallel()
+	engines(t, func(t *testing.T, c *Catalog) {
+		errDeadlock := errors.New("deadlock")
+		c.testRetryable = errDeadlock
+		id := newID(t)
+		var revisions []int64
+		err := c.inTx(t.Context(), func(tx *sqlx.Tx) error {
+			row, err := c.lockCapture(t.Context(), tx, id)
+			if err != nil {
+				return err
+			}
+			revisions = append(revisions, row.DataRevision)
+			if len(revisions) == 1 {
+				return errDeadlock // after the prologue wrote
+			}
+
+			return nil
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		// The second run read the row afresh: the first run's write was rolled back.
+		if len(revisions) != 2 || revisions[0] != 1 || revisions[1] != 1 {
+			t.Errorf("revisions read by the runs = %v, want [1 1]", revisions)
+		}
+		if n := count(t, c, `SELECT data_revision FROM captures WHERE capture_id = ?`, id[:]); n != 1 {
+			t.Errorf("data revision %d, want 1: one durable effect", n)
+		}
+	})
+}
+
+// A MariaDB deadlock is retried; a lock wait timeout is not.
+func TestMariaDBRetryable(t *testing.T) {
+	t.Parallel()
+	if !mariadbDialect.retryable(fmt.Errorf("x: %w", &mysql.MySQLError{Number: 1213})) {
+		t.Error("a deadlock is not retried")
+	}
+	if mariadbDialect.retryable(&mysql.MySQLError{Number: 1205}) {
+		t.Error("a lock wait timeout is retried")
 	}
 }
 

@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"path/filepath"
 	"syscall"
 	"time"
 
@@ -32,6 +33,7 @@ const defaultBusyTimeout = 5 * time.Second
 var ErrSecondWriter = errors.New("catalog: another process writes this SQLite catalog")
 
 // Config says which database the catalog is.
+// MariaDB is 11.1 or later, the first with the transaction_isolation variable.
 type Config struct {
 	// Engine is EngineSQLite or EngineMariaDB.
 	Engine string
@@ -53,6 +55,8 @@ type Catalog struct {
 	now        func() int64
 	// hooks are the package's test seams, nil otherwise.
 	hooks [numHooks]func()
+	// testRetryable, set only by the package's tests, is an error a transaction retries like a deadlock.
+	testRetryable error
 }
 
 // Test hooks: points where a barrier-controlled test holds a transaction.
@@ -104,8 +108,16 @@ func (c *Catalog) Close() error {
 }
 
 func openSQLite(cfg Config) (*Catalog, error) {
-	// The lock is the file's, so a second process, or a second Open in this one, finds it held.
-	lock, err := os.OpenFile(cfg.DSN+".writer", os.O_RDWR|os.O_CREATE, 0o600)
+	// The lock is the file's, so a second process, or a second Open in this one, finds it held;
+	// the path is resolved first, so a link to the database names the same lock.
+	path, err := filepath.EvalSymlinks(cfg.DSN)
+	if err != nil {
+		return nil, fmt.Errorf("catalog: %w", err)
+	}
+	if path, err = filepath.Abs(path); err != nil {
+		return nil, fmt.Errorf("catalog: %w", err)
+	}
+	lock, err := os.OpenFile(path+".writer", os.O_RDWR|os.O_CREATE, 0o600)
 	if err != nil {
 		return nil, fmt.Errorf("catalog: %w", err)
 	}
@@ -125,7 +137,7 @@ func openSQLite(cfg Config) (*Catalog, error) {
 	q.Add("_pragma", fmt.Sprintf("busy_timeout(%d)", busy.Milliseconds()))
 	q.Add("_pragma", "journal_mode(WAL)")
 	q.Add("_pragma", "synchronous(FULL)")
-	base := "file:" + cfg.DSN + "?"
+	base := "file:" + path + "?"
 	// Every write transaction begins IMMEDIATE, taking the write lock first, on the one writer connection.
 	write, err := sqlx.Open("sqlite", base+q.Encode()+"&_txlock=immediate")
 	if err != nil {
@@ -153,6 +165,8 @@ func openMariaDB(cfg Config) (*Catalog, error) {
 		mc.Params = map[string]string{}
 	}
 	mc.Params["transaction_isolation"] = "'READ-COMMITTED'"
+	// UNIX_TIMESTAMP(NOW()), the database's clock, goes through the session's time zone, which UTC keeps free of daylight saving.
+	mc.Params["time_zone"] = "'+00:00'"
 	// Affected rows count the rows an update matched, as on SQLite, so a guard that rewrites a value unchanged still counts.
 	mc.ClientFoundRows = true
 	db, err := sqlx.Open("mysql", mc.FormatDSN())

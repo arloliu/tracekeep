@@ -9,6 +9,9 @@ import (
 	"github.com/jmoiron/sqlx"
 )
 
+// ErrUnknownLease reports a lease name the migrations did not create.
+var ErrUnknownLease = errors.New("catalog: unknown lease")
+
 // ErrLeaseLost reports a lease its holder no longer holds: a worker that lost its lease does nothing further (compactor.md §8.1).
 var ErrLeaseLost = errors.New("catalog: lease lost")
 
@@ -19,15 +22,11 @@ type Lease struct {
 	Fence  int64
 }
 
-// TakeLease takes the lease name for holder when it is free or lapsed, for ttl by the database's clock;
+// TakeLease takes the lease name, one the migrations created (the compactor's), for holder when it is free or lapsed, for ttl by the database's clock;
 // ok is false while another holder's lease is live.
 func (c *Catalog) TakeLease(ctx context.Context, name, holder string, ttl time.Duration) (Lease, bool, error) {
 	l := Lease{Name: name, Holder: holder}
 	err := c.inTx(ctx, func(tx *sqlx.Tx) error {
-		_, err := tx.ExecContext(ctx, c.d.insertIgnore+` INTO leases (name, holder, fence_token, until_ns) VALUES (?, '', 0, 0)`, name)
-		if err != nil {
-			return err
-		}
 		res, err := tx.ExecContext(ctx, `UPDATE leases SET holder = ?, fence_token = fence_token + 1, until_ns = `+c.d.nowNS+` + ?
 			WHERE name = ? AND until_ns < `+c.d.nowNS, holder, ttl.Nanoseconds(), name)
 		if err := affected(res, err, ErrLeaseLost); err != nil {
@@ -36,6 +35,16 @@ func (c *Catalog) TakeLease(ctx context.Context, name, holder string, ttl time.D
 
 		return tx.GetContext(ctx, &l.Fence, `SELECT fence_token FROM leases WHERE name = ?`, name)
 	})
+	if errors.Is(err, ErrLeaseLost) {
+		// Held by another, or a lease the migrations never created.
+		var n int
+		if err := c.read.GetContext(ctx, &n, `SELECT COUNT(*) FROM leases WHERE name = ?`, name); err != nil {
+			return Lease{}, false, fmt.Errorf("catalog: take lease %s: %w", name, err)
+		}
+		if n == 0 {
+			return Lease{}, false, fmt.Errorf("%w: %s", ErrUnknownLease, name)
+		}
+	}
 	if errors.Is(err, ErrLeaseLost) {
 		return Lease{}, false, nil
 	}

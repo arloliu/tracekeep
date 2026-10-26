@@ -6,6 +6,8 @@ import (
 	"time"
 
 	"github.com/jmoiron/sqlx"
+
+	"github.com/arloliu/go-secs/tracepack"
 )
 
 const ttl = time.Minute
@@ -67,7 +69,7 @@ func TestRegisterNeedsEveryUnretiredConfig(t *testing.T) {
 		if _, err := c.Register(ctx, "new", []int64{v1, v2}, ttl); err != nil {
 			t.Fatalf("Register with both: %v", err)
 		}
-		if err := c.RetireConfig(ctx, v2); err != nil {
+		if err := c.RetireConfig(ctx, v2, nil); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := c.Register(ctx, "old", []int64{v1}, ttl); err != nil {
@@ -104,6 +106,51 @@ func TestRenew(t *testing.T) {
 		}
 		if err := c.Renew(ctx, again, ttl); !errors.Is(err, ErrMembershipLapsed) {
 			t.Errorf("renew after leaving = %v, want ErrMembershipLapsed", err)
+		}
+		// A registration after leaving takes a generation never used, so no earlier handle renews it.
+		rejoined, err := c.Register(ctx, "r", nil, ttl)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if rejoined.Generation == m.Generation || rejoined.Generation == again.Generation {
+			t.Fatalf("the rejoined generation %d reuses an earlier one (%d, %d)", rejoined.Generation, m.Generation, again.Generation)
+		}
+		if err := c.Renew(ctx, again, ttl); !errors.Is(err, ErrMembershipLapsed) {
+			t.Errorf("renew of the earlier handle after rejoining = %v, want ErrMembershipLapsed", err)
+		}
+	})
+}
+
+// A retirement is refused when a capture the caller did not find quiescent is bound to the configuration,
+// such as one admitted after the caller looked (rollouts.md §6.4).
+func TestRetireNeedsEveryBoundCaptureQuiescent(t *testing.T) {
+	t.Parallel()
+	engines(t, func(t *testing.T, c *Catalog) {
+		ctx := t.Context()
+		cfg := gate(t, c)
+		early := newID(t)
+		if _, err := c.Admit(ctx, early, descriptor(t, "a")); err != nil {
+			t.Fatal(err)
+		}
+		observed := []tracepack.UUID{early} // the caller's quiescence check saw this capture only
+		late := newID(t)
+		if _, err := c.Admit(ctx, late, descriptor(t, "b")); err != nil {
+			t.Fatal(err)
+		}
+		if err := c.RetireConfig(ctx, cfg, observed); !errors.Is(err, ErrNotQuiescent) {
+			t.Fatalf("RetireConfig = %v, want ErrNotQuiescent", err)
+		}
+		if err := c.RetireConfig(ctx, cfg, []tracepack.UUID{early, late}); err != nil {
+			t.Errorf("RetireConfig with every bound capture quiescent: %v", err)
+		}
+	})
+}
+
+func TestTakeLeaseOfAnUnknownName(t *testing.T) {
+	t.Parallel()
+	engines(t, func(t *testing.T, c *Catalog) {
+		if _, _, err := c.TakeLease(t.Context(), "nobody", "a", ttl); !errors.Is(err, ErrUnknownLease) {
+			t.Errorf("TakeLease = %v, want ErrUnknownLease", err)
 		}
 	})
 }

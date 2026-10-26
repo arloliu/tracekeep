@@ -75,7 +75,7 @@ CREATE TABLE `pack_ranges` (
   PRIMARY KEY (`pack_id`, `seq_from`)
 );
 -- Create index "pack_ranges_capture_seq" to table: "pack_ranges"
-CREATE INDEX `pack_ranges_capture_seq` ON `pack_ranges` (`capture_id`, `seq_from`);
+CREATE INDEX `pack_ranges_capture_seq` ON `pack_ranges` (`capture_id`, `seq_from`, `seq_to`);
 -- Create "evicted_ranges" table
 CREATE TABLE `evicted_ranges` (
   `capture_id` blob NOT NULL,

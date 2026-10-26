@@ -10,11 +10,15 @@ import (
 	"time"
 
 	"github.com/jmoiron/sqlx"
+
+	"github.com/arloliu/go-secs/tracepack"
 )
 
 var (
 	// ErrConfigNotExecuted refuses a membership whose replica does not execute every configuration not yet retired (rollouts.md §6.4).
 	ErrConfigNotExecuted = errors.New("catalog: the replica does not execute every unretired configuration")
+	// ErrNotQuiescent refuses the retirement of a configuration a capture the caller did not find quiescent is bound to.
+	ErrNotQuiescent = errors.New("catalog: a capture bound to the configuration is not quiescent")
 	// ErrMembershipLapsed reports a membership whose lease lapsed or whose generation is not the current one: register again.
 	ErrMembershipLapsed = errors.New("catalog: membership lapsed")
 )
@@ -55,17 +59,33 @@ func (c *Catalog) ActivateConfig(ctx context.Context, content []byte) (int64, er
 	return id, nil
 }
 
-// RetireConfig retires a configuration: no new capture binds it, and a replica need not execute it to register.
-// The caller has established that every capture bound to it is producer-quiescent (rollouts.md §6.4).
-func (c *Catalog) RetireConfig(ctx context.Context, id int64) error {
-	return c.inTx(ctx, func(tx *sqlx.Tx) error {
+// RetireConfig retires configuration id: no new capture binds it, and a replica need not execute it to register.
+// quiescent are the captures the caller found producer-quiescent (rollouts.md §6.4);
+// under the membership sentinel, which every binding takes, the retirement is refused with ErrNotQuiescent
+// unless every capture bound to id is among them, so a capture admitted after the caller looked keeps its configuration.
+func (c *Catalog) RetireConfig(ctx context.Context, id int64, quiescent []tracepack.UUID) error {
+	err := c.inTx(ctx, func(tx *sqlx.Tx) error {
 		if err := c.lockMembership(ctx, tx); err != nil {
 			return err
+		}
+		var bound [][]byte
+		if err := tx.SelectContext(ctx, &bound, `SELECT capture_id FROM captures WHERE config_id = ?`, id); err != nil {
+			return err
+		}
+		for _, b := range bound {
+			if !slices.Contains(quiescent, tracepack.UUID(b)) {
+				return fmt.Errorf("%w: capture %s", ErrNotQuiescent, tracepack.UUID(b))
+			}
 		}
 		_, err := tx.ExecContext(ctx, `UPDATE processing_configs SET retired_at = ? WHERE config_id = ? AND retired_at IS NULL`, c.now(), id)
 
 		return err
 	})
+	if err != nil {
+		return fmt.Errorf("catalog: retire configuration %d: %w", id, err)
+	}
+
+	return nil
 }
 
 // Register makes replica a member executing configs, with a lease of ttl by the database's clock.
@@ -85,7 +105,11 @@ func (c *Catalog) Register(ctx context.Context, replica string, configs []int64,
 				return fmt.Errorf("%w: configuration %d", ErrConfigNotExecuted, id)
 			}
 		}
-		if err := tx.GetContext(ctx, &m.Generation, `SELECT COALESCE(MAX(generation), 0) + 1 FROM consumers`); err != nil {
+		// The sentinel's value counts registrations, so a generation is never reused, after a leave included.
+		if _, err := tx.ExecContext(ctx, `UPDATE counters SET value = value + 1 WHERE name = 'membership'`); err != nil {
+			return err
+		}
+		if err := tx.GetContext(ctx, &m.Generation, `SELECT value FROM counters WHERE name = 'membership'`); err != nil {
 			return err
 		}
 		if _, err := tx.ExecContext(ctx, `DELETE FROM consumers WHERE replica_id = ?`, replica); err != nil {

@@ -138,10 +138,28 @@ func TestRegisterGuards(t *testing.T) {
 			t.Errorf("%d packs registered past the guards", n)
 		}
 
-		// The reconciler's orphan of a capture no start admitted stays unregistered.
+		// The reconciler's orphan of a capture no start admitted, pending or rejected, stays unregistered.
 		lease, _, _ := c.TakeLease(ctx, "compactor", "w", ttl)
-		if out := register(t, c, segment(t, newID(t), 5, 0, 9), Registration{Lease: &lease, Adopted: true}); out != PendingCapture {
-			t.Errorf("an orphan of a pending capture = %v, want pending", out)
+		if out := register(t, c, segment(t, newID(t), 5, 0, 9), Registration{Lease: &lease, Adopted: true}); out != UnadmittedCapture {
+			t.Errorf("an orphan of an unknown capture = %v, want unadmitted", out)
+		}
+		rejected := newID(t)
+		if _, err := c.Reject(ctx, rejected, []byte("bad")); err != nil {
+			t.Fatal(err)
+		}
+		if out := register(t, c, segment(t, rejected, 5, 0, 9), Registration{Lease: &lease, Adopted: true}); out != UnadmittedCapture {
+			t.Errorf("an orphan of a rejected capture = %v, want unadmitted", out)
+		}
+		// An outcome that registers nothing writes nothing: no placeholder row for an unknown capture, its tombstone apart.
+		stray := segment(t, newID(t), 1, 0, 9)
+		if out := register(t, c, stray, Registration{Evidence: &Evidence{}, HorizonHour: 4}); out != BeyondHorizon {
+			t.Fatalf("a stray past the horizon = %v", out)
+		}
+		if n := count(t, c, `SELECT COUNT(*) FROM captures WHERE capture_id = ?`, stray.Capture[:]); n != 0 {
+			t.Errorf("a refused registration left %d capture rows", n)
+		}
+		if n := count(t, c, `SELECT COUNT(*) FROM packs`); n != 0 {
+			t.Errorf("%d packs registered past the guards", n)
 		}
 		lapse(t, c, `UPDATE leases SET until_ns = 0`)
 		if _, err := c.RegisterPack(ctx, segment(t, capture, 5, 0, 9), Registration{Lease: &lease, Adopted: true}); !errors.Is(err, ErrLeaseLost) {
@@ -220,28 +238,76 @@ func TestRegisterReceipts(t *testing.T) {
 	})
 }
 
-// A conflict the batch split is recorded confirmed against the pack holding the other version.
+// A conflict the batch split is recorded confirmed against the pack holding the other version,
+// whichever of the flush's packs registers first.
 func TestRegisterBatchConflict(t *testing.T) {
 	t.Parallel()
 	engines(t, func(t *testing.T, c *Catalog) {
 		capture := admitted(t, c)
 		first := segment(t, capture, 1, 0, 9)
-		register(t, c, first, Registration{Evidence: &Evidence{}})
 		other := segment(t, capture, 1, 4, 4)
 		other.Role = RoleConflict
 		other.Conflicts = []Version{{Seq: 4, Pack: first.ID}}
-		register(t, c, other, Registration{Evidence: &Evidence{}})
+		if out := register(t, c, other, Registration{Evidence: &Evidence{}}); out != Registered {
+			t.Fatalf("the conflict segment before the pack it names = %v", out)
+		}
+		register(t, c, first, Registration{Evidence: &Evidence{}})
 		if n := count(t, c, `SELECT COUNT(*) FROM conflicts WHERE state = 'confirmed' AND seq_from = 4`); n != 1 {
 			t.Errorf("%d confirmed conflicts at seq 4, want one", n)
 		}
 	})
 }
 
-func TestRegisterRefusesTheCloseSentinel(t *testing.T) {
+// A pack whose seqs do not fit a signed BIGINT, and a registration mode no caller has, are refused before anything is written.
+func TestRegisterRefusesInvalidInput(t *testing.T) {
 	t.Parallel()
-	c := newCatalog(t, EngineSQLite)
-	p := segment(t, newID(t), 1, 0, closeSentinel)
-	if _, err := c.RegisterPack(t.Context(), p, Registration{}); err == nil {
-		t.Error("a range ending at the close sentinel was registered")
-	}
+	engines(t, func(t *testing.T, c *Catalog) {
+		capture := admitted(t, c)
+		lease, _, _ := c.TakeLease(t.Context(), "compactor", "w", ttl)
+		ingest := Registration{Evidence: &Evidence{}}
+		big := uint64(closeSentinel)
+		cases := map[string]struct {
+			mutate func(*Pack)
+			r      Registration
+		}{
+			"range at the sentinel":      {func(p *Pack) { p.Ranges[0].SeqTo = big }, ingest},
+			"seq start overflow":         {func(p *Pack) { p.SeqStart = big + 1 }, ingest},
+			"loss overflow":              {func(p *Pack) { p.Losses = []Loss{{SeqFrom: 1, SeqTo: big + 5, Reason: "x"}} }, ingest},
+			"conflict overflow":          {func(p *Pack) { p.Conflicts = []Version{{Seq: big}} }, ingest},
+			"receipt overflow":           {func(*Pack) {}, Registration{Evidence: &Evidence{Receipts: []Receipt{{Seq: big + 1}}}}},
+			"no range":                   {func(p *Pack) { p.Ranges = nil }, ingest},
+			"adoption without the lease": {func(*Pack) {}, Registration{Adopted: true}},
+			"adoption with evidence":     {func(*Pack) {}, Registration{Lease: &lease, Adopted: true, Evidence: &Evidence{}}},
+			"evidence under the lease":   {func(*Pack) {}, Registration{Lease: &lease, Evidence: &Evidence{}}},
+			"neither evidence nor lease": {func(*Pack) {}, Registration{}},
+		}
+		for name, tc := range cases {
+			p := segment(t, capture, 1, 0, 9)
+			tc.mutate(p)
+			if _, err := c.RegisterPack(t.Context(), p, tc.r); !errors.Is(err, ErrInvalidRegistration) {
+				t.Errorf("%s: RegisterPack = %v, want ErrInvalidRegistration", name, err)
+			}
+		}
+		if n := count(t, c, `SELECT COUNT(*) FROM packs`) + count(t, c, `SELECT COUNT(*) FROM scopes`) + count(t, c, `SELECT COUNT(*) FROM claim_records`); n != 0 {
+			t.Errorf("refused registrations wrote %d rows", n)
+		}
+	})
+}
+
+// A close holds only the sentinel: it registers without a range and moves no seq of the capture.
+func TestRegisterClose(t *testing.T) {
+	t.Parallel()
+	engines(t, func(t *testing.T, c *Catalog) {
+		capture := admitted(t, c)
+		register(t, c, segment(t, capture, 1, 0, 9), Registration{Evidence: &Evidence{}})
+		lease, _, _ := c.TakeLease(t.Context(), "compactor", "w", ttl)
+		cl := segment(t, capture, 1, 0, 0)
+		cl.Role, cl.Ranges, cl.SeqStart = RoleClose, nil, closeSentinel
+		if out := register(t, c, cl, Registration{Lease: &lease}); out != Registered {
+			t.Fatalf("a close = %v, want registered", out)
+		}
+		if got, _ := c.Capture(t.Context(), capture); got.HighestSeq != 9 {
+			t.Errorf("highest seq %d after the close, want 9", got.HighestSeq)
+		}
+	})
 }
