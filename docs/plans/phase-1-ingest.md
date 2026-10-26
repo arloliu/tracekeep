@@ -26,6 +26,7 @@ This plan only orders the work.
 | 1.5 — reconciler | full verification, quarantine and adoption under the compactor lease (`storage.md` §5.4); a receipt's claim object key is the bucket-qualified `Tpk-Payload-Ref`, while the claim bucket is read by the bare message id | done (#16) |
 | 1.6 — dev and roles | `tracekeep dev` and the role subcommands with their configuration (T-22), each processing configuration named for its classifier's implementation and version, the simulator in the service module, the gate's loopback capture | in-progress |
 | 1.7 — completeness and gate | catalog completeness (`catalog.md` §7.3) as a read, and the gate and checklist cases the phases before left open | pending |
+| 1.8 — metrics | every role's metrics of `operations.md` §10.4 with their endpoint; the gate names none, so they follow it | pending |
 
 Only the phase under way is detailed; the others are detailed when they start.
 
@@ -111,7 +112,7 @@ so a pass adopts a key only when the previous pass also found it unknown:
 this plan's default, which the owner may change, and which costs one pass interval of delay.
 `compact` does not import `ingest`; the reconciler derives a pack's ranges and stop from the records it reads.
 Quarantined and unadmitted orphans are reported (logged, and returned by the pass), never deleted;
-the specs keep no table for them, and the metrics come with the role in phase 1.6.
+the specs keep no table for them, and the metrics come with every role's in phase 1.8.
 
 | Step | Scope | State |
 |---|---|---|
@@ -123,7 +124,7 @@ the specs keep no table for them, and the metrics come with the role in phase 1.
 | 6 | the gate's reconciliation schedules: checklist item 3, the roadmap row's reconciler cases (the sole parked copy acknowledged at exactly `LastSeq` and reconciled after a restart, a handle created while `AllowDirect` was on reading through the API, a lagging replica on the clustered testbus), and the orphan cases (a crash after the put adopted while `ingest`'s registration is in flight, a pending capture's orphan left unregistered, a terminated orphan tombstoned and deleted, a tombstoned key deleted again, a corrupt, writer-defective or misnamed object quarantined) | done (2fe7bf9) |
 
 Left to later phases:
-the `compact` role's wiring, its metrics (`orphans_adopted_total`, `orphans_quarantined_total`) and the `object adopt` and `object list` commands go to phase 1.6;
+the `compact` role's wiring and the `object adopt` and `object list` commands go to phase 1.6, its metrics (`orphans_adopted_total`, `orphans_quarantined_total`) to phase 1.8;
 a close's orphan, whose `seq_start` is the close sentinel 2^63−1, is reported and kept, and waits for the compactor that writes closes, phase 2.
 The follower schedule reads through a follower but does not induce a replica's lag; the protection it relies on is that `AllowDirect` is refused and the handle refreshed.
 
@@ -145,13 +146,18 @@ a role refuses to start when the build reports no version (a workspace build), a
 `internal/testbus` serves `dev` as well as the tests, so it gains a constructor that takes no `testing.TB`.
 The `object list --unattributed` and `--survivors` commands report data that retention writes in phase 2, and `object adopt` has no defined semantics yet:
 `object list` reports nothing until phase 2, and `object adopt` waits for its specification.
+Two things wait for phase 2: admin through the process that owns a SQLite catalog, which is the `api` role's (`architecture.md` §3.1),
+so with SQLite an admin command runs while the service is stopped;
+and applying the catalog's migrations from the binary, which needs an applier that records the revision it reached.
+A replica executes every unretired configuration of its own classifier, so a changed `ingest.max_frame_len` never locks a start out;
+new captures keep binding the newest of them until an operator retires it (`rollouts.md` §6.4).
 
 | Step | Scope | State |
 |---|---|---|
 | 1 | `internal/config`: the struct, defaults (T-12, T-25 and the two above), environment overrides, secrets by `ref`, validation; `docs/guides/configuration.md` | done (bc52061) |
 | 2 | the built-in processing configuration named for its classifier, and the refusal of an unversioned build outside `dev` | done (bcb2d07) |
 | 3 | the simulator back in the service module (T-38): its `go.mod` removed, its tests run with the service's | done (f7b67a5) |
-| 4 | the roles: `migrate` (the catalog's migrations, the bus's streams and bucket, both incarnations), `ingest` (the traffic and parked consumers sharing the executor, flusher and coordinator, `parking.enabled` read at start), `compact` (the reconciler under the lease, released on stop), `all`, and `admin` over `internal/admin`; each refuses to start against a stream that is not its incarnation or that allows direct gets | done (3375194) |
+| 4 | the roles: `migrate` (the bus's streams and bucket and both incarnations, the catalog's schema being applied by the Atlas CLI, T-12), `ingest` (the traffic and parked consumers sharing the executor, flusher and coordinator, `parking.enabled` read at start), `compact` (the reconciler under the lease, released on stop), `all`, and `admin` over `internal/admin`; each refuses to start against a stream that is not its incarnation or that allows direct gets | done (3375194) |
 | 5 | `parking.enabled` turned off on a running service: waiting and evicted-hour copies stay listable and terminable (the gate's case the parking phase left here) | done (0a1758f) |
 | 6 | `tracekeep dev`: an embedded bus, an `fs` store, SQLite, `ingest` and `compact`, and the loopback simulator, in one process | done (c3eb1c0, f2cb656) |
 | 7 | the gate's loopback capture: `dev` run by a test, the simulator's capture registered and read back with the tracepack reader, and once by hand with the tracepack CLI | done (927c9fd) |

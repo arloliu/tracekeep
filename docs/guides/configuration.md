@@ -37,7 +37,7 @@ The tunables of later phases (Q, I, L, D, the masking keys) join this file with 
 | `ingest.lease` | `1m` | `TRACEKEEP_INGEST_LEASE` | the membership lease (`rollouts.md` §6.4): a replica that stops renewing leaves the activation gate after it |
 | `ingest.batch_max_bytes` | `64MiB` | `TRACEKEEP_INGEST_BATCH_MAX_BYTES` | a batch flushes before F once it holds this many payload bytes |
 | `ingest.work_dir` | the system's temporary directory | `TRACEKEEP_INGEST_WORK_DIR` | holds a segment's working file until its put returns, masked bytes only |
-| `ingest.max_frame_len` | `0` | `TRACEKEEP_INGEST_MAX_FRAME_LEN` | the processing configuration's `max_frame_len`, 0 for no ceiling; a change makes another configuration, which every replica must execute before captures bind it (`rollouts.md` §6.4) |
+| `ingest.max_frame_len` | `0` | `TRACEKEEP_INGEST_MAX_FRAME_LEN` | the processing configuration's `max_frame_len`, 0 for no ceiling; a change makes another configuration, which every replica must execute before captures bind it (`rollouts.md` §6.4); a replica executes every one not retired, and new captures bind the newest until it is retired, so changing back takes that retirement |
 | `parking.enabled` | `true` | `TRACEKEEP_PARKING_ENABLED` | off, an indefinite deferral is nak'd and can fill `max_ack_pending` for every capture (`parking.md`); the parked consumer works either way |
 | `parking.redelivery_delay` | `60s` | `TRACEKEEP_PARKING_REDELIVERY_DELAY` | how soon a parked copy is tried again; the completion signal is `parked list`, not a time |
 | `compact.lease_ttl` | `1m` | `TRACEKEEP_COMPACT_LEASE_TTL` | the compactor lease: renewed every third of it while a cycle runs; a standby takes over once it lapses |
