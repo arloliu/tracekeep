@@ -123,6 +123,13 @@ func segment(t *testing.T, capture tracepack.UUID, seqs []uint64, stop bool) bui
 
 func write(t *testing.T, capture tracepack.UUID, role tracepack.PackRole, seqs []uint64, stop bool) built {
 	t.Helper()
+
+	return writeWith(t, capture, role, seqs, stop, func(*tracepack.PackMeta) {})
+}
+
+// writeWith is write with the pack metadata adjusted by adjust before the Writer sees it.
+func writeWith(t *testing.T, capture tracepack.UUID, role tracepack.PackRole, seqs []uint64, stop bool, adjust func(*tracepack.PackMeta)) built {
+	t.Helper()
 	name := "eqp"
 	origin, mono, tolerance, interval := int64(1000), int64(0), uint64(time.Second), uint64(5*time.Minute)
 	m := &tracepack.PackMeta{
@@ -134,6 +141,7 @@ func write(t *testing.T, capture tracepack.UUID, role tracepack.PackRole, seqs [
 		PackRole: role, SeqStart: seqs[0], PeriodStart: hour * nsPerHour, PeriodEnd: (hour + 1) * nsPerHour,
 		FlushIntervalNs: &interval, ScopeGeneration: new(uint64),
 	}
+	adjust(m)
 	id := newID(t)
 	var buf bytes.Buffer
 	w, err := tracepack.NewWriter(&buf, tracepack.WriterOptions{
@@ -220,31 +228,32 @@ func TestOrphanAdopted(t *testing.T) {
 	})
 }
 
-// Every key that cannot be registered is deleted: one beyond the horizon, one lost to a termination,
-// and a tombstoned key that reappears, at once and on every pass.
+// Every key that cannot be registered is deleted: one lost to a termination, kept within retention so only the termination refuses it,
+// one beyond the horizon, and a tombstoned key that reappears, at once and on every pass.
 func TestOrphanDeleted(t *testing.T) {
 	t.Parallel()
 	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
 		ctx := t.Context()
 		f := newFixture(t, c)
-		old := segment(t, f.admit(t), []uint64{1}, false)
 		terminated := f.admit(t)
 		if _, err := c.TerminateCapture(ctx, terminated, 1, 10, "op", "a1"); err != nil {
 			t.Fatal(err)
 		}
 		lost := segment(t, terminated, []uint64{1}, false)
-		f.put(t, old.key, old.data)
 		f.put(t, lost.key, lost.data)
 		f.pass(t)
-		f.horizon = hour + 1
-		rep := f.pass(t)
-		slices.Sort(rep.Deleted)
-		want := []string{old.key, lost.key}
-		slices.Sort(want)
-		if !slices.Equal(rep.Deleted, want) {
-			t.Fatalf("pass = %+v, want both deleted", rep)
+		if rep := f.pass(t); !slices.Equal(rep.Deleted, []string{lost.key}) {
+			t.Fatalf("pass = %+v, want the terminated orphan deleted", rep)
 		}
-		for _, k := range want {
+
+		old := segment(t, f.admit(t), []uint64{1}, false)
+		f.put(t, old.key, old.data)
+		f.pass(t)
+		f.horizon = hour + 1
+		if rep := f.pass(t); !slices.Equal(rep.Deleted, []string{old.key}) {
+			t.Fatalf("pass = %+v, want the orphan beyond the horizon deleted", rep)
+		}
+		for _, k := range []string{lost.key, old.key} {
 			if f.present(t, k) {
 				t.Errorf("%s still stored", k)
 			}
@@ -258,6 +267,39 @@ func TestOrphanDeleted(t *testing.T) {
 			t.Errorf("a reappearing tombstoned key = %+v, want deleted at once", rep)
 		}
 	})
+}
+
+// The pack an orphan registers is derived from its records alone: the exact seq runs with their endpoint times,
+// the stop, the identity its header names, and its coverage entries as losses.
+func TestReadDerivesThePack(t *testing.T) {
+	t.Parallel()
+	f := &fixture{s: store.NewMem()}
+	f.r = &Reconciler{Store: f.s}
+	capture := newID(t)
+	four, ts := uint64(4), hour*nsPerHour+4
+	b := writeWith(t, capture, tracepack.PackRoleSegment, []uint64{1, 2, 3, 5, 6}, true, func(m *tracepack.PackMeta) {
+		m.Coverage = []tracepack.Coverage{{CaptureID: &capture, SeqFirst: &four, SeqLast: &four, TimeStart: &ts, TimeEnd: &ts}}
+	})
+	key, err := tracepack.SegmentKey("", tool, capture, 1, b.id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.put(t, key, b.data)
+	p, reason, err := f.r.read(t.Context(), store.ObjectInfo{Key: key, Size: int64(len(b.data))})
+	if err != nil || reason != "" {
+		t.Fatalf("read = %q, %v", reason, err)
+	}
+	at := func(seq int64) int64 { return hour*nsPerHour + seq }
+	want := []catalog.Range{{SeqFrom: 1, SeqTo: 3, TSFrom: at(1), TSTo: at(3)}, {SeqFrom: 5, SeqTo: 6, TSFrom: at(5), TSTo: at(6)}}
+	if !slices.Equal(p.Ranges, want) {
+		t.Errorf("ranges %+v, want %+v", p.Ranges, want)
+	}
+	if !p.Stop || p.ID != b.id || p.Capture != capture || p.Hour != hour || p.SeqStart != 1 || p.Role != catalog.RoleSegment || p.ToolID != tool {
+		t.Errorf("pack %+v, want the header's identity and a stop", p)
+	}
+	if len(p.Losses) != 1 || *p.Losses[0].SeqFrom != 4 || *p.Losses[0].SeqTo != 4 || *p.Losses[0].TSFrom != ts || *p.Losses[0].TSTo != ts {
+		t.Errorf("losses %+v, want seq 4 at %d", p.Losses, ts)
+	}
 }
 
 // An orphan of a capture no start admitted stays unregistered and stored, and leaves no placeholder capture row.
