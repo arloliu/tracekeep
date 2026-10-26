@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/arloliu/go-secs/tracepack"
+	"github.com/nats-io/nats.go/jetstream"
 
 	"github.com/arloliu/tracekeep/internal/catalog"
 	"github.com/arloliu/tracekeep/internal/store"
@@ -29,7 +30,16 @@ type Reconciler struct {
 	// HorizonHour returns the oldest hour retention keeps.
 	HorizonHour func() int64
 	Log         *slog.Logger
+	// Traffic and Parked are the two streams whose copy rows the copy pass reconciles.
+	Traffic, Parked jetstream.Stream
+	// Holder names this process in the compactor lease, LeaseTTL is how long a take or a renewal holds it,
+	// and Interval is the time between two cycles of Run, well below LeaseTTL.
+	Holder   string
+	LeaseTTL time.Duration
+	Interval time.Duration
 
+	// lease is the compactor lease while this process holds it.
+	lease *catalog.Lease
 	// unknown holds the keys the last orphan pass found unknown, which this pass may adopt.
 	unknown map[string]bool
 }
