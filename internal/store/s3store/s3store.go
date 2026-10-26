@@ -14,6 +14,7 @@ import (
 	awshttp "github.com/aws/aws-sdk-go-v2/aws/transport/http"
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/aws/smithy-go"
 
 	"github.com/arloliu/tracekeep/internal/store"
 )
@@ -32,6 +33,7 @@ type Config struct {
 	Endpoint string
 	// Region defaults to us-east-1.
 	Region string
+	// Bucket holds every object of the store; it must exist.
 	Bucket string
 	// AccessKeyID and SecretAccessKey are static credentials.
 	// shortcut: static credentials only; add the SDK's default chain when a deployment authenticates by role.
@@ -152,26 +154,33 @@ func (s *Store) PresignGet(ctx context.Context, key string, lifetime time.Durati
 	return req.URL, nil
 }
 
-// get reads bytes [from, to) of key with one ranged GET.
-func (s *Store) get(ctx context.Context, key string, from, to int64) ([]byte, error) {
-	rng := fmt.Sprintf("bytes=%d-%d", from, to-1)
+// get fills buf from key's bytes at from with one ranged GET.
+func (s *Store) get(ctx context.Context, key string, from int64, buf []byte) error {
+	rng := fmt.Sprintf("bytes=%d-%d", from, from+int64(len(buf))-1)
 	out, err := s.client.GetObject(ctx, &s3.GetObjectInput{Bucket: &s.bucket, Key: &key, Range: &rng})
 	if err != nil {
-		return nil, wrap("read", key, err)
+		return wrap("read", key, err)
 	}
 	defer out.Body.Close()
-	buf := make([]byte, to-from)
+	// A proxy that ignores Range answers with the whole object, whose bytes would land at the wrong offset.
+	if out.ContentRange == nil {
+		return fmt.Errorf("s3store: read %s: the store ignored the range", key)
+	}
 	if _, err := io.ReadFull(out.Body, buf); err != nil {
-		return nil, fmt.Errorf("s3store: read %s: %w", key, err)
+		return fmt.Errorf("s3store: read %s: %w", key, err)
 	}
 
-	return buf, nil
+	return nil
 }
 
-// wrap names the operation, and maps a 404 to store.ErrNotFound.
+// wrap names the operation, and maps a 404 to store.ErrNotFound unless the bucket is what is missing.
 func wrap(op, key string, err error) error {
 	if err == nil {
 		return nil
+	}
+	var api smithy.APIError
+	if errors.As(err, &api) && api.ErrorCode() == "NoSuchBucket" {
+		return fmt.Errorf("s3store: %s %s: %w", op, key, err)
 	}
 	var re *awshttp.ResponseError
 	if errors.As(err, &re) && re.HTTPStatusCode() == 404 {
@@ -208,17 +217,21 @@ func (o *object) ReadAt(p []byte, off int64) (int, error) {
 		return 0, io.EOF
 	}
 	want := min(int64(len(p)), o.size-off)
-	if !o.cached(p[:want], off) {
-		buf, err := o.s.get(o.ctx, o.key, off, min(off+max(want, readAhead), o.size))
-		if err != nil {
+	switch {
+	case o.cached(p[:want], off):
+	case want >= readAhead || off+want == o.size: // nothing to read ahead
+		if err := o.s.get(o.ctx, o.key, off, p[:want]); err != nil {
+			return 0, err
+		}
+	default:
+		buf := make([]byte, min(readAhead, o.size-off))
+		if err := o.s.get(o.ctx, o.key, off, buf); err != nil {
 			return 0, err
 		}
 		copy(p, buf)
-		if int64(len(buf)) > want {
-			o.mu.Lock()
-			o.win, o.winOff = buf, off
-			o.mu.Unlock()
-		}
+		o.mu.Lock()
+		o.win, o.winOff = buf, off
+		o.mu.Unlock()
 	}
 	if want < int64(len(p)) {
 		return int(want), io.EOF
