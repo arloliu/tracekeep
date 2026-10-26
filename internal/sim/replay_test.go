@@ -1,4 +1,4 @@
-package main
+package sim
 
 import (
 	"context"
@@ -106,7 +106,7 @@ func TestReplaySendsThePackThroughThePair(t *testing.T) {
 	if err := l.Start(t.Context()); err != nil {
 		t.Fatal(err)
 	}
-	n, skipped, err := replayPack(t.Context(), l, pack, 0)
+	n, skipped, err := ReplayPack(t.Context(), l, pack, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -166,7 +166,7 @@ func TestReplayKeepsThePacksPace(t *testing.T) {
 		t.Fatal(err)
 	}
 	start := time.Now()
-	if _, _, err := replayPack(t.Context(), l, pack, 0.5); err != nil {
+	if _, _, err := ReplayPack(t.Context(), l, pack, 0.5); err != nil {
 		t.Fatal(err)
 	}
 	// Half speed stretches the 20 ms between the first and the last frame to 40 ms.
@@ -179,7 +179,7 @@ func TestReplayKeepsThePacksPace(t *testing.T) {
 func TestReplayRefusesAMissingPack(t *testing.T) {
 	t.Parallel()
 	l := newTestLoopbackWith(t, producer.Config{}, testOptions(), producer.WithBus(producertest.NewBus()))
-	if _, _, err := replayPack(t.Context(), l, filepath.Join(t.TempDir(), "none"), 0); !os.IsNotExist(err) {
+	if _, _, err := ReplayPack(t.Context(), l, filepath.Join(t.TempDir(), "none"), 0); !os.IsNotExist(err) {
 		t.Fatalf("replayPack = %v, want not-exist", err)
 	}
 }

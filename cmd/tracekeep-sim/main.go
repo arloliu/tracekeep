@@ -18,6 +18,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/arloliu/tracekeep/internal/sim"
 	"github.com/arloliu/tracekeep/producer"
 )
 
@@ -34,7 +35,7 @@ type config struct {
 	stream   string
 	rate     float64
 	duration time.Duration
-	opts     Options
+	opts     sim.Options
 }
 
 func main() {
@@ -83,7 +84,7 @@ func run(ctx context.Context, c *config) error {
 		return err
 	}
 	defer p.Close()
-	l, err := NewLoopback(p, c.opts)
+	l, err := sim.NewLoopback(p, c.opts)
 	if err != nil {
 		return err
 	}
@@ -99,32 +100,16 @@ func run(ctx context.Context, c *config) error {
 	var runErr error
 	if c.opts.Replay {
 		var sent, skipped int
-		sent, skipped, runErr = replayPack(ctx, l, c.pack, c.speed)
+		sent, skipped, runErr = sim.ReplayPack(ctx, l, c.pack, c.speed)
 		log.Info("tracekeep-sim: replayed", "frames", sent, "malformed", skipped)
 		// The pack's last requests get their waits before the device stops.
-		_ = sleepUntil(ctx, time.Now().Add(c.opts.T3))
+		_ = sim.SleepUntil(ctx, time.Now().Add(c.opts.T3))
 	} else {
-		forward(ctx, l, c.rate, log)
+		sim.Forward(ctx, l, c.rate, log)
 	}
 	sctx, cancel := context.WithTimeout(context.Background(), stopTimeout)
 	defer cancel()
 	l.Stop(sctx)
 
 	return runErr
-}
-
-// forward relays requests at rate per second until ctx ends.
-func forward(ctx context.Context, l *Loopback, rate float64, log *slog.Logger) {
-	tick := time.NewTicker(time.Duration(float64(time.Second) / rate))
-	defer tick.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-tick.C:
-			if err := l.Forward(ctx); err != nil && ctx.Err() == nil {
-				log.Warn("tracekeep-sim: forward failed", "error", err)
-			}
-		}
-	}
 }
