@@ -23,9 +23,10 @@ type putting struct {
 func (s *putting) Put(ctx context.Context, key string, r io.ReadSeeker, size int64) error {
 	err := s.ObjectStore.Put(ctx, key, r, size)
 	if err == nil {
+		// Never blocks: the shutdown flush puts under a context that does not end, after the test stopped listening.
 		select {
 		case s.put <- key:
-		case <-ctx.Done():
+		default:
 		}
 	}
 
@@ -42,7 +43,7 @@ func TestDevLoopbackCapture(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = d.Close() })
-	put := &putting{ObjectStore: d.Env.Store, put: make(chan string)}
+	put := &putting{ObjectStore: d.Env.Store, put: make(chan string, 16)}
 	d.Env.Store = put
 	run, stop := context.WithCancel(ctx)
 	done := make(chan error, 1)
