@@ -43,6 +43,8 @@ func (c *clock) flushInterval() { c.mu.Lock(); c.t = c.t.Add(time.Second); c.mu.
 
 // replica is one ingest replica on its own bus, with its stream, catalog and store.
 type replica struct {
+	srv    *testbus.Server
+	nc     *nats.Conn
 	g      *Ingester
 	js     jetstream.JetStream
 	stream jetstream.Stream
@@ -55,7 +57,8 @@ type replica struct {
 func newReplica(t *testing.T, c *catalog.Catalog) *replica {
 	t.Helper()
 	ctx := t.Context()
-	nc, err := nats.Connect(testbus.Start(t))
+	srv := testbus.StartServer(t, testbus.Options{})
+	nc, err := nats.Connect(srv.URL())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -100,7 +103,7 @@ func newReplica(t *testing.T, c *catalog.Catalog) *replica {
 		t.Fatal(err)
 	}
 
-	return &replica{g: g, js: js, stream: s, claims: obj, st: st, clk: clk, cat: c}
+	return &replica{srv: srv, nc: nc, g: g, js: js, stream: s, claims: obj, st: st, clk: clk, cat: c}
 }
 
 // publish publishes m on its capture's subject, putting a claim-check record's payload in the bucket first.

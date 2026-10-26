@@ -424,3 +424,54 @@ func TestParkingRacingAdmissionAndTermination(t *testing.T) {
 		})
 	}
 }
+
+// Checklist 5: the parked consumer records a copy's row immediately before or after a capture's termination,
+// both serializing on the capture row: the copy row exists either way, and the version ends terminated.
+func TestCopyRowRacingATermination(t *testing.T) {
+	t.Parallel()
+	for _, termFirst := range []bool{true, false} {
+		t.Run(map[bool]string{true: "termination first", false: "copy row first"}[termFirst], func(t *testing.T) {
+			t.Parallel()
+			engines(t, func(t *testing.T, c *Catalog) {
+				orig := identity(newID(t), 1, 3)
+				capture := orig.Version.Capture
+				begin(t, c, orig, 0)
+				cp := *orig
+				cp.Incarnation, cp.StreamSeq = 2, 9
+				var state VersionState
+				var errC, errT error
+				record := func() { state, errC = c.RecordCopy(t.Context(), &cp) }
+				terminate := func() { _, errT = c.TerminateCapture(t.Context(), capture, 1, 10, "op", "c1") }
+				first, second := terminate, record
+				if !termFirst {
+					first, second = record, terminate
+				}
+				held, release := holdAt(c, hookLocked)
+				a := run(first)
+				<-held
+				waits := c.write.Stats().WaitCount
+				b := run(second)
+				waitBlocked(t, c, waits, "INSERT INTO captures", 1)
+				close(release)
+				<-a
+				<-b
+				if errC != nil || errT != nil {
+					t.Fatalf("RecordCopy = %v, TerminateCapture = %v", errC, errT)
+				}
+				want := VersionParking
+				if termFirst {
+					want = VersionTerminated
+				}
+				if state != want {
+					t.Errorf("RecordCopy found %s, want %s", state, want)
+				}
+				if s, by := versionState(t, c, orig); s != "terminated" || by != "c1" {
+					t.Errorf("version = %s by %q, want terminated by c1", s, by)
+				}
+				if n := count(t, c, `SELECT COUNT(*) FROM parked_copies WHERE incarnation_id = 2 AND stream_seq = 9`); n != 1 {
+					t.Errorf("%d copy rows of the copy, want 1", n)
+				}
+			})
+		})
+	}
+}
