@@ -14,7 +14,6 @@ import (
 	awshttp "github.com/aws/aws-sdk-go-v2/aws/transport/http"
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
-	"github.com/aws/smithy-go"
 
 	"github.com/arloliu/tracekeep/internal/store"
 )
@@ -205,7 +204,8 @@ func wrap(op, key string, err error) error {
 	if err == nil {
 		return nil
 	}
-	var api smithy.APIError
+	// Every API error of the SDK has a code (smithy.APIError); a local interface keeps smithy-go out of our imports.
+	var api interface{ ErrorCode() string }
 	if errors.As(err, &api) && api.ErrorCode() == "NoSuchBucket" {
 		return fmt.Errorf("s3store: %s %s: %w", op, key, err)
 	}
