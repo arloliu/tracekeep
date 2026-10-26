@@ -274,8 +274,9 @@ func (g *Ingester) renew(ctx context.Context) error {
 	return nil
 }
 
-// checkIncarnation verifies that the traffic stream is still the incarnation the consumer was named for:
-// its creation time, and a last sequence not below one observed (parking.md *incarnations*).
+// checkIncarnation verifies that the stream is still the incarnation the consumer was named for,
+// its creation time and a last sequence not below one observed (parking.md *incarnations*),
+// then spends the traffic stream's orders its first sequence passed.
 func (g *Ingester) checkIncarnation(ctx context.Context) error {
 	inc, err := bus.Incarnate(ctx, g.Executor.Catalog, g.Incarnation.Role, g.Stream)
 	if err != nil {
@@ -284,8 +285,14 @@ func (g *Ingester) checkIncarnation(ctx context.Context) error {
 	if inc.ID != g.Incarnation.ID {
 		return fmt.Errorf("%w: incarnation %d, the consumer is named for %d", catalog.ErrIncarnationChanged, inc.ID, g.Incarnation.ID)
 	}
+	if inc.Role != catalog.RoleTraffic {
+		return nil
+	}
+	// Incarnate read the stream; an order whose cut-off its first sequence passed covers no message that can still exist.
+	first := int64(g.Stream.CachedInfo().State.FirstSeq) //nolint:gosec // a stream sequence fits
+	_, err = g.Executor.Catalog.SpendOrders(ctx, inc.ID, first)
 
-	return nil
+	return err
 }
 
 // handle disposes of one delivery pulled under membership generation:

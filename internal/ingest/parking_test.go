@@ -237,3 +237,26 @@ func TestIngesterActsOnParking(t *testing.T) {
 		}
 	})
 }
+
+// An order whose cut-off the traffic stream's first sequence passed is spent at the next renewal: no message it covers can exist.
+func TestIngesterSpendsPassedOrders(t *testing.T) {
+	t.Parallel()
+	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
+		ctx := t.Context()
+		r := newReplica(t, c)
+		capture := tracepack.UUID{24}
+		r.publish(t, inline(t, capture, dataRecord(1, now), nil), nil)
+		if _, err := c.TerminateCapture(ctx, capture, r.g.Incarnation.ID, 1, "op", "c1"); err != nil {
+			t.Fatal(err)
+		}
+		r.step(t) // the covered message is acknowledged under the order
+		if orders, _ := c.TerminationOrders(ctx, capture); len(orders) != 1 || orders[0].State != "active" {
+			t.Fatalf("orders %+v, want active while its message may still be redelivered", orders)
+		}
+		r.publish(t, inline(t, tracepack.UUID{25}, dataRecord(1, now), nil), nil) // the stream's first sequence moves past the cut-off
+		r.step(t)
+		if orders, _ := c.TerminationOrders(ctx, capture); len(orders) != 1 || orders[0].State != "spent" {
+			t.Errorf("orders %+v, want spent once the first sequence passed the cut-off", orders)
+		}
+	})
+}
