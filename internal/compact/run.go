@@ -51,9 +51,40 @@ func (r *Reconciler) Run(ctx context.Context) error {
 // While another process holds the lease it does nothing. A lease lost during the cycle cancels it, and the next cycle takes the lease again
 // under a new fence token; a worker that lost its lease does nothing further under the old one (compactor.md §8.1).
 func (r *Reconciler) Step(ctx context.Context) error {
-	if !r.hold(ctx) {
+	held := r.hold(ctx)
+	r.Metrics.Lease(held)
+	if !held {
 		return nil
 	}
+	started := time.Now()
+	err := r.underLease(ctx)
+	r.Metrics.Cycle("reconcile", time.Since(started), err == nil)
+
+	return err
+}
+
+// errNotYetHeld reports a reconciler that has not yet learned the compactor lease's state.
+var errNotYetHeld = errors.New("compact: the lease's state not read yet")
+
+// Ready reports whether the reconciler knows the compactor lease's state, holding it or standing by, for readiness.
+func (r *Reconciler) Ready(context.Context) error {
+	r.holdMu.Lock()
+	defer r.holdMu.Unlock()
+	if !r.holdKnown && r.holdErr == nil {
+		return errNotYetHeld
+	}
+
+	return r.holdErr
+}
+
+func (r *Reconciler) setHoldErr(err error) {
+	r.holdMu.Lock()
+	defer r.holdMu.Unlock()
+	r.holdErr, r.holdKnown = err, r.holdKnown || err == nil
+}
+
+// underLease is one cycle under the lease r holds.
+func (r *Reconciler) underLease(ctx context.Context) error {
 	lease := *r.lease
 	if err := r.incarnations(ctx); err != nil {
 		return err
@@ -147,6 +178,7 @@ func (r *Reconciler) incarnations(ctx context.Context) error {
 
 func (r *Reconciler) cycle(ctx context.Context, lease catalog.Lease) error {
 	rep, err := r.Orphans(ctx, lease)
+	r.Metrics.Orphans(len(rep.Adopted), len(rep.Quarantined), len(rep.Tombstoned))
 	if err != nil {
 		return err
 	}
@@ -172,16 +204,19 @@ func (r *Reconciler) hold(ctx context.Context) bool {
 		err := r.Catalog.RenewLease(ctx, *r.lease, r.LeaseTTL)
 		switch {
 		case err == nil:
+			r.setHoldErr(nil)
 			return true
 		case !errors.Is(err, catalog.ErrLeaseLost):
 			// The lease may still be live; this cycle is skipped and the next renews it again.
 			r.Log.Warn("compact: renew the compactor lease", "error", err)
+			r.setHoldErr(err)
 
 			return false
 		}
 		r.lease = nil
 	}
 	l, ok, err := r.Catalog.TakeLease(ctx, leaseName, r.Holder, r.LeaseTTL)
+	r.setHoldErr(err)
 	if err != nil {
 		r.Log.Warn("compact: take the compactor lease", "error", err)
 	}

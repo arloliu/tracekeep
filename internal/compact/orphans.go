@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"math"
 	"slices"
+	"sync"
 	"time"
 
 	"github.com/arloliu/go-secs/tracepack"
@@ -17,6 +18,7 @@ import (
 
 	"github.com/arloliu/tracekeep/internal/bus"
 	"github.com/arloliu/tracekeep/internal/catalog"
+	"github.com/arloliu/tracekeep/internal/metrics"
 	"github.com/arloliu/tracekeep/internal/store"
 )
 
@@ -46,6 +48,12 @@ type Reconciler struct {
 	lease *catalog.Lease
 	// hooks are the package's test seams.
 	hooks [numHooks]func()
+	// Metrics records the reconciler's metrics; nil records none.
+	Metrics *metrics.Compact
+	// holdErr is the last failure to read the lease's state, nil once it was read; Ready reports it.
+	holdMu    sync.Mutex
+	holdErr   error
+	holdKnown bool
 	// unknown holds the keys the last orphan pass found unknown, which this pass may adopt.
 	unknown map[string]bool
 }
@@ -68,6 +76,8 @@ type OrphanReport struct {
 	Adopted []string
 	// Deleted are the keys deleted: tombstoned, beyond the horizon, or lost to a termination.
 	Deleted []string
+	// Tombstoned are the keys this pass tombstoned, beyond the horizon or lost to a termination, then deleted.
+	Tombstoned []string
 	// Quarantined and Unadmitted are reported, never deleted.
 	Quarantined []Quarantine
 	Unadmitted  []Unadmitted
@@ -165,8 +175,11 @@ func (r *Reconciler) adopt(ctx context.Context, lease catalog.Lease, p *catalog.
 		r.Log.Info("compact: orphan adopted", "key", p.Key)
 	case catalog.AlreadyRegistered:
 		// Its registration committed after the listing's look.
-	case catalog.Tombstoned, catalog.BeyondHorizon, catalog.LostToTermination:
-		// The key is tombstoned, so the object goes; an orphan's messages were never acknowledged and are decided again.
+	case catalog.BeyondHorizon, catalog.LostToTermination:
+		// The key is now tombstoned, so the object goes; an orphan's messages were never acknowledged and are decided again.
+		rep.Tombstoned = append(rep.Tombstoned, p.Key)
+		return r.delete(ctx, lease, p.Key, rep)
+	case catalog.Tombstoned:
 		return r.delete(ctx, lease, p.Key, rep)
 	case catalog.UnadmittedCapture:
 		rep.Unadmitted = append(rep.Unadmitted, Unadmitted{Key: p.Key, Capture: p.Capture})
