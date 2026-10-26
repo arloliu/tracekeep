@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
+	"strings"
 	"time"
 
 	"github.com/nats-io/nats.go/jetstream"
@@ -19,6 +21,9 @@ const (
 	firstNakDelay = 5 * time.Second
 	lastNakDelay  = time.Minute
 )
+
+// writeFailureLimit is how many times the Writer refuses one batch before the refusal counts as deterministic.
+const writeFailureLimit = 3
 
 // Ingester is one ingest replica: it holds a membership in the activation gate,
 // pulls the traffic stream, decides each delivery, batches and flushes (rollouts.md §6.4, ingest.md §6).
@@ -39,6 +44,9 @@ type Ingester struct {
 	MaxWait time.Duration
 	// Now is the clock the batches and the lease are judged by.
 	Now func() time.Time
+
+	// writeFailures counts, by batch, the flushes the Writer refused: the same batch refused three times is deterministic.
+	writeFailures map[string]int
 
 	membership catalog.Membership
 	// leaseEnd is when this replica stops trusting its lease: the renewal's start plus the lease,
@@ -194,8 +202,14 @@ func (g *Ingester) flush(ctx context.Context, batches []*Batch) error {
 		switch {
 		case err != nil:
 			errs = append(errs, err)
+			delay := firstNakDelay
+			if errors.Is(err, errWrite) && g.refused(b) >= writeFailureLimit {
+				// Deterministic: the messages stay deferred for an operator (ingest.md §6.1 `write-failure`).
+				g.Log.Warn("ingest: alert", "reason", ReasonWriteFailure, "capture", b.Key.Capture.String(), "hour", b.Key.Hour, "error", err)
+				delay = lastNakDelay
+			}
 			for _, e := range b.Entries {
-				_ = e.Msg.NakWithDelay(firstNakDelay)
+				_ = e.Msg.NakWithDelay(delay)
 			}
 		case out.BeyondHorizon:
 			for _, e := range b.Entries {
@@ -206,6 +220,22 @@ func (g *Ingester) flush(ctx context.Context, batches []*Batch) error {
 	}
 
 	return errors.Join(errs...)
+}
+
+// refused counts one more refusal of b's records by the Writer and returns the count.
+func (g *Ingester) refused(b *Batch) int {
+	if g.writeFailures == nil {
+		g.writeFailures = map[string]int{}
+	}
+	ids := make([]string, len(b.Entries))
+	for i, e := range b.Entries {
+		ids[i] = e.D.Msg.Env.MsgID
+	}
+	slices.Sort(ids)
+	k := strings.Join(ids, ",")
+	g.writeFailures[k]++
+
+	return g.writeFailures[k]
 }
 
 // readMessage reads a delivery's headers, body and stream sequence.

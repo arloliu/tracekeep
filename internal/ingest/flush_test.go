@@ -30,12 +30,12 @@ func (m *msg) do(s string) error {
 	return nil
 }
 
-func (m *msg) Ack() error                       { return m.do("ack") }
-func (m *msg) DoubleAck(context.Context) error  { return m.do("double-ack") }
-func (m *msg) NakWithDelay(time.Duration) error { return m.do("nak") }
-func (m *msg) InProgress() error                { return m.do("in-progress") }
-func (m *msg) Term() error                      { return m.do("term") }
-func (m *msg) done() []string                   { m.mu.Lock(); defer m.mu.Unlock(); return slices.Clone(m.acks) }
+func (m *msg) Ack() error                         { return m.do("ack") }
+func (m *msg) DoubleAck(context.Context) error    { return m.do("double-ack") }
+func (m *msg) NakWithDelay(d time.Duration) error { return m.do("nak " + d.String()) }
+func (m *msg) InProgress() error                  { return m.do("in-progress") }
+func (m *msg) Term() error                        { return m.do("term") }
+func (m *msg) done() []string                     { m.mu.Lock(); defer m.mu.Unlock(); return slices.Clone(m.acks) }
 
 // pipeline is one replica's executor, batcher and flusher over a catalog and a memory store.
 type pipeline struct {

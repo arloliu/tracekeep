@@ -66,6 +66,7 @@ const (
 	ReasonIncompatible    = "incompatible-configuration"
 	ReasonInvalidRecord   = "invalid-record"
 	ReasonInvariant       = "invariant"
+	ReasonWriteFailure    = "write-failure"
 )
 
 // Decision is Decide's answer: a step to run, or a final action with its reason.
