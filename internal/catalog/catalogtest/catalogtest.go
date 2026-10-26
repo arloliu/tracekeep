@@ -39,7 +39,7 @@ func Open(t *testing.T, engine string) *catalog.Catalog {
 	switch engine {
 	case catalog.EngineSQLite:
 		cfg.DSN = filepath.Join(t.TempDir(), "catalog.db")
-		apply(t, "sqlite", "file:"+cfg.DSN, engine)
+		apply(t, "sqlite", catalog.SQLiteURI(cfg.DSN), engine)
 	case catalog.EngineMariaDB:
 		cfg.DSN = mariadbDatabase(t)
 	default:
