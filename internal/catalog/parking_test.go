@@ -490,6 +490,10 @@ func TestReconcileCopies(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		lease, _, err := c.TakeLease(ctx, "compactor", "w", ttl)
+		if err != nil {
+			t.Fatal(err)
+		}
 		capture := newID(t)
 		on := func(seq uint64, inc, streamSeq int64, state string) *Identity {
 			d := identity(capture, seq, streamSeq)
@@ -514,22 +518,27 @@ func TestReconcileCopies(t *testing.T) {
 		if err != nil || len(got) != 1 || got[0].StreamSeq != 10 || got[0].Version != staged.Version {
 			t.Fatalf("ResolvedWaitingCopies = %+v, %v; want the staged version's waiting copy", got, err)
 		}
-		if ok, err := c.ReconcileCopy(ctx, staged); err != nil || !ok {
+		stale := lease
+		stale.Fence--
+		if _, err := c.ReconcileCopy(ctx, staged, stale); !errors.Is(err, ErrLeaseLost) {
+			t.Errorf("ReconcileCopy under a stale lease = %v, want ErrLeaseLost", err)
+		}
+		if ok, err := c.ReconcileCopy(ctx, staged, lease); err != nil || !ok {
 			t.Errorf("ReconcileCopy of a staged version = %v, %v", ok, err)
 		}
 		if n := count(t, c, `SELECT COUNT(*) FROM parked WHERE seq = 1 AND acked_at IS NOT NULL`); n != 1 {
 			t.Errorf("acked_at not set once the staged version's last copy is acked")
 		}
-		if ok, err := c.ReconcileCopy(ctx, staged); err != nil || ok {
+		if ok, err := c.ReconcileCopy(ctx, staged, lease); err != nil || ok {
 			t.Errorf("ReconcileCopy again = %v, %v; want nothing to do", ok, err)
 		}
-		if ok, err := c.ReconcileCopy(ctx, parked); err != nil || ok {
+		if ok, err := c.ReconcileCopy(ctx, parked, lease); err != nil || ok {
 			t.Errorf("ReconcileCopy of an unresolved version = %v, %v; want refused", ok, err)
 		}
 		if _, err := c.write.ExecContext(ctx, `UPDATE bus_streams SET retired_at = 1 WHERE incarnation_id = ?`, parking.ID); err != nil {
 			t.Fatal(err)
 		}
-		if ok, err := c.ReconcileCopy(ctx, terminated); err != nil || ok {
+		if ok, err := c.ReconcileCopy(ctx, terminated, lease); err != nil || ok {
 			t.Errorf("ReconcileCopy on a retired incarnation = %v, %v; want refused", ok, err)
 		}
 		if n := count(t, c, `SELECT COUNT(*) FROM parked_copies WHERE state = 'waiting'`); n != 2 {

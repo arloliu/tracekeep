@@ -271,11 +271,15 @@ func (c *Catalog) ResolvedWaitingCopies(ctx context.Context, incarnation int64) 
 // and sets the version's acked_at when no copy of it waits any longer.
 // Under the capture row it re-reads that the version is staged or terminated and that d's incarnation is not retired,
 // so it never touches a copy of an unresolved version or of a retired stream; ok reports that it marked the row.
-func (c *Catalog) ReconcileCopy(ctx context.Context, d *Identity) (bool, error) {
+// It runs under the compactor lease, which a lost lease ends with ErrLeaseLost.
+func (c *Catalog) ReconcileCopy(ctx context.Context, d *Identity, lease Lease) (bool, error) {
 	v := &d.Version
 	var ok bool
 	err := outcome(c.inTx(ctx, func(tx *sqlx.Tx) error {
 		if _, err := c.lockCapture(ctx, tx, v.Capture); err != nil {
+			return err
+		}
+		if err := c.checkLease(ctx, tx, lease); err != nil {
 			return err
 		}
 		state, err := readVersionState(ctx, tx, v)
