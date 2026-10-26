@@ -309,7 +309,7 @@ A `Close` during an `End` stops the publisher; the `End` still returns by its de
 The send path's rules (`producer.md` §4.6), fixed before the phase that builds its fixture;
 the signatures are still reviewed with the eqp-hub maintainers (T-26):
 - an entry is `live`, `completed`, `removed` or `expired`:
-  progress is first-wins, a failure removes only a `live` entry, the first terminal outcome seals the entry so every later report of either kind is a counted no-op, and expiry, which ends `live` and `completed` entries, is no outcome;
+  progress is first-wins, a failure removes only a `live` entry, the first terminal outcome seals the entry so every later report of either kind is a counted no-op (amended by T-39), and expiry, which ends `live` and `completed` entries, is no outcome;
 - expiry follows the wait, not the registration:
   the waiter reports `Awaiting(timeout)` on the token when it opens the wait, and the entry expires at that time plus the timeout plus a reporting grace (default 5 s);
   an entry never awaited is removed 30 s after its registration; both are tunables;
@@ -429,3 +429,11 @@ A pseudo-version of `producer/` was rejected because rebase merges rewrite the c
 an early SDK tag was rejected because phase 0.4 itself still changes the SDK's API.
 The cost is that `go install …@latest` cannot build the simulator while it carries `replace`.
 When the service first requires the SDK by tag, at the latest for phase 1's `tracekeep dev`, the simulator's `go.mod` is removed and it returns to the service module.
+
+### T-39 — a Sent that follows the reply (2026-10-26)
+
+The eqp-hub maintainers' review of the send path (T-26) found that a reply can arrive before the forwarding call returns,
+so a gateway's `Sent` often follows the waiter's terminal outcome.
+T-31 counted it as a report on a sealed entry, so every fast reply moved `ignored{reason="sealed"}`.
+A `Sent` that is the token's first progress report is therefore taken on a `completed` entry too, uncounted, and changes nothing (`producer.md` §4.6);
+every other report after the outcome stays a counted no-op.
