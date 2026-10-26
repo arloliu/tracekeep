@@ -36,6 +36,7 @@ type Producer struct {
 	tun    Tunables
 	prefix string
 	stream string
+	parked string
 	bucket string
 	pub    *publisher
 	// conn is the default bus, on the connection New dialed or WithConn brought, which Close cleans up; nil with WithBus.
@@ -127,10 +128,15 @@ func New(cfg Config, opts ...Option) (*Producer, error) {
 	if stream == "" {
 		stream = busconfig.DefaultTrafficStream
 	}
+	parked := cfg.ParkedStream
+	if parked == "" {
+		parked = busconfig.DefaultParkedStream
+	}
 	p := &Producer{
 		tun:    tun,
 		prefix: cfg.SubjectPrefix,
 		stream: stream,
+		parked: parked,
 		bucket: cfg.ClaimBucket,
 		rec: core.NewRecorder(core.RecorderParams{
 			ReservedCap:     tun.ReservedLaneRecords,

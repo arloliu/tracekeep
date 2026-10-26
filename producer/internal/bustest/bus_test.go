@@ -61,6 +61,9 @@ func newBusWith(t *testing.T, o testbus.Options, traffic func(*jetstream.StreamC
 	if _, err := js.CreateStream(ctx, sc); err != nil {
 		t.Fatalf("create stream: %v", err)
 	}
+	if _, err := js.CreateStream(ctx, busconfig.ParkedStreamConfig(busconfig.DefaultParkedStream, busconfig.DefaultParkPrefix, 1)); err != nil {
+		t.Fatalf("create parking stream: %v", err)
+	}
 	if _, err := js.CreateObjectStore(ctx, busconfig.ObjectStoreConfig(bucket)); err != nil {
 		t.Fatalf("create bucket: %v", err)
 	}

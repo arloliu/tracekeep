@@ -122,6 +122,8 @@ type StreamInfo struct {
 	AllowDirect                          bool
 	// Derived reports a mirror or sources, whose sequences are not the stream's own.
 	Derived bool
+	// Replicas is the stream's replica count, one for a stream that names none.
+	Replicas int
 }
 
 // StreamInfoOf returns the settings of c as a Bus reports them.
@@ -138,6 +140,7 @@ func StreamInfoOf(c *jetstream.StreamConfig) StreamInfo {
 		MaxMsgsPerSubject: c.MaxMsgsPerSubject,
 		AllowDirect:       c.AllowDirect,
 		Derived:           c.Mirror != nil || len(c.Sources) > 0,
+		Replicas:          max(c.Replicas, 1),
 	}
 }
 

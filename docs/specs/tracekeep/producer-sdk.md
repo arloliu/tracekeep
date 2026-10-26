@@ -69,7 +69,7 @@ so the direction holds.
 |---|---|---|
 | `producer` | tracepack, nats.go `jetstream` | `Producer`, `Capture`, the algorithm of §4.2 (lock, lanes, rotation, `start`, claim-check, retry horizon), the pending-request table and sampler of §4.6, `Bus`, `Metrics` and `Logger` interfaces (no Prometheus dependency); no exported record entry point |
 | `producer/secsobs` | + go-secs `hsms` | the observer options and lifecycle attachment an integrator installs; `WireEvent`, `SocketEvent`, `LifecycleEvent`, `TxEvent` → records (tracepack-go.md §5); it reaches the capture algorithm through `producer/internal/core`, which also holds the frame copy and the socket→epoch map |
-| `producer/busconfig` | nats.go `jetstream` | `StreamConfig()`, `ObjectStoreConfig()`, `ConsumerConfig()`, subject prefix and naming: one definition of [STO §4] *Stream settings* shared by producers and `tracekeep migrate`, including `AllowDirect` off on the claim bucket's stream, which `migrate` sets after creating the bucket (T-28) |
+| `producer/busconfig` | nats.go `jetstream` | `StreamConfig()`, `ParkedStreamConfig()`, `ObjectStoreConfig()`, `ConsumerConfig()`, the stream names, the park prefix and the check that it and the traffic prefix have distinct first tokens, the subject-filter overlap check: one definition of [STO §4] *Stream settings* shared by producers and `tracekeep migrate`, including `AllowDirect` off on the claim bucket's stream, which `migrate` sets after creating the bucket (T-28), and the parking stream of `parking.md` *Parking* |
 
 **The SDK owns the NATS client by default; injection is the escape hatch.**
 A producer's configuration names the bus and nothing about how to drive it:
@@ -81,6 +81,7 @@ type Config struct {
     TLS                TLSConfig         // CA, client certificate and key, server name
     SubjectPrefix      string            // the traffic stream's prefix
     Stream             string            // the traffic stream every publish expects; empty takes busconfig's default
+    ParkedStream       string            // the parking stream Preflight checks; empty takes busconfig's default
     ClaimBucket        string
     Tunables           Tunables          // lanes, H, τ, ε, sampler, the send path's bounds; every field has a default
 }
@@ -222,6 +223,7 @@ which the device's `Start`, `HotReload` and `Stop` map onto (`producer.md` §4.2
   (`Bus` carries `StreamInfo`, `Objects`, `MaxPayload` and `CheckConn` for it; `producertest`'s fake implements them):
   checks the stream and bucket exist with the [STO §4] settings that the API exposes
   (retention, storage, limits, compression, `AllowDirect` off on the claim bucket's stream;
+  the parking stream with the traffic stream's retention, storage and limits, no subject either stream's filter could share with the other's and no fewer replicas, `parking.md` *Parking*;
   encryption at rest is a deployment assurance no client can see, so it is left out rather than reported on every run), `max_payload ≥ 4140`, TLS, the reconnect buffer disabled,
   the capture's `start` message within the header-block and `max_payload` limits
   (through `CheckBusStart` with the real header block), `tool_id` and `recorder_instance_name` set in the descriptor;
