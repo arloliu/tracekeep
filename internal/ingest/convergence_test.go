@@ -11,6 +11,7 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 
 	"github.com/arloliu/go-secs/tracepack"
+	"github.com/arloliu/tracekeep/internal/bus"
 	"github.com/arloliu/tracekeep/internal/catalog"
 	"github.com/arloliu/tracekeep/internal/catalog/catalogtest"
 	"github.com/arloliu/tracekeep/producer/busconfig"
@@ -280,8 +281,10 @@ func TestParkedConsumerCrashAfterStaging(t *testing.T) {
 	})
 }
 
-// A handler stalled past the ack wait and the duplicate window publishes a second copy only after the first was acknowledged and its subject emptied;
-// that copy is acknowledged from the staged row, its claim object gone.
+// A handler stalled past the ack wait (the gate's case): the original is redelivered to another handler, which parks it whole,
+// its copy stored and the original acknowledged, and the parked consumer stages the copy; the stalled handler, waking past the
+// duplicate window, publishes a second copy only once the first was acknowledged and its subject emptied, and that copy is
+// acknowledged from the staged row, its claim object gone; the stalled handler's late acknowledgement brings nothing back.
 func TestLateSecondCopy(t *testing.T) {
 	t.Parallel()
 	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
@@ -290,6 +293,13 @@ func TestLateSecondCopy(t *testing.T) {
 		capture := tracepack.UUID{96}
 		r.publish(t, inline(t, capture, startRecord(t, now), descriptorOf(t, "eqp")), nil)
 		r.step(t)
+		r.clk.flushInterval()
+		r.step(t) // the start staged and acknowledged before the ack wait is shortened
+		cons, err := bus.Consumer(ctx, r.stream, r.g.Incarnation, bus.ConsumerConfig{AckWait: 300 * time.Millisecond, MaxAckPending: 1000})
+		if err != nil {
+			t.Fatal(err)
+		}
+		r.g.Consumer = cons
 		cl := newClaims()
 		m := claimCheck(t, cl, capture, dataRecord(1, now), nil)
 		r.publish(t, m, cl.objs[m.Env.MsgID])
@@ -299,13 +309,19 @@ func TestLateSecondCopy(t *testing.T) {
 		if _, err := r.js.UpdateStream(ctx, cfg); err != nil {
 			t.Fatal(err)
 		}
-		d, _ := r.fetch(t)
-		b, err := r.g.Coordinator.Begin(ctx, d, ReasonWriteFailure, 0)
+		k := r.g.Coordinator
+
+		stalled, stalledMsg := r.fetch(t) // handler A begins parking, then stalls
+		b, err := k.Begin(ctx, stalled, ReasonWriteFailure, 0)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if conf, err := r.g.Coordinator.Publish(ctx, d, b.State); err != nil || conf != Confirmed {
-			t.Fatalf("Publish = %v, %v", conf, err)
+		again, againMsg := r.fetch(t) // the ack wait passed: handler B receives the redelivery and parks it whole
+		if md, _ := againMsg.Metadata(); md == nil || md.NumDelivered != 2 {
+			t.Fatalf("second delivery %+v, want the redelivery", md)
+		}
+		if pk, err := k.Park(ctx, Entry{D: again, Msg: againMsg}, ReasonWriteFailure, 0); err != nil || pk.Confirmation != Confirmed {
+			t.Fatalf("Park of the redelivery = %+v, %v", pk, err)
 		}
 		pg := r.parkedConsumer(t)
 		for range 2 {
@@ -319,8 +335,8 @@ func TestLateSecondCopy(t *testing.T) {
 		}
 
 		// The stalled handler wakes past the window: its publish finds the subject empty and stores a second copy.
-		time.Sleep(4 * cfg.Duplicates)
-		if conf, err := r.g.Coordinator.Publish(ctx, d, b.State); err != nil || conf != Confirmed {
+		time.Sleep(4 * cfg.Duplicates) // the scenario's delay
+		if conf, err := k.Publish(ctx, stalled, b.State); err != nil || conf != Confirmed {
 			t.Fatalf("the late publish = %v, %v", conf, err)
 		}
 		if err := r.claims.Delete(ctx, m.Env.MsgID); err != nil {
@@ -331,6 +347,15 @@ func TestLateSecondCopy(t *testing.T) {
 		}
 		if n := msgs(t, r.parked(t)); n != 0 {
 			t.Errorf("the parking stream holds %d copies, want the late copy acknowledged as already staged", n)
+		}
+		if err := stalledMsg.Ack(); err != nil {
+			t.Fatal(err)
+		}
+		if err := r.nc.Flush(); err != nil {
+			t.Fatal(err)
+		}
+		if n := r.pending(t); n != 0 {
+			t.Errorf("the traffic stream holds %d messages after the stalled handler's late acknowledgement, want none", n)
 		}
 	})
 }

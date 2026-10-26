@@ -475,3 +475,58 @@ func TestConsumersProcessAtOnce(t *testing.T) {
 		}
 	})
 }
+
+// Checklist 5's claim-bearing case: a claim-check version parked, its hour evicted (an evicted-hour version, its object kept),
+// then terminated; once its object is deleted, as survivor cleanup does when its predicate holds, a late message of the same version
+// is acknowledged under the termination without the object, with its own audit row.
+func TestLateClaimMessageAfterItsObjectIsGone(t *testing.T) {
+	t.Parallel()
+	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
+		ctx := t.Context()
+		r := newReplica(t, c)
+		capture := tracepack.UUID{55}
+		cl := newClaims()
+		late := claimCheck(t, cl, capture, dataRecord(1, now-int64(48*time.Hour)), nil)
+		r.publish(t, late, cl.objs[late.Env.MsgID])
+		r.step(t) // parked: expired, its capture unknown
+		r.publish(t, inline(t, capture, startRecord(t, now), descriptorOf(t, "eqp")), nil)
+		r.step(t)
+		pg := r.parkedConsumer(t)
+		if err := pg.Step(ctx); err != nil {
+			t.Fatal(err)
+		}
+		if vs := versions(t, c, capture); len(vs) != 1 || vs[0].State != catalog.VersionEvictedHour {
+			t.Fatalf("versions %+v, want the claim-check version evicted-hour", vs)
+		}
+		if n, err := c.TerminateParked(ctx, capture, nil, "op", "p5"); err != nil || n != 1 {
+			t.Fatalf("TerminateParked = %d, %v", n, err)
+		}
+		if err := r.claims.Delete(ctx, late.Env.MsgID); err != nil { // the survivor's object deleted
+			t.Fatal(err)
+		}
+
+		cfg := r.stream.CachedInfo().Config
+		cfg.Duplicates = 100 * time.Millisecond
+		if _, err := r.js.UpdateStream(ctx, cfg); err != nil {
+			t.Fatal(err)
+		}
+		time.Sleep(2 * cfg.Duplicates) // the scenario's delay: the late message comes after the window
+		subject, err := tracepack.BusSubject(prefix, "T1", capture)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if ack := r.publishTo(t, subject, late); ack.Duplicate {
+			t.Fatal("the late message was taken for a duplicate")
+		}
+		r.step(t)
+		es, err := c.AuditEntries(ctx, capture)
+		if err != nil || !slices.ContainsFunc(es, func(e catalog.AuditEntry) bool { return e.Action == ReasonTerminated && e.ActionID == "p5" }) {
+			t.Errorf("audit %+v, %v; want the late message acknowledged under p5", es, err)
+		}
+		r.clk.flushInterval() // the admitted start's batch flushed and acknowledged
+		r.step(t)
+		if n := r.pending(t); n != 0 {
+			t.Errorf("the traffic stream holds %d messages, want the late message acknowledged without its object", n)
+		}
+	})
+}

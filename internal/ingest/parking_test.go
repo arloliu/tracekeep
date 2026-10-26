@@ -314,6 +314,16 @@ func TestAcknowledgementRecordsTheMessage(t *testing.T) {
 // and the first version delivered again is acknowledged under the termination again.
 func TestTerminatedStartThenAnotherVersion(t *testing.T) {
 	t.Parallel()
+	for _, kind := range []string{"inline", "claim-check with its object missing"} {
+		t.Run(kind, func(t *testing.T) {
+			t.Parallel()
+			terminatedStartThenAnotherVersion(t, kind != "inline")
+		})
+	}
+}
+
+func terminatedStartThenAnotherVersion(t *testing.T, claim bool) {
+	t.Helper()
 	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
 		ctx := t.Context()
 		r := newReplica(t, c)
@@ -336,6 +346,9 @@ func TestTerminatedStartThenAnotherVersion(t *testing.T) {
 		capture := tracepack.UUID{23}
 		first := inline(t, capture, startRecord(t, now), nil)
 		first.Env.Descriptor = "not base64!"
+		if claim {
+			first = claimCheck(t, newClaims(), capture, startRecord(t, now), descriptorOf(t, "eqp")) // its object never reaches the bucket
+		}
 		r.publish(t, first, nil)
 		if _, err := c.TerminateCapture(ctx, capture, r.g.Incarnation.ID, 1, "op", "c1"); err != nil {
 			t.Fatal(err)
