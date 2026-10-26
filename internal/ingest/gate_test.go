@@ -55,7 +55,8 @@ func TestRestoredTrafficStream(t *testing.T) {
 		for _, m := range traffic(t, capture)[:3] {
 			r.publish(t, m, nil)
 		}
-		_, held := r.fetch(t) // a delivery the old consumer holds when the snapshot is taken
+		_, held := r.fetch(t) // deliveries the old consumer holds when the snapshot is taken
+		_, held2 := r.fetch(t)
 		r.restore(t, r.stream.CachedInfo().Config.Name, func() {
 			r.publish(t, traffic(t, capture)[3], nil)                                       // accepted after the snapshot: the restore rewinds it away
 			if _, err := bus.Incarnate(ctx, c, catalog.RoleTraffic, r.stream); err != nil { // a renewal observes the later sequence
@@ -86,20 +87,12 @@ func TestRestoredTrafficStream(t *testing.T) {
 		if got := consumerNames(t, s); len(got) != 0 {
 			t.Fatalf("consumers %v after the adoption, want none", got)
 		}
-		if err := held.Ack(); err != nil { // a stale handler's late acknowledgement names the retired consumer
-			t.Fatal(err)
-		}
-		if err := r.nc.Flush(); err != nil {
-			t.Fatal(err)
-		}
-		if info, err := s.Info(ctx); err != nil || info.State.Msgs != 3 {
-			t.Fatalf("the restored stream holds %v messages (%v), want the 3 pending untouched", info.State.Msgs, err)
-		}
-
 		cons, err := bus.Consumer(ctx, s, inc, bus.ConsumerConfig{AckWait: 30 * time.Second, MaxAckPending: 1000})
 		if err != nil {
 			t.Fatalf("the new incarnation's consumer = %v", err)
 		}
+
+		staleHandler(t, r, held, held2, cons)
 		r.g.Consumer, r.g.Stream, r.g.Incarnation = cons, s, inc
 		if err := r.g.Join(ctx); err != nil {
 			t.Fatal(err)
@@ -114,6 +107,30 @@ func TestRestoredTrafficStream(t *testing.T) {
 			t.Errorf("the stream holds %v messages, want none", info.State.Msgs)
 		}
 	})
+}
+
+// staleHandler is a process that missed the stop: its buffered acknowledgement and nak, and its pull, name the retired consumer,
+// and leave the new consumer's 3 messages pending and none held.
+func staleHandler(t *testing.T, r *replica, acked, nakd jetstream.Msg, cons jetstream.Consumer) {
+	t.Helper()
+	if err := acked.Ack(); err != nil {
+		t.Fatal(err)
+	}
+	if err := nakd.Nak(); err != nil {
+		t.Fatal(err)
+	}
+	if batch, err := r.g.Consumer.Fetch(1, jetstream.FetchMaxWait(200*time.Millisecond)); err == nil {
+		for range batch.Messages() {
+			t.Error("the retired consumer delivered a message")
+		}
+	}
+	if err := r.nc.Flush(); err != nil {
+		t.Fatal(err)
+	}
+	info, err := cons.Info(t.Context())
+	if err != nil || info.NumPending != 3 || info.NumAckPending != 0 {
+		t.Fatalf("the new consumer: %+v, %v; want the 3 messages pending and none held", info, err)
+	}
 }
 
 // Checklist 1, the parking stream: restored with the retired parked consumer, adopted, and its copy delivered to the new one,

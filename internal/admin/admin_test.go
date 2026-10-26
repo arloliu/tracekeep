@@ -73,7 +73,11 @@ func TestCaptureTerminate(t *testing.T) {
 			t.Errorf("CaptureShow = %+v; want the version terminated, the placeholder kept", show)
 		}
 		inc := show.Orders[0].Incarnation
-		for seq, want := range map[int64]catalog.Resolution{3: catalog.CoveredByOrder, 4: catalog.Unresolved} {
+		ack, err := js.Publish(ctx, "tk.T1.x", nil) // accepted after the cut-off's read
+		if err != nil {
+			t.Fatal(err)
+		}
+		for seq, want := range map[int64]catalog.Resolution{3: catalog.CoveredByOrder, int64(ack.Sequence): catalog.Unresolved} { //nolint:gosec // a stream sequence fits
 			r, err := c.Resolve(ctx, &identity(capture, 9, inc, seq).Version, inc, seq)
 			if err != nil || r != want {
 				t.Errorf("a message at stream seq %d = %v, %v; want %v", seq, r, err, want)
