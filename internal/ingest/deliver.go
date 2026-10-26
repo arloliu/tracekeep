@@ -8,6 +8,8 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/nats-io/nats.go"
+
 	"github.com/arloliu/go-secs/tracepack"
 	"github.com/arloliu/tracekeep/internal/catalog"
 )
@@ -35,8 +37,11 @@ type ClaimStore interface {
 type Message struct {
 	Env  tracepack.BusEnvelope
 	Body []byte
-	// StreamSeq is the message's sequence on the traffic stream.
+	// StreamSeq is the message's sequence on the stream it came from.
 	StreamSeq int64
+	// Subject and Header are the message's as the bus delivered them, which its parked copy carries on.
+	Subject string
+	Header  nats.Header
 }
 
 // Delivery is one delivery being decided: the message, the facts gathered and what the steps found.

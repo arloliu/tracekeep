@@ -395,7 +395,9 @@ func readMessage(m jetstream.Msg) (Message, uint64, error) {
 		PayloadRef: h.Get(tracepack.BusHeaderPayloadRef), PayloadDigest: h.Get(tracepack.BusHeaderPayloadDigest),
 	}
 
-	return Message{Env: env, Body: m.Data(), StreamSeq: int64(md.Sequence.Stream)}, md.NumDelivered, nil //nolint:gosec // a stream sequence fits
+	msg := Message{Env: env, Body: m.Data(), StreamSeq: int64(md.Sequence.Stream), Subject: m.Subject(), Header: h} //nolint:gosec // a stream sequence fits
+
+	return msg, md.NumDelivered, nil
 }
 
 // nakDelay backs off from five seconds to a minute as the message is redelivered.
