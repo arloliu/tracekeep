@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/nats-io/nats.go/jetstream"
+
 	"github.com/arloliu/go-secs/tracepack"
 	"github.com/arloliu/tracekeep/internal/bus"
 	"github.com/arloliu/tracekeep/internal/catalog"
@@ -184,6 +186,10 @@ func TestParkedConsumerAcknowledgesUnderTheTermination(t *testing.T) {
 		ctx := t.Context()
 		r := newReplica(t, c)
 		capture := tracepack.UUID{43}
+		// The window is shortened before anything is stored: the server purges duplicates on a timer set by the window
+		// in force when the message was stored.
+		window := 100 * time.Millisecond
+		shortenWindow(t, r, r.parked(t), window)
 		original := inline(t, capture, dataRecord(1, now-int64(48*time.Hour)), nil)
 		r.publish(t, original, nil)
 		r.step(t)
@@ -229,14 +235,8 @@ func TestParkedConsumerAcknowledgesUnderTheTermination(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		// The scenario's delay: the late copy comes after the parking stream's duplicate window, here shortened to 100 ms.
-		s := r.parked(t)
-		cfg := s.CachedInfo().Config
-		cfg.Duplicates = 100 * time.Millisecond
-		if _, err := r.js.UpdateStream(ctx, cfg); err != nil {
-			t.Fatal(err)
-		}
-		time.Sleep(2 * cfg.Duplicates)
+		// The scenario's delay: the late copy comes after the parking stream's duplicate window, shortened before the first copy.
+		time.Sleep(2 * window)
 		if ack := r.publishTo(t, subject, original); ack.Duplicate {
 			t.Fatal("the late copy was taken for a duplicate; the window has not passed")
 		}
@@ -486,6 +486,8 @@ func TestLateClaimMessageAfterItsObjectIsGone(t *testing.T) {
 		ctx := t.Context()
 		r := newReplica(t, c)
 		capture := tracepack.UUID{55}
+		window := 100 * time.Millisecond // shortened before anything is stored, see TestParkedConsumerAcknowledgesUnderTheTermination
+		shortenWindow(t, r, r.stream, window)
 		cl := newClaims()
 		late := claimCheck(t, cl, capture, dataRecord(1, now-int64(48*time.Hour)), nil)
 		r.publish(t, late, cl.objs[late.Env.MsgID])
@@ -508,12 +510,7 @@ func TestLateClaimMessageAfterItsObjectIsGone(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		cfg := r.stream.CachedInfo().Config
-		cfg.Duplicates = 100 * time.Millisecond
-		if _, err := r.js.UpdateStream(ctx, cfg); err != nil {
-			t.Fatal(err)
-		}
-		time.Sleep(2 * cfg.Duplicates) // the scenario's delay: the late message comes after the window
+		time.Sleep(2 * window) // the scenario's delay: the late message comes after the window
 		subject, err := tracepack.BusSubject(prefix, "T1", capture)
 		if err != nil {
 			t.Fatal(err)
@@ -532,4 +529,14 @@ func TestLateClaimMessageAfterItsObjectIsGone(t *testing.T) {
 			t.Errorf("the traffic stream holds %d messages, want the late message acknowledged without its object", n)
 		}
 	})
+}
+
+// shortenWindow sets s's duplicate window, before the scenario stores anything on it.
+func shortenWindow(t *testing.T, r *replica, s jetstream.Stream, window time.Duration) {
+	t.Helper()
+	cfg := s.CachedInfo().Config
+	cfg.Duplicates = window
+	if _, err := r.js.UpdateStream(t.Context(), cfg); err != nil {
+		t.Fatal(err)
+	}
 }
