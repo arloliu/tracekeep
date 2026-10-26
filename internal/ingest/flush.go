@@ -73,20 +73,35 @@ type Flushed struct {
 	// BeyondHorizon reports that the batch's hour passed the retention horizon before its registration:
 	// nothing was registered, and the caller terminates its messages as beyond-retention.
 	BeyondHorizon bool
+	// Acked counts the batch's entries acknowledged, in the order of b.Entries after the flush;
+	// a flush that fails during the acknowledgements leaves the rest for the caller.
+	Acked int
 }
 
 // segment is one pack a flush writes: the batch's first versions, or one rank of further versions.
 type segment struct {
-	id      tracepack.UUID
-	role    string
+	id   tracepack.UUID
+	role string
+	// entries are the versions the segment holds, one entry each.
 	entries []Entry
+	// copies are every entry whose version the segment holds, equal copies included: each is delivery evidence.
+	copies []Entry
 	// others names, for each seq of a conflict segment, the pack holding the version it conflicts with.
 	others []catalog.Version
+}
+
+// working is a segment written to its working file, ready to be put.
+type working struct {
+	file  *os.File
+	size  int64
+	minor uint16
 }
 
 // Flush writes b's records as segments, puts each under its key and registers it with delivery evidence,
 // then acknowledges every message of the batch; the messages of a batch that fails anywhere are left unacknowledged.
 // Equal copies of a record are written once, and every further version of a seq goes into a conflict segment (ingest.md §6.2).
+// Every segment is written before the first put, so a batch the Writer refuses registers nothing,
+// and one retention horizon judges every segment of the batch.
 func (f *Flusher) Flush(ctx context.Context, b *Batch) (Flushed, error) {
 	cfg, ok := f.Configs[b.ConfigID]
 	if !ok {
@@ -96,16 +111,33 @@ func (f *Flusher) Flush(ctx context.Context, b *Batch) (Flushed, error) {
 	if err != nil {
 		return Flushed{}, err
 	}
+	segs := split(b)
+	files := make([]working, 0, len(segs))
+	defer func() {
+		for _, w := range files {
+			_ = w.file.Close()
+			_ = os.Remove(w.file.Name())
+		}
+	}()
+	for i := range segs {
+		w, err := f.writeFile(b, &capture, &cfg, &segs[i])
+		if err != nil {
+			return Flushed{}, err
+		}
+		files = append(files, w)
+	}
+	horizon := f.HorizonHour()
 	var out Flushed
-	for _, seg := range split(b) {
-		outcome, err := f.writeSegment(ctx, b, &capture, &cfg, &seg)
+	for i := range segs {
+		outcome, err := f.register(ctx, b, &capture, &segs[i], &files[i], horizon)
 		if err != nil {
 			return Flushed{}, err
 		}
 		if outcome == catalog.BeyondHorizon {
+			// Only the first segment can meet it: every segment is judged by the same horizon and hour.
 			return Flushed{BeyondHorizon: true}, nil
 		}
-		out.Packs = append(out.Packs, seg.id)
+		out.Packs = append(out.Packs, segs[i].id)
 	}
 	if err := f.hook(hookAfterRegister); err != nil {
 		return out, err
@@ -114,6 +146,7 @@ func (f *Flusher) Flush(ctx context.Context, b *Batch) (Flushed, error) {
 		if err := ack(ctx, e); err != nil {
 			return out, err // the rest are redelivered, written again and deduplicated by the merge
 		}
+		out.Acked++
 		if err := f.hook(hookAfterAck); err != nil {
 			return out, err
 		}
@@ -148,61 +181,65 @@ func split(b *Batch) []segment {
 		var versions []Entry
 		for ; i < len(b.Entries) && b.Entries[i].D.Raw.Version.Seq == seq; i++ {
 			e := b.Entries[i]
-			if !slices.ContainsFunc(versions, func(v Entry) bool { return v.D.Raw.Version == e.D.Raw.Version }) {
+			rank := slices.IndexFunc(versions, func(v Entry) bool { return v.D.Raw.Version == e.D.Raw.Version })
+			if rank < 0 {
+				rank = len(versions)
 				versions = append(versions, e)
+				for len(segs) <= rank {
+					segs = append(segs, segment{id: newPackID(), role: catalog.RoleConflict})
+				}
+				segs[rank].entries = append(segs[rank].entries, e)
+				if rank > 0 {
+					segs[rank].others = append(segs[rank].others, catalog.Version{Seq: seq, Pack: segs[0].id})
+				}
 			}
-		}
-		for rank, v := range versions {
-			for len(segs) <= rank {
-				segs = append(segs, segment{id: newPackID(), role: catalog.RoleConflict})
-			}
-			segs[rank].entries = append(segs[rank].entries, v)
-			if rank > 0 {
-				segs[rank].others = append(segs[rank].others, catalog.Version{Seq: seq, Pack: segs[0].id})
-			}
+			segs[rank].copies = append(segs[rank].copies, e)
 		}
 	}
 
 	return segs
 }
 
-// writeSegment writes seg to a working file, puts it and registers it.
-func (f *Flusher) writeSegment(ctx context.Context, b *Batch, capture *catalog.Capture, cfg *Config, seg *segment) (catalog.PackOutcome, error) {
+// writeFile writes seg to a working file.
+func (f *Flusher) writeFile(b *Batch, capture *catalog.Capture, cfg *Config, seg *segment) (working, error) {
 	tmp, err := os.CreateTemp(f.WorkDir, workFilePattern)
 	if err != nil {
-		return 0, fmt.Errorf("ingest: working file: %w", err)
+		return working{}, fmt.Errorf("ingest: working file: %w", err)
 	}
-	defer func() {
-		_ = tmp.Close()
-		_ = os.Remove(tmp.Name())
-	}()
 	minor, err := f.write(tmp, b, capture, cfg, seg)
-	if err != nil {
-		return 0, err
+	if err == nil {
+		var size int64
+		if size, err = tmp.Seek(0, io.SeekEnd); err == nil {
+			return working{file: tmp, size: size, minor: minor}, nil
+		}
 	}
-	size, err := tmp.Seek(0, io.SeekEnd)
-	if err != nil {
-		return 0, err
-	}
+	_ = tmp.Close()
+	_ = os.Remove(tmp.Name())
+
+	return working{}, err
+}
+
+// register puts seg's working file under its key and registers it, judged against the retention horizon hour.
+func (f *Flusher) register(ctx context.Context, b *Batch, capture *catalog.Capture, seg *segment, w *working, horizon int64) (catalog.PackOutcome, error) {
 	first := seg.entries[0].D.Raw.Version.Seq
 	key, err := tracepack.SegmentKey(f.KeyPrefix, capture.ToolID, b.Key.Capture, first, seg.id)
 	if err != nil {
 		return 0, fmt.Errorf("ingest: segment key: %w", err)
 	}
-	if _, err := tmp.Seek(0, io.SeekStart); err != nil {
+	if _, err := w.file.Seek(0, io.SeekStart); err != nil {
 		return 0, err
 	}
-	if err := f.Store.Put(ctx, key, tmp, size); err != nil {
+	if err := f.Store.Put(ctx, key, w.file, w.size); err != nil {
 		return 0, err
 	}
 	if err := f.hook(hookAfterPut); err != nil {
 		return 0, err
 	}
 	p := &catalog.Pack{
-		ID: seg.id, Capture: b.Key.Capture, ToolID: capture.ToolID, Hour: b.Key.Hour, Role: seg.role, Key: key, Size: size,
-		SeqStart: first, FormatMinor: int(minor), Ranges: ranges(seg.entries), Stop: hasStop(seg.entries), Conflicts: seg.others,
+		ID: seg.id, Capture: b.Key.Capture, ToolID: capture.ToolID, Hour: b.Key.Hour, Role: seg.role, Key: key, Size: w.size,
+		SeqStart: first, FormatMinor: int(w.minor), Ranges: ranges(seg.entries), Stop: hasStop(seg.entries), Conflicts: seg.others,
 	}
-	outcome, err := f.Catalog.RegisterPack(ctx, p, catalog.Registration{Evidence: evidence(seg.entries), HorizonHour: f.HorizonHour()})
+	outcome, err := f.Catalog.RegisterPack(ctx, p, catalog.Registration{Evidence: evidence(seg.copies), HorizonHour: horizon})
 	if err != nil {
 		return 0, err
 	}
@@ -212,9 +249,13 @@ func (f *Flusher) writeSegment(ctx context.Context, b *Batch, capture *catalog.C
 	case catalog.BeyondHorizon:
 		// The key is tombstoned; the object goes, and so would a put delayed across eviction.
 		return outcome, f.Store.Delete(ctx, key)
-	case catalog.AlreadyRegistered, catalog.FoundAdopted, catalog.Tombstoned, catalog.UnadmittedCapture:
-		// A fresh pack id meets no earlier registration, adoption or tombstone, and its capture is admitted.
+	case catalog.AlreadyRegistered, catalog.Tombstoned, catalog.UnadmittedCapture:
+		// A fresh pack id meets no earlier registration or tombstone, and its capture is admitted.
 		return outcome, fmt.Errorf("ingest: registration of the fresh pack %s returned outcome %d", seg.id, outcome)
+	case catalog.FoundAdopted:
+		// The reconciler adopted the put object while its registration was in flight (ingest.md §6.3):
+		// it wrote no receipts, so the batch is not acknowledged and its redelivery registers it again.
+		return outcome, fmt.Errorf("ingest: the pack %s was adopted before its registration", seg.id)
 	default:
 		return outcome, fmt.Errorf("ingest: unknown registration outcome %d", outcome)
 	}
@@ -239,19 +280,19 @@ func (f *Flusher) write(w *os.File, b *Batch, capture *catalog.Capture, cfg *Con
 		Meta: meta, Facts: facts(seg.entries), PackID: seg.id, CaptureID: b.Key.Capture, Sync: w, Now: f.Now,
 	})
 	if err != nil {
-		return 0, fmt.Errorf("%w: %w", errWrite, err)
+		return 0, refusal(b, err)
 	}
 	if err := f.hook(hookWrite); err != nil {
-		return 0, fmt.Errorf("%w: %w", errWrite, err)
+		return 0, refusal(b, err)
 	}
 	for _, e := range seg.entries {
 		r := e.D.Record.Record
 		if err := tw.Append(&r); err != nil {
-			return 0, fmt.Errorf("%w: append seq %d: %w", errWrite, r.Seq, err)
+			return 0, refusal(b, fmt.Errorf("append seq %d: %w", r.Seq, err))
 		}
 	}
 	if _, err := tw.Close(); err != nil {
-		return 0, fmt.Errorf("%w: %w", errWrite, err)
+		return 0, refusal(b, err)
 	}
 	size, err := w.Seek(0, io.SeekEnd)
 	if err != nil {
@@ -259,14 +300,46 @@ func (f *Flusher) write(w *os.File, b *Batch, capture *catalog.Capture, cfg *Con
 	}
 	r, err := tracepack.Open(context.Background(), w, size, tracepack.ReaderOptions{})
 	if err != nil {
-		return 0, fmt.Errorf("%w: reopen: %w", errWrite, err)
+		return 0, fmt.Errorf("ingest: reopen the working file: %w", err)
 	}
 
 	return r.Header().FormatMinor, nil
 }
 
-// errWrite marks a batch the Writer refused: deterministic, unlike a failed put (ingest.md §6.1 `write-failure`).
+// errWrite marks a batch the Writer refused: deterministic, unlike a failed put or a failed working file (ingest.md §6.1 `write-failure`).
 var errWrite = errors.New("ingest: write")
+
+// refusalError is the Writer's refusal of a batch, named by the batch's capture, hour and configuration:
+// a live capture's redelivered batch gains records between tries, so its messages do not name it.
+type refusalError struct {
+	batch string
+	err   error
+}
+
+func (e *refusalError) Error() string { return fmt.Sprintf("%v: %v", errWrite, e.err) }
+
+func (e *refusalError) Unwrap() []error { return []error{errWrite, e.err} }
+
+// refusals are the Writer's validation errors; any other error, such as the working file's, is transient.
+var refusals = []error{
+	tracepack.ErrSeqOrder, tracepack.ErrPayloadTooLarge, tracepack.ErrFieldValidity, tracepack.ErrMetadataCommitment,
+	tracepack.ErrValidation, tracepack.ErrScopeBreach, tracepack.ErrInvalidRecord, tracepack.ErrMergeLimit,
+	tracepack.ErrRequiredTag, tracepack.ErrFieldValue, tracepack.ErrFieldLength, tracepack.ErrAnnotationText, tracepack.ErrReservedTag,
+}
+
+// refusal returns err as a refusal of b when it is one of the Writer's validation errors, and as a plain error otherwise.
+func refusal(b *Batch, err error) error {
+	if slices.ContainsFunc(refusals, func(r error) bool { return errors.Is(err, r) }) {
+		return &refusalError{batch: batchName(b), err: err}
+	}
+
+	return fmt.Errorf("ingest: write: %w", err)
+}
+
+// batchName names b's capture, hour and configuration.
+func batchName(b *Batch) string {
+	return fmt.Sprintf("%s/%d/%d", b.Key.Capture, b.Key.Hour, b.ConfigID)
+}
 
 // facts are what the segment's metadata is validated against.
 func facts(entries []Entry) tracepack.PackFacts {

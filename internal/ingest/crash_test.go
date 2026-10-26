@@ -4,12 +4,14 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"reflect"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/arloliu/go-secs/tracepack"
 	"github.com/arloliu/tracekeep/internal/catalog"
@@ -63,15 +65,14 @@ func untouched(t *testing.T, hs []*msg) {
 	}
 }
 
-// failingPut fails its first put, as a crash before the object exists would.
+// failingPut fails its at-th put, counting from one, as a crash before the object exists would.
 type failingPut struct {
 	store.ObjectStore
-	failed bool
+	at, puts int
 }
 
 func (f *failingPut) Put(ctx context.Context, key string, r io.ReadSeeker, size int64) error {
-	if !f.failed {
-		f.failed = true
+	if f.puts++; f.puts == f.at {
 		return errCrash
 	}
 
@@ -83,7 +84,7 @@ func TestCrashBeforeThePut(t *testing.T) {
 	t.Parallel()
 	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
 		p := newPipeline(t, c)
-		p.f.Store = &failingPut{ObjectStore: p.st}
+		p.f.Store = &failingPut{ObjectStore: p.st, at: 1}
 		capture := tracepack.UUID{1}
 		hs := p.deliver(t, traffic(t, capture))
 		if _, err := p.flushOne(t); !errors.Is(err, errCrash) {
@@ -147,12 +148,13 @@ func TestCrashAfterThePut(t *testing.T) {
 	})
 }
 
-// A crash during the acknowledgements leaves a registered segment and some messages unacknowledged;
+// A failure during the acknowledgements leaves a registered segment and the rest of the messages nak'd, never the acknowledged ones;
 // their redelivery writes them again into a segment the catalog marks a suspect against the first.
 func TestCrashDuringTheAcks(t *testing.T) {
 	t.Parallel()
 	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
 		p := newPipeline(t, c)
+		g := p.ingester(slog.New(slog.DiscardHandler))
 		acks := 0
 		p.f.hooks[hookAfterAck] = func() error {
 			if acks++; acks == 2 {
@@ -163,10 +165,18 @@ func TestCrashDuringTheAcks(t *testing.T) {
 		capture := tracepack.UUID{3}
 		msgs := traffic(t, capture)
 		hs := p.deliver(t, msgs)
-		if _, err := p.flushOne(t); !errors.Is(err, errCrash) {
-			t.Fatalf("Flush = %v, want the crash", err)
+		if err := g.flush(t.Context(), p.b.All()); !errors.Is(err, errCrash) {
+			t.Fatalf("flush = %v, want the crash", err)
 		}
-		untouched(t, hs[2:])
+		for i, h := range hs {
+			want := []string{"ack"}
+			if i >= 2 {
+				want = []string{"nak " + firstNakDelay.String()}
+			}
+			if got := h.done(); !slices.Equal(got, want) {
+				t.Errorf("message %d: %v, want %v", i, got, want)
+			}
+		}
 
 		p.f.hooks[hookAfterAck] = nil
 		rest := p.deliver(t, msgs[2:])
@@ -185,18 +195,23 @@ func TestCrashDuringTheAcks(t *testing.T) {
 	})
 }
 
-// A batch the Writer refuses three times is deterministic: the write-failure alert is raised and its messages stay deferred.
+// A batch the Writer refuses three times is deterministic: the write-failure alert is raised and its messages stay deferred,
+// though records joined the batch between the tries.
 func TestWriteFailureThreeTimes(t *testing.T) {
 	t.Parallel()
 	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
 		p := newPipeline(t, c)
-		p.f.hooks[hookWrite] = func() error { return errors.New("refused") }
+		p.f.hooks[hookWrite] = func() error { return fmt.Errorf("refused: %w", tracepack.ErrInvalidRecord) }
 		var logged bytes.Buffer
-		g := &Ingester{Flusher: p.f, Batcher: p.b, Log: slog.New(slog.NewTextHandler(&logged, nil))}
+		g := p.ingester(slog.New(slog.NewTextHandler(&logged, nil)))
 		capture := tracepack.UUID{4}
 		var last []*msg
 		for try := 1; try <= writeFailureLimit; try++ {
-			last = p.deliver(t, traffic(t, capture))
+			msgs := traffic(t, capture)
+			for seq := uint64(4); seq < uint64(4+try); seq++ { // the capture is live
+				msgs = append(msgs, inline(t, capture, dataRecord(seq, now+int64(seq)), nil))
+			}
+			last = p.deliver(t, msgs)
 			if err := g.flush(t.Context(), p.b.All()); !errors.Is(err, errWrite) {
 				t.Fatalf("try %d: flush = %v, want the Writer's refusal", try, err)
 			}
@@ -211,6 +226,132 @@ func TestWriteFailureThreeTimes(t *testing.T) {
 			}
 		}
 	})
+}
+
+// A write that fails for any other reason than the Writer's validation, such as the working file's, is retried and never counted.
+func TestWriteFailureOnlyCountsRefusals(t *testing.T) {
+	t.Parallel()
+	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
+		p := newPipeline(t, c)
+		p.f.hooks[hookWrite] = func() error { return errCrash }
+		var logged bytes.Buffer
+		g := p.ingester(slog.New(slog.NewTextHandler(&logged, nil)))
+		capture := tracepack.UUID{5}
+		for try := 1; try <= writeFailureLimit+1; try++ {
+			hs := p.deliver(t, traffic(t, capture))
+			if err := g.flush(t.Context(), p.b.All()); !errors.Is(err, errCrash) || errors.Is(err, errWrite) {
+				t.Fatalf("try %d: flush = %v, want the failure, not a refusal", try, err)
+			}
+			if got := hs[0].done(); !slices.Equal(got, []string{"nak " + firstNakDelay.String()}) {
+				t.Fatalf("try %d: %v, want retried with the short delay", try, got)
+			}
+		}
+		if strings.Contains(logged.String(), ReasonWriteFailure) {
+			t.Error("a transient failure raised the write-failure alert")
+		}
+	})
+}
+
+// The Writer refusing a conflict segment registers nothing: every segment is written before the first put.
+func TestRefusedConflictSegmentRegistersNothing(t *testing.T) {
+	t.Parallel()
+	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
+		p := newPipeline(t, c)
+		writes := 0
+		p.f.hooks[hookWrite] = func() error {
+			if writes++; writes == 2 {
+				return fmt.Errorf("refused: %w", tracepack.ErrInvalidRecord)
+			}
+			return nil
+		}
+		capture := tracepack.UUID{6}
+		hs := p.deliver(t, append(traffic(t, capture), otherVersion(t, capture, 1)))
+		if _, err := p.flushOne(t); !errors.Is(err, errWrite) {
+			t.Fatalf("Flush = %v, want the refusal", err)
+		}
+		untouched(t, hs)
+		if ks := keys(t, p.st); len(ks) != 0 {
+			t.Errorf("objects %v after a refusal", ks)
+		}
+		if got, _ := c.Capture(t.Context(), capture); got.HasHighestSeq {
+			t.Errorf("a segment was registered: %+v", got)
+		}
+	})
+}
+
+// A put failing for the conflict segment after the batch's segment registered leaves every message unacknowledged;
+// the redelivery writes both again and every message is acknowledged.
+func TestPutFailsAfterTheFirstSegment(t *testing.T) {
+	t.Parallel()
+	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
+		p := newPipeline(t, c)
+		p.f.Store = &failingPut{ObjectStore: p.st, at: 2}
+		capture := tracepack.UUID{7}
+		msgs := append(traffic(t, capture), otherVersion(t, capture, 1))
+		hs := p.deliver(t, msgs)
+		if _, err := p.flushOne(t); !errors.Is(err, errCrash) {
+			t.Fatalf("Flush = %v, want the crash", err)
+		}
+		untouched(t, hs)
+		if got, _ := c.Capture(t.Context(), capture); got.HighestSeq != 3 {
+			t.Fatalf("highest seq %d, want the batch's segment registered", got.HighestSeq)
+		}
+		hs = p.deliver(t, msgs)
+		fl, err := p.flushOne(t)
+		if err != nil || len(fl.Packs) != 2 {
+			t.Fatalf("Flush = %+v, %v; want a segment and a conflict segment", fl, err)
+		}
+		for i, h := range hs {
+			if got := h.done(); !slices.Equal(got, []string{"ack"}) {
+				t.Errorf("redelivered message %d: %v, want acknowledged", i, got)
+			}
+		}
+	})
+}
+
+// A batch whose hour passed the retention horizon at its flush registers nothing, and each message is terminated with its audit row.
+func TestFlushBeyondTheHorizon(t *testing.T) {
+	t.Parallel()
+	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
+		p := newPipeline(t, c)
+		g := p.ingester(slog.New(slog.DiscardHandler))
+		capture := tracepack.UUID{8}
+		hs := p.deliver(t, traffic(t, capture))
+		p.f.HorizonHour = func() int64 { return HourOf(now) + 1 }
+		if err := g.flush(t.Context(), p.b.All()); err != nil {
+			t.Fatal(err)
+		}
+		for i, h := range hs {
+			if got := h.done(); !slices.Equal(got, []string{"term"}) {
+				t.Errorf("message %d: %v, want terminated", i, got)
+			}
+		}
+		if ks := keys(t, p.st); len(ks) != 0 {
+			t.Errorf("objects %v, want the segment deleted", ks)
+		}
+		if got, _ := c.Capture(t.Context(), capture); got.HasHighestSeq {
+			t.Errorf("a segment was registered: %+v", got)
+		}
+	})
+}
+
+// ingester runs p's flushes on a clock that stands still, its heartbeat never due.
+func (p *pipeline) ingester(log *slog.Logger) *Ingester {
+	at := time.Unix(0, now)
+
+	return &Ingester{
+		Executor: p.x, Flusher: p.f, Batcher: p.b, Log: log,
+		Heartbeat: time.Hour, Now: func() time.Time { return at }, lastBeat: at,
+	}
+}
+
+// otherVersion is another version of a data record at seq.
+func otherVersion(t *testing.T, capture tracepack.UUID, seq uint64) Message {
+	t.Helper()
+	r := dataRecord(seq, now+int64(seq))
+	r.Payload = append(bytes.Clone(r.Payload), 0xff)
+
+	return inline(t, capture, r, nil)
 }
 
 // sameRecord compares two records as stored, payloads included.

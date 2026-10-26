@@ -1,6 +1,7 @@
 package ingest
 
 import (
+	"context"
 	"errors"
 	"log/slog"
 	"sync"
@@ -20,13 +21,21 @@ import (
 
 const prefix = "tk"
 
-// clock is a settable clock.
+// clock is a settable clock; each reading advances it by tick.
 type clock struct {
-	mu sync.Mutex
-	t  time.Time
+	mu   sync.Mutex
+	t    time.Time
+	tick time.Duration
 }
 
-func (c *clock) now() time.Time { c.mu.Lock(); defer c.mu.Unlock(); return c.t }
+func (c *clock) now() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	t := c.t
+	c.t = c.t.Add(c.tick)
+
+	return t
+}
 
 func (c *clock) advance(d time.Duration) { c.mu.Lock(); c.t = c.t.Add(d); c.mu.Unlock() }
 
@@ -81,7 +90,7 @@ func newReplica(t *testing.T, c *catalog.Catalog) *replica {
 		HorizonHour: func() int64 { return HourOf(x.Horizon()) }, Writer: "tracekeep-test", Now: clk.now,
 	}
 	g := &Ingester{
-		Executor: x, Batcher: NewBatcher(time.Second, 1<<20), Flusher: f, Consumer: cons, Log: slog.New(slog.DiscardHandler),
+		Executor: x, Batcher: NewBatcher(time.Second, 1<<20), Flusher: f, Consumer: cons, Stream: s, Log: slog.New(slog.DiscardHandler),
 		Replica: "r1", Lease: time.Minute, FetchBatch: 100, MaxWait: 200 * time.Millisecond, Now: clk.now,
 	}
 	if err := g.Join(ctx); err != nil {
@@ -182,26 +191,87 @@ func TestIngesterLapsedLeaseTouchesNothing(t *testing.T) {
 	t.Parallel()
 	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
 		r := newReplica(t, c)
-		capture := tracepack.UUID{2}
-		r.publish(t, inline(t, capture, startRecord(t, now), descriptorOf(t, "eqp")), nil)
-		for _, tc := range []struct {
+		for i, tc := range []struct {
 			name  string
 			setup func() int64
 		}{
 			{"after the lease", func() int64 { r.g.leaseEnd = r.clk.now(); return r.g.membership.Generation }},
 			{"under an earlier membership", func() int64 { r.g.leaseEnd = r.clk.now().Add(time.Minute); return r.g.membership.Generation - 1 }},
 		} {
+			capture := tracepack.UUID{2, byte(i)}
+			r.publish(t, inline(t, capture, startRecord(t, now), descriptorOf(t, "eqp")), nil)
 			batch, err := r.g.Consumer.Fetch(1, jetstream.FetchMaxWait(5*time.Second))
 			if err != nil {
 				t.Fatal(err)
 			}
 			generation := tc.setup()
+			handled := 0
 			for m := range batch.Messages() {
+				handled++
 				r.g.handle(t.Context(), m, generation)
+			}
+			if handled != 1 {
+				t.Fatalf("%s: %d messages handled, want the start (%v)", tc.name, handled, batch.Error())
 			}
 			if _, err := c.Capture(t.Context(), capture); !errors.Is(err, catalog.ErrUnknownCapture) {
 				t.Errorf("%s: the start was processed: %v", tc.name, err)
 			}
+		}
+	})
+}
+
+// A renewal that leaves no lease to fetch within fetches nothing.
+func TestIngesterNoLeaseNoFetch(t *testing.T) {
+	t.Parallel()
+	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
+		r := newReplica(t, c)
+		r.publish(t, inline(t, tracepack.UUID{3}, startRecord(t, now), descriptorOf(t, "eqp")), nil)
+		r.clk.tick = r.g.Lease // every reading of the clock takes a whole lease
+		if err := r.g.Step(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+		info, err := r.g.Consumer.Info(t.Context())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if info.Delivered.Consumer != 0 {
+			t.Errorf("%d messages fetched without a lease", info.Delivered.Consumer)
+		}
+	})
+}
+
+// A stream that is no longer its incarnation stops the replica at its renewal with bus-incarnation-changed,
+// its held deliveries abandoned unacknowledged and nothing flushed (parking.md *incarnations*).
+func TestIngesterStopsOnAnotherIncarnation(t *testing.T) {
+	t.Parallel()
+	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
+		r := newReplica(t, c)
+		capture := tracepack.UUID{4}
+		r.publish(t, inline(t, capture, startRecord(t, now), descriptorOf(t, "eqp")), nil)
+		if err := r.g.Step(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+		if n := len(r.g.Batcher.batches); n != 1 {
+			t.Fatalf("%d batches held, want the start's", n)
+		}
+		// A restore of an older snapshot: the stream's last sequence falls below one observed.
+		if err := c.ObserveLastSeq(t.Context(), r.g.Executor.Incarnation, 1000); err != nil {
+			t.Fatal(err)
+		}
+		r.clk.advance(time.Second)                                      // the batch is due
+		ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second) // a Run that does not stop fails, never hangs
+		defer cancel()
+		if err := r.g.Run(ctx); !errors.Is(err, catalog.ErrIncarnationChanged) {
+			t.Fatalf("Run = %v, want ErrIncarnationChanged", err)
+		}
+		if n := len(r.g.Batcher.batches); n != 0 {
+			t.Errorf("%d batches still held", n)
+		}
+		if ks := keys(t, r.st); len(ks) != 0 {
+			t.Errorf("objects %v, want nothing flushed", ks)
+		}
+		if n := r.pending(t); n != 1 {
+			t.Errorf("the stream holds %d messages, want the start unacknowledged", n)
 		}
 	})
 }

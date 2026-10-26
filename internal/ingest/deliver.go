@@ -56,7 +56,9 @@ type Delivery struct {
 // the classifier's name, which every pack of a capture bound to it records, its frame bound, and the classifier itself.
 // Phase 1 binds no redaction policy, so nothing is masked.
 type Config struct {
-	Classifier  tracepack.Classifier
+	Classifier tracepack.Classifier
+	// Name names the classifier's implementation and its version: the configuration's identity is its content,
+	// so two classifier releases sharing a name would share a configuration and pass the activation gate together.
 	Name        string
 	MaxFrameLen uint64
 }

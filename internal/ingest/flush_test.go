@@ -3,6 +3,7 @@ package ingest
 import (
 	"bytes"
 	"context"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"slices"
@@ -228,6 +229,70 @@ func TestFlushClaimCheckDoubleAcks(t *testing.T) {
 		v.Header, v.Digest = d.Raw.Version.Header, d.Raw.Version.Digest
 		if m, err := c.Receipt(t.Context(), v); err != nil || m != catalog.ReceiptEqual {
 			t.Errorf("receipt %v, %v; want the record's", m, err)
+		}
+	})
+}
+
+// A claim-check copy of a record also delivered inline gets its receipt, whichever copy the segment holds (ingest.md §6.3).
+func TestFlushReceiptOfAnEqualCopy(t *testing.T) {
+	t.Parallel()
+	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
+		for i, inlineFirst := range []bool{true, false} {
+			p := newPipeline(t, c)
+			capture := tracepack.UUID{4, byte(i)}
+			p.feed(t, inline(t, capture, startRecord(t, now), descriptorOf(t, "eqp")))
+			cc := claimCheck(t, p.cl, capture, dataRecord(1, now), nil)
+			copies := []Message{inline(t, capture, dataRecord(1, now), nil), cc}
+			if !inlineFirst {
+				copies[0], copies[1] = copies[1], copies[0]
+			}
+			var hs []*msg
+			for _, m := range copies {
+				hs = append(hs, p.feed(t, m))
+			}
+			p.flushAll(t)
+			for j, h := range hs {
+				if got := h.done(); len(got) != 1 {
+					t.Errorf("inline first %v, copy %d: %v, want acknowledged once", inlineFirst, j, got)
+				}
+			}
+			d, _ := dispose(t, p.x, cc)
+			v := &catalog.VersionKey{Capture: capture, Seq: 1, Header: d.Raw.Version.Header, Digest: d.Raw.Version.Digest}
+			if m, err := c.Receipt(t.Context(), v); err != nil || m != catalog.ReceiptEqual {
+				t.Errorf("inline first %v: receipt %v, %v; want the claim-check copy's", inlineFirst, m, err)
+			}
+		}
+	})
+}
+
+// Before each flush, once the heartbeat passed, every held message is kept in progress, those of the batches still to flush included.
+func TestFlushKeepsHeldMessagesInProgress(t *testing.T) {
+	t.Parallel()
+	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
+		p := newPipeline(t, c)
+		clk := &clock{t: time.Unix(0, now)}
+		g := &Ingester{Flusher: p.f, Batcher: p.b, Log: slog.New(slog.DiscardHandler), Heartbeat: time.Second, Now: clk.now}
+		for _, capture := range []tracepack.UUID{{5}, {6}} {
+			p.feed(t, inline(t, capture, startRecord(t, now), descriptorOf(t, "eqp")))
+		}
+		p.f.hooks[hookAfterRegister] = func() error {
+			p.f.hooks[hookAfterRegister] = nil
+			clk.advance(time.Second) // the first flush takes a heartbeat
+			return nil
+		}
+		bs := p.b.All()
+		if err := g.flush(t.Context(), bs); err != nil {
+			t.Fatal(err)
+		}
+		want := [][]string{{"in-progress", "ack"}, {"in-progress", "in-progress", "ack"}}
+		for i, b := range bs {
+			h, ok := b.Entries[0].Msg.(*msg)
+			if !ok {
+				t.Fatalf("batch %d: message %T", i, b.Entries[0].Msg)
+			}
+			if got := h.done(); !slices.Equal(got, want[i]) {
+				t.Errorf("batch %d: %v, want %v", i, got, want[i])
+			}
 		}
 	})
 }

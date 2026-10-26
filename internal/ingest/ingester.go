@@ -6,13 +6,12 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"slices"
-	"strings"
 	"time"
 
 	"github.com/nats-io/nats.go/jetstream"
 
 	"github.com/arloliu/go-secs/tracepack"
+	"github.com/arloliu/tracekeep/internal/bus"
 	"github.com/arloliu/tracekeep/internal/catalog"
 )
 
@@ -25,6 +24,15 @@ const (
 // writeFailureLimit is how many times the Writer refuses one batch before the refusal counts as deterministic.
 const writeFailureLimit = 3
 
+// Run's backoff after a failed step: a catalog or bus outage is retried, never spun on.
+const (
+	firstStepBackoff = 100 * time.Millisecond
+	lastStepBackoff  = 5 * time.Second
+)
+
+// ReasonIncarnationChanged is the alert of a traffic stream that is no longer the incarnation the catalog records (parking.md *incarnations*).
+const ReasonIncarnationChanged = "bus-incarnation-changed"
+
 // Ingester is one ingest replica: it holds a membership in the activation gate,
 // pulls the traffic stream, decides each delivery, batches and flushes (rollouts.md §6.4, ingest.md §6).
 // It is driven by Step, which Run calls in a loop; Step starts no goroutine of its own.
@@ -33,20 +41,29 @@ type Ingester struct {
 	Batcher  *Batcher
 	Flusher  *Flusher
 	Consumer jetstream.Consumer
-	Log      *slog.Logger
+	// Stream is the traffic stream, checked against the catalog's incarnation with every renewal.
+	Stream jetstream.Stream
+	Log    *slog.Logger
 	// Replica names this replica's membership.
 	Replica string
 	// Lease is the membership lease, renewed before every fetch; a fetch waits at most what remains of it.
 	Lease time.Duration
 	// FetchBatch bounds the messages of one fetch.
 	FetchBatch int
-	// MaxWait bounds how long a fetch waits for FetchBatch messages; it never waits past what remains of the lease.
+	// MaxWait bounds how long a fetch waits for FetchBatch messages; it never waits past what remains of the lease,
+	// nor past Heartbeat.
 	MaxWait time.Duration
+	// Heartbeat is the consumer's ack wait over three: a held message is kept in progress at least this often
+	// between steps and before each flush, so it goes unrefreshed for at most Heartbeat plus one flush,
+	// which the ack wait exceeds (architecture.md §3.1); zero refreshes at every chance.
+	Heartbeat time.Duration
 	// Now is the clock the batches and the lease are judged by.
 	Now func() time.Time
 
 	// writeFailures counts, by batch, the flushes the Writer refused: the same batch refused three times is deterministic.
 	writeFailures map[string]int
+	// lastBeat is when the held messages were last kept in progress.
+	lastBeat time.Time
 
 	membership catalog.Membership
 	// leaseEnd is when this replica stops trusting its lease: the renewal's start plus the lease,
@@ -94,11 +111,26 @@ func (g *Ingester) Join(ctx context.Context) error {
 	return nil
 }
 
-// Run steps until ctx ends, then flushes what it holds.
+// Run steps until ctx ends, then flushes what it holds;
+// a stream that is no longer its incarnation ends it at once, the held deliveries abandoned unacknowledged.
 func (g *Ingester) Run(ctx context.Context) error {
+	var backoff time.Duration
 	for ctx.Err() == nil {
-		if err := g.Step(ctx); err != nil {
+		err := g.Step(ctx)
+		switch {
+		case errors.Is(err, catalog.ErrIncarnationChanged):
+			return err
+		case err != nil:
 			g.Log.Warn("ingest: step failed", "error", err)
+			backoff = min(max(2*backoff, firstStepBackoff), lastStepBackoff)
+			t := time.NewTimer(backoff)
+			select {
+			case <-ctx.Done():
+			case <-t.C:
+			}
+			t.Stop()
+		default:
+			backoff = 0
 		}
 	}
 
@@ -107,29 +139,61 @@ func (g *Ingester) Run(ctx context.Context) error {
 
 // Step renews the membership, fetches one batch of messages within the lease, disposes of each,
 // keeps the held ones in progress and flushes the batches that are due.
+// It returns the renewal's and the fetch's errors; a failed flush's batch is nak'd and logged.
 func (g *Ingester) Step(ctx context.Context) error {
 	if err := g.renew(ctx); err != nil {
+		if errors.Is(err, catalog.ErrIncarnationChanged) {
+			g.Log.Error("ingest: alert", "reason", ReasonIncarnationChanged, "error", err)
+			g.Batcher.All() // abandoned unacknowledged (parking.md *incarnations*)
+		}
+
 		return err
 	}
 	wait := min(g.MaxWait, g.leaseEnd.Sub(g.Now())/2)
-	batch, err := g.Consumer.Fetch(g.FetchBatch, jetstream.FetchMaxWait(max(wait, time.Millisecond)))
-	if err != nil {
-		return fmt.Errorf("ingest: fetch: %w", err)
+	if g.Heartbeat > 0 {
+		wait = min(wait, g.Heartbeat)
 	}
-	generation := g.membership.Generation
-	for m := range batch.Messages() {
-		g.handle(ctx, m, generation)
+	if wait >= time.Millisecond { // otherwise no lease is left to fetch within
+		batch, err := g.Consumer.Fetch(g.FetchBatch, jetstream.FetchMaxWait(wait))
+		if err != nil {
+			return fmt.Errorf("ingest: fetch: %w", err)
+		}
+		generation := g.membership.Generation
+		for m := range batch.Messages() {
+			g.handle(ctx, m, generation)
+		}
+		if err := batch.Error(); err != nil && !errors.Is(err, jetstream.ErrNoMessages) && !errors.Is(err, context.DeadlineExceeded) {
+			g.Log.Warn("ingest: fetch ended", "error", err)
+		}
 	}
-	if err := batch.Error(); err != nil && !errors.Is(err, jetstream.ErrNoMessages) && !errors.Is(err, context.DeadlineExceeded) {
-		g.Log.Warn("ingest: fetch ended", "error", err)
+	if err := g.flush(ctx, g.Batcher.Due(g.Now())); err != nil {
+		g.Log.Warn("ingest: flush failed", "error", err)
 	}
-	g.Batcher.Held(func(m Msg) { _ = m.InProgress() })
 
-	return g.flush(ctx, g.Batcher.Due(g.Now()))
+	return nil
 }
 
-// renew renews the membership, or registers again once it lapsed.
+// keepAlive keeps every held message in progress, those of the batches about to flush included,
+// once Heartbeat passed since the last time.
+func (g *Ingester) keepAlive(flushing []*Batch) {
+	now := g.Now()
+	if now.Sub(g.lastBeat) < g.Heartbeat {
+		return
+	}
+	g.lastBeat = now
+	g.Batcher.Held(func(m Msg) { _ = m.InProgress() })
+	for _, b := range flushing {
+		for _, e := range b.Entries {
+			_ = e.Msg.InProgress()
+		}
+	}
+}
+
+// renew checks the stream against its incarnation, then renews the membership, or registers again once it lapsed.
 func (g *Ingester) renew(ctx context.Context) error {
+	if err := g.checkIncarnation(ctx); err != nil {
+		return err
+	}
 	start := g.Now()
 	err := g.Executor.Catalog.Renew(ctx, g.membership, g.Lease)
 	if errors.Is(err, catalog.ErrMembershipLapsed) {
@@ -140,6 +204,20 @@ func (g *Ingester) renew(ctx context.Context) error {
 		return err
 	}
 	g.leaseEnd = start.Add(g.Lease)
+
+	return nil
+}
+
+// checkIncarnation verifies that the traffic stream is still the incarnation the consumer was named for:
+// its creation time, and a last sequence not below one observed (parking.md *incarnations*).
+func (g *Ingester) checkIncarnation(ctx context.Context) error {
+	inc, err := bus.Incarnate(ctx, g.Executor.Catalog, g.Stream)
+	if err != nil {
+		return err
+	}
+	if inc.ID != g.Executor.Incarnation {
+		return fmt.Errorf("%w: incarnation %d, the consumer is named for %d", catalog.ErrIncarnationChanged, inc.ID, g.Executor.Incarnation)
+	}
 
 	return nil
 }
@@ -194,21 +272,24 @@ func (g *Ingester) act(ctx context.Context, e Entry, dec Decision, delivered uin
 	}
 }
 
-// flush flushes each batch; a batch that fails is nak'd whole and written again at its redelivery.
+// flush flushes each batch, keeping the held messages in progress before each;
+// a batch that fails is nak'd, but for the messages it acknowledged, and written again at its redelivery.
 func (g *Ingester) flush(ctx context.Context, batches []*Batch) error {
 	var errs []error
-	for _, b := range batches {
+	for i, b := range batches {
+		g.keepAlive(batches[i:])
 		out, err := g.Flusher.Flush(ctx, b)
+		var refused *refusalError
 		switch {
 		case err != nil:
 			errs = append(errs, err)
 			delay := firstNakDelay
-			if errors.Is(err, errWrite) && g.refused(b) >= writeFailureLimit {
+			if errors.As(err, &refused) && g.refused(refused.batch) >= writeFailureLimit {
 				// Deterministic: the messages stay deferred for an operator (ingest.md §6.1 `write-failure`).
 				g.Log.Warn("ingest: alert", "reason", ReasonWriteFailure, "capture", b.Key.Capture.String(), "hour", b.Key.Hour, "error", err)
 				delay = lastNakDelay
 			}
-			for _, e := range b.Entries {
+			for _, e := range b.Entries[out.Acked:] {
 				_ = e.Msg.NakWithDelay(delay)
 			}
 		case out.BeyondHorizon:
@@ -216,26 +297,21 @@ func (g *Ingester) flush(ctx context.Context, batches []*Batch) error {
 				g.act(ctx, e, Decision{Action: ActTerminate, Reason: ReasonBeyondRetention, Alert: true, Audit: true}, 0)
 			}
 		default: // registered and acknowledged
+			delete(g.writeFailures, batchName(b))
 		}
 	}
 
 	return errors.Join(errs...)
 }
 
-// refused counts one more refusal of b's records by the Writer and returns the count.
-func (g *Ingester) refused(b *Batch) int {
+// refused counts one more refusal of the batch named batch by the Writer and returns the count.
+func (g *Ingester) refused(batch string) int {
 	if g.writeFailures == nil {
 		g.writeFailures = map[string]int{}
 	}
-	ids := make([]string, len(b.Entries))
-	for i, e := range b.Entries {
-		ids[i] = e.D.Msg.Env.MsgID
-	}
-	slices.Sort(ids)
-	k := strings.Join(ids, ",")
-	g.writeFailures[k]++
+	g.writeFailures[batch]++
 
-	return g.writeFailures[k]
+	return g.writeFailures[batch]
 }
 
 // readMessage reads a delivery's headers, body and stream sequence.
