@@ -169,42 +169,100 @@ func TestAdoptStream(t *testing.T) {
 	})
 }
 
-// gate forwards a client's bytes to the server while open; closed, it holds them, as a network delays a publish already sent.
+// gate holds a client's bytes on their way to the server while closed, as a network delays a publish already sent;
+// the client's bytes keep being read into it, so a frame split across reads, or behind another frame, is still seen.
 type gate struct {
-	mu     sync.Mutex
-	open   bool
-	opened chan struct{}
-	// holding is closed once the closed gate holds a publish frame.
+	mu   sync.Mutex
+	cond *sync.Cond
+	open bool
+	// buf holds the bytes read from the client and not yet forwarded; done reports the client gone.
+	buf  []byte
+	done bool
+	// holding is closed once the closed gate holds a publish (PUB or HPUB) frame.
 	holding chan struct{}
 	once    sync.Once
-	held    []byte
+}
+
+func newGate() *gate {
+	g := &gate{open: true, holding: make(chan struct{})}
+	g.cond = sync.NewCond(&g.mu)
+
+	return g
 }
 
 func (g *gate) set(open bool) {
 	g.mu.Lock()
-	defer g.mu.Unlock()
-	if open && !g.open {
-		close(g.opened)
-	} else if !open && g.open {
-		g.opened = make(chan struct{})
-	}
 	g.open = open
+	g.mu.Unlock()
+	g.cond.Broadcast()
 }
 
-// wait holds b while the gate is closed; holding is closed once the held bytes include a publish (PUB or HPUB) frame,
-// since a client may send a subscription for the reply first.
-func (g *gate) wait(b []byte) {
+// push takes bytes read from the client.
+func (g *gate) push(b []byte) {
 	g.mu.Lock()
-	ch, open := g.opened, g.open
-	if !open {
-		g.held = append(g.held, b...)
-		if bytes.Contains(g.held, []byte("PUB ")) {
-			g.once.Do(func() { close(g.holding) })
-		}
+	g.buf = append(g.buf, b...)
+	if !g.open && bytes.Contains(g.buf, []byte("PUB ")) {
+		g.once.Do(func() { close(g.holding) })
 	}
 	g.mu.Unlock()
-	if !open {
-		<-ch
+	g.cond.Broadcast()
+}
+
+// end marks the client gone.
+func (g *gate) end() {
+	g.mu.Lock()
+	g.done = true
+	g.mu.Unlock()
+	g.cond.Broadcast()
+}
+
+// pop returns the bytes to forward once the gate is open, in order; ok is false once the client is gone and nothing remains.
+func (g *gate) pop() (b []byte, ok bool) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	for (!g.open || len(g.buf) == 0) && !g.done {
+		g.cond.Wait()
+	}
+	if !g.open || len(g.buf) == 0 {
+		return nil, false
+	}
+	b, g.buf = g.buf, nil
+
+	return b, true
+}
+
+func held(g *gate) bool {
+	select {
+	case <-g.holding:
+		return true
+	default:
+		return false
+	}
+}
+
+// The gate signals only once the bytes it holds include a publish frame, however the reads split them,
+// and forwards everything in order once opened.
+func TestGateWaitsForThePublishFrame(t *testing.T) {
+	t.Parallel()
+	g := newGate()
+	g.set(false)
+	for _, chunk := range []string{"SUB _INBOX.a 1\r\n", "PU", "B tk.T1.x _INBOX.a.1 0\r\n\r\n"} {
+		if held(g) {
+			t.Fatalf("holding before %q", chunk)
+		}
+		g.push([]byte(chunk))
+	}
+	if !held(g) {
+		t.Fatal("not holding once the publish frame arrived")
+	}
+	got := make(chan []byte)
+	go func() {
+		b, _ := g.pop()
+		got <- b
+	}()
+	g.set(true)
+	if b := <-got; string(b) != "SUB _INBOX.a 1\r\nPUB tk.T1.x _INBOX.a.1 0\r\n\r\n" {
+		t.Errorf("forwarded %q, want every held byte in order", b)
 	}
 }
 
@@ -228,17 +286,26 @@ func proxy(t *testing.T, url string, g *gate) string {
 			return
 		}
 		go func() { _, _ = io.Copy(client, up) }()
-		buf := make([]byte, 32<<10)
-		for {
-			n, err := client.Read(buf)
-			if n > 0 {
-				g.wait(buf[:n])
-				if _, err := up.Write(buf[:n]); err != nil {
+		go func() {
+			defer g.end()
+			buf := make([]byte, 32<<10)
+			for {
+				n, err := client.Read(buf)
+				if n > 0 {
+					g.push(buf[:n])
+				}
+				if err != nil {
 					return
 				}
 			}
-			if err != nil {
+		}()
+		for {
+			b, ok := g.pop()
+			if !ok {
 				_ = up.Close()
+				return
+			}
+			if _, err := up.Write(b); err != nil {
 				return
 			}
 		}
@@ -271,8 +338,7 @@ func TestPublishAcceptedAfterTheCutOffRead(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		g := &gate{open: true, opened: make(chan struct{}), holding: make(chan struct{})}
-		close(g.opened)
+		g := newGate()
 		late, err := nats.Connect(proxy(t, srv.URL(), g))
 		if err != nil {
 			t.Fatal(err)
