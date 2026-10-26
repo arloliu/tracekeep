@@ -73,6 +73,10 @@ type Flushed struct {
 	// BeyondHorizon reports that the batch's hour passed the retention horizon before its registration:
 	// nothing was registered, and the caller terminates its messages as beyond-retention.
 	BeyondHorizon bool
+	// Terminated reports that a termination committed before a segment's registration covers a message of the batch (T-32):
+	// that segment's key is tombstoned and its object deleted, nothing is acknowledged,
+	// and the caller returns the batch's messages to be decided again.
+	Terminated bool
 	// Acked counts the batch's entries acknowledged, in the order of b.Entries after the flush;
 	// a flush that fails during the acknowledgements leaves the rest for the caller.
 	Acked int
@@ -136,6 +140,10 @@ func (f *Flusher) Flush(ctx context.Context, b *Batch) (Flushed, error) {
 		if outcome == catalog.BeyondHorizon {
 			// Only the first segment can meet it: every segment is judged by the same horizon and hour.
 			return Flushed{BeyondHorizon: true}, nil
+		}
+		if outcome == catalog.VersionTerminated {
+			// A segment registered before stays; its records are written again at the redelivery and deduplicated by the merge.
+			return Flushed{Packs: out.Packs, Terminated: true}, nil
 		}
 		out.Packs = append(out.Packs, segs[i].id)
 	}
@@ -246,7 +254,7 @@ func (f *Flusher) register(ctx context.Context, b *Batch, capture *catalog.Captu
 	switch outcome {
 	case catalog.Registered:
 		return outcome, nil
-	case catalog.BeyondHorizon:
+	case catalog.BeyondHorizon, catalog.VersionTerminated:
 		// The key is tombstoned; the object goes, and so would a put delayed across eviction.
 		return outcome, f.Store.Delete(ctx, key)
 	case catalog.AlreadyRegistered, catalog.Tombstoned, catalog.UnadmittedCapture:
@@ -385,10 +393,12 @@ func hasStop(entries []Entry) bool {
 	})
 }
 
-// evidence is the delivery evidence of the entries: a receipt for each record that travelled by claim-check.
+// evidence is the delivery evidence of the entries, every copy of the segment's versions:
+// each delivery's identity, and a receipt for each record that travelled by claim-check.
 func evidence(entries []Entry) *catalog.Evidence {
 	ev := &catalog.Evidence{}
 	for _, e := range entries {
+		ev.Deliveries = append(ev.Deliveries, *e.D.identity())
 		if !e.D.Raw.ClaimCheck {
 			continue
 		}

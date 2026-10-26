@@ -7,6 +7,8 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/jmoiron/sqlx"
+
 	"github.com/arloliu/go-secs/tracepack"
 )
 
@@ -44,32 +46,49 @@ const (
 	ReceiptOther
 )
 
+// Identity is a delivery's identity (catalog.md §7.2): its version, the stream incarnation it came from, its stream sequence,
+// and its record's UTC hour, which a termination's scope event names.
+type Identity struct {
+	Version     VersionKey
+	Incarnation int64
+	StreamSeq   int64
+	Hour        int64
+}
+
 // Resolve looks the version up in parked and the capture's active termination orders,
 // for the message at streamSeq on incarnation (ingest.md §6.1 *resolution before framing and admission*).
 // It is a read: a transaction that acts on the answer re-reads it under the capture row.
 func (c *Catalog) Resolve(ctx context.Context, v *VersionKey, incarnation, streamSeq int64) (Resolution, error) {
+	r, _, err := resolveIn(ctx, c.read, v, incarnation, streamSeq)
+
+	return r, err
+}
+
+// resolveIn is Resolve on q, a transaction's or the read pool; it also returns the action id of the order that covers the message.
+func resolveIn(ctx context.Context, q sqlx.QueryerContext, v *VersionKey, incarnation, streamSeq int64) (Resolution, string, error) {
 	var state string
-	err := c.read.GetContext(ctx, &state, `SELECT state FROM parked WHERE capture_id = ? AND seq = ? AND header = ? AND payload_digest = ?`,
+	err := sqlx.GetContext(ctx, q, &state, `SELECT state FROM parked WHERE capture_id = ? AND seq = ? AND header = ? AND payload_digest = ?`,
 		v.Capture[:], int64(v.Seq), v.Header[:], v.Digest[:])
 	switch {
 	case err == nil && state == "staged":
-		return ResolvedStaged, nil
+		return ResolvedStaged, "", nil
 	case err == nil && state == "terminated":
-		return ResolvedTerminated, nil
+		return ResolvedTerminated, "", nil
 	case err != nil && !errors.Is(err, sql.ErrNoRows):
-		return 0, fmt.Errorf("catalog: resolve %s.%d: %w", v.Capture, v.Seq, err)
+		return 0, "", fmt.Errorf("catalog: resolve %s.%d: %w", v.Capture, v.Seq, err)
 	}
-	var n int
-	err = c.read.GetContext(ctx, &n, `SELECT COUNT(*) FROM termination_orders WHERE capture_id = ? AND incarnation_id = ? AND state = 'active' AND cut_off >= ?`,
+	var action string
+	err = sqlx.GetContext(ctx, q, &action, `SELECT action_id FROM termination_orders
+		WHERE capture_id = ? AND incarnation_id = ? AND state = 'active' AND cut_off >= ? ORDER BY action_id LIMIT 1`,
 		v.Capture[:], incarnation, streamSeq)
-	if err != nil {
-		return 0, fmt.Errorf("catalog: resolve %s.%d: %w", v.Capture, v.Seq, err)
+	switch {
+	case err == nil:
+		return CoveredByOrder, action, nil
+	case errors.Is(err, sql.ErrNoRows):
+		return Unresolved, "", nil
+	default:
+		return 0, "", fmt.Errorf("catalog: resolve %s.%d: %w", v.Capture, v.Seq, err)
 	}
-	if n > 0 {
-		return CoveredByOrder, nil
-	}
-
-	return Unresolved, nil
 }
 
 // Receipt compares the receipts of the version's (capture, seq) with the version.
@@ -105,13 +124,18 @@ type AuditEntry struct {
 
 // Audit appends e to the audit log, outside any domain transaction (catalog.md §7.2).
 func (c *Catalog) Audit(ctx context.Context, e AuditEntry) error {
+	return c.auditIn(ctx, c.write, e)
+}
+
+// auditIn appends e on q: the write pool, or the transaction whose audit row it is.
+func (c *Catalog) auditIn(ctx context.Context, q sqlx.ExecerContext, e AuditEntry) error {
 	var id [16]byte
 	_, _ = rand.Read(id[:])
 	var capture []byte
 	if e.Capture != nil {
 		capture = e.Capture[:]
 	}
-	_, err := c.write.ExecContext(ctx, `INSERT INTO audit_log (audit_id, at, actor, action, action_id, capture_id, detail) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+	_, err := q.ExecContext(ctx, `INSERT INTO audit_log (audit_id, at, actor, action, action_id, capture_id, detail) VALUES (?, ?, ?, ?, ?, ?, ?)`,
 		id[:], c.now(), e.Actor, e.Action, nullString(e.ActionID), capture, nullString(e.Detail))
 	if err != nil {
 		return fmt.Errorf("catalog: audit %s: %w", e.Action, err)

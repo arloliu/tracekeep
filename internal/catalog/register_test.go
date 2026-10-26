@@ -14,7 +14,7 @@ func admitted(t *testing.T, c *Catalog) tracepack.UUID {
 	t.Helper()
 	gate(t, c)
 	id := newID(t)
-	if _, err := c.Admit(t.Context(), id, descriptor(t, "d")); err != nil {
+	if _, err := c.Admit(t.Context(), start(id), descriptor(t, "d")); err != nil {
 		t.Fatal(err)
 	}
 
@@ -144,7 +144,7 @@ func TestRegisterGuards(t *testing.T) {
 			t.Errorf("an orphan of an unknown capture = %v, want unadmitted", out)
 		}
 		rejected := newID(t)
-		if _, err := c.Reject(ctx, rejected, []byte("bad")); err != nil {
+		if _, err := c.Reject(ctx, start(rejected), []byte("bad")); err != nil {
 			t.Fatal(err)
 		}
 		if out := register(t, c, segment(t, rejected, 5, 0, 9), Registration{Lease: &lease, Adopted: true}); out != UnadmittedCapture {

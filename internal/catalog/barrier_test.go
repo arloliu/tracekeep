@@ -74,10 +74,10 @@ func TestTwoFirstSightings(t *testing.T) {
 		held, release := holdAt(c, hookLocked)
 		var first, second Result
 		var err1, err2 error
-		a := run(func() { first, err1 = c.Admit(t.Context(), id, d) })
+		a := run(func() { first, err1 = c.Admit(t.Context(), start(id), d) })
 		<-held
 		waits := c.write.Stats().WaitCount
-		b := run(func() { second, err2 = c.Admit(t.Context(), id, d) })
+		b := run(func() { second, err2 = c.Admit(t.Context(), start(id), d) })
 		waitBlocked(t, c, waits, "INSERT INTO captures", 1)
 		close(release)
 		<-a
@@ -193,7 +193,7 @@ func TestRenewalRacingAnAdmission(t *testing.T) {
 		waits := c.write.Stats().WaitCount
 		var res Result
 		var admitErr error
-		admitted := run(func() { res, admitErr = c.Admit(ctx, newID(t), descriptor(t, "d")) })
+		admitted := run(func() { res, admitErr = c.Admit(ctx, start(newID(t)), descriptor(t, "d")) })
 		waitBlocked(t, c, waits, "UPDATE counters SET value = value WHERE name = 'membership'", 1)
 		close(release)
 		<-renewed
@@ -277,9 +277,119 @@ func TestHorizonTombstoneHoldsTheCaptureRow(t *testing.T) {
 func admittedAnother(t *testing.T, c *Catalog) tracepack.UUID {
 	t.Helper()
 	id := newID(t)
-	if _, err := c.Admit(t.Context(), id, descriptor(t, "d2")); err != nil {
+	if _, err := c.Admit(t.Context(), start(id), descriptor(t, "d2")); err != nil {
 		t.Fatal(err)
 	}
 
 	return id
+}
+
+// A termination and an ingest effect of one capture serialize on its row, and whichever commits first wins (T-32):
+// two messages of one start version, one an order covers and one above its cut-off.
+// The order's application held under the row makes the admission waiting behind it return terminated;
+// an admission held under the row admits, and the application then terminates the version only.
+func TestTerminationRacingAnAdmission(t *testing.T) {
+	t.Parallel()
+	for _, termFirst := range []bool{true, false} {
+		t.Run(map[bool]string{true: "termination first", false: "admission first"}[termFirst], func(t *testing.T) {
+			t.Parallel()
+			engines(t, func(t *testing.T, c *Catalog) {
+				gate(t, c)
+				d := identity(newID(t), 0, 10)
+				order(t, c, d.Version.Capture, "a1")
+				late := *d
+				late.StreamSeq = 20
+				var res Result
+				var r Resolution
+				var errA, errT error
+				admit := func() { res, errA = c.Admit(t.Context(), &late, descriptor(t, "d")) }
+				apply := func() { r, errT = c.ApplyOrder(t.Context(), d) }
+				first, second := apply, admit
+				if !termFirst {
+					first, second = admit, apply
+				}
+				held, release := holdAt(c, hookLocked)
+				a := run(first)
+				<-held
+				waits := c.write.Stats().WaitCount
+				b := run(second)
+				waitBlocked(t, c, waits, "INSERT INTO captures", 1)
+				close(release)
+				<-a
+				<-b
+				if errA != nil || errT != nil || r != ResolvedTerminated {
+					t.Fatalf("Admit = %v, ApplyOrder = %v, %v", errA, r, errT)
+				}
+				want, state := Terminated, StatePending
+				if !termFirst {
+					want, state = Admitted, StateOpen
+				}
+				got, err := c.Capture(t.Context(), d.Version.Capture)
+				if res.Outcome != want || err != nil || got.State != state {
+					t.Errorf("admission = %v, capture %s (%v); want %v, %s", res.Outcome, got.State, err, want, state)
+				}
+				if n := count(t, c, `SELECT COUNT(*) FROM scope_events WHERE event = 'terminated'`); n != 1 {
+					t.Errorf("%d terminated events, want 1", n)
+				}
+			})
+		})
+	}
+}
+
+// A registration and an order's application of one parked version, through a message above the cut-off and one the order covers:
+// the first to commit wins.
+// The application held under the row makes the registration abort and tombstone its key;
+// a registration held under the row stages the version, which the application then leaves staged.
+func TestTerminationRacingARegistration(t *testing.T) {
+	t.Parallel()
+	for _, termFirst := range []bool{true, false} {
+		t.Run(map[bool]string{true: "termination first", false: "registration first"}[termFirst], func(t *testing.T) {
+			t.Parallel()
+			engines(t, func(t *testing.T, c *Catalog) {
+				capture := admitted(t, c)
+				d := identity(capture, 3, 10)
+				park(t, c, d, "parked")
+				order(t, c, capture, "a1")
+				p := segment(t, capture, 5, 0, 9)
+				var out PackOutcome
+				var r Resolution
+				var errR, errT error
+				late := *d
+				late.StreamSeq = 20
+				register := func() {
+					out, errR = c.RegisterPack(t.Context(), p, Registration{Evidence: &Evidence{Deliveries: []Identity{late}}})
+				}
+				apply := func() { r, errT = c.ApplyOrder(t.Context(), d) }
+				first, second := apply, register
+				if !termFirst {
+					first, second = register, apply
+				}
+				held, release := holdAt(c, hookLocked)
+				a := run(first)
+				<-held
+				waits := c.write.Stats().WaitCount
+				b := run(second)
+				waitBlocked(t, c, waits, "INSERT INTO captures", 1)
+				close(release)
+				<-a
+				<-b
+				if errR != nil || errT != nil {
+					t.Fatalf("RegisterPack = %v, ApplyOrder = %v", errR, errT)
+				}
+				wantOut, wantR, wantState, packs := VersionTerminated, ResolvedTerminated, "terminated", 0
+				if !termFirst {
+					wantOut, wantR, wantState, packs = Registered, ResolvedStaged, "staged", 1
+				}
+				if out != wantOut || r != wantR {
+					t.Errorf("registration = %v, application = %v; want %v, %v", out, r, wantOut, wantR)
+				}
+				if state, _ := versionState(t, c, d); state != wantState {
+					t.Errorf("version = %s, want %s", state, wantState)
+				}
+				if n := count(t, c, `SELECT COUNT(*) FROM packs`); n != packs {
+					t.Errorf("%d packs, want %d", n, packs)
+				}
+			})
+		})
+	}
 }

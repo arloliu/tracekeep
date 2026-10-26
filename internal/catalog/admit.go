@@ -48,6 +48,9 @@ const (
 	// AlreadyAdmitted: a rejection found the capture admitted with these bytes; nothing was written,
 	// and the classifier decides again with the bound configuration.
 	AlreadyAdmitted
+	// Terminated: the delivery's version is terminated, or an active termination order covers the delivery and was applied to it;
+	// nothing else was written (T-32).
+	Terminated
 )
 
 // Descriptor is an accepted start descriptor: its bytes and the fields the catalog indexes.
@@ -81,15 +84,21 @@ type Capture struct {
 	DataRevision  int64
 }
 
-// Admit admits the capture id with the accepted descriptor d (catalog.md §7.2 `Admit`):
-// no row or a pending one moves to open and binds the newest configuration every leased member supports;
+// Admit admits the capture of the delivery dv with its accepted descriptor d (catalog.md §7.2 `Admit`).
+// First, under the capture row, a delivery that lost to a termination returns Terminated and admits nothing.
+// Then no row or a pending one moves to open and binds the newest configuration every leased member supports;
 // a rejected one does the same when its retained bytes equal d's;
 // equal bytes on an admitted capture change nothing, and other bytes are a descriptor conflict.
-func (c *Catalog) Admit(ctx context.Context, id tracepack.UUID, d *Descriptor) (Result, error) {
+func (c *Catalog) Admit(ctx context.Context, dv *Identity, d *Descriptor) (Result, error) {
+	id := dv.Version.Capture
 	var res Result
 	err := c.inTx(ctx, func(tx *sqlx.Tx) error {
 		row, err := c.lockCapture(ctx, tx, id)
 		if err != nil {
+			return err
+		}
+		if lost, err := c.lostToTermination(ctx, tx, dv); lost {
+			res = Result{Outcome: Terminated}
 			return err
 		}
 		switch row.State {
@@ -137,14 +146,20 @@ func (c *Catalog) Admit(ctx context.Context, id tracepack.UUID, d *Descriptor) (
 	return res, nil
 }
 
-// Reject records that the start descriptor of capture id is not accepted (catalog.md §7.2 `Reject`):
+// Reject records that the start descriptor of the delivery dv's capture is not accepted (catalog.md §7.2 `Reject`),
+// after the termination re-check of Admit:
 // an unknown capture becomes rejected with the bytes, durably, so its start stays deferred whatever its age;
 // an admitted capture is never overwritten: equal bytes return AlreadyAdmitted with its configuration, other bytes DescriptorConflict.
-func (c *Catalog) Reject(ctx context.Context, id tracepack.UUID, descriptor []byte) (Result, error) {
+func (c *Catalog) Reject(ctx context.Context, dv *Identity, descriptor []byte) (Result, error) {
+	id := dv.Version.Capture
 	var res Result
 	err := c.inTx(ctx, func(tx *sqlx.Tx) error {
 		row, err := c.lockCapture(ctx, tx, id)
 		if err != nil {
+			return err
+		}
+		if lost, err := c.lostToTermination(ctx, tx, dv); lost {
+			res = Result{Outcome: Terminated}
 			return err
 		}
 		switch row.State {
