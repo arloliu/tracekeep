@@ -49,7 +49,8 @@ func TestSoleCopyReconciledAfterARestart(t *testing.T) {
 		srv.Stop()
 		srv.Restart()
 		js = connect(t, srv.URL())
-		traffic, parked, err := bus.Ensure(ctx, js, bus.Config{SubjectPrefix: "tk", ClaimBucket: "claims"})
+		cfg := bus.Config{SubjectPrefix: "tk", ClaimBucket: "claims"}
+		_, parked, err = bus.Ensure(ctx, js, cfg)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -58,7 +59,7 @@ func TestSoleCopyReconciledAfterARestart(t *testing.T) {
 		}
 		r := &Reconciler{
 			Catalog: c, Store: store.NewMem(), HorizonHour: func() int64 { return hour - 24 }, Log: slog.New(slog.DiscardHandler),
-			Traffic: traffic, Parked: parked, Holder: "restarted", LeaseTTL: time.Hour, Interval: time.Minute,
+			JS: js, Bus: cfg, Holder: "restarted", LeaseTTL: time.Hour, Interval: time.Minute,
 		}
 		step(t, r)
 		if got := copyState(t, c, d); got != "acked" {
