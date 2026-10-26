@@ -52,6 +52,7 @@ func TestUsage(t *testing.T) {
 	for _, args := range [][]string{
 		nil, {"serve"}, {"migrate", "--config", path, "extra"}, {"admin", "--config", path},
 		{"admin", "--config", path, "capture", "show", "not-a-uuid"}, {"admin", "--config", path, "parked", "terminate"},
+		{"dev", "--flush", "0s"}, {"dev", "--data", t.TempDir(), "extra"},
 	} {
 		if code, _, stderr := tracekeep(t, args...); code != 2 || !strings.Contains(stderr, "usage:") {
 			t.Errorf("tracekeep %v = %d, %q; want 2 with the usage", args, code, stderr)

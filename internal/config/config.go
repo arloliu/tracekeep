@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/arloliu/fuda"
@@ -174,4 +175,27 @@ func (c *Config) check() error {
 	}
 
 	return nil
+}
+
+// Dev is the configuration of tracekeep dev: the defaults, a SQLite catalog and an fs store under dir, the bus at url,
+// and a flush interval short enough to watch a capture arrive.
+func Dev(dir, url string, flush time.Duration) (*Config, error) {
+	var c Config
+	if err := fuda.SetDefaults(&c); err != nil {
+		return nil, fmt.Errorf("config: %w", err)
+	}
+	c.Catalog.DSN = filepath.Join(dir, "catalog.db")
+	c.Bus.URL, c.Bus.SubjectPrefix, c.Bus.ClaimBucket = url, "tk", "tk-claims"
+	c.Store.Kind, c.Store.Dir, c.Store.Presign = "fs", filepath.Join(dir, "packs"), false
+	c.Ingest.FlushInterval, c.Ingest.AckWait, c.Ingest.MaxWait = flush, max(time.Minute, 2*flush), time.Second
+	c.Compact.Interval = 30 * time.Second
+	c.Replica = "dev"
+	if err := fuda.Validate(&c); err != nil {
+		return nil, fmt.Errorf("config: %w", err)
+	}
+	if err := c.check(); err != nil {
+		return nil, err
+	}
+
+	return &c, nil
 }

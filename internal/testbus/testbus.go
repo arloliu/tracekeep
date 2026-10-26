@@ -1,7 +1,7 @@
-// Package testbus runs an embedded nats-server with JetStream for tests.
+// Package testbus runs an embedded nats-server with JetStream for tests and for tracekeep dev.
 //
-// The server listens on localhost at a random port and keeps its file storage under the test's temporary directory,
-// so no test reaches a network or a shared server.
+// A test's server listens on localhost at a random port and keeps its file storage under the test's temporary directory,
+// so no test reaches a network or a shared server; Serve runs one with no test to own it.
 // The producer SDK never imports this package; its tests use producertest.
 package testbus
 
@@ -290,4 +290,33 @@ func (s *Server) Restore(t testing.TB, cfg server.StreamConfig, data []byte) {
 	if _, err := s.srv.GlobalAccount().RestoreStreamV2(&cfg, bytes.NewReader(data)); err != nil {
 		t.Fatalf("testbus: restore of %s: %v", cfg.Name, err)
 	}
+}
+
+// Serve runs an embedded nats-server with JetStream storing under dir, for tracekeep dev, which has no test to own it:
+// the caller shuts it down. It listens on localhost, on port when it is not zero and on a free port otherwise.
+//
+// Parameters:
+//   - dir: the JetStream storage directory, kept across runs
+//   - port: the client port, 0 for a free one
+//
+// Returns:
+//   - *server.Server: the running server; its ClientURL is the nats:// URL to connect to
+//   - error: the server could not start
+func Serve(dir string, port int) (*server.Server, error) {
+	if port == 0 {
+		port = -1
+	}
+	srv, err := server.NewServer(&server.Options{
+		Host: "127.0.0.1", Port: port, JetStream: true, StoreDir: dir, NoLog: true, NoSigs: true,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("testbus: new server: %w", err)
+	}
+	go srv.Start()
+	if !srv.ReadyForConnections(readyTimeout) {
+		srv.Shutdown()
+		return nil, fmt.Errorf("testbus: server not ready within %s", readyTimeout)
+	}
+
+	return srv, nil
 }

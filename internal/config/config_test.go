@@ -100,3 +100,17 @@ func TestValidation(t *testing.T) {
 		}
 	}
 }
+
+// dev's configuration is valid, its stores under the given directory.
+func TestDev(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	c, err := Dev(dir, "nats://127.0.0.1:4222", 2*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Catalog.DSN != filepath.Join(dir, "catalog.db") || c.Store.Dir != filepath.Join(dir, "packs") || c.Ingest.FlushInterval != 2*time.Second ||
+		c.Ingest.AckWait <= c.Ingest.FlushInterval || !c.Parking.Enabled || c.Retention != 30*24*time.Hour {
+		t.Errorf("dev configuration %+v", c)
+	}
+}
