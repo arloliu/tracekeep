@@ -276,11 +276,34 @@ func TestIngesterStopsOnAnotherIncarnation(t *testing.T) {
 	})
 }
 
-// stuck is a held message whose first in-progress blocks until released.
+// stuck is a held message whose first in-progress blocks until released; nakked closes at its first nak.
 type stuck struct {
 	msg
-	entered, release chan struct{}
-	once             sync.Once
+	entered, release, nakked chan struct{}
+	once, nakOnce            sync.Once
+}
+
+func (m *stuck) NakWithDelay(d time.Duration) error {
+	m.nakOnce.Do(func() { close(m.nakked) })
+
+	return m.msg.NakWithDelay(d)
+}
+
+// alerted is a log handler that closes its channel at the first alert.
+type alerted struct {
+	slog.Handler
+	once sync.Once
+	ch   chan struct{}
+}
+
+func (a *alerted) Enabled(context.Context, slog.Level) bool { return true }
+
+func (a *alerted) Handle(ctx context.Context, r slog.Record) error {
+	if r.Message == "ingest: alert" {
+		a.once.Do(func() { close(a.ch) })
+	}
+
+	return a.Handler.Handle(ctx, r)
 }
 
 func (m *stuck) InProgress() error {
@@ -301,23 +324,31 @@ func TestRunJoinsItsHeartbeat(t *testing.T) {
 			catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
 				r := newReplica(t, c)
 				r.g.Heartbeat = time.Millisecond
-				h := &stuck{entered: make(chan struct{}), release: make(chan struct{})}
+				h := &stuck{entered: make(chan struct{}), release: make(chan struct{}), nakked: make(chan struct{})}
+				alert := &alerted{Handler: slog.DiscardHandler, ch: make(chan struct{})}
+				r.g.Log = slog.New(alert)
 				d := &Delivery{Raw: Raw{Version: Version{Capture: tracepack.UUID{9}}, TS: now}}
 				r.g.Batcher.Add(Entry{D: d, Msg: h}, r.clk.now())
 				ctx, cancel := context.WithCancel(t.Context())
 				returned := make(chan error, 1)
 				go func() { returned <- r.g.Run(ctx) }()
 				<-h.entered // a beat is under way
+				// Run reaches its end while the beat is stuck: the final flush's nak, or the incarnation alert.
 				if exit == "cancelled" {
 					cancel()
-				} else if err := c.ObserveLastSeq(t.Context(), r.g.Executor.Incarnation, 1000); err != nil {
-					t.Fatal(err)
+					<-h.nakked // the held batch is not executable here, so its final flush naks it
+				} else {
+					if err := c.ObserveLastSeq(t.Context(), r.g.Executor.Incarnation, 1000); err != nil {
+						t.Fatal(err)
+					}
+					<-alert.ch
 				}
+				// All Run has left is to join its heartbeat: without the join it would return at once.
 				select {
 				case err := <-returned:
 					close(h.release)
 					t.Fatalf("%s: Run returned %v while its heartbeat was beating", exit, err)
-				case <-time.After(time.Second): // the negative case: Run waits for the beat
+				case <-time.After(100 * time.Millisecond):
 				}
 				close(h.release)
 				err := <-returned
