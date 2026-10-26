@@ -48,7 +48,7 @@ Contract changes go through proposals, which the subject [README.md](README.md) 
 ## 6.1 *Parking*
 
 **Parking.**
-A deferral that is indefinite by its nature (a `rejected` capture, a missing claim object, a `write-failure`, an unknown capture with an earlier message pending) would otherwise occupy the consumer's acknowledgement budget:
+A deferral that is indefinite by its nature (a `rejected` capture, a claim object still missing once its nak delay reached the last step, a `write-failure`, an unknown capture with an earlier message pending) would otherwise occupy the consumer's acknowledgement budget:
 the server keeps a nak-delayed message in the consumer's pending set,
 and when `max_ack_pending` is reached delivery stops for **every** capture,
 so nak-with-delay alone cannot keep one bad capture from stalling the rest.
@@ -175,7 +175,7 @@ whatever sequence it carries;
 this, not detection, is the fence against a stale acknowledgement removing new traffic.
 `ingest`, the parked consumer and the reconciler verify at start and with every lease renewal (§6.4)
 that `StreamInfo.Created` equals the row's and that `State.LastSeq` is not below the highest observed
-(a restore of an older snapshot keeps `Created` but rewinds sequences);
+(a snapshot restore comes back under a new `Created`, nats-server v2.15.1, and a restore of an older snapshot also rewinds sequences; either mismatch is a changed incarnation, T-40);
 on either mismatch they stop fetching and publishing with the alert `bus-incarnation-changed`,
 and the deliveries they hold are abandoned unacknowledged.
 **Replacing, restoring or rewinding a traffic or parking stream is a maintenance procedure, never a live operation**:
@@ -196,7 +196,7 @@ since its version is resolved.
 that writes every named unresolved version `terminated` with the declared loss and the audit row of the action, and, for `capture terminate`, a **termination order** (capture, the traffic stream's incarnation, cut-off = that stream's `LastSeq` read by a fresh `Info` inside the action, action id, state `active`/`spent`)
 that covers the capture's deferred originals that were never parked:
 a consumer that later receives a message of that capture **on that incarnation** with a stream sequence at or below the cut-off and an unresolved version inserts the version `terminated` under the order's action id, with its copy row, the declared loss and the audit row, and acknowledges it
-(a message whose version is already `staged` is acknowledged as already staged, the order never undoes a resolution);
+(a message whose version is already `staged`, or whose seq a registered pack holds, is acknowledged as already staged, the order never undoes a resolution or a registration, T-40);
 that insertion is a transaction that starts with the prologue of §6.3 and re-reads the version under the capture row,
 so a version staged meanwhile is acknowledged as already staged;
 a message above the cut-off, or on another incarnation, is new traffic (a partitioned producer, [STO §4], or a replaced stream) and is handled normally,

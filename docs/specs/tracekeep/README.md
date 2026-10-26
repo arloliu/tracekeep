@@ -22,6 +22,9 @@ The review reports, the owner's decision brief and the seed's last text (v21) ar
 | `operations.md` | living | draft | admin commands, runbook, tunables, metrics, health |
 | `glossary.md` | living | draft | terms and tunables, with their defining sections |
 | `tracekeep-decisions.md` | living | draft | rulings relied on, the owner's decisions T-1 onward, service defaults |
+| `proposals/p1-parked-replay.md` | finite | deferred | an early retry of a capture's parked messages, withdrawn by T-40 |
+
+The next free proposal ID is P2.
 
 ## Read order
 
