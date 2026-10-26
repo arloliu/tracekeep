@@ -50,15 +50,21 @@ func (r *Reconciler) Run(ctx context.Context) error {
 // then the orphan pass and the copy pass on both streams under the lease, which a keeper renews every third of LeaseTTL while they run.
 // While another process holds the lease it does nothing. A lease lost during the cycle cancels it, and the next cycle takes the lease again
 // under a new fence token; a worker that lost its lease does nothing further under the old one (compactor.md §8.1).
+// The metrics count a cycle that lost its lease as failed, and the lease as held only until it lapses.
 func (r *Reconciler) Step(ctx context.Context) error {
-	held := r.hold(ctx)
-	r.Metrics.Lease(held)
-	if !held {
+	asked := time.Now()
+	if !r.hold(ctx) {
+		r.Metrics.Lease(time.Time{})
 		return nil
 	}
+	r.Metrics.Lease(asked.Add(r.LeaseTTL))
 	started := time.Now()
 	err := r.underLease(ctx)
-	r.Metrics.Cycle("reconcile", time.Since(started), err == nil)
+	lost := r.lease == nil
+	if lost {
+		r.Metrics.Lease(time.Time{})
+	}
+	r.Metrics.Cycle("reconcile", time.Since(started), err == nil && !lost)
 
 	return err
 }
@@ -123,12 +129,14 @@ func (r *Reconciler) keep(ctx context.Context, cancel context.CancelCauseFunc, l
 			return
 		case <-t.C:
 		}
+		asked := time.Now()
 		err := r.Catalog.RenewLease(ctx, lease, r.LeaseTTL)
 		switch {
 		case errors.Is(err, catalog.ErrLeaseLost):
 			cancel(err)
 			return
 		case err == nil:
+			r.Metrics.Lease(asked.Add(r.LeaseTTL))
 			r.hook(hookRenewed)
 		case ctx.Err() == nil:
 			r.Log.Warn("compact: renew the compactor lease", "error", err)
@@ -159,6 +167,7 @@ func (r *Reconciler) release() {
 		r.Log.Warn("compact: release the compactor lease", "error", err)
 	}
 	r.lease = nil
+	r.Metrics.Lease(time.Time{})
 }
 
 // incarnations checks both streams against the incarnations the catalog records, each on a handle of its own (parking.md *incarnations*).
