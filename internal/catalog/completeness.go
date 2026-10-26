@@ -301,19 +301,29 @@ func asRuns(rs []Range) []Run {
 	return out
 }
 
-// coalesceRuns sorts runs and merges the overlapping and adjacent ones, keeping the outer endpoints' times.
+// coalesceRuns sorts runs and merges the overlapping and adjacent ones, keeping the outer endpoints' times;
+// where two runs end on one seq, a time either knows is kept.
 func coalesceRuns(rs []Run) []Run {
 	rs = slices.Clone(rs)
 	slices.SortFunc(rs, func(a, b Run) int { return cmp.Compare(a.SeqFrom, b.SeqFrom) })
 	var out []Run
 	for _, r := range rs {
-		if n := len(out); n > 0 && r.SeqFrom <= out[n-1].SeqTo+1 {
-			if r.SeqTo > out[n-1].SeqTo {
-				out[n-1].SeqTo, out[n-1].TSTo = r.SeqTo, r.TSTo
-			}
+		n := len(out)
+		if n == 0 || r.SeqFrom > out[n-1].SeqTo+1 {
+			out = append(out, r)
 			continue
 		}
-		out = append(out, r)
+		last := &out[n-1]
+		if r.SeqFrom == last.SeqFrom && last.TSFrom == nil {
+			last.TSFrom = r.TSFrom
+		}
+		switch {
+		case r.SeqTo > last.SeqTo:
+			last.SeqTo, last.TSTo = r.SeqTo, r.TSTo
+		case r.SeqTo == last.SeqTo && last.TSTo == nil:
+			last.TSTo = r.TSTo
+		default:
+		}
 	}
 
 	return out
@@ -333,10 +343,18 @@ func subtract(a []Run, b []Range) []Run {
 					continue
 				}
 				if s.SeqFrom > p.SeqFrom {
-					next = append(next, Run{SeqFrom: p.SeqFrom, SeqTo: s.SeqFrom - 1, TSFrom: p.TSFrom})
+					left := Run{SeqFrom: p.SeqFrom, SeqTo: s.SeqFrom - 1, TSFrom: p.TSFrom}
+					if left.SeqTo == left.SeqFrom { // one seq: its end is the record its start names
+						left.TSTo = p.TSFrom
+					}
+					next = append(next, left)
 				}
 				if s.SeqTo < p.SeqTo {
-					next = append(next, Run{SeqFrom: s.SeqTo + 1, SeqTo: p.SeqTo, TSTo: p.TSTo})
+					right := Run{SeqFrom: s.SeqTo + 1, SeqTo: p.SeqTo, TSTo: p.TSTo}
+					if right.SeqFrom == right.SeqTo {
+						right.TSFrom = p.TSTo
+					}
+					next = append(next, right)
 				}
 			}
 			pieces = next

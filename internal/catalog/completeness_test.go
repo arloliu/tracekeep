@@ -231,3 +231,28 @@ func TestCompletenessWithoutAFrontier(t *testing.T) {
 		}
 	})
 }
+
+// A time the catalog holds is kept wherever it applies: a gap beside a seq both lost without a time and retained with one
+// is timed by the retained record; an evicted fragment of one seq, cut on its other side, keeps that record's time.
+func TestCompletenessKnownTimesKept(t *testing.T) {
+	t.Parallel()
+	engines(t, func(t *testing.T, c *Catalog) {
+		ctx := t.Context()
+		capture := admitted(t, c)
+		p := segment(t, capture, 5, 0, 0)
+		from, to := uint64(1), uint64(3)
+		p.Losses = []Loss{{SeqFrom: &from, SeqTo: &to}} // 1-3 declared lost, no time
+		register(t, c, p, Registration{Evidence: &Evidence{Deliveries: []Identity{*identity(capture, 0, 1)}}})
+		pack(t, c, capture, [2]uint64{3, 3}, [2]uint64{5, 5}, [2]uint64{21, 29})
+		if _, err := c.write.ExecContext(ctx, `INSERT INTO evicted_ranges (capture_id, hour, seq_from, seq_to, ts_from, ts_to) VALUES (?, 2, 20, 30, 20, 30)`, capture[:]); err != nil {
+			t.Fatal(err)
+		}
+		got := completeness(t, c, capture)
+		if len(got.Gaps) == 0 || got.Gaps[0].From != 4 || got.Gaps[0].Start == nil || *got.Gaps[0].Start != 3 {
+			t.Errorf("gaps %+v, want 4 after the retained record at 3", got.Gaps)
+		}
+		if len(got.Evicted) != 2 || got.Evicted[0].TSTo == nil || *got.Evicted[0].TSTo != 20 || got.Evicted[1].TSFrom == nil || *got.Evicted[1].TSFrom != 30 {
+			t.Errorf("evicted %+v, want 20 and 30, each its own record's time at both ends", got.Evicted)
+		}
+	})
+}
