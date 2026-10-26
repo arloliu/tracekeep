@@ -148,10 +148,10 @@ The `object list --unattributed` and `--survivors` commands report data that ret
 
 | Step | Scope | State |
 |---|---|---|
-| 1 | `internal/config`: the struct, defaults (T-12, T-25 and the two above), environment overrides, secrets by `ref`, validation; `docs/guides/configuration.md` | pending |
-| 2 | the built-in processing configuration named for its classifier, and the refusal of an unversioned build outside `dev` | pending |
-| 3 | the simulator back in the service module (T-38): its `go.mod` removed, its tests run with the service's | pending |
-| 4 | the roles: `migrate` (the catalog's migrations, the bus's streams and bucket, both incarnations), `ingest` (the traffic and parked consumers sharing the executor, flusher and coordinator, `parking.enabled` read at start), `compact` (the reconciler under the lease, released on stop), `all`, and `admin` over `internal/admin`; each refuses to start against a stream that is not its incarnation or that allows direct gets | pending |
-| 5 | `parking.enabled` turned off on a running service: waiting and evicted-hour copies stay listable and terminable (the gate's case the parking phase left here) | pending |
-| 6 | `tracekeep dev`: an embedded bus, an `fs` store, SQLite, `ingest` and `compact`, and the loopback simulator, in one process | pending |
-| 7 | the gate's loopback capture: `dev` run by a test, the simulator's capture registered and read back with the tracepack reader, and once by hand with the tracepack CLI | pending |
+| 1 | `internal/config`: the struct, defaults (T-12, T-25 and the two above), environment overrides, secrets by `ref`, validation; `docs/guides/configuration.md` | done (bc52061) |
+| 2 | the built-in processing configuration named for its classifier, and the refusal of an unversioned build outside `dev` | done (bcb2d07) |
+| 3 | the simulator back in the service module (T-38): its `go.mod` removed, its tests run with the service's | done (f7b67a5) |
+| 4 | the roles: `migrate` (the catalog's migrations, the bus's streams and bucket, both incarnations), `ingest` (the traffic and parked consumers sharing the executor, flusher and coordinator, `parking.enabled` read at start), `compact` (the reconciler under the lease, released on stop), `all`, and `admin` over `internal/admin`; each refuses to start against a stream that is not its incarnation or that allows direct gets | done (3375194) |
+| 5 | `parking.enabled` turned off on a running service: waiting and evicted-hour copies stay listable and terminable (the gate's case the parking phase left here) | done (0a1758f) |
+| 6 | `tracekeep dev`: an embedded bus, an `fs` store, SQLite, `ingest` and `compact`, and the loopback simulator, in one process | done (c3eb1c0, f2cb656) |
+| 7 | the gate's loopback capture: `dev` run by a test, the simulator's capture registered and read back with the tracepack reader, and once by hand with the tracepack CLI | done (927c9fd) |
