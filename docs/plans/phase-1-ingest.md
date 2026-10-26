@@ -1,6 +1,6 @@
 # Phase 1 — ingest
 
-Status: active (2026-10-27) — phase 1.7 in progress
+Status: active (2026-10-27) — phase 1.8 in progress
 
 Milestone 1 of the [roadmap](../ROADMAP.md):
 the `ingest` role with its stores, catalog and reconciler, and `tracekeep dev` as the single-process loop.
@@ -25,8 +25,8 @@ This plan only orders the work.
 | 1.4 — parking | parking, resolution, incarnations, termination orders and their re-check in `Admit`, `Reject` and `RegisterPack`, the parking transactions, `bus adopt-stream` and the termination commands (`parking.md`, `operations.md` §10.4) | done (#14) |
 | 1.5 — reconciler | full verification, quarantine and adoption under the compactor lease (`storage.md` §5.4); a receipt's claim object key is the bucket-qualified `Tpk-Payload-Ref`, while the claim bucket is read by the bare message id | done (#16) |
 | 1.6 — dev and roles | `tracekeep dev` and the role subcommands with their configuration (T-22), each processing configuration named for its classifier's implementation and version, the simulator in the service module, the gate's loopback capture | done (#17) |
-| 1.7 — completeness and gate | catalog completeness (`catalog.md` §7.3) as a read, and the gate and checklist cases the phases before left open | in-progress |
-| 1.8 — metrics | every role's metrics of `operations.md` §10.4 with their endpoint; the gate names none, so they follow it | pending |
+| 1.7 — completeness and gate | catalog completeness (`catalog.md` §7.3) as a read, and the gate and checklist cases the phases before left open | done (#18) |
+| 1.8 — metrics | every role's metrics of `operations.md` §10.4 with their endpoint; the gate names none, so they follow it | in-progress |
 
 Only the phase under way is detailed; the others are detailed when they start.
 
@@ -178,3 +178,23 @@ every catalog schedule runs on both engines and every concurrent one is barrier-
 | 2 | ingest cases: a duplicate `start` after a crash before the put staged with its seq in the segment; an initial claim-check `start` at `max_payload` 4140 through ingest; a second claim digest at a staged seq deferred as a claim conflict, the object being named for the seq, while the first keeps its receipt; two inline versions of one seq parked inside one duplicate window; a later copy of a terminated version acknowledged with its own audit row; a terminated `pending` `start` followed by a different-version `start` that admits | done (7146720, 37d0d7c, d0a1569) |
 | 3 | stream cases: a stale handler's late nak racing the acknowledgement of the same original; a stream deleted and recreated while a handler holds an old delivery, its late acknowledgement and nak removing nothing and a reused sequence inheriting nothing at its disposition; the parking stream's stale handler after a restore | done (b43cf0b) |
 | 4 | the rest: a `start` with no descriptor header; a termination committed immediately after parking's step (1), held at a barrier; `rejected → open` with a parked copy, then staged, against a consumer whose accepted descriptors the test widens; the traffic and parked consumers processing at once | done (391910e) |
+
+## Phase 1.8 — metrics
+
+Work on the branch `feat/metrics/roles`, one commit per step, test first;
+the branch merges by pull request once the whole phase passes an external post-implementation review, and ends phase 1.
+`operations.md` §10.4's metrics are implemented where a phase 1 role already produces their data;
+every other metric lands with the code that emits it (merge, close, deletion and retention in phase 2, the api's with the api, masking's in phase 3),
+and `tracekeep status`, an admin command over the reads the machine API brings, is phase 2's.
+`internal/metrics` owns the registry, the listener (`/metrics`, `/healthz`, `/readyz`) and one collector struct per role;
+a component records through a pointer to its struct, nil recording nothing, so the tests and `dev` need no metrics;
+`tool_id` is the only bounded label beside the reasons and outcomes, and `capture_id` is never one.
+The service requires `github.com/prometheus/client_golang` v1.25.0; the SDK keeps its own `Metrics` interface and no Prometheus dependency.
+
+| Step | Scope | State |
+|---|---|---|
+| 1 | the facility: the registry, the listener on `metrics.listen` (default `:9090`, empty for none), `/healthz`, and `/readyz` answering every readiness check a role registers; the configuration key in `docs/guides/configuration.md` | pending |
+| 2 | catalog: both pools' usage, transaction retries by `busy` and `deadlock`, the embedded migrations' latest version; readiness by a ping | pending |
+| 3 | ingest: `messages_total{disposition}`, `deferred_messages{reason}`, `deferred_oldest_age_seconds{reason}`, `parked_messages{reason}`, `segments_total{tool_id}`, `segment_bytes_total{tool_id}`, `put_seconds`, `registration_seconds`, `in_progress_acks_total`, `redelivered_total`, `conflicts_total{tool_id}`, `declared_losses_total{tool_id}`, `consumer_ack_pending`, `stream_backlog_messages`, `stream_backlog_bytes`; and on a periodic pass over open captures, `captures_open{tool_id}`, `open_gaps{tool_id}`, `captures_with_unknown_tail{tool_id}`, `gap_observations_total{tool_id}`; readiness once both consumers joined | pending |
+| 4 | compact: `cycle_seconds{task=reconcile}`, `last_success_timestamp{task=reconcile}`, `lease_held`, `orphans_adopted_total`, `orphans_quarantined_total`, `tombstones_total`; readiness while the lease is held or a standby waits for it | pending |
+| 5 | the roles wired: each serves the listener and registers its collectors and readiness; `dev` and `all` serve one listener for both roles | pending |
