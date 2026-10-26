@@ -53,6 +53,24 @@ const (
 	ActPark
 )
 
+// String names the action for the messages_total metric's disposition.
+func (a Action) String() string {
+	switch a {
+	case ActBatch:
+		return "batch"
+	case ActAck:
+		return "ack"
+	case ActTerminate:
+		return "terminate"
+	case ActNak:
+		return "nak"
+	case ActPark:
+		return "park"
+	default:
+		return "unknown"
+	}
+}
+
 // Reasons name a disposition for its metric, its alert and the nak delay.
 const (
 	ReasonMalformed       = "malformed"

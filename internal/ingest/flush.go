@@ -13,6 +13,7 @@ import (
 
 	"github.com/arloliu/go-secs/tracepack"
 	"github.com/arloliu/tracekeep/internal/catalog"
+	"github.com/arloliu/tracekeep/internal/metrics"
 	"github.com/arloliu/tracekeep/internal/store"
 )
 
@@ -40,6 +41,8 @@ type Flusher struct {
 	Writer string
 	// Now returns the time a segment's writer_start is stamped with.
 	Now func() time.Time
+	// Metrics records the put and registration of each segment; nil records none.
+	Metrics *metrics.Ingest
 
 	// hooks are the package's test seams, each between two side effects of a flush; an error is a crash there.
 	hooks [numFlushHooks]func() error
@@ -237,9 +240,11 @@ func (f *Flusher) register(ctx context.Context, b *Batch, capture *catalog.Captu
 	if _, err := w.file.Seek(0, io.SeekStart); err != nil {
 		return 0, err
 	}
+	started := time.Now()
 	if err := f.Store.Put(ctx, key, w.file, w.size); err != nil {
 		return 0, err
 	}
+	f.Metrics.Put(time.Since(started))
 	if err := f.hook(hookAfterPut); err != nil {
 		return 0, err
 	}
@@ -247,12 +252,14 @@ func (f *Flusher) register(ctx context.Context, b *Batch, capture *catalog.Captu
 		ID: seg.id, Capture: b.Key.Capture, ToolID: capture.ToolID, Hour: b.Key.Hour, Role: seg.role, Key: key, Size: w.size,
 		SeqStart: first, FormatMinor: int(w.minor), Ranges: ranges(seg.entries), Stop: hasStop(seg.entries), Conflicts: seg.others,
 	}
+	started = time.Now()
 	outcome, err := f.Catalog.RegisterPack(ctx, p, catalog.Registration{Evidence: evidence(seg.copies), HorizonHour: horizon})
 	if err != nil {
 		return 0, err
 	}
 	switch outcome {
 	case catalog.Registered:
+		f.Metrics.Registered(time.Since(started), capture.ToolID, w.size, seg.role == catalog.RoleConflict)
 		return outcome, nil
 	case catalog.BeyondHorizon, catalog.LostToTermination:
 		// The key is tombstoned; the object goes, and so would a put delayed across eviction.

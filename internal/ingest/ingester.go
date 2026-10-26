@@ -14,6 +14,7 @@ import (
 	"github.com/arloliu/go-secs/tracepack"
 	"github.com/arloliu/tracekeep/internal/bus"
 	"github.com/arloliu/tracekeep/internal/catalog"
+	"github.com/arloliu/tracekeep/internal/metrics"
 	"github.com/arloliu/tracekeep/producer/busconfig"
 )
 
@@ -72,6 +73,8 @@ type Ingester struct {
 	Heartbeat time.Duration
 	// Now is the clock the batches and the lease are judged by.
 	Now func() time.Time
+	// Metrics records the role's metrics; nil records none.
+	Metrics *metrics.Ingest
 
 	// writeFailures counts, by batch, the flushes the Writer refused: the same batch refused three times is deterministic.
 	writeFailures map[string]int
@@ -253,6 +256,7 @@ func (g *Ingester) beat() {
 	for _, m := range msgs {
 		_ = m.InProgress()
 	}
+	g.Metrics.InProgress(len(msgs))
 }
 
 // renew checks the stream against its incarnation, then renews the membership, or registers again once it lapsed.
@@ -358,6 +362,12 @@ func (g *Ingester) act(ctx context.Context, e Entry, dec Decision, delivered uin
 	if dec.Alert {
 		g.Log.Warn("ingest: alert", "reason", dec.Reason, "msg_id", e.D.Msg.Env.MsgID)
 	}
+	g.Metrics.Disposed(dec.Action.String(), delivered > 1)
+	if dec.Action == ActNak {
+		g.Metrics.Deferred(e.D.Msg.Env.MsgID, dec.Reason)
+	} else {
+		g.Metrics.Settled(e.D.Msg.Env.MsgID)
+	}
 	switch dec.Action {
 	case ActBatch:
 		g.mu.Lock()
@@ -381,6 +391,9 @@ func (g *Ingester) act(ctx context.Context, e Entry, dec Decision, delivered uin
 			}
 		}
 		_ = e.Msg.Term()
+		if dec.Reason == ReasonBeyondRetention {
+			g.Metrics.Lost(e.D.ToolID)
+		}
 	case ActNak:
 		_ = e.Msg.NakWithDelay(g.delay(delivered))
 	default:
@@ -411,6 +424,7 @@ func (g *Ingester) evict(ctx context.Context, e Entry) {
 // Without parking, and for a copy already parked, the deferral is nak'd like any other.
 func (g *Ingester) park(ctx context.Context, e Entry, reason string, delivered uint64) {
 	if !g.Park || e.D.Msg.Parked {
+		g.Metrics.Deferred(e.D.Msg.Env.MsgID, reason)
 		_ = e.Msg.NakWithDelay(g.delay(delivered))
 		return
 	}

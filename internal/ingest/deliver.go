@@ -56,6 +56,8 @@ type Delivery struct {
 	ConfigID int64
 	// Claim is the claim object of a claim-check record once fetched.
 	Claim []byte
+	// ToolID is the capture's tool once the capture is looked up and admitted, for the metrics labelled by tool.
+	ToolID string
 }
 
 // Config is a processing configuration this replica executes (rollouts.md §6.4):
@@ -215,7 +217,7 @@ func (x *Executor) lookupCapture(ctx context.Context, d *Delivery) error {
 	case c.State == catalog.StateRejected:
 		d.Facts.Capture = CaptureRejected
 	default:
-		d.Facts.Capture, d.ConfigID = CaptureAdmitted, c.ConfigID
+		d.Facts.Capture, d.ConfigID, d.ToolID = CaptureAdmitted, c.ConfigID, c.ToolID
 	}
 
 	return nil
