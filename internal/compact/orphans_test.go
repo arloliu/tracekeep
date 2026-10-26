@@ -2,6 +2,7 @@ package compact
 
 import (
 	"bytes"
+	"context"
 	"crypto/rand"
 	"errors"
 	"log/slog"
@@ -441,3 +442,44 @@ func TestTombstonedKeyKeptFromAStaleHolder(t *testing.T) {
 		}
 	})
 }
+
+// A read the store fails is retried by the next pass, never taken for a damaged object.
+func TestOrphanReadFailureRetried(t *testing.T) {
+	t.Parallel()
+	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
+		f := newFixture(t, c)
+		b := segment(t, f.admit(t), []uint64{1}, false)
+		f.put(t, b.key, b.data)
+		f.pass(t)
+		f.r.Store = &failingReads{ObjectStore: f.s, err: errors.New("connection reset")}
+		if rep := f.pass(t); len(rep.Quarantined)+len(rep.Adopted) != 0 {
+			t.Fatalf("pass with failing reads = %+v, want nothing settled", rep)
+		}
+		f.r.Store = f.s
+		if rep := f.pass(t); !slices.Equal(rep.Adopted, []string{b.key}) {
+			t.Errorf("the next pass = %+v, want the key adopted", rep)
+		}
+	})
+}
+
+// failingReads is a store whose objects' reads fail with err.
+type failingReads struct {
+	store.ObjectStore
+	err error
+}
+
+func (s *failingReads) Open(ctx context.Context, key string) (store.Object, error) {
+	o, err := s.ObjectStore.Open(ctx, key)
+	if err != nil {
+		return nil, err
+	}
+
+	return failingObject{Object: o, err: s.err}, nil
+}
+
+type failingObject struct {
+	store.Object
+	err error
+}
+
+func (o failingObject) ReadAt([]byte, int64) (int, error) { return 0, o.err }
