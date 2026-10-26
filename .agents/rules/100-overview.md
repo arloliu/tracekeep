@@ -34,7 +34,8 @@ a header or convention both sides need goes into the SDK, never into the service
 | `cmd/tracekeep-sim` | the reference producer on the SDK: a go-secs loopback pair with the observers, or replay of tracepack packs; a module of its own until the SDK's first tag (T-38) |
 | `internal/testbus` | embedded nats-server with JetStream for tests and `dev`; service module only, never the SDK |
 | `internal/bus` | JetStream pull consumers, claim-check fetch, message disposition |
-| `internal/ingest` | per-scope batches, sort, dedupe, conflicts, mask, write, register, acknowledge |
+| `internal/ingest` | per-scope batches, sort, dedupe, conflicts, mask, write, register, acknowledge; the parking coordinator and the parked consumer |
+| `internal/admin` | the operator operations the admin commands run: parked list and terminate, capture terminate and show, bus adopt-stream |
 | `internal/compact` | merge, close, deletion, retention, reconciler, leases |
 | `internal/catalog` | sqlx repository, dialects, statements, compare-and-set helpers, counters |
 | `internal/store` | `ObjectStore` (s3, fs, mem), the `ReaderAt` adapter, the conformance suite |
