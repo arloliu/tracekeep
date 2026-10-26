@@ -83,6 +83,20 @@ func resolveIn(ctx context.Context, q sqlx.QueryerContext, v *VersionKey, incarn
 		v.Capture[:], incarnation, streamSeq)
 	switch {
 	case err == nil:
+		// An order never undoes a registration: a seq a registered pack holds is staged, even with no parked row
+		// (an inline record whose acknowledgement was lost). An evicted hour's seqs are no longer held, so an order still covers them.
+		// shortcut: pack_ranges records seqs, not versions, so another version of a held seq also reads staged;
+		// accepted since the operator ended the capture; upgrade to a per-version receipt if that loss ever matters.
+		var held int
+		err := sqlx.GetContext(ctx, q, &held, `SELECT COUNT(*) FROM pack_ranges WHERE capture_id = ? AND seq_from <= ? AND seq_to >= ?`,
+			v.Capture[:], int64(v.Seq), int64(v.Seq))
+		switch {
+		case err != nil:
+			return 0, "", fmt.Errorf("catalog: resolve %s.%d: %w", v.Capture, v.Seq, err)
+		case held > 0:
+			return ResolvedStaged, "", nil
+		}
+
 		return CoveredByOrder, action, nil
 	case errors.Is(err, sql.ErrNoRows):
 		return Unresolved, "", nil

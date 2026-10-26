@@ -64,6 +64,10 @@ func (c *Catalog) BeginParking(ctx context.Context, d *Identity, reason, objectK
 		}
 		state, err := readVersionState(ctx, tx, &d.Version)
 		switch {
+		case errors.Is(err, ErrUnknownVersion) && r == ResolvedStaged:
+			// Covered by an order but held by a registered pack: staged with no parked row, so nothing is written.
+			b = Begun{State: VersionStaged}
+			return errRollback
 		case errors.Is(err, ErrUnknownVersion) && isAdmitted(row.State) && d.Hour < horizonHour:
 			// Retention may already have evicted the hour (§8.4), so the version is never parked.
 			b = Begun{BeyondRetention: true}

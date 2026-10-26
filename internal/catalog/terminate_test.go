@@ -202,6 +202,54 @@ func TestApplyOrderInAnEvictedHour(t *testing.T) {
 	})
 }
 
+// An order never undoes a registration: a covered message whose seq a registered pack holds,
+// an inline record staged without a parked row whose acknowledgement was lost, resolves as staged
+// on every path that re-checks the orders, and nothing is terminated, recorded or audited.
+func TestOrderSparesASeqAPackHolds(t *testing.T) {
+	t.Parallel()
+	engines(t, func(t *testing.T, c *Catalog) {
+		ctx := t.Context()
+		capture := admitted(t, c)
+		first := &Evidence{Deliveries: []Identity{*identity(capture, 3, 3)}} // the delivery whose acknowledgement was lost
+		if out := register(t, c, segment(t, capture, 5, 3, 3), Registration{Evidence: first}); out != Registered {
+			t.Fatalf("RegisterPack = %v", out)
+		}
+		order(t, c, capture, "a1")
+		d := identity(capture, 3, 10)
+
+		if r, err := c.Resolve(ctx, &d.Version, d.Incarnation, d.StreamSeq); err != nil || r != ResolvedStaged {
+			t.Errorf("Resolve = %v, %v; want staged", r, err)
+		}
+		if r, err := c.ApplyOrder(ctx, d); err != nil || r != ResolvedStaged {
+			t.Errorf("ApplyOrder = %v, %v; want staged", r, err)
+		}
+		if b, err := c.BeginParking(ctx, d, "write-failure", "", 0); err != nil || b.State != VersionStaged {
+			t.Errorf("BeginParking = %+v, %v; want staged", b, err)
+		}
+		ev := &Evidence{Deliveries: []Identity{*d}}
+		if out := register(t, c, segment(t, capture, 5, 3, 3), Registration{Evidence: ev}); out != Registered {
+			t.Errorf("RegisterPack with the delivery = %v, want registered", out)
+		}
+		if n := count(t, c, `SELECT COUNT(*) FROM parked WHERE capture_id = ?`, capture[:]); n != 0 {
+			t.Errorf("%d parked rows, want none", n)
+		}
+		if n := count(t, c, `SELECT COUNT(*) FROM parked_copies WHERE capture_id = ?`, capture[:]); n != 0 {
+			t.Errorf("%d copy rows, want none", n)
+		}
+		if n := count(t, c, `SELECT COUNT(*) FROM audit_log WHERE action_id = 'a1'`); n != 0 {
+			t.Errorf("%d audit rows of the order, want none", n)
+		}
+		if got := events(t, c); slices.Contains(got, "terminated@5") {
+			t.Errorf("events = %v, want no termination", got)
+		}
+
+		// A seq no pack holds is still terminated.
+		if r, err := c.ApplyOrder(ctx, identity(capture, 4, 9)); err != nil || r != ResolvedTerminated {
+			t.Errorf("ApplyOrder of a seq no pack holds = %v, %v; want terminated", r, err)
+		}
+	})
+}
+
 // A registration with evidence aborts and tombstones its key when a version of the batch is terminated
 // or a message of it is covered by an order (T-32), and stages the batch's parked versions.
 func TestRegisterPackRechecksTermination(t *testing.T) {
