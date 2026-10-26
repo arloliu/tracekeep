@@ -232,7 +232,8 @@ and the caller acts on it: the merge and the close at the next cycle (§8.1, §8
 - **Migrations**: Atlas versioned.
   One `schema.hcl`;
   `atlas migrate diff` produces `migrations/mariadb/` and `migrations/sqlite/` with their `atlas.sum`;
-  `atlas migrate lint` in CI.
+  CI runs `atlas migrate validate` and checks that `atlas migrate diff` finds nothing to add, on both engines
+  (`atlas migrate lint` is available only to Atlas Pro users since Atlas v0.38).
   The **first release applies them with the Atlas CLI** (`atlas migrate apply`: a Job or init container on Kubernetes, the binary shipped in the standalone package),
   because the embedded Go library path is unverified;
   `tracekeep migrate` wraps that CLI and is replaced by the library once verified.
