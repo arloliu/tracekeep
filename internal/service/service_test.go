@@ -12,6 +12,8 @@ import (
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 
+	"github.com/arloliu/go-secs/tracepack"
+
 	"github.com/arloliu/tracekeep/internal/bus"
 	"github.com/arloliu/tracekeep/internal/catalog"
 	"github.com/arloliu/tracekeep/internal/catalog/catalogtest"
@@ -143,6 +145,16 @@ func TestIngestJoinsBothConsumers(t *testing.T) {
 		if err := run(stopped, e, gs); err != nil {
 			t.Errorf("run stopped = %v", err)
 		}
+		// Both memberships left: a configuration neither executes is bindable, which a live member lacking it would prevent.
+		newer, err := c.ActivateConfig(ctx, []byte(`{"classifier":"newer","max_frame_len":0}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		res, err := c.Admit(ctx, &catalog.Identity{Version: catalog.VersionKey{Capture: tracepack.UUID{5}}, Incarnation: 1, StreamSeq: 1},
+			&catalog.Descriptor{Bytes: []byte("d"), ToolID: "T1", RecorderInstanceID: tracepack.UUID{6}, Device: "eqp", OriginNS: 1})
+		if err != nil || res.ConfigID != newer {
+			t.Errorf("Admit after the stop = %+v, %v; want the newer configuration bound, no member left", res, err)
+		}
 	})
 }
 
@@ -183,8 +195,8 @@ func setDirect(t *testing.T, js jetstream.JetStream, name string, on bool) {
 	}
 }
 
-// One role's end ends all: a stream replaced under a running all stops ingest and compact, and all returns the cause,
-// the stream missing or another incarnation, depending on when a role first looks.
+// A stream replaced under all ends it with an error rather than leaving a role running; which role meets the change first,
+// and whether at its start, is not controlled here: TestTogetherCancelsTheOthers is the schedule for the cancellation.
 func TestAllStopsWithOneRole(t *testing.T) {
 	t.Parallel()
 	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
@@ -206,4 +218,32 @@ func TestAllStopsWithOneRole(t *testing.T) {
 			t.Error("All = nil after its traffic stream was replaced, want the role's error")
 		}
 	})
+}
+
+// together cancels every other role when one fails, and returns that role's error (barrier-controlled):
+// both roles are running before one fails, and the other ends only by its context's cancellation.
+func TestTogetherCancelsTheOthers(t *testing.T) {
+	t.Parallel()
+	errFail := errors.New("role failed")
+	running := make(chan struct{})
+	cancelled := make(chan struct{})
+	err := together(t.Context(),
+		func(ctx context.Context) error {
+			<-running // the other role is running
+			return errFail
+		},
+		func(ctx context.Context) error {
+			close(running)
+			<-ctx.Done()
+			close(cancelled)
+			return ctx.Err()
+		})
+	if !errors.Is(err, errFail) {
+		t.Errorf("together = %v, want the failed role's error", err)
+	}
+	select {
+	case <-cancelled:
+	default:
+		t.Error("the running role was not cancelled")
+	}
 }
