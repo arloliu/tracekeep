@@ -92,6 +92,10 @@ table "captures" {
   index "captures_device" {
     columns = [column.tool_id, column.device, column.origin_ns]
   }
+  # The captures bound to a configuration, which a retirement reads under the membership sentinel.
+  index "captures_config" {
+    columns = [column.config_id]
+  }
   check "captures_state" {
     expr = "state IN ('pending', 'open', 'stopped', 'closed', 'rejected')"
   }
@@ -265,7 +269,7 @@ table "evicted_ranges" {
   }
 }
 
-# A pack's coverage entries: its declared losses.
+# A pack's coverage entries: its declared losses, each field as the entry has it (a carried entry may lack any).
 table "pack_losses" {
   schema = schema.main
   column "pack_id" {
@@ -276,9 +280,12 @@ table "pack_losses" {
   }
   column "seq_from" {
     type = bigint
+    null = true
   }
+  # Absent when the upper bound of the lost seqs is unknown.
   column "seq_to" {
     type = bigint
+    null = true
   }
   column "ts_from" {
     type = bigint
@@ -287,9 +294,6 @@ table "pack_losses" {
   column "ts_to" {
     type = bigint
     null = true
-  }
-  column "reason" {
-    type = varchar(64)
   }
   primary_key {
     columns = [column.pack_id, column.ord]
@@ -347,7 +351,7 @@ table "conflicts" {
     type = varchar(16)
   }
   primary_key {
-    columns = [column.capture_id, column.seq_from, column.pack_id, column.other_pack_id]
+    columns = [column.capture_id, column.seq_from, column.seq_to, column.pack_id, column.other_pack_id]
   }
   check "conflicts_state" {
     expr = "state IN ('suspect', 'confirmed')"
@@ -564,7 +568,8 @@ table "scope_events" {
   }
 }
 
-# Named counters; 'membership' holds no value, its row lock serializes admission with membership changes.
+# Named counters: 'scope_events' allocates event seqs;
+# 'membership' counts registrations, which number the memberships, and its row lock serializes admission with membership changes.
 table "counters" {
   schema = schema.main
   column "name" {

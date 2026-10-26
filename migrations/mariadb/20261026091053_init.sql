@@ -39,6 +39,7 @@ CREATE TABLE `captures` (
   `last_registered_at` bigint NULL,
   `created_at` bigint NOT NULL,
   PRIMARY KEY (`capture_id`),
+  INDEX `captures_config` (`config_id`),
   INDEX `captures_device` (`tool_id`, `device`, `origin_ns`),
   INDEX `captures_successor` (`tool_id`, `recorder_instance_id`, `origin_ns`),
   CONSTRAINT `captures_state` CHECK (`state` in ('pending','open','stopped','closed','rejected'))
@@ -93,7 +94,7 @@ CREATE TABLE `conflicts` (
   `pack_id` binary(16) NOT NULL,
   `other_pack_id` binary(16) NOT NULL,
   `state` varchar(16) NOT NULL,
-  PRIMARY KEY (`capture_id`, `seq_from`, `pack_id`, `other_pack_id`),
+  PRIMARY KEY (`capture_id`, `seq_from`, `seq_to`, `pack_id`, `other_pack_id`),
   CONSTRAINT `conflicts_state` CHECK (`state` in ('suspect','confirmed'))
 ) CHARSET utf8mb4 COLLATE utf8mb4_bin;
 -- Create "consumers" table
@@ -191,11 +192,10 @@ CREATE TABLE `packs` (
 CREATE TABLE `pack_losses` (
   `pack_id` binary(16) NOT NULL,
   `ord` int NOT NULL,
-  `seq_from` bigint NOT NULL,
-  `seq_to` bigint NOT NULL,
+  `seq_from` bigint NULL,
+  `seq_to` bigint NULL,
   `ts_from` bigint NULL,
   `ts_to` bigint NULL,
-  `reason` varchar(64) NOT NULL,
   PRIMARY KEY (`pack_id`, `ord`)
 ) CHARSET utf8mb4 COLLATE utf8mb4_bin;
 -- Create "pack_ranges" table

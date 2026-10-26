@@ -239,6 +239,35 @@ func TestWaitersOnAnExistingCaptureDoNotDeadlock(t *testing.T) {
 	})
 }
 
+// A registration that finds its hour past the horizon tombstones the key under the capture row,
+// so a registration of the same pack waiting on that row finds the tombstone and registers nothing.
+func TestHorizonTombstoneHoldsTheCaptureRow(t *testing.T) {
+	t.Parallel()
+	engines(t, func(t *testing.T, c *Catalog) {
+		capture := admitted(t, c)
+		p := segment(t, capture, 1, 0, 9)
+		held, release := holdAt(c, hookLocked) // before it decides
+		var out1, out2 PackOutcome
+		var err1, err2 error
+		a := run(func() {
+			out1, err1 = c.RegisterPack(t.Context(), p, Registration{Evidence: &Evidence{}, HorizonHour: 2})
+		})
+		<-held
+		waits := c.write.Stats().WaitCount
+		b := run(func() { out2, err2 = c.RegisterPack(t.Context(), p, Registration{Evidence: &Evidence{}}) })
+		waitBlocked(t, c, waits, "INSERT INTO captures", 1)
+		close(release)
+		<-a
+		<-b
+		if err1 != nil || err2 != nil || out1 != BeyondHorizon || out2 != Tombstoned {
+			t.Fatalf("registrations = %v %v, %v %v; want beyond the horizon, then tombstoned", out1, err1, out2, err2)
+		}
+		if n := count(t, c, `SELECT COUNT(*) FROM packs`); n != 0 {
+			t.Errorf("%d packs registered under a tombstoned key", n)
+		}
+	})
+}
+
 // admittedAnother admits a second capture under the gate admitted already set up.
 func admittedAnother(t *testing.T, c *Catalog) tracepack.UUID {
 	t.Helper()

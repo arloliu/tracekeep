@@ -22,6 +22,8 @@ CREATE TABLE `captures` (
 CREATE INDEX `captures_successor` ON `captures` (`tool_id`, `recorder_instance_id`, `origin_ns`);
 -- Create index "captures_device" to table: "captures"
 CREATE INDEX `captures_device` ON `captures` (`tool_id`, `device`, `origin_ns`);
+-- Create index "captures_config" to table: "captures"
+CREATE INDEX `captures_config` ON `captures` (`config_id`);
 -- Create "capture_closes" table
 CREATE TABLE `capture_closes` (
   `capture_id` blob NOT NULL,
@@ -90,11 +92,10 @@ CREATE TABLE `evicted_ranges` (
 CREATE TABLE `pack_losses` (
   `pack_id` blob NOT NULL,
   `ord` int NOT NULL,
-  `seq_from` bigint NOT NULL,
-  `seq_to` bigint NOT NULL,
+  `seq_from` bigint NULL,
+  `seq_to` bigint NULL,
   `ts_from` bigint NULL,
   `ts_to` bigint NULL,
-  `reason` varchar NOT NULL,
   PRIMARY KEY (`pack_id`, `ord`)
 );
 -- Create "claim_records" table
@@ -117,7 +118,7 @@ CREATE TABLE `conflicts` (
   `pack_id` blob NOT NULL,
   `other_pack_id` blob NOT NULL,
   `state` varchar NOT NULL,
-  PRIMARY KEY (`capture_id`, `seq_from`, `pack_id`, `other_pack_id`),
+  PRIMARY KEY (`capture_id`, `seq_from`, `seq_to`, `pack_id`, `other_pack_id`),
   CONSTRAINT `conflicts_state` CHECK (state IN ('suspect', 'confirmed'))
 );
 -- Create "claim_objects" table
