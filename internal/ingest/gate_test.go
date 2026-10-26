@@ -151,8 +151,9 @@ func TestRecreatedTrafficStream(t *testing.T) {
 			t.Fatal(err)
 		}
 		r.stream = s
-		for _, m := range traffic(t, renewed)[:2] { // the new stream's sequences 1 and 2, below the old order's cut-off
-			r.publish(t, m, nil)
+		cl := newClaims()                                        // claim-check, so the stream reflects the confirmed acknowledgements once a step returns
+		for _, m := range confirmedTraffic(t, cl, renewed)[:2] { // the new stream's sequences 1 and 2, below the old order's cut-off
+			r.publish(t, m, cl.objs[m.Env.MsgID])
 		}
 		cons, err := bus.Consumer(ctx, s, inc, bus.ConsumerConfig{AckWait: 30 * time.Second, MaxAckPending: 1000})
 		if err != nil {

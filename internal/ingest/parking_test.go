@@ -358,7 +358,12 @@ func terminatedStartThenAnotherVersion(t *testing.T, claim bool) {
 			t.Fatalf("capture %+v, %v; want no admission effect", got, err)
 		}
 
-		later(inline(t, capture, startRecord(t, now+1), descriptorOf(t, "eqp"))) // another version, above the cut-off
+		cl := newClaims()
+		other := claimCheck(t, cl, capture, startRecord(t, now+1), descriptorOf(t, "eqp")) // confirmed when acknowledged
+		if _, err := r.claims.PutBytes(ctx, other.Env.MsgID, cl.objs[other.Env.MsgID]); err != nil {
+			t.Fatal(err)
+		}
+		later(other) // another version, above the cut-off
 		r.step(t)
 		if got, err := c.Capture(ctx, capture); err != nil || got.State != catalog.StateOpen {
 			t.Fatalf("capture %+v, %v; want the other version's start admitting it", got, err)

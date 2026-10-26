@@ -35,6 +35,18 @@ func traffic(t *testing.T, capture tracepack.UUID) []Message {
 	return msgs
 }
 
+// confirmedTraffic is traffic's messages sent by claim-check, so their acknowledgements are confirmed (DoubleAck)
+// and the stream reflects them once a step returns; the objects are in cl.
+func confirmedTraffic(t *testing.T, cl *claims, capture tracepack.UUID) []Message {
+	t.Helper()
+	msgs := []Message{claimCheck(t, cl, capture, startRecord(t, now), descriptorOf(t, "eqp"))}
+	for seq := uint64(1); seq <= 3; seq++ {
+		msgs = append(msgs, claimCheck(t, cl, capture, dataRecord(seq, now+int64(seq)), nil))
+	}
+
+	return msgs
+}
+
 // deliver disposes and batches msgs and returns their handles.
 func (p *pipeline) deliver(t *testing.T, msgs []Message) []*msg {
 	t.Helper()
