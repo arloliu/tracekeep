@@ -117,10 +117,15 @@ func TestCompactRequests(t *testing.T) {
 		if err := c.FinishRequest(t.Context(), stale, q, false, "settled"); !errors.Is(err, ErrLeaseLost) {
 			t.Errorf("FinishRequest under a lost lease = %v, want ErrLeaseLost", err)
 		}
+		before := captureRevision(t, c, capture)
 		if err := c.FinishRequest(t.Context(), l, q, false, "settled"); err != nil {
 			t.Fatal(err)
 		}
+		// It runs under the capture row, which its prologue advances.
 		rev := captureRevision(t, c, capture)
+		if rev != before+1 {
+			t.Errorf("finishing a request left the capture row at revision %d, want %d", rev, before+1)
+		}
 		if err := c.FinishRequest(t.Context(), l, q, true, "again"); err != nil {
 			t.Errorf("finishing it again = %v, want nothing done", err)
 		}
