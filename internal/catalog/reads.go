@@ -1,6 +1,7 @@
 package catalog
 
 import (
+	"cmp"
 	"context"
 	"database/sql"
 	"fmt"
@@ -51,6 +52,22 @@ type UnregisteredInterval struct {
 	End   int64
 }
 
+// DeviceInfo is one device as ListDevices reports it (api.md §10.1).
+type DeviceInfo struct {
+	Name string
+	// EquipmentEndpoint and DeviceID are the latest selected capture's.
+	EquipmentEndpoint *string
+	DeviceID          *uint64
+	// OpenCaptures counts the selected captures still open.
+	OpenCaptures int
+	// Overlap is set when any selected capture of the device overlaps another.
+	Overlap bool
+	// LastRecordNS is the latest record time of the selected captures, nil before any.
+	LastRecordNS *int64
+	// Gap is set when a gap of a selected capture meets the window, an unknown bound counting as meeting it.
+	Gap bool
+}
+
 // span is the part of a capture's row its span and its recorder's other captures are computed from.
 type span struct {
 	id       tracepack.UUID
@@ -83,6 +100,61 @@ func (c *Catalog) ListCaptures(ctx context.Context, sel Selector, q time.Duratio
 	}
 
 	return out, nil
+}
+
+// ListDevices lists per device what the captures sel selects report (catalog.md §7.3), from one snapshot.
+func (c *Catalog) ListDevices(ctx context.Context, sel Selector, q time.Duration) ([]DeviceInfo, error) {
+	var out []DeviceInfo
+	err := c.snapshot(ctx, func(tx *sqlx.Tx) error {
+		caps, err := c.selectCaptures(ctx, tx, sel, q)
+		if err != nil {
+			return err
+		}
+		byName := map[string]*DeviceInfo{}
+		latest := map[string]CaptureInfo{}
+		for _, ci := range caps {
+			d := byName[ci.Device]
+			if d == nil {
+				d = &DeviceInfo{Name: ci.Device}
+				byName[ci.Device] = d
+			}
+			if l, ok := latest[ci.Device]; !ok || ci.OriginNS > l.OriginNS {
+				latest[ci.Device] = ci
+				d.EquipmentEndpoint, d.DeviceID = ci.EquipmentEndpoint, ci.DeviceID
+			}
+			if ci.State == StateOpen {
+				d.OpenCaptures++
+			}
+			d.Overlap = d.Overlap || ci.Overlap
+			if ci.LastRecordNS != nil && (d.LastRecordNS == nil || *ci.LastRecordNS > *d.LastRecordNS) {
+				d.LastRecordNS = ci.LastRecordNS
+			}
+			if d.Gap {
+				continue
+			}
+			in, err := c.completenessInputs(ctx, tx, ci.ID)
+			if err != nil {
+				return err
+			}
+			d.Gap = slices.ContainsFunc(in.classify().Gaps, func(g Gap) bool { return g.meets(sel.From, sel.To) })
+		}
+		for _, d := range byName {
+			out = append(out, *d)
+		}
+		slices.SortFunc(out, func(a, b DeviceInfo) int { return cmp.Compare(a.Name, b.Name) })
+
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("catalog: list devices: %w", err)
+	}
+
+	return out, nil
+}
+
+// meets reports whether the gap's time interval meets [from, to), a nil bound unbounded.
+func (g Gap) meets(from, to int64) bool {
+	return (g.Start == nil || *g.Start < to) && (g.End == nil || *g.End > from)
 }
 
 // admittedStates are the states of an admitted capture, as SQL.

@@ -201,3 +201,46 @@ func TestListCapturesDescriptor(t *testing.T) {
 		}
 	})
 }
+
+// A device reports its latest capture's endpoint and device id, its open captures, overlap,
+// its last record time and whether a gap's interval meets the window.
+func TestListDevices(t *testing.T) {
+	t.Parallel()
+	engines(t, func(t *testing.T, c *Catalog) {
+		r := newID(t)
+		old := described(t, c, spec{instance: r, origin: 0, endpoint: "10.0.0.1:5000", deviceID: 1})
+		pack(t, c, old, [2]uint64{0, 3}, [2]uint64{6, 9}) // a gap at 4–5, between the records at 3 and 6
+		exec(t, c, `UPDATE captures SET state = 'closed' WHERE capture_id = ?`, old[:])
+		newer := described(t, c, spec{instance: r, origin: 8, endpoint: "10.0.0.2:5000", deviceID: 2})
+		lastRecord(t, c, newer, 40)
+		described(t, c, spec{instance: newID(t), device: "pdf", origin: 1})
+
+		devices := func(from, to int64) map[string]DeviceInfo {
+			got, err := c.ListDevices(t.Context(), window(from, to), readQ)
+			if err != nil {
+				t.Fatal(err)
+			}
+			out := map[string]DeviceInfo{}
+			for _, d := range got {
+				out[d.Name] = d
+			}
+
+			return out
+		}
+		got := devices(0, 100)
+		eqp := got["eqp"]
+		if eqp.EquipmentEndpoint == nil || *eqp.EquipmentEndpoint != "10.0.0.2:5000" || eqp.DeviceID == nil || *eqp.DeviceID != 2 {
+			t.Errorf("eqp endpoint %v, device id %v; want the newer capture's", eqp.EquipmentEndpoint, eqp.DeviceID)
+		}
+		if eqp.OpenCaptures != 1 || !eqp.Overlap || eqp.LastRecordNS == nil || *eqp.LastRecordNS != 40 || !eqp.Gap {
+			t.Errorf("eqp %+v", eqp)
+		}
+		if pdf := got["pdf"]; pdf.OpenCaptures != 1 || pdf.Overlap || pdf.LastRecordNS != nil || pdf.Gap || pdf.EquipmentEndpoint != nil {
+			t.Errorf("pdf %+v", pdf)
+		}
+		// After the gap's later record: the gap no longer meets the window.
+		if eqp := devices(7, 100)["eqp"]; eqp.Gap {
+			t.Error("a gap ending before the window reported in it")
+		}
+	})
+}
