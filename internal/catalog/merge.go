@@ -119,6 +119,9 @@ type Merge struct {
 	Inputs   []tracepack.UUID
 	// Archive is the archive's pack: its exact ranges and its losses, read from the archive itself.
 	Archive *Pack
+	// Request is the operator's request this merge executes, nil for a scheduled merge:
+	// the commit ends it done in the same transaction, so a merge that committed never runs again for it.
+	Request *tracepack.UUID
 }
 
 // MergeOutcome is what a merge commit did (catalog.md §7.2 `CommitMerge`).
@@ -221,6 +224,13 @@ func (c *Catalog) commitMergeIn(ctx context.Context, tx *sqlx.Tx, l Lease, m *Me
 		return MergeStale, nil
 	} else if err != nil {
 		return 0, err
+	}
+	if m.Request != nil {
+		_, err := tx.ExecContext(ctx, `UPDATE compact_requests SET state = 'done', outcome = 'merged', done_at = ? WHERE request_id = ? AND state = 'pending'`,
+			now, m.Request[:])
+		if err != nil {
+			return 0, err
+		}
 	}
 
 	return Merged, c.emit(ctx, tx, []event{{m.Capture, m.Hour, "settled", m.Revision + 1}})

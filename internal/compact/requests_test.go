@@ -1,6 +1,8 @@
 package compact
 
 import (
+	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -104,6 +106,72 @@ func TestMergeRequestOnConflictingRecords(t *testing.T) {
 		}
 		if state, outcome := f.status(t, id); state != "failed" || outcome != "the inputs hold conflicting records" {
 			t.Errorf("request = %s, %q", state, outcome)
+		}
+	})
+}
+
+// A request whose merge committed is ended by that commit: a crash right after it, then a registration reopening the scope,
+// never runs the request again.
+func TestMergeRequestEndsWithItsCommit(t *testing.T) {
+	t.Parallel()
+	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
+		f := newFixture(t, c)
+		f.merging(t)
+		capture := f.admit(t)
+		f.stage(t, segment(t, capture, []uint64{0, 1}, false))
+		id := f.request(t, catalog.RequestMerge, capture)
+		ctx, crash := context.WithCancel(t.Context())
+		f.r.hooks[hookMergeCommitted] = func() { crash() }
+		if _, err := f.r.Requests(ctx, f.lease); !errors.Is(err, context.Canceled) {
+			t.Fatalf("Requests = %v, want the crash", err)
+		}
+		f.r.hooks[hookMergeCommitted] = nil
+		if state, outcome := f.status(t, id); state != "done" || outcome != "merged" {
+			t.Fatalf("after the crash the request is %s, %q; want done, merged", state, outcome)
+		}
+		f.stage(t, segment(t, capture, []uint64{2, 3}, false))
+		rep, err := f.r.Requests(t.Context(), f.lease)
+		if err != nil || rep.Done+rep.Failed+rep.Pending != 0 || len(rep.Merges.Merged) != 0 {
+			t.Errorf("Requests after the restart = %+v, %v; want nothing to execute", rep, err)
+		}
+		if snap, err := c.MergeSnapshot(t.Context(), catalog.Scope{Capture: capture, Hour: hour}); err != nil || snap.State != "reopened" {
+			t.Errorf("scope = %+v, %v; want reopened, left to the scheduled merge", snap, err)
+		}
+	})
+}
+
+// A lease lost while a request executes ends the pass with nothing ended; the next holder executes the request.
+func TestMergeRequestUnderALostLease(t *testing.T) {
+	t.Parallel()
+	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
+		f := newFixture(t, c)
+		f.merging(t)
+		capture := f.admit(t)
+		f.stage(t, segment(t, capture, []uint64{0, 1}, false))
+		id := f.request(t, catalog.RequestMerge, capture)
+		var next catalog.Lease
+		f.r.hooks[hookMergePut] = func() {
+			f.r.hooks[hookMergePut] = nil
+			if err := c.ReleaseLease(t.Context(), f.lease); err != nil {
+				t.Error(err)
+			}
+			l, ok, err := c.TakeLease(t.Context(), "compactor", "next", time.Hour)
+			if err != nil || !ok {
+				t.Errorf("TakeLease = %v, %v", ok, err)
+			}
+			next = l
+		}
+		if _, err := f.r.Requests(t.Context(), f.lease); !errors.Is(err, catalog.ErrLeaseLost) {
+			t.Fatalf("Requests = %v, want ErrLeaseLost", err)
+		}
+		if state, _ := f.status(t, id); state != "pending" {
+			t.Fatalf("the request is %s, want pending", state)
+		}
+		if rep, err := f.r.Requests(t.Context(), next); err != nil || rep.Done != 1 {
+			t.Fatalf("the next holder's Requests = %+v, %v; want it done", rep, err)
+		}
+		if state, outcome := f.status(t, id); state != "done" || outcome != "merged" {
+			t.Errorf("the request is %s, %q; want done, merged", state, outcome)
 		}
 	})
 }

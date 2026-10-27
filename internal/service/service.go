@@ -403,6 +403,10 @@ func ingesters(ctx context.Context, e *Env) (_ []*ingest.Ingester, err error) {
 	if f.WorkDir == "" {
 		f.WorkDir = os.TempDir()
 	}
+	// At start a role removes the working files it left behind (storage.md §5.1).
+	if err := ingest.CleanWorkDir(f.WorkDir); err != nil {
+		return nil, err
+	}
 	var m *metrics.Ingest
 	if e.Metrics != nil {
 		if m, err = metrics.NewIngest(e.Metrics, e.now); err != nil {
@@ -449,6 +453,9 @@ func Compact(ctx context.Context, e *Env) error {
 	}
 	if r.WorkDir == "" {
 		r.WorkDir = os.TempDir()
+	}
+	if err := compact.CleanWorkDir(r.WorkDir); err != nil {
+		return err
 	}
 	if e.Metrics != nil {
 		var err error

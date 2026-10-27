@@ -20,6 +20,8 @@ const (
 	hookMergeSnapshot
 	// hookMergePut runs after a merge put its archive, before its commit.
 	hookMergePut
+	// hookMergeCommitted runs after a merge's commit returned.
+	hookMergeCommitted
 	// hookCompared runs after a suspect's packs were compared, before the result is recorded.
 	hookCompared
 	numHooks
@@ -216,19 +218,22 @@ func (r *Compactor) cycle(ctx context.Context, lease catalog.Lease) error {
 	if conflicts.Failed > 0 {
 		r.Log.Warn("compact: suspects left uncompared", "failed", conflicts.Failed)
 	}
-	if _, err := r.Requests(ctx, lease); err != nil {
-		return err
-	}
 
 	return r.mergePass(ctx, lease)
 }
 
-// mergePass runs the merge pass and records its metrics, then reads the scope gauges;
-// a failed read of them keeps their previous values.
+// mergePass runs the operators' requests and the scheduled merges, one merge task, and records their metrics, then reads the scope gauges;
+// the task succeeds when neither ended in an error and no merge failed, and a failed read of the gauges keeps their previous values.
 func (r *Compactor) mergePass(ctx context.Context, lease catalog.Lease) error {
 	started := time.Now()
-	rep, err := r.Merges(ctx, lease)
-	r.Metrics.Cycle("merge", time.Since(started), err == nil)
+	reqs, err := r.Requests(ctx, lease)
+	rep := reqs.Merges
+	if err == nil {
+		var scheduled MergeReport
+		scheduled, err = r.Merges(ctx, lease)
+		rep.add(scheduled)
+	}
+	r.Metrics.Cycle("merge", time.Since(started), err == nil && len(rep.Failed) == 0)
 	r.Metrics.Merges(len(rep.Merged), len(rep.Stale), len(rep.Conflicted), len(rep.Failed))
 	if err != nil {
 		return err
