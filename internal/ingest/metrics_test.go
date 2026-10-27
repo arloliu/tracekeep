@@ -67,6 +67,22 @@ func TestIngestMetrics(t *testing.T) {
 		r.step(t)
 		r.clk.flushInterval()
 		r.step(t)
+		// An acknowledgement is not awaited, so the stream drops the acknowledged messages a moment later:
+		// the refresh reads the backlog once only the nak'd message is left.
+		deadline := time.Now().Add(10 * time.Second)
+		for {
+			si, err := r.stream.Info(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if si.State.Msgs == 1 {
+				break
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("the stream holds %d messages, want only the nak'd one", si.State.Msgs)
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
 		if err := m.Refresh(ctx, c, trafficState{r}); err != nil {
 			t.Fatal(err)
 		}
