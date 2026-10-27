@@ -133,13 +133,13 @@ func TestQuietPeriodBound(t *testing.T) {
 	}
 }
 
-// D must exceed the download URL's lifetime strictly (compactor.md §8.3).
+// D must exceed the download URL's lifetime by more than two minutes of clock skew (compactor.md §8.3).
 func TestDeleteDelayBound(t *testing.T) {
 	t.Parallel()
 	timing := func(d string) string {
 		return yaml("", "", "  s3:\n    bucket: packs\n    access_key_id: ak\n    secret_access_key: sk\n  download_lifetime: 15m\n", "compact:\n  delete_delay: "+d+"\n")
 	}
-	for d, ok := range map[string]bool{"14m": false, "15m": false, "15m1s": true, "1h": true} {
+	for d, ok := range map[string]bool{"15m1s": false, "17m": false, "17m1s": true, "1h": true} {
 		_, err := Load(write(t, timing(d)))
 		if ok && err != nil {
 			t.Errorf("D %s: Load = %v, want it accepted", d, err)
