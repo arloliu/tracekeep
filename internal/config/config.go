@@ -72,7 +72,7 @@ type Store struct {
 	S3  S3     `yaml:"s3"`
 	// Presign lets readers download by presigned URL (T-33); off for an s3 store whose URLs readers cannot use.
 	Presign bool `yaml:"presign" default:"true" env:"TRACEKEEP_STORE_PRESIGN"`
-	// DownloadLifetime is the longest a download URL lives (T-41); compact.delete_delay exceeds it by more than the clock skew.
+	// DownloadLifetime is the longest a download URL lives (T-41); compact.delete_delay exceeds it by more than twice the clock skew.
 	DownloadLifetime time.Duration `yaml:"download_lifetime" default:"15m" env:"TRACEKEEP_STORE_DOWNLOAD_LIFETIME" validate:"gt=0"`
 }
 
@@ -130,7 +130,7 @@ type Compact struct {
 	// Inactivity is I: an open capture without a registration for I is closed (compactor.md §8.2, T-12).
 	Inactivity time.Duration `yaml:"inactivity" default:"2h" env:"TRACEKEEP_COMPACT_INACTIVITY" validate:"gt=0"`
 	// DeleteDelay is D: a merged input is deleted D after its merge, and a shortened retention evicts nothing early for D;
-	// it exceeds store.download_lifetime by more than two minutes of clock skew (compactor.md §8.3).
+	// it exceeds store.download_lifetime by more than twice two minutes of clock skew (compactor.md §8.3).
 	DeleteDelay time.Duration `yaml:"delete_delay" default:"1h" env:"TRACEKEEP_COMPACT_DELETE_DELAY" validate:"gt=0"`
 }
 
@@ -167,8 +167,9 @@ func Load(path string) (*Config, error) {
 	return &c, nil
 }
 
-// clockSkew is how far two hosts' clocks may disagree, a minute either way of the true time:
-// what the download margin covers (T-33), and what D leaves beyond a URL's lifetime (compactor.md §8.3).
+// clockSkew is how far two hosts' clocks may disagree, a minute either way of the true time, which the download margin covers (T-33).
+// D leaves twice that beyond a URL's lifetime (compactor.md §8.3): once between the hosts that issue and validate the URL,
+// once between those that record a deletion time and act on it.
 const clockSkew = 2 * time.Minute
 
 // check holds the rules that span fields.
@@ -181,8 +182,8 @@ func (c *Config) check() error {
 		errs = append(errs, fmt.Errorf("compact.quiet_period %s must exceed ingest.flush_interval + ingest.ack_wait + compact.redelivery_slack, %s (T-25, T-41)",
 			c.Compact.QuietPeriod, bound))
 	}
-	if bound := c.Store.DownloadLifetime + clockSkew; c.Compact.DeleteDelay <= bound {
-		errs = append(errs, fmt.Errorf("compact.delete_delay %s must exceed store.download_lifetime + %s of clock skew, %s (compactor.md §8.3)",
+	if bound := c.Store.DownloadLifetime + 2*clockSkew; c.Compact.DeleteDelay <= bound {
+		errs = append(errs, fmt.Errorf("compact.delete_delay %s must exceed store.download_lifetime + twice %s of clock skew, %s (compactor.md §8.3)",
 			c.Compact.DeleteDelay, clockSkew, bound))
 	}
 	switch c.Store.Kind {

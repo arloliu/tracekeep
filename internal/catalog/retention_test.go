@@ -132,28 +132,33 @@ func TestRecordRetentionUnderALostLease(t *testing.T) {
 	})
 }
 
-// A URL issued just before a shortening outlives the hold only if D leaves the clocks' skew beyond its lifetime:
-// the recording compactor a minute slow, the next holder a minute fast, the hour's held deadline otherwise far away.
-func TestRetentionHoldAcrossSkewedClocks(t *testing.T) {
+// A URL issued just before a shortening or a merge expires before the object goes only if D leaves twice the clock skew beyond its lifetime:
+// the issuer a minute fast and the validator a minute slow stretch the URL by two minutes,
+// the recorder a minute slow and the evictor a minute fast shorten the wait by two.
+func TestDeletionTimeAcrossSkewedClocks(t *testing.T) {
 	t.Parallel()
 	const lifetime, skew = 15 * time.Minute, time.Minute
-	real0 := hourNS(1000) // the true time of the issue and of the shortening
-	expiry := real0 + int64(lifetime)
+	real0 := hourNS(1000) // the true time of the issue, and of the shortening or the merge
+	// The validator, a minute slow, accepts the URL the fast issuer signed while its own clock is before the signed expiry.
+	accepted := func(trueNs int64) bool { return trueNs-int64(skew) < real0+int64(skew)+int64(lifetime) }
 	for _, tc := range []struct {
 		d    time.Duration
 		safe bool
-	}{{lifetime + 2*skew, false}, {lifetime + 2*skew + time.Second, true}} {
-		// The slow recorder holds the month until its own now + D.
-		recorded := Retention{Known: true, Period: time.Hour, Held: month, HeldUntil: real0 - int64(skew) + int64(tc.d)}
-		hour := int64(990) // kept by the month, past the shortened hour
-		// The fast holder's clock reads real + skew: its first eviction of hour, in true time.
+	}{{lifetime + 4*skew - time.Second, false}, {lifetime + 4*skew, true}, {lifetime + 4*skew + time.Second, true}} {
+		recordedAt := real0 - int64(skew) // the slow recorder's now
+		// The shortening: the month held until the recorder's now + D; the fast evictor's first eviction of an hour the month keeps.
+		held := Retention{Known: true, Period: time.Hour, Held: month, HeldUntil: recordedAt + int64(tc.d)}
+		hour := int64(990)
 		evicted := real0
-		for hour >= recorded.HorizonHour(evicted+int64(skew)) {
+		for hour >= held.HorizonHour(evicted+int64(skew)) {
 			evicted += int64(time.Second)
 		}
-		if safe := evicted > expiry; safe != tc.safe {
-			t.Errorf("D %s: evicted %s after the issue, URL expiry %s; safe %v, want %v",
-				tc.d, time.Duration(evicted-real0), lifetime, safe, tc.safe)
+		// The merge: delete_at the recorder's now + D; the fast evictor deletes once its clock reaches it.
+		deleted := recordedAt + int64(tc.d) - int64(skew)
+		for name, at := range map[string]int64{"eviction": evicted, "deletion": deleted} {
+			if safe := !accepted(at); safe != tc.safe {
+				t.Errorf("D %s: %s %s after the issue while the URL is accepted: safe %v, want %v", tc.d, name, time.Duration(at-real0), safe, tc.safe)
+			}
 		}
 	}
 }
