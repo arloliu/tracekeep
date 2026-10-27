@@ -1,6 +1,6 @@
 # Roadmap
 
-Status: current (2026-10-26) — milestones from seed v21 §12
+Status: current (2026-10-27) — milestones from seed v21 §12
 
 Where tracekeep's work stands, and the single index of active plans (`.agents/rules/450-doc-lifecycle.md`).
 The milestones and their gates are seed v21 §12, moved unchanged;
@@ -49,12 +49,20 @@ eqp-hub reviews the SDK's API (`Bus`, `Preflight`, the six guarantees, the `secs
 
 ## Active plans
 
-- [Phase 1 — ingest](plans/phase-1-ingest.md)
+None.
 
 Phase 0 is done (#1, #3, #4, #7, #8).
+Phase 1 is done (#9, #11, #13, #14, #16, #17, #18, #19).
 
 ## Open items
 
+- Phase 1 left these to phase 2:
+  checklist item 7's close left `abandoned`, with the closes;
+  admin through the process that owns a SQLite catalog (the `api` role), so with SQLite an admin command runs while the service is stopped;
+  applying the catalog's migrations from the binary, which needs an applier that records the revision it reached;
+  `object list --unattributed` and `--survivors`, which report what retention writes, while `object adopt` waits for its specification;
+  `tracekeep status`, and the ingest metrics `gap_observations_total` and `captures_with_unknown_tail`.
+- The cost of ingest's periodic metrics read (`Completeness` of every open capture every 30 seconds) is not measured at fleet size.
 - Whether timer-triggered FDC collection contexts count as interval polling (T-3) is with the FDC maintainers;
   thinning stays disabled until the poll channel exists.
 - connect-go's overhead against plain gRPC is measured before the API of phase 2 is implemented;
