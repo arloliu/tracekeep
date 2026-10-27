@@ -344,6 +344,42 @@ func TestRequestedAndFailedMergeMetrics(t *testing.T) {
 		if strings.Contains(got, `last_success_timestamp{task="merge"}`) {
 			t.Error("an all-failed pass stamped a success")
 		}
+
+		// A merge that fails on conflicting records failed too.
+		k := metrics.NewServer()
+		if f.r.Metrics, err = metrics.NewCompact(k); err != nil {
+			t.Fatal(err)
+		}
+		f.r.Store = f.s
+		if err := c.ReleaseLease(t.Context(), f.lease); err != nil {
+			t.Fatal(err)
+		}
+		conflicting := f.admit(t)
+		f.stage(t, segmentOf(t, conflicting, hour, recordsAt(hour, 0, 1, 2), noAdjust))
+		changed := recordsAt(hour, 2, 3)
+		changed[0].Payload = append([]byte(nil), changed[0].Payload...)
+		changed[0].Payload[0] ^= 0xff
+		b := segmentOf(t, conflicting, hour, changed, noAdjust)
+		f.put(t, b.key, b.data)
+		q, _, err := f.r.read(t.Context(), store.ObjectInfo{Key: b.key, Size: int64(len(b.data))})
+		if err != nil {
+			t.Fatal(err)
+		}
+		q.Ranges = []catalog.Range{{SeqFrom: 3, SeqTo: 3, TSFrom: q.Ranges[0].TSTo, TSTo: q.Ranges[0].TSTo}}
+		if out, err := c.RegisterPack(t.Context(), q, catalog.Registration{Evidence: &catalog.Evidence{}, HorizonHour: f.horizon}); err != nil || out != catalog.Registered {
+			t.Fatalf("RegisterPack = %v, %v", out, err)
+		}
+		if f.lease, _, err = c.TakeLease(t.Context(), "compactor", "again", time.Hour); err != nil {
+			t.Fatal(err)
+		}
+		// The scope of the failed read is merged by this pass too; it is the conflicting one that fails the task.
+		if err := f.r.mergePass(t.Context(), f.lease); err != nil {
+			t.Fatal(err)
+		}
+		got = scrape(t, k)
+		if !strings.Contains(got, `tracekeep_compact_merges_total{outcome="conflicted"} 1`) || strings.Contains(got, `last_success_timestamp{task="merge"}`) {
+			t.Errorf("a pass with a conflicted merge stamped a success, or did not count it:\n%s", got)
+		}
 	})
 }
 
