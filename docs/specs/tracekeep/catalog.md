@@ -133,7 +133,7 @@ Every compactor transaction that changes domain state checks the lease (`leases 
 Outside the table, without the helper:
 taking or renewing the compactor lease (`leases`; a worker that lost it does nothing further, §8.1);
 registering, renewing or leaving a membership and activating or retiring a configuration (`rollouts.md` §6.4), each of which updates `counters('membership')` first, judging a lease's lapse by the database's clock as `Admit` does (T-32);
-pruning `scope_events` by seq prefix, which sets `counters.low_water` in the same transaction and allocates no seq (§7.3);
+pruning `scope_events` by seq prefix, which checks the compactor lease, sets `counters.low_water` in the same transaction and allocates no seq (§7.3);
 appending `audit_log` for the API's actions (other audit rows are written inside their own transaction);
 and the reads (look a capture up, list packs and ranges, pick scopes to merge, pick deletable packs),
 whose answers each transaction above re-validates instead of trusting.
@@ -174,24 +174,35 @@ and the caller acts on it: the merge and the close at the next cycle (§8.1, §8
 - **Declared losses** come from `pack_losses` and from `terminated` `parked` rows;
   **crash gaps** from `capture_closes` (`gap_start`, `gap_end`);
   **conflicts** from `conflicts`.
+- **Selection**: a read names a tool, optionally its devices or one capture, and a window [from, to).
+  It selects the admitted captures (`open`, `stopped` or `closed`) of that tool and those devices whose span meets the window:
+  a capture's **span** runs from `capture_origin_utc_ns` to `highest_seq_ts`, or is the origin alone before any record,
+  and for the window only, a capture still `open` has a span without end, since it may yet record.
 - `ListPacks(tool, from, to)` iterates the requested hours:
-  for each, the scopes of every capture of the tool overlapping it, with packs, ranges, state and revision;
-  an hour with no scope is reported as `no-data` together with whether a capture of the tool was open then,
+  for each, the scopes of every selected capture overlapping it, with packs, ranges, state and revision;
+  an hour with no scope is reported as `no-data` together with whether a selected capture's span, unbounded while `open`, meets that hour,
   so a missing whole hour is a result, not an absence;
-  an hour with no scope that holds parked seqs reports them as deferred or declared losses instead (T-33).
+  an hour with no scope whose ranges retention evicted is reported evicted instead, naming the captures,
+  and an hour with no scope that holds parked seqs reports them as deferred or declared losses (T-33),
+  read from the capture's completeness, so each seq keeps the one class the precedence gives it.
   An **unregistered interval** is reported
-  when a capture starts more than Q after the latest `highest_seq_ts` of every earlier capture of its (`tool_id`, `recorder_instance_id`),
+  when a capture starts more than Q after the latest span end of every earlier capture of its (`tool_id`, `recorder_instance_id`),
+  earlier meaning an earlier origin,
   not after the end of one predecessor, so two overlapping captures are never reported as missing traffic;
-  or when its `previous_capture_id` names no registered capture.
+  or when its `previous_capture_id` names no admitted capture, an interval whose start is unknown.
+  The first capture of a recorder, with no earlier capture and no `previous_capture_id`, has none.
 - **Domain results**: the read side returns results, never rows for a caller to classify.
   `ListPacks` returns the watermark it read before the listing (*Cursor* below) with each capture's completeness:
   gaps with their time intervals, evicted, deferred and unknown-tail seqs, `no-data` hours, unregistered intervals, declared losses, crash gaps and conflicts, an unresolved suspect reported as a conflict (§6.2);
   `ListCaptures` and `ListDevices` return the `overlap` flag;
+  `ListDevices` reports per device the latest selected capture's `equipment_endpoint` and `device_id` from its descriptor,
+  how many selected captures are `open`, the overlap flag, the last record time (the highest `highest_seq_ts`),
+  and whether the window holds a gap: a gap whose time interval meets the window, an unknown bound counting as meeting it;
   `ListScopeChanges` (`api.md` §10.1) returns the events after a cursor, or reports the cursor stale when it is below `low_water` or carries another epoch,
   so the module detects a stale cursor and `ListPacks` returns the watermark to continue from:
   the client re-lists the window and continues from that watermark.
 - **Overlap**: two leaders running at once write two captures of one (`tool_id`, `recorder_instance_id`), which [STO §4] allows.
-  When the spans of two such captures intersect, each from `capture_origin_utc_ns` to `highest_seq_ts`,
+  When the spans of two such captures intersect (*Selection* above, never unbounded here),
   both are flagged `overlap` in `ListCaptures` and `ListDevices`;
   the flag is computed from the spans, not from the `open` state, so it survives the close of either capture.
   A read by device returns both, each with its own completeness, and never interleaves them into one series.
@@ -210,8 +221,16 @@ and the caller acts on it: the merge and the close at the next cycle (§8.1, §8
   Pruning deletes a **seq prefix only**:
   `low = min(seq) over events younger than the retention period`, delete `seq < low`, set `counters.low_water = low` in the same transaction, never by time alone,
   since event time and seq are not ordered together;
-  `epoch` changes only when an operator truncates otherwise,
-  and a client whose cursor is below `low_water` or carries another epoch re-lists the window from `ListPacks` and continues from the watermark that listing returns.
+  the period is the configured retention period of §8.3, and the compactor prunes in its retention pass under the lease;
+  `low_water` is only ever raised, so a retry or an older snapshot never lets a pruned seq read as present.
+  `epoch` changes only when an operator truncates otherwise.
+  A **cursor** is the pair (epoch, seq): every event up to seq has been read.
+  It is stale when it carries another epoch or when a pruned seq lies above it, `seq < low_water − 1`,
+  and a client with a stale cursor re-lists the window from `ListPacks` and continues from the watermark and epoch that listing returns.
+  `ListScopeChanges` returns the events above the cursor whose capture is of the selected tool and devices, in seq order, a page at a time,
+  with the cursor to continue from:
+  the last seq the page scanned, so events of other tools never hold it back,
+  or, when the page is short, the watermark of its snapshot, read before the events as `ListPacks` reads it.
   The **watermark is read before the listing**:
   `ListPacks` reads `counters.scope_events` = w first, then the scope and pack rows, and returns w;
   an event committed during the listing has seq > w and is replayed to the client,
