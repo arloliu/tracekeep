@@ -41,7 +41,8 @@ type Listed struct {
 
 // RecordListing records a listing of the claim bucket under l at now (compactor.md §8.3–§8.4):
 // an attributed object without a row gets a live one, whatever its capture's state, and a row it finds stays as it is;
-// an unattributed object without a row is recorded with its first sighting, and one the listing no longer holds is forgotten.
+// an unattributed object without a row is recorded with its first sighting, and one the listing no longer holds,
+// or that has gained a row since, is forgotten.
 // It returns how many claim object rows it added.
 func (c *Catalog) RecordListing(ctx context.Context, l Lease, objs []Listed, now int64) (int, error) {
 	added := 0
@@ -53,6 +54,14 @@ func (c *Catalog) RecordListing(ctx context.Context, l Lease, objs []Listed, now
 		listed := map[string]bool{}
 		for _, o := range objs {
 			if o.Attr == nil {
+				// An object with a row, a receipt's, is attributed by it; only one without is the operator's.
+				var n int
+				if err := tx.GetContext(ctx, &n, `SELECT COUNT(*) FROM claim_objects WHERE object_key = ?`, o.Key); err != nil {
+					return err
+				}
+				if n > 0 {
+					continue
+				}
 				listed[o.Key] = true
 				_, err := tx.ExecContext(ctx, c.d.insertIgnore+` INTO unattributed_objects (object_key, size, seen_at) VALUES (?, ?, ?)`, o.Key, o.Size, now)
 				if err != nil {

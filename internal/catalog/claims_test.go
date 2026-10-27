@@ -91,6 +91,27 @@ func TestRecordListing(t *testing.T) {
 	})
 }
 
+// An object without the SDK's metadata that a receipt names is attributed by the receipt's row, never the operator's;
+// one recorded unattributed before its receipt arrived is forgotten once the row exists.
+func TestRecordListingDefersToAReceipt(t *testing.T) {
+	t.Parallel()
+	engines(t, func(t *testing.T, c *Catalog) {
+		l := compactorLease(t, c, "w")
+		capture := admitted(t, c)
+		objs := []Listed{{Key: "claims/3", Size: 10}, {Key: "claims/4", Size: 10}}
+		claimRow(t, c, capture, 3, 1, "claims/3")
+		recordListing(t, c, l, objs, 100)
+		if got := unattributedKeys(t, c); !slices.Equal(got, []string{"claims/4"}) {
+			t.Fatalf("unattributed = %v, want only the object no receipt names", got)
+		}
+		claimRow(t, c, capture, 4, 1, "claims/4")
+		recordListing(t, c, l, objs, 200)
+		if got := unattributedKeys(t, c); len(got) != 0 {
+			t.Errorf("unattributed after its receipt = %v, want none", got)
+		}
+	})
+}
+
 func TestRecordListingUnderALostLease(t *testing.T) {
 	t.Parallel()
 	engines(t, func(t *testing.T, c *Catalog) {

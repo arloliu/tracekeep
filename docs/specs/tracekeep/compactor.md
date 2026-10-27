@@ -212,7 +212,8 @@ no proof about acceptance times, drained subjects or object incarnations is need
   mark the `claim_objects` row `deletable` under the capture row and the lease (the `parked` and `parked_copies` rows stay), delete the object from the bucket, remove the `claim_objects` row under the lease;
   an interrupted step resumes, never skips;
   `tracekeep admin object list --survivors` shows survivors with their evicted hour and bytes;
-  an object whose `Metadata` lacks the SDK's header and time, or whose name, header seq and time disagree (a non-SDK producer), is **never deleted automatically**:
+  an object without a receipt whose `Metadata` lacks the SDK's header and time, or whose name, header seq and time disagree (a non-SDK producer), is **never deleted automatically**
+  (one a receipt names is attributed by the receipt and goes with its hour):
   the listing records it in `unattributed_objects` until it is gone,
   `tracekeep admin object list --unattributed` shows it and the operator decides,
   which is the conservative disposition for a producer the design does not support.
