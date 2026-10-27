@@ -251,7 +251,8 @@ func (r *Compactor) read(ctx context.Context, info store.ObjectInfo) (*catalog.P
 	if err := records(ctx, rd, p); err != nil {
 		return nil, "", err
 	}
-	if len(p.Ranges) == 0 && p.Role != catalog.RoleClose {
+	// A close, and an archive merged from closes alone, hold the close record only, which is never a range.
+	if len(p.Ranges) == 0 && p.SeqStart != math.MaxInt64 {
 		return nil, "the pack holds no record", nil
 	}
 

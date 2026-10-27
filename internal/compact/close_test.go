@@ -385,3 +385,65 @@ func TestClosePublishedAfterAFailure(t *testing.T) {
 		}
 	})
 }
+
+// A close in an hour without records merges like any segment: its archive holds the close record only, no range,
+// and the reconciler adopts such an archive's orphan rather than quarantining it.
+func TestCloseOnlyHourMerges(t *testing.T) {
+	t.Parallel()
+	for _, crash := range []bool{false, true} {
+		catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
+			f := newFixture(t, c)
+			now := time.Now().Add(3 * time.Hour)
+			f.closing(t, now)
+			capture := f.described(t, newID(t), now.Add(-4*time.Hour).UnixNano())
+			if rep := f.closes(t); rep.Published != 1 {
+				t.Fatalf("Closes = %+v", rep)
+			}
+			h := floorHour(now.UnixNano())
+			scope := catalog.Scope{Capture: capture, Hour: h}
+			f.r.Now = func() time.Time { return time.Unix(0, (h+2)*nsPerHour) }
+			if crash {
+				ctx, stop := context.WithCancel(t.Context())
+				f.r.hooks[hookMergePut] = func() { stop() }
+				if _, err := f.r.Merges(ctx, f.lease); !errors.Is(err, context.Canceled) {
+					t.Fatalf("Merges = %v, want the crash", err)
+				}
+				f.r.hooks[hookMergePut] = nil
+				f.pass(t)
+				if rep := f.pass(t); len(rep.Adopted) != 1 || len(rep.Quarantined) != 0 {
+					t.Fatalf("pass = %+v, want the close-only archive adopted", rep)
+				}
+				f.conflicts(t)
+			}
+			if rep := f.merges(t); !slices.Equal(rep.Merged, []catalog.Scope{scope}) {
+				t.Fatalf("Merges = %+v, want the close's hour merged", rep)
+			}
+			snap, err := c.MergeSnapshot(t.Context(), scope)
+			if err != nil || snap.State != "settled" || len(snap.Inputs) != 1 || snap.Inputs[0].Role != catalog.RoleArchive {
+				t.Fatalf("snapshot = %+v, %v; want settled with its archive", snap, err)
+			}
+			if rep := f.pass(t); len(rep.Quarantined) != 0 {
+				t.Errorf("pass = %+v, want nothing quarantined", rep)
+			}
+		})
+	}
+}
+
+// A put whose result was lost with other bytes stored under the key is no close: the intent stays pending until the bytes are its own.
+func TestCloseLostPutWithOtherBytes(t *testing.T) {
+	t.Parallel()
+	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
+		f := newFixture(t, c)
+		now := time.Now().Add(3 * time.Hour)
+		f.closing(t, now)
+		f.described(t, newID(t), now.Add(-4*time.Hour).UnixNano())
+		f.r.Store = failingPut{Mem: f.s, visible: true, garbled: true}
+		if rep := f.closes(t); rep.Failed != 1 || rep.Published != 0 {
+			t.Fatalf("Closes = %+v, want the garbled put failed", rep)
+		}
+		f.r.Store = f.s
+		if rep := f.closes(t); rep.Published != 1 {
+			t.Errorf("the next Closes = %+v, want published", rep)
+		}
+	})
+}
