@@ -563,6 +563,7 @@ func (c *Catalog) ListScopeChanges(ctx context.Context, after Cursor, sel Select
 		if err != nil {
 			return err
 		}
+		c.hook(hookWatermarkRead)
 		if after.Epoch != w.Epoch || after.Seq < low-1 {
 			out.Stale = true
 
