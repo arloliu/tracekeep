@@ -19,7 +19,7 @@ const (
 	numHooks
 )
 
-func (r *Reconciler) hook(id int) {
+func (r *Compactor) hook(id int) {
 	if h := r.hooks[id]; h != nil {
 		h()
 	}
@@ -28,7 +28,7 @@ func (r *Reconciler) hook(id int) {
 // Run runs a cycle every Interval until ctx is done or a stream is no longer the incarnation the catalog records,
 // which stops the reconciler with ErrIncarnationChanged until an operator adopts the stream (parking.md *incarnations*).
 // On its way out it releases the lease it holds, so a standby takes over without waiting for the lease to lapse.
-func (r *Reconciler) Run(ctx context.Context) error {
+func (r *Compactor) Run(ctx context.Context) error {
 	t := time.NewTicker(r.Interval)
 	defer t.Stop()
 	defer r.release()
@@ -51,7 +51,7 @@ func (r *Reconciler) Run(ctx context.Context) error {
 // While another process holds the lease it does nothing. A lease lost during the cycle cancels it, and the next cycle takes the lease again
 // under a new fence token; a worker that lost its lease does nothing further under the old one (compactor.md §8.1).
 // The metrics count a cycle that lost its lease as failed, and the lease as held only until it lapses.
-func (r *Reconciler) Step(ctx context.Context) error {
+func (r *Compactor) Step(ctx context.Context) error {
 	asked := time.Now()
 	if !r.hold(ctx) {
 		r.Metrics.Lease(time.Time{})
@@ -73,7 +73,7 @@ func (r *Reconciler) Step(ctx context.Context) error {
 var errNotYetHeld = errors.New("compact: the lease's state not read yet")
 
 // Ready reports whether the reconciler knows the compactor lease's state, holding it or standing by, for readiness.
-func (r *Reconciler) Ready(context.Context) error {
+func (r *Compactor) Ready(context.Context) error {
 	r.holdMu.Lock()
 	defer r.holdMu.Unlock()
 	if !r.holdKnown && r.holdErr == nil {
@@ -83,14 +83,14 @@ func (r *Reconciler) Ready(context.Context) error {
 	return r.holdErr
 }
 
-func (r *Reconciler) setHoldErr(err error) {
+func (r *Compactor) setHoldErr(err error) {
 	r.holdMu.Lock()
 	defer r.holdMu.Unlock()
 	r.holdErr, r.holdKnown = err, r.holdKnown || err == nil
 }
 
 // underLease is one cycle under the lease r holds.
-func (r *Reconciler) underLease(ctx context.Context) error {
+func (r *Compactor) underLease(ctx context.Context) error {
 	lease := *r.lease
 	if err := r.incarnations(ctx); err != nil {
 		return err
@@ -120,7 +120,7 @@ func (r *Reconciler) underLease(ctx context.Context) error {
 // keep renews lease every third of LeaseTTL until ctx is done, so a pass longer than the lease keeps it,
 // and checks both streams' incarnations with every renewal (parking.md *incarnations*), on handles of its own;
 // a lost lease or a changed stream cancels ctx with its error, and any other failure leaves the next renewal to try again.
-func (r *Reconciler) keep(ctx context.Context, cancel context.CancelCauseFunc, lease catalog.Lease) {
+func (r *Compactor) keep(ctx context.Context, cancel context.CancelCauseFunc, lease catalog.Lease) {
 	t := time.NewTicker(max(r.LeaseTTL/3, time.Millisecond))
 	defer t.Stop()
 	for {
@@ -156,7 +156,7 @@ func (r *Reconciler) keep(ctx context.Context, cancel context.CancelCauseFunc, l
 }
 
 // release ends the lease this process holds, if any.
-func (r *Reconciler) release() {
+func (r *Compactor) release() {
 	if r.lease == nil {
 		return
 	}
@@ -171,7 +171,7 @@ func (r *Reconciler) release() {
 }
 
 // incarnations checks both streams against the incarnations the catalog records, each on a handle of its own (parking.md *incarnations*).
-func (r *Reconciler) incarnations(ctx context.Context) error {
+func (r *Compactor) incarnations(ctx context.Context) error {
 	for _, role := range []string{catalog.RoleTraffic, catalog.RoleParking} {
 		s, err := r.JS.Stream(ctx, bus.StreamName(r.Bus, role))
 		if err != nil {
@@ -185,7 +185,7 @@ func (r *Reconciler) incarnations(ctx context.Context) error {
 	return nil
 }
 
-func (r *Reconciler) cycle(ctx context.Context, lease catalog.Lease) error {
+func (r *Compactor) cycle(ctx context.Context, lease catalog.Lease) error {
 	rep, err := r.Orphans(ctx, lease)
 	r.Metrics.Orphans(len(rep.Adopted), len(rep.Quarantined), len(rep.Tombstoned))
 	if err != nil {
@@ -208,7 +208,7 @@ func (r *Reconciler) cycle(ctx context.Context, lease catalog.Lease) error {
 }
 
 // hold takes the lease, or renews it while held; it reports whether this process holds it.
-func (r *Reconciler) hold(ctx context.Context) bool {
+func (r *Compactor) hold(ctx context.Context) bool {
 	if r.lease != nil {
 		err := r.Catalog.RenewLease(ctx, *r.lease, r.LeaseTTL)
 		switch {

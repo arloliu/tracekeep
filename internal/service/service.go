@@ -442,7 +442,7 @@ func Compact(ctx context.Context, e *Env) error {
 		return err
 	}
 	c := e.Config
-	r := &compact.Reconciler{
+	r := &compact.Compactor{
 		Catalog: e.Catalog, Store: e.Store, KeyPrefix: c.Store.KeyPrefix, HorizonHour: func() int64 { return ingest.HourOf(e.horizon()) },
 		Log: e.Log.With("role", "compact"), JS: e.JS, Bus: e.Bus(), Holder: c.Replica, LeaseTTL: c.Compact.LeaseTTL, Interval: c.Compact.Interval,
 	}

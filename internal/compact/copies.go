@@ -21,7 +21,7 @@ var ErrAllowDirect = errors.New("compact: the stream allows direct gets")
 // then only GetMsg's not-found for a sequence at or below that answer's LastSeq marks a row, under lease.
 // A refresh, incarnation or AllowDirect failure is returned and advances nothing; a GetMsg error on one copy skips that copy.
 // It returns how many rows it marked.
-func (r *Reconciler) Copies(ctx context.Context, lease catalog.Lease, role string, s jetstream.Stream) (int, error) {
+func (r *Compactor) Copies(ctx context.Context, lease catalog.Lease, role string, s jetstream.Stream) (int, error) {
 	inc, err := bus.Incarnate(ctx, r.Catalog, role, s)
 	if err != nil {
 		return 0, err

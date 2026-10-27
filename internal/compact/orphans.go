@@ -1,5 +1,6 @@
 // Package compact holds the compactor's work under its catalog lease (docs/specs/tracekeep/compactor.md):
-// for now the reconciler, which adopts orphaned packs (storage.md §5.4) and reconciles parked copy rows (parking.md *resolution*).
+// the reconciler, which adopts orphaned packs (storage.md §5.4) and reconciles parked copy rows (parking.md *resolution*),
+// and the merge of settled scopes (compactor.md §8.1).
 package compact
 
 import (
@@ -24,9 +25,10 @@ import (
 
 const nsPerHour = int64(time.Hour)
 
-// Reconciler adopts the packs the catalog does not know and reconciles parked copy rows, under the compactor lease.
-// One Reconciler runs at a time, the lease's holder; its methods are not safe for concurrent use.
-type Reconciler struct {
+// Compactor holds the compactor lease and runs the compactor's passes under it:
+// the reconciler's, which adopt the packs the catalog does not know and reconcile parked copy rows, and the merge.
+// One Compactor runs at a time, the lease's holder; its methods are not safe for concurrent use.
+type Compactor struct {
 	Catalog *catalog.Catalog
 	Store   store.ObjectStore
 	// KeyPrefix is the pack keys' prefix, as ingest writes them.
@@ -91,7 +93,7 @@ type OrphanReport struct {
 // An examined key is verified in full and read for its exact seq set, its name checked against the pack,
 // and registered as adopted under lease; the registration's own guards decide, not this listing.
 // A lost lease ends the pass with ErrLeaseLost; an error on one key is logged and leaves the key for the next pass.
-func (r *Reconciler) Orphans(ctx context.Context, lease catalog.Lease) (OrphanReport, error) {
+func (r *Compactor) Orphans(ctx context.Context, lease catalog.Lease) (OrphanReport, error) {
 	var rep OrphanReport
 	seen := map[string]bool{}
 	for _, area := range []string{"staging/", "archive/"} {
@@ -120,7 +122,7 @@ func (r *Reconciler) Orphans(ctx context.Context, lease catalog.Lease) (OrphanRe
 }
 
 // settle handles one listed key.
-func (r *Reconciler) settle(ctx context.Context, lease catalog.Lease, info store.ObjectInfo, seen map[string]bool, rep *OrphanReport) error {
+func (r *Compactor) settle(ctx context.Context, lease catalog.Lease, info store.ObjectInfo, seen map[string]bool, rep *OrphanReport) error {
 	standing, err := r.Catalog.KeyStanding(ctx, info.Key)
 	if err != nil {
 		return err
@@ -158,7 +160,7 @@ func (r *Reconciler) settle(ctx context.Context, lease catalog.Lease, info store
 }
 
 // adopt registers p as adopted under lease and acts on the outcome.
-func (r *Reconciler) adopt(ctx context.Context, lease catalog.Lease, p *catalog.Pack, rep *OrphanReport) error {
+func (r *Compactor) adopt(ctx context.Context, lease catalog.Lease, p *catalog.Pack, rep *OrphanReport) error {
 	out, err := r.Catalog.RegisterPack(ctx, p, catalog.Registration{Lease: &lease, Adopted: true, HorizonHour: r.HorizonHour()})
 	if errors.Is(err, catalog.ErrInvalidRegistration) {
 		rep.Quarantined = append(rep.Quarantined, Quarantine{Key: p.Key, Reason: err.Error()})
@@ -195,7 +197,7 @@ func (r *Reconciler) adopt(ctx context.Context, lease catalog.Lease, p *catalog.
 
 // delete deletes the tombstoned key while this process holds lease: a worker that lost it does nothing further (compactor.md §8.1).
 // The lease may be lost between the check and the deletion, which is harmless: a tombstoned key is never registered again.
-func (r *Reconciler) delete(ctx context.Context, lease catalog.Lease, key string, rep *OrphanReport) error {
+func (r *Compactor) delete(ctx context.Context, lease catalog.Lease, key string, rep *OrphanReport) error {
 	if err := r.Catalog.VerifyLease(ctx, lease); err != nil {
 		return err
 	}
@@ -209,7 +211,7 @@ func (r *Reconciler) delete(ctx context.Context, lease catalog.Lease, key string
 
 // read verifies the object of info in full and reads the pack it holds;
 // a non-empty reason quarantines it, and an error leaves it for the next pass.
-func (r *Reconciler) read(ctx context.Context, info store.ObjectInfo) (*catalog.Pack, string, error) {
+func (r *Compactor) read(ctx context.Context, info store.ObjectInfo) (*catalog.Pack, string, error) {
 	opened, err := r.Store.Open(ctx, info.Key)
 	if err != nil {
 		return nil, "", err

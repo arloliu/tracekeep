@@ -26,7 +26,7 @@ import (
 
 // pair is two reconcilers of one catalog, store and bus, as two compact processes would be.
 type pair struct {
-	a, b *Reconciler
+	a, b *Compactor
 	s    *store.Mem
 	js   jetstream.JetStream
 }
@@ -47,8 +47,8 @@ func reconcilers(t *testing.T, c *catalog.Catalog) pair {
 		t.Fatal(err)
 	}
 	s := store.NewMem()
-	mk := func(holder string) *Reconciler {
-		return &Reconciler{
+	mk := func(holder string) *Compactor {
+		return &Compactor{
 			Catalog: c, Store: s, HorizonHour: func() int64 { return hour - 24 }, Log: slog.New(slog.DiscardHandler),
 			JS: js, Bus: cfg, Holder: holder, LeaseTTL: time.Hour, Interval: time.Minute,
 		}
@@ -57,7 +57,7 @@ func reconcilers(t *testing.T, c *catalog.Catalog) pair {
 	return pair{a: mk("a"), b: mk("b"), s: s, js: js}
 }
 
-func step(t *testing.T, r *Reconciler) {
+func step(t *testing.T, r *Compactor) {
 	t.Helper()
 	if err := r.Step(t.Context()); err != nil {
 		t.Fatal(err)
@@ -322,7 +322,7 @@ func TestRunReleasesTheLease(t *testing.T) {
 
 // The reconciler's metrics and readiness: the holder adopts, counts its cycles and holds the lease; the standby holds none;
 // neither is ready before it read the lease's state, and both are after.
-func TestReconcilerMetrics(t *testing.T) {
+func TestCompactorMetrics(t *testing.T) {
 	t.Parallel()
 	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
 		ctx := t.Context()
@@ -344,7 +344,7 @@ func TestReconcilerMetrics(t *testing.T) {
 		step(t, p.a)
 		step(t, p.a)
 		step(t, p.b)
-		for name, r := range map[string]*Reconciler{"holder": p.a, "standby": p.b} {
+		for name, r := range map[string]*Compactor{"holder": p.a, "standby": p.b} {
 			if err := r.Ready(ctx); err != nil {
 				t.Errorf("%s not ready after reading the lease's state: %v", name, err)
 			}
