@@ -72,6 +72,8 @@ type Store struct {
 	S3  S3     `yaml:"s3"`
 	// Presign lets readers download by presigned URL (T-33); off for an s3 store whose URLs readers cannot use.
 	Presign bool `yaml:"presign" default:"true" env:"TRACEKEEP_STORE_PRESIGN"`
+	// DownloadLifetime is the longest a download URL lives (T-41); compact.delete_delay exceeds it.
+	DownloadLifetime time.Duration `yaml:"download_lifetime" default:"15m" env:"TRACEKEEP_STORE_DOWNLOAD_LIFETIME" validate:"gt=0"`
 }
 
 // S3 is an S3-compatible endpoint (T-34).
@@ -115,7 +117,7 @@ type Parking struct {
 	RedeliveryDelay time.Duration `yaml:"redelivery_delay" default:"60s" env:"TRACEKEEP_PARKING_REDELIVERY_DELAY" validate:"gt=0"`
 }
 
-// Compact is the compact role: its reconciler (storage.md §5.4), its merges and its closes (compactor.md §8.1, §8.2).
+// Compact is the compact role: its reconciler (storage.md §5.4), its merges, closes, deletions and retention (compactor.md §8.1–§8.3).
 type Compact struct {
 	// LeaseTTL is how long a take or renewal holds the compactor lease.
 	LeaseTTL time.Duration `yaml:"lease_ttl" default:"1m" env:"TRACEKEEP_COMPACT_LEASE_TTL" validate:"gt=0"`
@@ -127,6 +129,9 @@ type Compact struct {
 	RedeliverySlack time.Duration `yaml:"redelivery_slack" default:"2m" env:"TRACEKEEP_COMPACT_REDELIVERY_SLACK" validate:"gte=0"`
 	// Inactivity is I: an open capture without a registration for I is closed (compactor.md §8.2, T-12).
 	Inactivity time.Duration `yaml:"inactivity" default:"2h" env:"TRACEKEEP_COMPACT_INACTIVITY" validate:"gt=0"`
+	// DeleteDelay is D: a merged input is deleted D after its merge, and a shortened retention evicts nothing early for D;
+	// it exceeds store.download_lifetime (compactor.md §8.3).
+	DeleteDelay time.Duration `yaml:"delete_delay" default:"1h" env:"TRACEKEEP_COMPACT_DELETE_DELAY" validate:"gt=0"`
 }
 
 // Metrics is the metrics and health listener (operations.md §10.4).
@@ -171,6 +176,10 @@ func (c *Config) check() error {
 	if bound := c.Ingest.FlushInterval + c.Ingest.AckWait + c.Compact.RedeliverySlack; c.Compact.QuietPeriod <= bound {
 		errs = append(errs, fmt.Errorf("compact.quiet_period %s must exceed ingest.flush_interval + ingest.ack_wait + compact.redelivery_slack, %s (T-25, T-41)",
 			c.Compact.QuietPeriod, bound))
+	}
+	if c.Compact.DeleteDelay <= c.Store.DownloadLifetime {
+		errs = append(errs, fmt.Errorf("compact.delete_delay %s must exceed store.download_lifetime %s (compactor.md §8.3)",
+			c.Compact.DeleteDelay, c.Store.DownloadLifetime))
 	}
 	switch c.Store.Kind {
 	case "fs":

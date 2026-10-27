@@ -456,8 +456,13 @@ func Compact(ctx context.Context, e *Env) error {
 		Catalog: e.Catalog, Store: e.Store, KeyPrefix: c.Store.KeyPrefix, HorizonHour: func() int64 { return ingest.HourOf(e.horizon()) },
 		Log: e.Log.With("role", "compact"), JS: e.JS, Bus: e.Bus(), Holder: c.Replica, LeaseTTL: c.Compact.LeaseTTL, Interval: c.Compact.Interval,
 		WorkDir: c.Ingest.WorkDir, Writer: writerName, QuietPeriod: c.Compact.QuietPeriod, Now: e.now,
-		Inactivity: c.Compact.Inactivity, FlushInterval: c.Ingest.FlushInterval,
+		Inactivity: c.Compact.Inactivity, FlushInterval: c.Ingest.FlushInterval, Retention: c.Retention, DeleteDelay: c.Compact.DeleteDelay,
 	}
+	claims, err := e.JS.ObjectStore(ctx, c.Bus.ClaimBucket)
+	if err != nil {
+		return err
+	}
+	r.Claims = compact.ObjectBucket{Store: claims}
 	dir, err := ownWorkDir(r.WorkDir, "compact", c.Replica)
 	if err != nil {
 		return err
