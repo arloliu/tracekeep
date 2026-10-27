@@ -62,7 +62,5 @@ Phase 1 is done (#9, #11, #13, #14, #16, #17, #18, #19).
   the result goes to the decision log.
 - The veq branch `docs/ve/log-service-decisions` (commit 7b8a019) carries the LS-row amendments and V-35;
   it is not merged yet.
-- The tracepack release after v0.8.0 makes `WriteClose` always write an uncompressed close segment (G5-272, announced by the tracepack maintainers);
-  when tracekeep adopts it, the close intent of `compactor.md` §8.2 drops the codec and keeps the serialized `PackMeta`, `writer_time` and the fixed `pack_id`.
 - The service's `go.mod` requires the SDK from its first tag (`producer/vX.Y.Z`) on;
   `producer/doc.go` blank-imports tracepack and nats.go only to keep the SDK's requirements until code imports them.
