@@ -100,6 +100,8 @@ type RetentionReport struct {
 	// Refused counts the deletions and evictions a guard refused, left for an operator;
 	// Failed counts the steps that failed and were left for the next cycle.
 	Refused, Failed int
+	// Pruned counts the change cursor's events pruned.
+	Pruned int
 }
 
 // Deletions deletes the merged inputs past their merge's delete_at (compactor.md §8.3): each by DeletePack, its object removed after the commit;
@@ -132,7 +134,8 @@ func (r *Compactor) Deletions(ctx context.Context, lease catalog.Lease, rep *Ret
 }
 
 // Retain runs retention (compactor.md §8.3–§8.4): the claim bucket listed and recorded, the configured period recorded,
-// every hour past its deadline evicted with its objects removed after the commit, then the survivors §8.4's predicate releases.
+// every hour past its deadline evicted with its objects removed after the commit, the survivors §8.4's predicate releases,
+// and the change cursor's events pruned with the configured period (catalog.md §7.3).
 func (r *Compactor) Retain(ctx context.Context, lease catalog.Lease, rep *RetentionReport) error {
 	listed, err := r.Claims.List(ctx)
 	if err != nil {
@@ -187,7 +190,13 @@ func (r *Compactor) Retain(ctx context.Context, lease catalog.Lease, rep *Retent
 		}
 	}
 
-	return r.releaseSurvivors(ctx, lease, rep)
+	if err := r.releaseSurvivors(ctx, lease, rep); err != nil {
+		return err
+	}
+	pruned, err := r.Catalog.PruneEvents(ctx, lease, r.Retention, r.now().UnixNano())
+	rep.Pruned += pruned
+
+	return err
 }
 
 // releaseSurvivors deletes every survivor §8.4's predicate now frees: marked deletable, its object deleted, its row removed,
