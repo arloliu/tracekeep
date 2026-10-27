@@ -183,23 +183,27 @@ func (c *Catalog) PendingRequests(ctx context.Context) ([]Request, error) {
 	return out, nil
 }
 
-// FinishRequest ends a pending request under l, done or failed with its outcome; a request already ended is left as it is.
-func (c *Catalog) FinishRequest(ctx context.Context, l Lease, id tracepack.UUID, failed bool, outcome string) error {
+// FinishRequest ends the pending request q under l, done or failed with its result, in a transaction that starts with q's capture row;
+// a request already ended is left as it is, and nothing is written. A merge request that merged is ended by its merge's commit instead.
+func (c *Catalog) FinishRequest(ctx context.Context, l Lease, q Request, failed bool, result string) error {
 	state := "done"
 	if failed {
 		state = "failed"
 	}
-	err := c.inTx(ctx, func(tx *sqlx.Tx) error {
+	err := outcome(c.inTx(ctx, func(tx *sqlx.Tx) error {
+		if _, err := c.lockCapture(ctx, tx, q.Capture); err != nil {
+			return err
+		}
 		if err := c.checkLease(ctx, tx, l); err != nil {
 			return err
 		}
-		_, err := tx.ExecContext(ctx, `UPDATE compact_requests SET state = ?, outcome = ?, done_at = ? WHERE request_id = ? AND state = 'pending'`,
-			state, outcome, c.now(), id[:])
+		res, err := tx.ExecContext(ctx, `UPDATE compact_requests SET state = ?, outcome = ?, done_at = ? WHERE request_id = ? AND state = 'pending'`,
+			state, result, c.now(), q.ID[:])
 
-		return err
-	})
+		return affected(res, err, errRollback)
+	}))
 	if err != nil {
-		return fmt.Errorf("catalog: finish request %s: %w", id, err)
+		return fmt.Errorf("catalog: finish request %s: %w", q.ID, err)
 	}
 
 	return nil

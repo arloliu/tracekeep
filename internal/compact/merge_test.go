@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -294,4 +296,74 @@ func TestMergePassMetrics(t *testing.T) {
 			}
 		}
 	})
+}
+
+// A requested merge counts as a merge of the task, and a pass whose every attempt failed stamps no success.
+func TestRequestedAndFailedMergeMetrics(t *testing.T) {
+	t.Parallel()
+	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
+		f := newFixture(t, c)
+		f.merging(t)
+		s := metrics.NewServer()
+		var err error
+		if f.r.Metrics, err = metrics.NewCompact(s); err != nil {
+			t.Fatal(err)
+		}
+		// Inside the quiet period: only the request merges.
+		f.r.Now = func() time.Time { return time.Unix(0, (hour+1)*nsPerHour) }
+		capture := f.admit(t)
+		f.stage(t, segment(t, capture, []uint64{0, 1}, false))
+		h := hour
+		if _, err := c.RequestCompaction(t.Context(), catalog.RequestMerge, capture, &h, "op"); err != nil {
+			t.Fatal(err)
+		}
+		if err := f.r.mergePass(t.Context(), f.lease); err != nil {
+			t.Fatal(err)
+		}
+		got := scrape(t, s)
+		for _, want := range []string{`tracekeep_compact_merges_total{outcome="merged"} 1`, `tracekeep_compact_last_success_timestamp{task="merge"}`} {
+			if !strings.Contains(got, want) {
+				t.Errorf("after a requested merge /metrics lacks %s", want)
+			}
+		}
+
+		g := metrics.NewServer()
+		if f.r.Metrics, err = metrics.NewCompact(g); err != nil {
+			t.Fatal(err)
+		}
+		f.r.Now = func() time.Time { return time.Unix(0, (hour+2)*nsPerHour) }
+		p := f.stage(t, segment(t, f.admit(t), []uint64{0, 1}, false))
+		f.r.Store = failingOpen{f.s, p.Key}
+		if err := f.r.mergePass(t.Context(), f.lease); err != nil {
+			t.Fatal(err)
+		}
+		got = scrape(t, g)
+		if !strings.Contains(got, `tracekeep_compact_merges_total{outcome="failed"} 1`) || !strings.Contains(got, `cycle_seconds_count{task="merge"} 1`) {
+			t.Errorf("an all-failed pass is not counted:\n%s", got)
+		}
+		if strings.Contains(got, `last_success_timestamp{task="merge"}`) {
+			t.Error("an all-failed pass stamped a success")
+		}
+	})
+}
+
+// At start the compactor removes the merges' working files a crash left, and nothing else.
+func TestCleanWorkDir(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	for _, name := range []string{"archive-1.tpk", "segment-1.tpk", "other"} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := CleanWorkDir(dir); err != nil {
+		t.Fatal(err)
+	}
+	left, err := filepath.Glob(filepath.Join(dir, "*"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{filepath.Join(dir, "other"), filepath.Join(dir, "segment-1.tpk")}; !slices.Equal(left, want) {
+		t.Errorf("left %v, want %v", left, want)
+	}
 }

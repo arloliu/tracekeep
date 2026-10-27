@@ -13,11 +13,13 @@ type RequestReport struct {
 	Done, Failed int
 	// Pending counts the requests left for a later cycle: a stale or failed attempt, or a kind this compactor does not execute yet.
 	Pending int
+	// Merges are the merges the requests attempted.
+	Merges MergeReport
 }
 
 // Requests executes the operators' pending requests under lease (T-41).
-// A merge request merges its scope now, its quiet period aside, if the scope can be merged; it ends done when the scope is settled,
-// and failed with the reason when it cannot be (a conflict, no staged pack, conflicting records).
+// A merge request merges its scope now, its quiet period aside, if the scope can be merged, and its merge's commit ends it done;
+// a scope already settled ends it done, one that cannot be merged (a conflict, no staged pack, conflicting records) ends it failed with the reason.
 // A stale merge or an error leaves the request for the next cycle; a lost lease ends the pass with ErrLeaseLost.
 func (r *Compactor) Requests(ctx context.Context, lease catalog.Lease) (RequestReport, error) {
 	var rep RequestReport
@@ -31,54 +33,64 @@ func (r *Compactor) Requests(ctx context.Context, lease catalog.Lease) (RequestR
 
 			continue
 		}
-		failed, outcome, err := r.mergeRequested(ctx, lease, catalog.Scope{Capture: q.Capture, Hour: *q.Hour})
-		if errors.Is(err, catalog.ErrLeaseLost) || ctx.Err() != nil {
+		end, err := r.mergeRequested(ctx, lease, q, &rep.Merges)
+		if ctx.Err() != nil {
+			return rep, ctx.Err()
+		}
+		if errors.Is(err, catalog.ErrLeaseLost) {
 			return rep, err
 		}
-		if err != nil || outcome == "" {
-			if err != nil {
-				r.Log.Warn("compact: merge request", "request", q.ID, "error", err)
-			}
+		switch {
+		case err != nil:
+			r.Log.Warn("compact: merge request", "request", q.ID, "error", err)
 			rep.Pending++
-
-			continue
+		case end == "merged":
+			rep.Done++ // ended by the merge's commit
+		case end == "":
+			rep.Pending++
+		default:
+			failed := end != "settled"
+			if err := r.Catalog.FinishRequest(ctx, lease, q, failed, end); err != nil {
+				return rep, err
+			}
+			if failed {
+				rep.Failed++
+			} else {
+				rep.Done++
+			}
 		}
-		if err := r.Catalog.FinishRequest(ctx, lease, q.ID, failed, outcome); err != nil {
-			return rep, err
+		if end != "" {
+			r.Log.Info("compact: merge request ended", "request", q.ID, "capture", q.Capture, "hour", *q.Hour, "outcome", end)
 		}
-		if failed {
-			rep.Failed++
-		} else {
-			rep.Done++
-		}
-		r.Log.Info("compact: merge request ended", "request", q.ID, "capture", q.Capture, "hour", *q.Hour, "failed", failed, "outcome", outcome)
 	}
 
 	return rep, nil
 }
 
-// mergeRequested merges s for a request and returns how the request ends; an empty outcome leaves it pending.
-func (r *Compactor) mergeRequested(ctx context.Context, lease catalog.Lease, s catalog.Scope) (bool, string, error) {
+// mergeRequested merges the scope q names and returns how q ends: merged (its merge's commit ended it), settled, a failure's reason,
+// or empty to leave it pending; the merge it attempts is added to merges.
+func (r *Compactor) mergeRequested(ctx context.Context, lease catalog.Lease, q catalog.Request, merges *MergeReport) (string, error) {
+	s := catalog.Scope{Capture: q.Capture, Hour: *q.Hour}
 	snap, err := r.Catalog.MergeSnapshot(ctx, s)
 	switch {
 	case err != nil:
-		return false, "", err
+		return "", err
 	case snap.State == "settled":
-		return false, "settled", nil
+		return "settled", nil
 	case len(snap.Inputs) == 0:
-		return true, "the scope has no staged pack", nil
+		return "the scope has no staged pack", nil
 	case !snap.Eligible:
-		return true, "a conflict touches the scope", nil
+		return "a conflict touches the scope", nil
 	}
-	out, err := r.merge(ctx, lease, s)
+	out, err := r.attempt(ctx, lease, s, &q.ID, merges)
 	switch {
 	case err != nil:
-		return false, "", err
+		return "", err
 	case out == merged:
-		return false, "merged", nil
+		return "merged", nil
 	case out == conflicted:
-		return true, "the inputs hold conflicting records", nil
+		return "the inputs hold conflicting records", nil
 	default:
-		return false, "", nil // stale, or no longer eligible: judged again next cycle
+		return "", nil // stale, failed, or no longer eligible: judged again next cycle
 	}
 }

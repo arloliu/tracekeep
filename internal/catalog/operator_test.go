@@ -113,22 +113,61 @@ func TestCompactRequests(t *testing.T) {
 		stale := compactorLease(t, c, "old")
 		lapse(t, c, `UPDATE leases SET until_ns = 0 WHERE name = 'compactor'`)
 		l := compactorLease(t, c, "new")
-		if err := c.FinishRequest(t.Context(), stale, id, false, "merged"); !errors.Is(err, ErrLeaseLost) {
+		q := pending[0]
+		if err := c.FinishRequest(t.Context(), stale, q, false, "settled"); !errors.Is(err, ErrLeaseLost) {
 			t.Errorf("FinishRequest under a lost lease = %v, want ErrLeaseLost", err)
 		}
-		if err := c.FinishRequest(t.Context(), l, id, false, "merged"); err != nil {
+		if err := c.FinishRequest(t.Context(), l, q, false, "settled"); err != nil {
 			t.Fatal(err)
 		}
-		if err := c.FinishRequest(t.Context(), l, id, true, "again"); err != nil {
+		rev := captureRevision(t, c, capture)
+		if err := c.FinishRequest(t.Context(), l, q, true, "again"); err != nil {
 			t.Errorf("finishing it again = %v, want nothing done", err)
+		}
+		if got := captureRevision(t, c, capture); got != rev {
+			t.Errorf("finishing an ended request wrote the capture row: revision %d, want %d", got, rev)
 		}
 		if pending, err := c.PendingRequests(t.Context()); err != nil || len(pending) != 0 {
 			t.Errorf("PendingRequests = %+v, %v; want none", pending, err)
 		}
 		var state, outcome string
 		row := c.read.QueryRowContext(t.Context(), `SELECT state, outcome FROM compact_requests WHERE request_id = ?`, id[:])
-		if err := row.Scan(&state, &outcome); err != nil || state != "done" || outcome != "merged" {
-			t.Errorf("request = %s, %q, %v; want done, merged", state, outcome, err)
+		if err := row.Scan(&state, &outcome); err != nil || state != "done" || outcome != "settled" {
+			t.Errorf("request = %s, %q, %v; want done, settled", state, outcome, err)
+		}
+	})
+}
+
+// A merge that executes a request ends it in its own commit, and a refused commit leaves it pending.
+func TestCommitMergeEndsItsRequest(t *testing.T) {
+	t.Parallel()
+	engines(t, func(t *testing.T, c *Catalog) {
+		capture := admitted(t, c)
+		in := segment(t, capture, 1, 0, 9)
+		register(t, c, in, Registration{Evidence: &Evidence{}})
+		hour := int64(1)
+		id, err := c.RequestCompaction(t.Context(), RequestMerge, capture, &hour, "op")
+		if err != nil {
+			t.Fatal(err)
+		}
+		l := compactorLease(t, c, "h")
+		snap := snapshot(t, c, capture)
+		register(t, c, segment(t, capture, 1, 10, 19), Registration{Evidence: &Evidence{}})
+		stale := mergeOf(snap, archiveOf(t, capture, 1, in))
+		stale.Request = &id
+		if out := commit(t, c, l, stale); out != MergeStale {
+			t.Fatalf("CommitMerge = %v, want stale", out)
+		}
+		if state, _, err := c.RequestStatus(t.Context(), id); err != nil || state != "pending" {
+			t.Errorf("after a stale merge the request is %s, %v; want pending", state, err)
+		}
+		m := mergeOf(snapshot(t, c, capture), archiveOf(t, capture, 1, in))
+		m.Request = &id
+		if out := commit(t, c, l, m); out != Merged {
+			t.Fatalf("CommitMerge = %v, want merged", out)
+		}
+		if state, outcome, err := c.RequestStatus(t.Context(), id); err != nil || state != "done" || outcome != "merged" {
+			t.Errorf("after the merge the request is %s, %q, %v; want done, merged", state, outcome, err)
 		}
 	})
 }

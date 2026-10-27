@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/arloliu/go-secs/tracepack"
@@ -16,6 +17,22 @@ import (
 
 // workFilePattern names a merge's working file under the working directory.
 const workFilePattern = "archive-*.tpk"
+
+// CleanWorkDir removes the merges' working files a crashed process left (storage.md §5.1): their scopes are merged again next cycle.
+// It removes nothing else, so ingest's working files in the same directory stay.
+func CleanWorkDir(dir string) error {
+	names, err := filepath.Glob(filepath.Join(dir, workFilePattern))
+	if err != nil {
+		return err
+	}
+	for _, n := range names {
+		if err := os.Remove(n); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+	}
+
+	return nil
+}
 
 // MergeReport is what a merge pass did, scope by scope.
 type MergeReport struct {
@@ -42,28 +59,49 @@ func (r *Compactor) Merges(ctx context.Context, lease catalog.Lease) (MergeRepor
 		return rep, err
 	}
 	for _, s := range scopes {
-		out, err := r.merge(ctx, lease, s)
-		if errors.Is(err, catalog.ErrLeaseLost) || ctx.Err() != nil {
-			return rep, err
+		_, err := r.attempt(ctx, lease, s, nil, &rep)
+		if ctx.Err() != nil {
+			return rep, ctx.Err()
 		}
-		switch {
-		case err != nil:
-			r.Log.Error("compact: merge failed", "capture", s.Capture, "hour", s.Hour, "error", err)
-			rep.Failed = append(rep.Failed, s)
-		case out == merged:
-			rep.Merged = append(rep.Merged, s)
-		case out == stale:
-			r.Log.Info("compact: merge stale, retried next cycle", "capture", s.Capture, "hour", s.Hour)
-			rep.Stale = append(rep.Stale, s)
-		case out == conflicted:
-			r.Log.Warn("compact: merge found conflicting records", "capture", s.Capture, "hour", s.Hour)
-			rep.Conflicted = append(rep.Conflicted, s)
-		default:
-			// The snapshot found the scope no longer eligible.
+		if errors.Is(err, catalog.ErrLeaseLost) {
+			return rep, err
 		}
 	}
 
 	return rep, nil
+}
+
+// attempt merges s, for request when it is not nil, and adds the attempt to rep by its outcome; a failure is logged and added as failed.
+func (r *Compactor) attempt(ctx context.Context, lease catalog.Lease, s catalog.Scope, request *tracepack.UUID, rep *MergeReport) (mergeOutcome, error) {
+	out, err := r.merge(ctx, lease, s, request)
+	if errors.Is(err, catalog.ErrLeaseLost) || ctx.Err() != nil {
+		return out, err
+	}
+	switch {
+	case err != nil:
+		r.Log.Error("compact: merge failed", "capture", s.Capture, "hour", s.Hour, "error", err)
+		rep.Failed = append(rep.Failed, s)
+	case out == merged:
+		rep.Merged = append(rep.Merged, s)
+	case out == stale:
+		r.Log.Info("compact: merge stale, retried next cycle", "capture", s.Capture, "hour", s.Hour)
+		rep.Stale = append(rep.Stale, s)
+	case out == conflicted:
+		r.Log.Warn("compact: merge found conflicting records", "capture", s.Capture, "hour", s.Hour)
+		rep.Conflicted = append(rep.Conflicted, s)
+	default:
+		// The snapshot found the scope no longer eligible.
+	}
+
+	return out, err
+}
+
+// add adds other's attempts to rep.
+func (rep *MergeReport) add(other MergeReport) {
+	rep.Merged = append(rep.Merged, other.Merged...)
+	rep.Stale = append(rep.Stale, other.Stale...)
+	rep.Conflicted = append(rep.Conflicted, other.Conflicted...)
+	rep.Failed = append(rep.Failed, other.Failed...)
 }
 
 // mergeOutcome is what the merge of one scope did.
@@ -76,8 +114,8 @@ const (
 	conflicted
 )
 
-// merge merges one scope.
-func (r *Compactor) merge(ctx context.Context, lease catalog.Lease, s catalog.Scope) (mergeOutcome, error) {
+// merge merges one scope, for request when it is not nil, whose commit then ends the request.
+func (r *Compactor) merge(ctx context.Context, lease catalog.Lease, s catalog.Scope, request *tracepack.UUID) (mergeOutcome, error) {
 	snap, err := r.Catalog.MergeSnapshot(ctx, s)
 	if err != nil || !snap.Eligible {
 		return ineligible, err
@@ -109,7 +147,7 @@ func (r *Compactor) merge(ctx context.Context, lease catalog.Lease, s catalog.Sc
 		return 0, err
 	}
 	r.hook(hookMergePut)
-	m := &catalog.Merge{Scope: s, Revision: snap.Revision, Archive: archive}
+	m := &catalog.Merge{Scope: s, Revision: snap.Revision, Archive: archive, Request: request}
 	for _, in := range snap.Inputs {
 		m.Inputs = append(m.Inputs, in.ID)
 	}
@@ -117,6 +155,7 @@ func (r *Compactor) merge(ctx context.Context, lease catalog.Lease, s catalog.Sc
 	if err != nil {
 		return 0, err
 	}
+	r.hook(hookMergeCommitted)
 	switch out {
 	case catalog.Merged, catalog.ArchiveRegistered:
 		// ArchiveRegistered: this merge's own commit, whose result was lost.
