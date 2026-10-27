@@ -136,6 +136,11 @@ so every process and every restart computes the same deadline:
 - before the first record no deadline exists and no URL is issued.
 The registration's horizon guard (§6.3) follows the configured period at once:
 refusing a registration early loses nothing an issued URL was promised; only eviction waits.
+The guard and eviction read different processes' clocks,
+so their mutual exclusion (`parking.md` *Retention, admission and parking*) assumes, as Q, I and the download margin do,
+one configured period in every role and host clocks that agree well within an hour boundary.
+An hour whose eviction a guard refuses (another hour's `packs` row naming one of its keys), like a merged input whose deletion one refuses,
+is left in place, logged and counted every cycle, and the task records no success until an operator decides.
 A completed export bundle under `exports/` is deleted at the end of its retention (default 24 h), its URLs clamped to that time likewise.
 Retention deletes whole hours older than the eviction horizon:
 in one transaction per hour of one admitted capture it copies the hour's `pack_ranges` union into `evicted_ranges`, deletes the packs, ranges, receipts, the hour's `claim_objects` rows **except survivors** (§8.4) and the scope row, and writes the tombstones;
@@ -146,6 +151,9 @@ so a declared loss of the hour reads afterwards as any hole outside `evicted_ran
 An hour holding claim objects but no scope is a candidate like any other:
 the claim bucket is listed before every retention pass, and an object without a `claim_objects` row is attributed by its name, `<capture_id>.<seq>`, and the SDK's metadata (§8.4) and given a `live` row,
 so a crash between an eviction's commit and its bucket deletions leaves objects the next listing attributes to the now scope-less hour, which is evicted again.
+The listing's transaction checks the lease and takes no capture row:
+it only inserts a missing row, as `ingest`'s receipt does, both ignoring an existing one,
+and taking the row of a capture the catalog does not know would create a `pending` capture for a stray object.
 The one retention decision therefore governs packs, receipts and claim objects alike, from the record's own `ts_utc_ns`, never from an object store clock.
 Seq order and hour order differ after a clock step, so evicted seqs are a set of ranges, not a prefix (§7.3).
 Holds for LS-13 (a), if the owner chooses them, exempt an hour from retention.
