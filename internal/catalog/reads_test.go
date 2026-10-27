@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jmoiron/sqlx"
+
 	"github.com/arloliu/go-secs/tracepack"
 )
 
@@ -284,6 +286,7 @@ func TestListPacks(t *testing.T) {
 		exec(t, c, `INSERT INTO evicted_ranges (capture_id, hour, seq_from, seq_to, ts_from, ts_to) VALUES (?, 6, 4, 5, ?, ?)`, a[:], h(6), h(6)+1)
 		parkedAt(t, c, a, 6, h(7)+1, "parked")
 		parkedAt(t, c, a, 7, h(7)+2, "terminated")
+		parkedAt(t, c, a, 8, h(6)+2, "parked") // in the evicted hour
 		exec(t, c, `UPDATE captures SET state = 'stopped', highest_seq_ts = ? WHERE capture_id = ?`, h(7)+2, a[:])
 		exec(t, c, `UPDATE counters SET epoch = 3 WHERE name = 'scope_events'`)
 		var w int64
@@ -300,13 +303,13 @@ func TestListPacks(t *testing.T) {
 			parked.Losses[0].ActionID != "a1" {
 			t.Errorf("hour 7: %+v, want seq 6 deferred and seq 7 lost", parked)
 		}
-		if len(got.Captures) != 1 || got.Captures[0].ID != a || got.Captures[0].Completeness.Frontier != 7 || len(got.Captures[0].Completeness.Evicted) != 1 {
+		if len(got.Captures) != 1 || got.Captures[0].ID != a || got.Captures[0].Completeness.Frontier != 8 || len(got.Captures[0].Completeness.Evicted) != 1 {
 			t.Errorf("captures %+v", got.Captures)
 		}
 	})
 }
 
-// checkHours checks TestListPacks' hours 3 through 8, no-data around the span, a's scope in 5 with p and evicted 6, and returns them by hour.
+// checkHours checks TestListPacks' hours 3 through 8, no-data around the span, a's scope in 5 with p and evicted 6 with its parked seq, and returns them by hour.
 func checkHours(t *testing.T, hours []HourListing, a tracepack.UUID, p *Pack) map[int64]HourListing {
 	t.Helper()
 	if len(hours) != 6 {
@@ -330,8 +333,8 @@ func checkHours(t *testing.T, hours []HourListing, a tracepack.UUID, p *Pack) ma
 		!slices.Equal(s.Packs[0].Ranges, p.Ranges) {
 		t.Errorf("hour 5 scope %+v", s)
 	}
-	if ev := byHour[6]; ev.NoData || !slices.Equal(ev.Evicted, []tracepack.UUID{a}) {
-		t.Errorf("hour 6: %+v, want evicted", ev)
+	if ev := byHour[6]; ev.NoData || !slices.Equal(ev.Evicted, []tracepack.UUID{a}) || len(ev.Deferred) != 1 || ev.Deferred[0].Seq != 8 {
+		t.Errorf("hour 6: %+v, want evicted with seq 8 deferred", ev)
 	}
 
 	return byHour
@@ -422,6 +425,7 @@ func TestListScopeChangesStale(t *testing.T) {
 			{Cursor{Epoch: 2, Seq: 3}, true},  // seq 4 was pruned unread
 			{Cursor{Epoch: 1, Seq: 9}, true},
 			{Cursor{Epoch: 2, Seq: 9}, false},
+			{Cursor{Epoch: 2, Seq: 100}, false}, // above the watermark: continued from the watermark, never skipping 10–100
 		} {
 			got := changes(t, c, tc.after, Selector{ToolID: "T1"}, 10)
 			if got.Stale != tc.stale {
@@ -434,14 +438,71 @@ func TestListScopeChangesStale(t *testing.T) {
 	})
 }
 
-// An empty or reversed window is refused, never listed as hours.
-func TestListPacksRefusesAnEmptyWindow(t *testing.T) {
+// An empty or reversed window is refused by every windowed read, never answered, even with an open capture whose span is unbounded.
+func TestReadsRefuseAnEmptyWindow(t *testing.T) {
 	t.Parallel()
 	engines(t, func(t *testing.T, c *Catalog) {
+		described(t, c, spec{instance: newID(t), origin: 0})
 		for _, w := range []Selector{window(hourNS(2), hourNS(2)), window(hourNS(3), hourNS(1))} {
-			if _, err := c.ListPacks(t.Context(), w, readQ); err == nil {
-				t.Errorf("window [%d, %d): listed, want refused", w.From, w.To)
+			_, errP := c.ListPacks(t.Context(), w, readQ)
+			_, errC := c.ListCaptures(t.Context(), w, readQ)
+			_, errD := c.ListDevices(t.Context(), w, readQ)
+			if errP == nil || errC == nil || errD == nil {
+				t.Errorf("window [%d, %d): %v, %v, %v; want each refused", w.From, w.To, errP, errC, errD)
 			}
+		}
+	})
+}
+
+// A gap whose interval runs backwards after a clock step still meets a window between its endpoints.
+func TestListDevicesBackwardGap(t *testing.T) {
+	t.Parallel()
+	engines(t, func(t *testing.T, c *Catalog) {
+		capture := described(t, c, spec{instance: newID(t), origin: 0})
+		p := segment(t, capture, 5, 0, 9)
+		p.Ranges = []Range{{SeqFrom: 0, SeqTo: 3, TSFrom: 77, TSTo: 80}, {SeqFrom: 6, SeqTo: 9, TSFrom: 20, TSTo: 29}}
+		register(t, c, p, Registration{Evidence: &Evidence{}})
+		got, err := c.ListDevices(t.Context(), window(30, 70), readQ)
+		if err != nil || len(got) != 1 || !got[0].Gap {
+			t.Errorf("ListDevices = %+v, %v; want the gap from 80 back to 20 inside [30, 70)", got, err)
+		}
+	})
+}
+
+// The reads bind no list of the selected captures, so a selection beyond SQLite's 32,766 parameters is answered.
+func TestReadsOfManyCaptures(t *testing.T) {
+	t.Parallel()
+	engines(t, func(t *testing.T, c *Catalog) {
+		const n = 33000
+		one := described(t, c, spec{instance: newID(t), origin: 1})
+		var d []byte
+		if err := c.read.GetContext(t.Context(), &d, `SELECT descriptor FROM captures WHERE capture_id = ?`, one[:]); err != nil {
+			t.Fatal(err)
+		}
+		for batch := 0; batch < n; batch += 500 {
+			query := `INSERT INTO captures (capture_id, state, descriptor, tool_id, recorder_instance_id, device, origin_ns, created_at) VALUES `
+			args := make([]any, 0, 3*500)
+			for i := range 500 {
+				id, instance := newID(t), newID(t)
+				if i > 0 {
+					query += ", "
+				}
+				query += "(?, 'open', ?, 'T1', ?, 'eqp', 1, 0)"
+				args = append(args, id[:], d, instance[:])
+			}
+			exec(t, c, query, args...)
+		}
+		sel := window(0, hourNS(1))
+		if got, err := c.ListCaptures(t.Context(), sel, readQ); err != nil || len(got) != n+1 {
+			t.Fatalf("ListCaptures = %d captures, %v; want %d", len(got), err, n+1)
+		}
+		err := c.snapshot(t.Context(), func(tx *sqlx.Tx) error {
+			_, err := listHours(t.Context(), tx, sel, 0, 0)
+
+			return err
+		})
+		if err != nil {
+			t.Errorf("listHours = %v", err)
 		}
 	})
 }
