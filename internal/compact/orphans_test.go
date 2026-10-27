@@ -133,6 +133,20 @@ func write(t *testing.T, capture tracepack.UUID, role tracepack.PackRole, seqs [
 // writeWith is write with the pack metadata adjusted by adjust before the Writer sees it.
 func writeWith(t *testing.T, capture tracepack.UUID, role tracepack.PackRole, seqs []uint64, stop bool, adjust func(*tracepack.PackMeta)) built {
 	t.Helper()
+	recs := make([]tracepack.Record, len(seqs))
+	for i, seq := range seqs {
+		recs[i] = data(seq)
+		if stop && i == len(seqs)-1 {
+			recs[i] = stopRecord(t, seq)
+		}
+	}
+
+	return writeRecords(t, capture, role, hour, recs, adjust)
+}
+
+// writeRecords writes recs, in order, into a pack of capture's hour hr, its metadata adjusted by adjust.
+func writeRecords(t *testing.T, capture tracepack.UUID, role tracepack.PackRole, hr int64, recs []tracepack.Record, adjust func(*tracepack.PackMeta)) built {
+	t.Helper()
 	name := "eqp"
 	origin, mono, tolerance, interval := int64(1000), int64(0), uint64(time.Second), uint64(5*time.Minute)
 	m := &tracepack.PackMeta{
@@ -141,25 +155,29 @@ func writeWith(t *testing.T, capture tracepack.UUID, role tracepack.PackRole, se
 		CaptureOriginUTCNs: &origin, CaptureOriginMonoNs: &mono, ClockStepToleranceNs: &tolerance,
 		LifecycleCoverage: tracepack.LifecycleCoverageSubscribed, QualityEvaluated: true,
 		RecorderInstanceID: tracepack.UUID{9}, RecorderInstanceName: &name,
-		PackRole: role, SeqStart: seqs[0], PeriodStart: hour * nsPerHour, PeriodEnd: (hour + 1) * nsPerHour,
+		PackRole: role, SeqStart: recs[0].Seq, PeriodStart: hr * nsPerHour, PeriodEnd: (hr + 1) * nsPerHour,
 		FlushIntervalNs: &interval, ScopeGeneration: new(uint64),
 	}
 	adjust(m)
+	// A pack masked at write marks every record a redaction entry names.
+	for _, e := range m.Redaction {
+		for i := range recs {
+			if recs[i].Seq == e.Seq {
+				recs[i].Quality |= tracepack.QualityRedacted
+			}
+		}
+	}
 	id := newID(t)
 	var buf bytes.Buffer
 	w, err := tracepack.NewWriter(&buf, tracepack.WriterOptions{
-		Meta: m, Facts: tracepack.PackFacts{DurableRecorder: true}, PackID: id, CaptureID: capture,
-		Now: func() time.Time { return time.Unix(0, hour*nsPerHour) },
+		Meta: m, Facts: tracepack.PackFacts{DurableRecorder: true, AnyRedacted: len(m.Redaction) > 0}, PackID: id, CaptureID: capture,
+		Now: func() time.Time { return time.Unix(0, hr*nsPerHour) },
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	for i, seq := range seqs {
-		r := data(seq)
-		if stop && i == len(seqs)-1 {
-			r = stopRecord(t, seq)
-		}
-		if err := w.Append(&r); err != nil {
+	for i := range recs {
+		if err := w.Append(&recs[i]); err != nil {
 			t.Fatal(err)
 		}
 	}

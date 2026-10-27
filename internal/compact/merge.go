@@ -92,8 +92,8 @@ func (r *Compactor) merge(ctx context.Context, lease catalog.Lease, s catalog.Sc
 		_ = os.Remove(tmp.Name())
 	}()
 	report, found, err := r.write(ctx, tmp, lease, &snap)
-	if found {
-		return conflicted, nil
+	if found != nil {
+		return conflicted, r.mergeConflicts(ctx, lease, s, found)
 	}
 	if err != nil {
 		return 0, err
@@ -128,8 +128,8 @@ func (r *Compactor) merge(ctx context.Context, lease catalog.Lease, s catalog.Sc
 	}
 }
 
-// write merges snap's inputs into w; found reports a merge that failed on conflicting records.
-func (r *Compactor) write(ctx context.Context, w *os.File, lease catalog.Lease, snap *catalog.Snapshot) (tracepack.MergeReport, bool, error) {
+// write merges snap's inputs into w; found holds the conflicts of a merge that failed on them, never nil then.
+func (r *Compactor) write(ctx context.Context, w *os.File, lease catalog.Lease, snap *catalog.Snapshot) (tracepack.MergeReport, []tracepack.Conflict, error) {
 	inputs := make([]tracepack.MergeInput, 0, len(snap.Inputs))
 	var opened []store.Object
 	defer func() {
@@ -140,12 +140,12 @@ func (r *Compactor) write(ctx context.Context, w *os.File, lease catalog.Lease, 
 	for _, in := range snap.Inputs {
 		obj, err := r.Store.Open(ctx, in.Key)
 		if err != nil {
-			return tracepack.MergeReport{}, false, fmt.Errorf("compact: open input %s: %w", in.Key, err)
+			return tracepack.MergeReport{}, nil, fmt.Errorf("compact: open input %s: %w", in.Key, err)
 		}
 		opened = append(opened, obj)
 		inputs = append(inputs, tracepack.MergeInput{ReaderAt: reading{obj}, Size: obj.Size()})
 	}
-	var conflicts []tracepack.Conflict
+	conflicts := []tracepack.Conflict{}
 	report, err := tracepack.Merge(ctx, w, inputs, tracepack.MergeOptions{
 		Writer: r.Writer,
 		// The revision the commit gives the scope, and the lease's fence token (compactor.md §8.1 step 4).
@@ -156,13 +156,13 @@ func (r *Compactor) write(ctx context.Context, w *os.File, lease catalog.Lease, 
 		Sync:            w,
 	})
 	if errors.Is(err, tracepack.ErrMergeConflict) {
-		return report, true, nil
+		return report, conflicts, nil
 	}
 	if err != nil {
-		return report, false, fmt.Errorf("compact: merge: %w", err)
+		return report, nil, fmt.Errorf("compact: merge: %w", err)
 	}
 
-	return report, false, nil
+	return report, nil, nil
 }
 
 // describeArchive reads the archive in w back as the pack to register: its key from its identity, its exact ranges and its losses.
