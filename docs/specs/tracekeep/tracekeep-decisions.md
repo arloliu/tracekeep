@@ -453,3 +453,22 @@ so the earlier text that a restore keeps it was wrong; a changed `Created` or a 
 since an object a producer is still putting may yet appear (`ingest.md` §6.1); parking at the first miss and never parking were rejected.
 **`parked replay` is withdrawn** from the admin commands:
 the parked consumer retries on its own after `parking.redelivery_delay`, and an early retry needs a design of its own, kept as proposal P1.
+
+### T-41 — what the phase 2 plan settled (2026-10-27)
+
+The owner's answers to nine points the phase 2 plan raised before it started.
+**Downloads from a store that does not presign** (`fs`, which `dev` uses, or `storage.presign` off) are served by the API in phase 2:
+the `download` key purpose of `masking-keys.md` §9 comes forward whole, its binding check, `file` and `env` providers and issuing and accepted key ids included,
+and phase 3 adds the other purposes.
+**`ListDevices`** is built in phase 2 with the other reads.
+**The catalog's migrations are applied by the binary through Atlas's Go library**, which replaces T-12's "Atlas CLI for the first release":
+`ariga.io/atlas` v1.3.0 (Apache-2.0) builds its `sql/migrate`, `sql/mysql` and `sql/sqlite` packages without cgo and imports no cgo SQLite driver;
+its executor needs a revision store of the service's own, since the CLI's lives in a separate module (`catalog.md` §7.4).
+**`object adopt` is withdrawn**: the reconciler adopts what it can verify, and a manual adoption needs a proposal that defines it.
+**`ListDevices`, `ListCaptures` and `ListScopeChanges`** are granted to `pack-reader` and to `viewer` (`api.md` §10.2).
+**A download URL lives 15 minutes** by default, below D.
+**`scope merge` and `capture close` are requests** in `compact_requests` that the compactor holding the lease executes at its next cycle,
+so neither needs the service stopped nor gives an admin process the lease.
+**An excluded input emits `excluded`**, a scope event of its own.
+**The redelivery slack** of `catalog.md` §7.3 is `compact.redelivery_slack`, default 2 minutes,
+and Q is validated strictly above F + `ack_wait` + slack (5 + 7 + 2 < 15 minutes).

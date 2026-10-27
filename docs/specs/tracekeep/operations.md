@@ -29,15 +29,15 @@ Contract changes go through proposals, which the subject [README.md](README.md) 
 | Command | For |
 |---|---|
 | `capture terminate <id>` | the operator action of G5-251 and of every `open incident` row of §6.1: terminates the capture's deferred and parked messages, writes every unresolved parked version `terminated`, the declared losses, the audit row and a **termination order** with the traffic stream's `LastSeq` as cut-off for originals never parked (§6.1 *operator termination*); the acknowledgements follow at each message's next delivery; for a `pending` capture it ends the messages and leaves the placeholder row and its version resolutions in place; audited |
-| `capture close <id>` | force a close intent now instead of waiting for I |
-| `scope merge <capture> <hour>` | re-run a merge after an operator resolved its inputs |
+| `capture close <id>` | force a close intent now instead of waiting for I; a request the compactor executes at its next cycle (T-41) |
+| `scope merge <capture> <hour>` | re-run a merge after an operator resolved its inputs; a request the compactor executes at its next cycle (T-41) |
 | `conflict acknowledge <capture> <seq>` | closes the incident; the scope stays unmerged for its lifetime (readers take the union and report the conflict, exports flag it, retention evicts it on time); a merge over differing versions is impossible by [STO §4], so no command promises one |
 | `scope exclude-input <pack>` | sets the pack `excluded` under the capture-row serialization, bumps the scope's revision and emits an event, so the next merge snapshot (which takes `staged` packs only) leaves it out; it stays readable and is never deleted by the merge relation; audited |
 | `key verify <key_id>` | re-resolves a key and compares its fingerprint with the binding, for the `key-binding-mismatch` incident |
 | `parked list` / `parked terminate <capture>` | the parking stream (§6.1): `list` shows each version's state, `evicted-hour` included, its messages with their states and its survivor object; `terminate` writes the version `terminated` with the audit row; the messages are acknowledged under it at their next delivery (G5-269) |
 | `bus adopt-stream <role>` | the last step of the stop-the-world replacement procedure of §6.1: allocates the new incarnation, marks the retired one's copy rows `lost` and its termination orders `spent`; refuses to run while any tracekeep lease is live; audited |
 | `capture show <id>` | the capture's versions, copies, survivors and termination orders with their states |
-| `object adopt <key>` / `object list --unattributed` / `object list --survivors` | reconciler decisions made by hand, on unregistered objects only |
+| `object list --unattributed` / `object list --survivors` | the objects the reconciler leaves to the operator: those without the SDK's metadata, and survivors with their evicted hour and bytes |
 | `config list --blocking-retirement` | the captures that keep a configuration alive (§6.4) |
 | `deferred list [--capture]` | what is waiting, since when, why |
 
@@ -50,7 +50,7 @@ shipped in `docs/guides/runbook.md` and referenced by the alert annotations.
 
 **Tunables**, all in one table in `docs/guides/configuration.md` with their defaults and the consequence of moving each:
 F, Q, I, L, D, H, τ, ε, the lane sizes, the key-set cap, the send path's reporting grace (default 5 s) and unawaited-entry bound (default 30 s, T-31), `parking.enabled` (default true; false documents the service-wide stall it allows)
-`storage.presign` (default on, T-33), the download URL's margin (default 2 min) and floor (default 1 min), an export bundle's retention (default 24 h),
+`storage.presign` (default on, T-33), the download URL's lifetime (default 15 min, T-41), margin (default 2 min) and floor (default 1 min), an export bundle's retention (default 24 h),
 and `parking.redelivery_delay` (default 60 s, the parked consumer's scheduled nak delay;
 how soon a termination or a cleared blocker takes effect follows from it only while that consumer is up and has delivery capacity,
 and the completion signal is `parked list`, §6.1) (§13 lists the defaults).
