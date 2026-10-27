@@ -30,7 +30,7 @@ The tunables of later phases (Q, I, L, D, the masking keys) join this file with 
 | `store.dir` | — | `TRACEKEEP_STORE_DIR` | the `fs` store's root |
 | `store.s3.endpoint`, `.region`, `.bucket`, `.access_key_id`, `.secret_access_key_ref` | — | `TRACEKEEP_S3_…` | an S3-compatible endpoint (T-34); empty endpoint for AWS; the bucket and both credentials are required, the store taking static credentials only |
 | `store.presign` | `true` | `TRACEKEEP_STORE_PRESIGN` | readers download by presigned URL (T-33); off for a store whose URLs they cannot use |
-| `store.download_lifetime` | `15m` | `TRACEKEEP_STORE_DOWNLOAD_LIFETIME` | the longest a download URL lives (T-41); `compact.delete_delay` must exceed it |
+| `store.download_lifetime` | `15m` | `TRACEKEEP_STORE_DOWNLOAD_LIFETIME` | the longest a download URL lives (T-41); `compact.delete_delay` must exceed it by more than 2 minutes |
 | `ingest.flush_interval` | `5m` | `TRACEKEEP_INGEST_FLUSH_INTERVAL` | F (T-25): longer makes fewer, larger segments and a later registration; Q must exceed F plus `ack_wait` plus slack |
 | `ingest.ack_wait` | `7m` | `TRACEKEEP_INGEST_ACK_WAIT` | must exceed F plus an upload, and with the redelivery slack stay below Q minus F (T-25); 7 minutes, the plan's middle of that range |
 | `ingest.max_ack_pending` | `50000` | `TRACEKEEP_INGEST_MAX_ACK_PENDING` | above the peak message rate times F plus an upload, or delivery stalls |
@@ -46,5 +46,5 @@ The tunables of later phases (Q, I, L, D, the masking keys) join this file with 
 | `compact.quiet_period` | `15m` | `TRACEKEEP_COMPACT_QUIET_PERIOD` | Q (T-12): a scope becomes a merge candidate once its hour ended Q ago; must exceed F + `ack_wait` + the redelivery slack; shorter settles sooner and reopens more often after a late flush |
 | `compact.inactivity` | `2h` | `TRACEKEEP_COMPACT_INACTIVITY` | I (T-12): an open capture without a registration for I is closed; shorter closes a quiet capture sooner, and a record arriving after its close is still staged |
 | `compact.redelivery_slack` | `2m` | `TRACEKEEP_COMPACT_REDELIVERY_SLACK` | the time Q leaves after F and `ack_wait` for a redelivered message to be flushed (T-41) |
-| `compact.delete_delay` | `1h` | `TRACEKEEP_COMPACT_DELETE_DELAY` | D (`compactor.md` §8.3): a merged input is deleted D after its merge (a change applies to later merges), and a shortened `retention` evicts nothing early for D; must exceed `store.download_lifetime` |
+| `compact.delete_delay` | `1h` | `TRACEKEEP_COMPACT_DELETE_DELAY` | D (`compactor.md` §8.3): a merged input is deleted D after its merge (a change applies to later merges), and a shortened `retention` evicts nothing early for D; must exceed `store.download_lifetime` by more than 2 minutes, the clock skew between hosts it allows |
 | `metrics.listen` | `:9090` | `TRACEKEEP_METRICS_LISTEN` | where `/metrics`, `/healthz` and `/readyz` are served (`operations.md` §10.4); empty serves none |

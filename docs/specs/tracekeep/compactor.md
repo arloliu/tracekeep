@@ -105,7 +105,7 @@ and a read whose range meets the gap reports `incomplete` ([STO §4]).
 A pack is deletable when it is an input of a successful merge
 whose output pack is in state `staged` or `merged`, or `deleted`, which only a merged pack becomes, its records living on in a later merge's output (the relation in `merges`/`merge_inputs`, never a flag or lineage tag),
 so a chain of merges is deleted in any order and a refused input stays a candidate;
-it is deleted a delay D (default 1 hour) after its own merge, at the `merges.delete_at` its commit fixed (`merges.at` + D), D exceeding the lifetime of any download URL, presigned or served by the API (§5.2 *Downloads*, §10.1), and any read in flight;
+it is deleted a delay D (default 1 hour) after its own merge, at the `merges.delete_at` its commit fixed (`merges.at` + D), D exceeding the lifetime of any download URL, presigned or served by the API (§5.2 *Downloads*, §10.1), by more than two minutes of clock skew, and any read in flight;
 a URL issued after the merge is clamped to that time instead (§10.1 *Downloads*, T-33),
 and a `tombstones` row is written in the same transaction as the `deleted` state.
 Every deletion, by this rule or by retention, runs a transaction
@@ -129,7 +129,8 @@ so every process and every restart computes the same deadline:
   a longer period is inserted with the latest row's H and U;
   a shorter one with H the period in force at that moment and U now + D,
   so two shortenings inside one window hold the longest;
-  D exceeds every URL's lifetime, so a URL issued before the change has expired by U;
+  D exceeds every URL's lifetime by more than the two minutes two hosts' clocks may disagree (the download margin's skew, T-33),
+  so a URL issued before the change has expired by U however the issuing, recording and evicting hosts' clocks differ;
 - an hour may be evicted at the first t at which its end plus the period in force at t has passed,
   which is its deadline, and the eviction horizon is the hour that rule reaches now;
   a merged input's deadline is the earlier of its hour's and its own merge's `delete_at` (through `merge_inputs`), never the scope's `merged_at`, which a later merge moves,

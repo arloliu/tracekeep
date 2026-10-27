@@ -131,3 +131,29 @@ func TestRecordRetentionUnderALostLease(t *testing.T) {
 		}
 	})
 }
+
+// A URL issued just before a shortening outlives the hold only if D leaves the clocks' skew beyond its lifetime:
+// the recording compactor a minute slow, the next holder a minute fast, the hour's held deadline otherwise far away.
+func TestRetentionHoldAcrossSkewedClocks(t *testing.T) {
+	t.Parallel()
+	const lifetime, skew = 15 * time.Minute, time.Minute
+	real0 := hourNS(1000) // the true time of the issue and of the shortening
+	expiry := real0 + int64(lifetime)
+	for _, tc := range []struct {
+		d    time.Duration
+		safe bool
+	}{{lifetime + 2*skew, false}, {lifetime + 2*skew + time.Second, true}} {
+		// The slow recorder holds the month until its own now + D.
+		recorded := Retention{Known: true, Period: time.Hour, Held: month, HeldUntil: real0 - int64(skew) + int64(tc.d)}
+		hour := int64(990) // kept by the month, past the shortened hour
+		// The fast holder's clock reads real + skew: its first eviction of hour, in true time.
+		evicted := real0
+		for hour >= recorded.HorizonHour(evicted+int64(skew)) {
+			evicted += int64(time.Second)
+		}
+		if safe := evicted > expiry; safe != tc.safe {
+			t.Errorf("D %s: evicted %s after the issue, URL expiry %s; safe %v, want %v",
+				tc.d, time.Duration(evicted-real0), lifetime, safe, tc.safe)
+		}
+	}
+}
