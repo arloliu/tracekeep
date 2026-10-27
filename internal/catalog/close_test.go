@@ -1,6 +1,7 @@
 package catalog
 
 import (
+	"encoding/hex"
 	"errors"
 	"slices"
 	"strconv"
@@ -483,3 +484,33 @@ func TestRegistrationBeforeACloseIntent(t *testing.T) {
 }
 
 func itoa(v int64) string { return strconv.FormatInt(v, 10) }
+
+// The successor trigger needs both silences: the capture's own for Q, and the successor's registration at least Q old.
+func TestSuccessorNeedsBothSilences(t *testing.T) {
+	t.Parallel()
+	engines(t, func(t *testing.T, c *Catalog) {
+		l := compactorLease(t, c, "h")
+		instance := newID(t)
+		old := admittedAs(t, c, instance, 100)
+		register(t, c, segment(t, old, 1, 0, 9), Registration{Evidence: &Evidence{}})
+		next := admittedAs(t, c, instance, 200)
+		register(t, c, segment(t, next, 1, 0, 9), Registration{Evidence: &Evidence{}})
+		now := c.now()
+		// The capture silent for long, its successor registered just now: not yet Q old.
+		lapse(t, c, "UPDATE captures SET last_registered_at = "+itoa(now-int64(time.Hour))+" WHERE capture_id = x'"+hexOf(old)+"'")
+		if got := candidates(t, c, now+int64(quiet)/2); len(got) != 0 {
+			t.Errorf("candidates with a successor registered under Q ago = %v, want none", got)
+		}
+		if out := closeIntent(t, c, l, intentOf(t, old, CloseSuccessor, now+int64(quiet)/2)); out != CloseIneligible {
+			t.Errorf("CloseIntent with a successor registered under Q ago = %v, want ineligible", out)
+		}
+		// The successor Q old, the capture registered within Q: refused too.
+		later := now + int64(quiet) + 1
+		lapse(t, c, "UPDATE captures SET last_registered_at = "+itoa(later-1)+" WHERE capture_id = x'"+hexOf(old)+"'")
+		if out := closeIntent(t, c, l, intentOf(t, old, CloseSuccessor, later)); out != CloseIneligible {
+			t.Errorf("CloseIntent of a capture registered within Q = %v, want ineligible", out)
+		}
+	})
+}
+
+func hexOf(id tracepack.UUID) string { return hex.EncodeToString(id[:]) }
