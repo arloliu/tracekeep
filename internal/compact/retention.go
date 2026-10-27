@@ -97,8 +97,9 @@ type RetentionReport struct {
 	// Attributed and Unattributed count the listing's objects without a row, by whether the SDK's metadata attributes them;
 	// Survivors counts the claim objects an eviction kept, and Released the survivors deleted.
 	Attributed, Unattributed, Survivors, Released int
+	// Refused counts the deletions and evictions a guard refused, left for an operator;
 	// Failed counts the steps that failed and were left for the next cycle.
-	Failed int
+	Refused, Failed int
 }
 
 // Deletions deletes the merged inputs past their merge's delete_at (compactor.md §8.3): each by DeletePack, its object removed after the commit;
@@ -115,6 +116,9 @@ func (r *Compactor) Deletions(ctx context.Context, lease catalog.Lease, rep *Ret
 			return err
 		}
 		if !ok {
+			r.Log.Warn("compact: a merged input's deletion refused", "key", d.Key)
+			rep.Refused++
+
 			continue
 		}
 		rep.Deleted++
@@ -160,6 +164,9 @@ func (r *Compactor) Retain(ctx context.Context, lease catalog.Lease, rep *Retent
 			return err
 		}
 		if !ev.Evicted {
+			r.Log.Warn("compact: an hour's eviction refused", "capture", s.Capture, "hour", s.Hour)
+			rep.Refused++
+
 			continue
 		}
 		rep.Evicted++

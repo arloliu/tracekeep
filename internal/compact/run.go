@@ -231,12 +231,12 @@ func (r *Compactor) cycle(ctx context.Context, lease catalog.Lease) error {
 }
 
 // retentionPass runs the deletion task and then the retention task, and records their metrics:
-// each succeeds when it ended in no error and none of its steps failed.
+// each succeeds when it ended in no error and none of its steps failed or was refused.
 func (r *Compactor) retentionPass(ctx context.Context, lease catalog.Lease) error {
 	started := time.Now()
 	var del RetentionReport
 	err := r.Deletions(ctx, lease, &del)
-	r.Metrics.Cycle("delete", time.Since(started), err == nil && del.Failed == 0)
+	r.Metrics.Cycle("delete", time.Since(started), err == nil && del.Failed+del.Refused == 0)
 	if err != nil {
 		r.Metrics.Retention(del.Deleted, del.Tombstoned)
 
@@ -245,7 +245,7 @@ func (r *Compactor) retentionPass(ctx context.Context, lease catalog.Lease) erro
 	started = time.Now()
 	var ret RetentionReport
 	err = r.Retain(ctx, lease, &ret)
-	r.Metrics.Cycle("retention", time.Since(started), err == nil && ret.Failed == 0)
+	r.Metrics.Cycle("retention", time.Since(started), err == nil && ret.Failed+ret.Refused == 0)
 	r.Metrics.Retention(del.Deleted, del.Tombstoned+ret.Tombstoned)
 	if err != nil {
 		return err

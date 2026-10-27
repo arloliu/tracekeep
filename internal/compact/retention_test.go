@@ -388,3 +388,127 @@ func TestRetentionPassMetrics(t *testing.T) {
 		}
 	})
 }
+
+// A retention shortened across a restart evicts nothing early: the first compactor records a month,
+// a second one configured with a day evicts no hour the month still keeps until D has passed since it recorded the day.
+func TestRetentionShortenedAcrossARestart(t *testing.T) {
+	t.Parallel()
+	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
+		f := newFixture(t, c)
+		b := f.retaining(t)
+		capture := f.admit(t)
+		seg := f.stage(t, writeSegment(t, capture, []uint64{0, 1}, noAdjust))
+		t0 := time.Unix(0, (hour+1)*nsPerHour).Add(2 * 24 * time.Hour) // two days after the hour: a month keeps it, a day does not
+		at := func(when time.Time) func() time.Time { return func() time.Time { return when } }
+		f.r.Now = at(t0)
+		if rep := f.retain(t); rep.Evicted != 0 {
+			t.Fatalf("Retain under a month = %+v", rep)
+		}
+		restarted := &Compactor{
+			Catalog: c, Store: f.s, Log: f.r.Log, Claims: b, Bus: f.r.Bus, Retention: 24 * time.Hour, DeleteDelay: time.Hour,
+			Now: at(t0.Add(10 * time.Minute)),
+		}
+		retain := func(r *Compactor) RetentionReport {
+			var rep RetentionReport
+			if err := r.Retain(t.Context(), f.lease, &rep); err != nil {
+				t.Fatal(err)
+			}
+
+			return rep
+		}
+		if rep := retain(restarted); rep.Evicted != 0 || !f.present(t, seg.Key) {
+			t.Fatalf("Retain right after shortening = %+v, want nothing evicted", rep)
+		}
+		restarted.Now = at(t0.Add(10*time.Minute + time.Hour - time.Second))
+		if rep := retain(restarted); rep.Evicted != 0 {
+			t.Fatalf("Retain just inside D = %+v, want nothing evicted", rep)
+		}
+		restarted.Now = at(t0.Add(10*time.Minute + time.Hour))
+		if rep := retain(restarted); rep.Evicted != 1 || f.present(t, seg.Key) {
+			t.Errorf("Retain once D passed = %+v, want the hour evicted", rep)
+		}
+	})
+}
+
+// A survivor's release whose bucket deletion fails leaves the row deletable and the object in place, counted as failed;
+// the next cycle resumes it and removes both.
+func TestSurvivorReleaseResumes(t *testing.T) {
+	t.Parallel()
+	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
+		f := newFixture(t, c)
+		b := f.retaining(t)
+		capture := f.admit(t)
+		needed := sdkObject(t, capture, 6, hour*nsPerHour+10)
+		b.put(needed)
+		v := &catalog.Identity{Version: catalog.VersionKey{Capture: capture, Seq: 6, Digest: [32]byte{6}}, Incarnation: 99, StreamSeq: 6, Hour: hour}
+		if _, err := c.BeginParking(t.Context(), v, "claim-conflict", "claims/"+needed.Name, 0); err != nil {
+			t.Fatal(err)
+		}
+		if rep := f.retain(t); rep.Survivors != 1 {
+			t.Fatalf("Retain = %+v, want a survivor", rep)
+		}
+		seq := uint64(6)
+		if _, err := c.TerminateParked(t.Context(), capture, &seq, "op", "a1"); err != nil {
+			t.Fatal(err)
+		}
+		b.failDeletes = true
+		if rep := f.retain(t); rep.Released != 0 || rep.Failed != 1 {
+			t.Fatalf("Retain with a failing bucket = %+v, want the release failed", rep)
+		}
+		objs, err := c.ClaimObjects(t.Context())
+		if err != nil || len(objs) != 1 || objs[0].State != "deletable" || len(b.names()) != 1 {
+			t.Fatalf("after the failed release: rows %+v, %v, bucket %v", objs, err, b.names())
+		}
+		b.failDeletes = false
+		if rep := f.retain(t); rep.Released != 1 || len(b.names()) != 0 {
+			t.Errorf("the resumed release = %+v, bucket %v", rep, b.names())
+		}
+	})
+}
+
+// A crash between an eviction's commit and its store deletions: the orphan pass deletes the tombstoned keys.
+func TestEvictedPacksDeletedByTheOrphanPass(t *testing.T) {
+	t.Parallel()
+	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
+		f := newFixture(t, c)
+		f.retaining(t)
+		capture := f.admit(t)
+		seg := f.stage(t, writeSegment(t, capture, []uint64{0, 1}, noAdjust))
+		f.r.Store = failingDelete{f.s}
+		if rep := f.retain(t); rep.Evicted != 1 || rep.Failed != 1 {
+			t.Fatalf("Retain = %+v, want the hour evicted and its removal failed", rep)
+		}
+		f.r.Store = f.s
+		if !f.present(t, seg.Key) {
+			t.Fatal("the failed removal removed the pack")
+		}
+		f.pass(t)
+		if f.present(t, seg.Key) {
+			t.Error("the orphan pass left an evicted pack's tombstoned key")
+		}
+	})
+}
+
+// An eviction a guard refuses, another hour's row naming one of its keys, is left in place and counted every cycle.
+func TestRefusedEvictionIsCounted(t *testing.T) {
+	t.Parallel()
+	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
+		f := newFixture(t, c)
+		f.retaining(t)
+		capture := f.admit(t)
+		seg := f.stage(t, writeSegment(t, capture, []uint64{0, 1}, noAdjust))
+		twin := *seg
+		twin.ID, twin.Hour = newID(t), seg.Hour+5000
+		if _, err := c.RegisterPack(t.Context(), &twin, catalog.Registration{Evidence: &catalog.Evidence{}}); err != nil {
+			t.Fatal(err)
+		}
+		for range 2 {
+			if rep := f.retain(t); rep.Refused != 1 || rep.Evicted != 0 {
+				t.Fatalf("Retain = %+v, want the eviction refused", rep)
+			}
+		}
+		if !f.present(t, seg.Key) {
+			t.Error("a refused eviction removed the pack")
+		}
+	})
+}
