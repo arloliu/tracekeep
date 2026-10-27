@@ -36,15 +36,20 @@ Contract changes go through proposals, which the subject [README.md](README.md) 
 ### 8.1 Merge
 
 1. Take the compactor lease (`leases`, `fence_token` = a monotonic counter) and renew it.
-2. Candidate scopes: `open` or `reopened`, hour end + Q passed, having packs in state `staged`, and no `conflicts` row.
-3. Snapshot: read `scopes.revision` = r and the **inputs**:
-   every pack of the scope in state `staged`, segments and archives alike (an archive stays `staged` until it is an input of a later merge).
+2. Candidate scopes: `open` or `reopened`, hour end + Q passed, having packs in state `staged`, and no `conflicts` row
+   (a row touches a scope when either of its packs is a pack of that capture and hour, in any state).
+3. Snapshot: read `scopes.revision` = r first, then the **inputs**:
+   every pack of the scope in state `staged`, segments and archives alike (an archive stays `staged` until it is an input of a later merge);
+   whatever changes after r was read advances the revision, so the commit's compare-and-set catches it on either engine.
 4. `tracepack.Merge` over `ReaderAt`s of the inputs; write the archive to a temp file; put under its `archive/` key.
+   The archive's `scope_generation` is the revision its commit gives the scope (r + 1), its `publisher_epoch` the lease's fence token,
+   and its writer tag the service's, as a segment's; the merge generates its `pack_id` and `replacement_set_id`.
 5. Commit, **one transaction**, all or nothing, starting with the capture row update of §6.3:
    insert the archive `packs` row with its `pack_ranges` (the union) and `pack_losses`;
    insert `merges` and `merge_inputs`; mark inputs `merged`;
    `UPDATE scopes SET state='settled', archive_pack_id=?, revision=revision+1 WHERE … AND revision=r`;
    `UPDATE leases … WHERE holder=? AND fence_token=?`;
+   re-read under the capture row that no `conflicts` row touches the scope and every input is still `staged`, aborting otherwise;
    the `counters` update that allocates the `settled` event's seq is the last statement (§7.3);
    zero affected rows on either update **rolls back the whole transaction**.
    A rolled-back merge **never deletes its uploaded archive directly**:
