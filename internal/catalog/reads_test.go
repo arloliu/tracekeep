@@ -1,6 +1,8 @@
 package catalog
 
 import (
+	"database/sql"
+	"encoding/binary"
 	"slices"
 	"testing"
 	"time"
@@ -243,4 +245,94 @@ func TestListDevices(t *testing.T) {
 			t.Error("a gap ending before the window reported in it")
 		}
 	})
+}
+
+// parkedAt writes a version of capture's seq whose record is at ts, in state, as parking would.
+func parkedAt(t *testing.T, c *Catalog, capture tracepack.UUID, seq uint64, ts int64, state string) {
+	t.Helper()
+	var header [44]byte
+	binary.LittleEndian.PutUint64(header[:8], seq)
+	binary.LittleEndian.PutUint64(header[8:16], uint64(ts)) //nolint:gosec // a test time is positive
+	by := sql.NullString{String: "a1", Valid: state == "terminated"}
+	exec(t, c, `INSERT INTO parked (capture_id, seq, header, payload_digest, state, reason, hour, terminated_by, parked_at)
+		VALUES (?, ?, ?, ?, ?, 'x', ?, ?, 0)`, capture[:], int64(seq), header[:], make([]byte, 32), state, floorHour(ts), by)
+}
+
+func listPacks(t *testing.T, c *Catalog, sel Selector) Listing {
+	t.Helper()
+	got, err := c.ListPacks(t.Context(), sel, readQ)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	return got
+}
+
+// ListPacks reports every requested hour: its scopes with their packs and ranges,
+// or, with no scope, evicted, its parked seqs as deferred and declared losses, or no-data with whether a capture spanned it;
+// beside them each capture's completeness, and the watermark and epoch read before the listing.
+func TestListPacks(t *testing.T) {
+	t.Parallel()
+	engines(t, func(t *testing.T, c *Catalog) {
+		h := hourNS
+		a := described(t, c, spec{instance: newID(t), origin: h(4) + 1})
+		p := segment(t, a, 5, 0, 3)
+		p.Ranges = []Range{{SeqFrom: 0, SeqTo: 3, TSFrom: h(5), TSTo: h(5) + 3}}
+		if out := register(t, c, p, Registration{Evidence: &Evidence{Deliveries: []Identity{*identity(a, 0, 1)}}}); out != Registered {
+			t.Fatalf("RegisterPack = %v", out)
+		}
+		exec(t, c, `INSERT INTO evicted_ranges (capture_id, hour, seq_from, seq_to, ts_from, ts_to) VALUES (?, 6, 4, 5, ?, ?)`, a[:], h(6), h(6)+1)
+		parkedAt(t, c, a, 6, h(7)+1, "parked")
+		parkedAt(t, c, a, 7, h(7)+2, "terminated")
+		exec(t, c, `UPDATE captures SET state = 'stopped', highest_seq_ts = ? WHERE capture_id = ?`, h(7)+2, a[:])
+		exec(t, c, `UPDATE counters SET epoch = 3 WHERE name = 'scope_events'`)
+		var w int64
+		if err := c.read.GetContext(t.Context(), &w, `SELECT value FROM counters WHERE name = 'scope_events'`); err != nil {
+			t.Fatal(err)
+		}
+
+		got := listPacks(t, c, window(h(3), h(9)))
+		if got.Cursor != (Cursor{Epoch: 3, Seq: w}) || w == 0 {
+			t.Errorf("cursor %+v, want epoch 3 at watermark %d", got.Cursor, w)
+		}
+		parked := checkHours(t, got.Hours, a, p)[7]
+		if parked.NoData || len(parked.Deferred) != 1 || parked.Deferred[0].Seq != 6 || len(parked.Losses) != 1 || *parked.Losses[0].SeqFrom != 7 ||
+			parked.Losses[0].ActionID != "a1" {
+			t.Errorf("hour 7: %+v, want seq 6 deferred and seq 7 lost", parked)
+		}
+		if len(got.Captures) != 1 || got.Captures[0].ID != a || got.Captures[0].Completeness.Frontier != 7 || len(got.Captures[0].Completeness.Evicted) != 1 {
+			t.Errorf("captures %+v", got.Captures)
+		}
+	})
+}
+
+// checkHours checks TestListPacks' hours 3 through 8, no-data around the span, a's scope in 5 with p and evicted 6, and returns them by hour.
+func checkHours(t *testing.T, hours []HourListing, a tracepack.UUID, p *Pack) map[int64]HourListing {
+	t.Helper()
+	if len(hours) != 6 {
+		t.Fatalf("%d hours, want 3 through 8", len(hours))
+	}
+	byHour := map[int64]HourListing{}
+	for _, hl := range hours {
+		byHour[hl.Hour] = hl
+	}
+	for hour, spanned := range map[int64]bool{3: false, 4: true, 8: false} {
+		if hl := byHour[hour]; !hl.NoData || hl.Spanned != spanned || len(hl.Scopes) != 0 {
+			t.Errorf("hour %d: %+v, want no-data, spanned %v", hour, hl, spanned)
+		}
+	}
+	scope := byHour[5]
+	if scope.NoData || len(scope.Scopes) != 1 {
+		t.Fatalf("hour 5: %+v, want its scope", scope)
+	}
+	s := scope.Scopes[0]
+	if s.Capture != a || s.State != "open" || len(s.Packs) != 1 || s.Packs[0].ID != p.ID || s.Packs[0].State != "staged" ||
+		!slices.Equal(s.Packs[0].Ranges, p.Ranges) {
+		t.Errorf("hour 5 scope %+v", s)
+	}
+	if ev := byHour[6]; ev.NoData || !slices.Equal(ev.Evicted, []tracepack.UUID{a}) {
+		t.Errorf("hour 6: %+v, want evicted", ev)
+	}
+
+	return byHour
 }

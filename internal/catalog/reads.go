@@ -303,3 +303,218 @@ func admittedIn(ctx context.Context, tx *sqlx.Tx, ids []tracepack.UUID) (map[tra
 }
 
 func compareUUIDs(a, b tracepack.UUID) int { return strings.Compare(string(a[:]), string(b[:])) }
+
+// Cursor is a position in the change cursor (catalog.md §7.3): every event up to Seq of Epoch has been read.
+type Cursor struct {
+	Epoch, Seq int64
+}
+
+// Listing is what ListPacks returns (catalog.md §7.3).
+type Listing struct {
+	// Cursor is the watermark and epoch read before the listing, which a client continues ListScopeChanges from.
+	Cursor Cursor
+	// Hours are the requested hours in order.
+	Hours []HourListing
+	// Captures are the selected captures, each with its completeness.
+	Captures []CaptureListing
+}
+
+// HourListing is one requested hour: its scopes, or, with none, what the hour holds instead.
+type HourListing struct {
+	Hour   int64
+	Scopes []ScopeListing
+	// Evicted names the captures whose ranges in the hour retention evicted, for an hour with no scope.
+	Evicted []tracepack.UUID
+	// Deferred and Losses are the parked seqs of an hour with no scope, as their captures' completeness classifies them.
+	Deferred []Deferred
+	Losses   []DeclaredLoss
+	// NoData is set for an hour with no scope that holds nothing else; Spanned then tells whether a selected capture's span meets it.
+	NoData, Spanned bool
+}
+
+// ScopeListing is one capture's scope of an hour with its packs.
+type ScopeListing struct {
+	Capture  tracepack.UUID
+	State    string
+	Revision int64
+	Packs    []PackListing
+}
+
+// PackListing is one pack of a scope that is not deleted, with its ranges.
+type PackListing struct {
+	ID          tracepack.UUID
+	Role        string
+	State       string
+	Size        int64
+	FormatMinor int
+	Ranges      []Range
+}
+
+// CaptureListing is a selected capture with its completeness.
+type CaptureListing struct {
+	CaptureInfo
+	Completeness Completeness
+}
+
+// ListPacks lists the hours of sel's window (catalog.md §7.3) from one snapshot whose first statement reads the watermark and the epoch,
+// so an event committed during the listing lies above the returned cursor.
+func (c *Catalog) ListPacks(ctx context.Context, sel Selector, q time.Duration) (Listing, error) {
+	var out Listing
+	err := c.snapshot(ctx, func(tx *sqlx.Tx) error {
+		err := tx.QueryRowxContext(ctx, `SELECT epoch, value FROM counters WHERE name = 'scope_events'`).Scan(&out.Cursor.Epoch, &out.Cursor.Seq)
+		if err != nil {
+			return err
+		}
+		c.hook(hookWatermarkRead)
+		caps, err := c.selectCaptures(ctx, tx, sel, q)
+		if err != nil {
+			return err
+		}
+		ids := make([]tracepack.UUID, 0, len(caps))
+		for _, ci := range caps {
+			in, err := c.completenessInputs(ctx, tx, ci.ID)
+			if err != nil {
+				return err
+			}
+			out.Captures = append(out.Captures, CaptureListing{CaptureInfo: ci, Completeness: in.classify()})
+			ids = append(ids, ci.ID)
+		}
+		first, last := floorHour(sel.From), floorHour(sel.To-1)
+		out.Hours, err = listHours(ctx, tx, ids, first, last)
+		if err != nil {
+			return err
+		}
+		for i := range out.Hours {
+			out.Hours[i].fill(out.Captures)
+		}
+
+		return nil
+	})
+	if err != nil {
+		return Listing{}, fmt.Errorf("catalog: list packs: %w", err)
+	}
+
+	return out, nil
+}
+
+// fill completes an hour with no scope from the captures' completeness: its parked seqs, or no-data with whether a span meets it.
+func (hl *HourListing) fill(caps []CaptureListing) {
+	if len(hl.Scopes) > 0 || len(hl.Evicted) > 0 {
+		return
+	}
+	start, end := hl.Hour*nsPerHour, (hl.Hour+1)*nsPerHour
+	for _, cl := range caps {
+		for _, d := range cl.Completeness.Deferred {
+			if floorHour(d.TS) == hl.Hour {
+				hl.Deferred = append(hl.Deferred, d)
+			}
+		}
+		for _, l := range cl.Completeness.Losses {
+			if l.ActionID != "" && l.TSFrom != nil && floorHour(*l.TSFrom) == hl.Hour {
+				hl.Losses = append(hl.Losses, l)
+			}
+		}
+		spanEnd := end
+		if cl.State != StateOpen {
+			spanEnd = cl.OriginNS
+			if cl.LastRecordNS != nil {
+				spanEnd = *cl.LastRecordNS
+			}
+		}
+		hl.Spanned = hl.Spanned || cl.OriginNS < end && spanEnd >= start
+	}
+	hl.NoData = len(hl.Deferred) == 0 && len(hl.Losses) == 0
+}
+
+// listHours reads the scopes, packs, ranges and evicted hours of the captures ids for the hours first through last.
+func listHours(ctx context.Context, tx *sqlx.Tx, ids []tracepack.UUID, first, last int64) ([]HourListing, error) {
+	out := make([]HourListing, 0, last-first+1)
+	for h := first; h <= last; h++ {
+		out = append(out, HourListing{Hour: h})
+	}
+	if len(ids) == 0 {
+		return out, nil
+	}
+	at := func(hour int64) *HourListing { return &out[hour-first] }
+	var scopes []struct {
+		Capture  []byte `db:"capture_id"`
+		Hour     int64  `db:"hour"`
+		State    string `db:"state"`
+		Revision int64  `db:"revision"`
+	}
+	query, args := inList(`SELECT capture_id, hour, state, revision FROM scopes WHERE hour BETWEEN ? AND ? AND capture_id IN`, ids, first, last)
+	if err := tx.SelectContext(ctx, &scopes, query+` ORDER BY hour, capture_id`, args...); err != nil {
+		return nil, err
+	}
+	type key struct {
+		capture tracepack.UUID
+		hour    int64
+	}
+	index := map[key]int{}
+	for _, s := range scopes {
+		hl := at(s.Hour)
+		index[key{tracepack.UUID(s.Capture), s.Hour}] = len(hl.Scopes)
+		hl.Scopes = append(hl.Scopes, ScopeListing{Capture: tracepack.UUID(s.Capture), State: s.State, Revision: s.Revision})
+	}
+	var packs []struct {
+		ID          []byte `db:"pack_id"`
+		Capture     []byte `db:"capture_id"`
+		Hour        int64  `db:"hour"`
+		Role        string `db:"role"`
+		State       string `db:"state"`
+		Size        int64  `db:"size"`
+		FormatMinor int    `db:"format_minor"`
+	}
+	query, args = inList(`SELECT pack_id, capture_id, hour, role, state, size, format_minor FROM packs
+		WHERE state <> 'deleted' AND hour BETWEEN ? AND ? AND capture_id IN`, ids, first, last)
+	if err := tx.SelectContext(ctx, &packs, query+` ORDER BY hour, capture_id, pack_id`, args...); err != nil {
+		return nil, err
+	}
+	type slot struct {
+		hour         int64
+		scope, index int
+	}
+	where := map[tracepack.UUID]slot{}
+	for _, p := range packs {
+		i, ok := index[key{tracepack.UUID(p.Capture), p.Hour}]
+		if !ok {
+			continue // a pack's registration creates its scope, and eviction deletes both
+		}
+		s := &at(p.Hour).Scopes[i]
+		where[tracepack.UUID(p.ID)] = slot{hour: p.Hour, scope: i, index: len(s.Packs)}
+		s.Packs = append(s.Packs, PackListing{ID: tracepack.UUID(p.ID), Role: p.Role, State: p.State, Size: p.Size, FormatMinor: p.FormatMinor})
+	}
+	var ranges []struct {
+		Pack   []byte `db:"pack_id"`
+		From   int64  `db:"seq_from"`
+		To     int64  `db:"seq_to"`
+		TSFrom int64  `db:"ts_from"`
+		TSTo   int64  `db:"ts_to"`
+	}
+	query, args = inList(`SELECT r.pack_id, r.seq_from, r.seq_to, r.ts_from, r.ts_to FROM pack_ranges r JOIN packs k ON k.pack_id = r.pack_id
+		WHERE k.state <> 'deleted' AND k.hour BETWEEN ? AND ? AND k.capture_id IN`, ids, first, last)
+	if err := tx.SelectContext(ctx, &ranges, query+` ORDER BY r.pack_id, r.seq_from`, args...); err != nil {
+		return nil, err
+	}
+	for _, r := range ranges {
+		if w, ok := where[tracepack.UUID(r.Pack)]; ok {
+			p := &at(w.hour).Scopes[w.scope].Packs[w.index]
+			p.Ranges = append(p.Ranges, Range{SeqFrom: uint64(r.From), SeqTo: uint64(r.To), TSFrom: r.TSFrom, TSTo: r.TSTo}) //nolint:gosec // stored seqs are below 2^63
+		}
+	}
+	var evicted []struct {
+		Capture []byte `db:"capture_id"`
+		Hour    int64  `db:"hour"`
+	}
+	query, args = inList(`SELECT DISTINCT capture_id, hour FROM evicted_ranges WHERE hour BETWEEN ? AND ? AND capture_id IN`, ids, first, last)
+	if err := tx.SelectContext(ctx, &evicted, query+` ORDER BY hour, capture_id`, args...); err != nil {
+		return nil, err
+	}
+	for _, e := range evicted {
+		if hl := at(e.Hour); len(hl.Scopes) == 0 {
+			hl.Evicted = append(hl.Evicted, tracepack.UUID(e.Capture))
+		}
+	}
+
+	return out, nil
+}
