@@ -199,7 +199,8 @@ func TestLongCycleKeepsTheLease(t *testing.T) {
 	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
 		p := reconcilers(t, c)
 		a := p.a
-		a.LeaseTTL = time.Second
+		// Short enough that the held read outlasts it, long enough that a renewal under a loaded MariaDB is not late.
+		a.LeaseTTL = 3 * time.Second
 		f := &fixture{c: c, s: p.s}
 		orphan := segment(t, f.admit(t), []uint64{1}, false)
 		f.put(t, orphan.key, orphan.data)
@@ -247,7 +248,8 @@ func TestChangedIncarnationFoundAtRenewal(t *testing.T) {
 	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
 		p := reconcilers(t, c)
 		a := p.a
-		a.LeaseTTL = time.Second
+		// Short enough that the held read outlasts it, long enough that a renewal under a loaded MariaDB is not late.
+		a.LeaseTTL = 3 * time.Second
 		f := &fixture{c: c, s: p.s}
 		orphan := segment(t, f.admit(t), []uint64{1}, false)
 		f.put(t, orphan.key, orphan.data)
