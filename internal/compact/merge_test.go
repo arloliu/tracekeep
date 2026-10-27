@@ -383,11 +383,11 @@ func TestRequestedAndFailedMergeMetrics(t *testing.T) {
 	})
 }
 
-// At start the compactor removes the merges' working files a crash left, and nothing else.
+// At start the compactor removes the merges' and closes' working files a crash left, and nothing else.
 func TestCleanWorkDir(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
-	for _, name := range []string{"archive-1.tpk", "segment-1.tpk", "other"} {
+	for _, name := range []string{"archive-1.tpk", "close-1.tpk", "segment-1.tpk", "other"} {
 		if err := os.WriteFile(filepath.Join(dir, name), []byte("x"), 0o600); err != nil {
 			t.Fatal(err)
 		}
