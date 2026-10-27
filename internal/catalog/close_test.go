@@ -514,3 +514,133 @@ func TestSuccessorNeedsBothSilences(t *testing.T) {
 }
 
 func hexOf(id tracepack.UUID) string { return hex.EncodeToString(id[:]) }
+
+// A close adopted, then its pack deleted with its key tombstoned: the publication abandons the intent, never publishes it.
+func TestPublishCloseOfATombstonedAdoption(t *testing.T) {
+	t.Parallel()
+	engines(t, func(t *testing.T, c *Catalog) {
+		l := compactorLease(t, c, "h")
+		capture, in := intended(t, c, l)
+		p := closePack(t, capture, in.PackID)
+		if out := register(t, c, p, Registration{Lease: &l, Adopted: true}); out != Registered {
+			t.Fatalf("adoption = %v", out)
+		}
+		lapse(t, c, "UPDATE packs SET state = 'deleted' WHERE pack_id = x'"+hexOf(p.ID)+"'")
+		lapse(t, c, "INSERT INTO tombstones (object_key, reason, at) VALUES ('"+p.Key+"', 'deleted', 1)")
+		if state := publish(t, c, l, p, 0); state != "abandoned" {
+			t.Errorf("PublishClose = %s, want abandoned", state)
+		}
+	})
+}
+
+// A registration or a stop racing a close intent and committing first: the intent, blocked on the capture row,
+// re-reads it and is refused, writing nothing.
+func TestRegistrationBeforeACloseIntentRefusesIt(t *testing.T) {
+	t.Parallel()
+	for _, stop := range []bool{false, true} {
+		engines(t, func(t *testing.T, c *Catalog) {
+			t0 := c.now()
+			c.now = func() int64 { return t0 }
+			capture := admitted(t, c)
+			register(t, c, segment(t, capture, 1, 0, 9), Registration{Evidence: &Evidence{}})
+			l := compactorLease(t, c, "h")
+			judged := t0 + int64(inactivity) + 1
+			// The racing registration is recorded a moment later: inside I of the intent's judgement.
+			c.now = func() int64 { return t0 + 2 }
+			held, release := holdAt(c, hookBeforeCommit)
+			late := segment(t, capture, 1, 10, 19)
+			late.Stop = stop
+			registered := run(func() { _, _ = c.RegisterPack(t.Context(), late, Registration{Evidence: &Evidence{}}) })
+			<-held
+			waits := c.write.Stats().WaitCount
+			var out CloseOutcome
+			intended := run(func() { out, _ = c.CloseIntent(t.Context(), l, intentOf(t, capture, CloseInactivity, judged)) })
+			waitBlocked(t, c, waits, "INSERT INTO captures", 1)
+			close(release)
+			<-registered
+			<-intended
+			if out != CloseIneligible {
+				t.Fatalf("the intent after the registration = %v, want ineligible", out)
+			}
+			if len(pendingCloses(t, c)) != 0 || captureState(t, c, capture) == StateClosed {
+				t.Error("the refused intent wrote")
+			}
+		})
+	}
+}
+
+// A lease takeover against a close intent and a publication: blocked behind the lease row the transaction holds, it lands after,
+// the transaction having committed under its lease; before the transaction took the lease row (MariaDB only, SQLite serializing
+// whole transactions), it wins and the transaction writes nothing.
+func TestLeaseTakeoverAgainstAClose(t *testing.T) {
+	t.Parallel()
+	for _, beforeLock := range []bool{false, true} {
+		for _, publication := range []bool{false, true} {
+			engines(t, func(t *testing.T, c *Catalog) {
+				if beforeLock && c.d.name == EngineSQLite {
+					t.Skip("SQLite serializes whole transactions")
+				}
+				l := compactorLease(t, c, "old")
+				capture := admitted(t, c)
+				in := intentOf(t, capture, CloseOperator, c.now())
+				if publication {
+					closeIntent(t, c, l, in)
+				}
+				rev, evs := captureRevision(t, c, capture), events(t, c)
+				hook := hookBeforeCommit
+				if beforeLock {
+					hook = hookLocked
+				}
+				held, release := holdAt(c, hook)
+				var err error
+				done := run(func() {
+					if publication {
+						_, err = c.PublishClose(t.Context(), l, closePack(t, capture, in.PackID), 0)
+					} else {
+						_, err = c.CloseIntent(t.Context(), l, in)
+					}
+				})
+				<-held
+				waits := c.write.Stats().WaitCount
+				var lerr error
+				lapsed := run(func() {
+					_, lerr = c.write.ExecContext(t.Context(), `UPDATE leases SET until_ns = 0 WHERE name = 'compactor'`)
+				})
+				if beforeLock {
+					<-lapsed
+					compactorLease(t, c, "new")
+				} else {
+					waitBlocked(t, c, waits, "UPDATE leases", 1)
+				}
+				close(release)
+				<-done
+				<-lapsed
+				if lerr != nil {
+					t.Fatal(lerr)
+				}
+				if !beforeLock {
+					if err != nil {
+						t.Fatalf("a transaction holding the lease row = %v, want it committed", err)
+					}
+					return
+				}
+				if !errors.Is(err, ErrLeaseLost) {
+					t.Fatalf("a transaction whose lease was taken first = %v, want ErrLeaseLost", err)
+				}
+				if got := captureRevision(t, c, capture); got != rev {
+					t.Errorf("capture revision = %d, want %d", got, rev)
+				}
+				if got := events(t, c); !slices.Equal(got, evs) {
+					t.Errorf("events = %v, want %v", got, evs)
+				}
+				wantState := StateOpen
+				if publication {
+					wantState = StateClosed
+				}
+				if captureState(t, c, capture) != wantState || len(pendingCloses(t, c)) != map[bool]int{false: 0, true: 1}[publication] {
+					t.Error("the refused transaction wrote")
+				}
+			})
+		}
+	}
+}
