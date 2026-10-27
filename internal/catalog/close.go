@@ -253,3 +253,55 @@ func (c *Catalog) PendingCloses(ctx context.Context) ([]Close, error) {
 
 	return out, nil
 }
+
+// PublishClose publishes the pending close intent of p's capture under l (compactor.md §8.2 step 2), on the intent's pack_id,
+// in one transaction under the capture row: the close registered as a pack holding no range, or found already registered
+// (the reconciler may adopt the close's object first), and the intent published, the scope's event allocated last.
+// The horizon guard refusing the pack tombstones its key and abandons the intent, and a key already tombstoned abandons it too;
+// the caller then deletes the object. It returns the intent's state: published, abandoned, or the state it already had.
+func (c *Catalog) PublishClose(ctx context.Context, l Lease, p *Pack, horizonHour int64) (string, error) {
+	if p.Role != RoleClose || p.SeqStart != closeSentinel || len(p.Ranges) != 0 {
+		return "", fmt.Errorf("%w: pack %s is no close", ErrInvalidRegistration, p.ID)
+	}
+	var state string
+	err := outcome(c.inTx(ctx, func(tx *sqlx.Tx) error {
+		out, evs, err := c.registerIn(ctx, tx, p, Registration{Lease: &l, HorizonHour: horizonHour})
+		if err != nil {
+			return err
+		}
+		var intent struct {
+			State  string `db:"state"`
+			PackID []byte `db:"pack_id"`
+		}
+		if err := tx.GetContext(ctx, &intent, `SELECT state, pack_id FROM capture_closes WHERE capture_id = ?`, p.Capture[:]); err != nil {
+			return fmt.Errorf("the close intent: %w", err)
+		}
+		if tracepack.UUID(intent.PackID) != p.ID {
+			return fmt.Errorf("the intent names pack %s, not %s", tracepack.UUID(intent.PackID), p.ID)
+		}
+		if state = intent.State; state != "pending" {
+			return errRollback
+		}
+		switch out {
+		case Registered, AlreadyRegistered:
+			state = "published"
+		case Tombstoned, BeyondHorizon:
+			state = "abandoned"
+		case FoundAdopted, UnadmittedCapture, LostToTermination:
+			// Outcomes of evidence or of an adoption, which a close's registration has neither.
+			return fmt.Errorf("unexpected registration outcome %d", out)
+		default:
+			return fmt.Errorf("unknown registration outcome %d", out)
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE capture_closes SET state = ? WHERE capture_id = ? AND state = 'pending'`, state, p.Capture[:]); err != nil {
+			return err
+		}
+
+		return c.emit(ctx, tx, evs)
+	}))
+	if err != nil {
+		return "", fmt.Errorf("catalog: publish the close of %s: %w", p.Capture, err)
+	}
+
+	return state, nil
+}

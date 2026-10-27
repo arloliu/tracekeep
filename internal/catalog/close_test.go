@@ -242,3 +242,145 @@ func pendingCloses(t *testing.T, c *Catalog) []Close {
 
 	return got
 }
+
+// closePack is the close pack of capture's intent, in hour 2.
+func closePack(t *testing.T, capture tracepack.UUID, id tracepack.UUID) *Pack {
+	t.Helper()
+
+	return &Pack{
+		ID: id, Capture: capture, ToolID: "T1", Hour: 2, Role: RoleClose, Key: "staging/close-" + id.String(), Size: 50,
+		SeqStart: closeSentinel, FormatMinor: 2,
+	}
+}
+
+// intended closes a capture registered up to seq 100 by the operator, and returns it with its intent.
+func intended(t *testing.T, c *Catalog, l Lease) (tracepack.UUID, *Intent) {
+	t.Helper()
+	capture := admitted(t, c)
+	register(t, c, segment(t, capture, 1, 0, 100), Registration{Evidence: &Evidence{}})
+	in := intentOf(t, capture, CloseOperator, c.now())
+	if out := closeIntent(t, c, l, in); out != Intended {
+		t.Fatalf("CloseIntent = %v", out)
+	}
+
+	return capture, in
+}
+
+func publish(t *testing.T, c *Catalog, l Lease, p *Pack, horizon int64) string {
+	t.Helper()
+	state, err := c.PublishClose(t.Context(), l, p, horizon)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	return state
+}
+
+// A close is published as a pack holding no range: coverage and the highest seq stay, its scope gains it with an event,
+// and completeness reads its crash gap.
+func TestPublishClose(t *testing.T) {
+	t.Parallel()
+	engines(t, func(t *testing.T, c *Catalog) {
+		l := compactorLease(t, c, "h")
+		capture, in := intended(t, c, l)
+		p := closePack(t, capture, in.PackID)
+		if state := publish(t, c, l, p, 0); state != "published" {
+			t.Fatalf("PublishClose = %s, want published", state)
+		}
+		if n := count(t, c, `SELECT COUNT(*) FROM packs WHERE pack_id = ? AND role = 'close'`, p.ID[:]); n != 1 {
+			t.Errorf("close packs = %d, want 1", n)
+		}
+		if n := count(t, c, `SELECT COUNT(*) FROM pack_ranges WHERE pack_id = ?`, p.ID[:]); n != 0 {
+			t.Errorf("close ranges = %d, want none", n)
+		}
+		got, err := c.Capture(t.Context(), capture)
+		if err != nil || got.HighestSeq != 100 || got.State != StateClosed {
+			t.Errorf("capture = %+v, %v; want closed at highest seq 100", got, err)
+		}
+		if evs := events(t, c); evs[len(evs)-1] != "created@2" {
+			t.Errorf("events = %v, want the close's scope created last", evs)
+		}
+		cp, err := c.Completeness(t.Context(), capture)
+		if err != nil || len(cp.CrashGaps) != 1 {
+			t.Errorf("completeness = %+v, %v; want the close's crash gap", cp, err)
+		}
+		if len(pendingCloses(t, c)) != 0 {
+			t.Error("the published intent is still pending")
+		}
+		if state := publish(t, c, l, p, 0); state != "published" {
+			t.Errorf("a second PublishClose = %s, want published as it was", state)
+		}
+		if n := count(t, c, `SELECT COUNT(*) FROM packs WHERE pack_id = ?`, p.ID[:]); n != 1 {
+			t.Errorf("packs = %d after a second publication, want 1", n)
+		}
+	})
+}
+
+// The reconciler adopting the close's object first: the publication finds it registered and publishes the intent.
+func TestPublishCloseAdoptedFirst(t *testing.T) {
+	t.Parallel()
+	engines(t, func(t *testing.T, c *Catalog) {
+		l := compactorLease(t, c, "h")
+		capture, in := intended(t, c, l)
+		p := closePack(t, capture, in.PackID)
+		if out := register(t, c, p, Registration{Lease: &l, Adopted: true}); out != Registered {
+			t.Fatalf("adoption = %v", out)
+		}
+		evs := events(t, c)
+		if state := publish(t, c, l, p, 0); state != "published" {
+			t.Fatalf("PublishClose = %s, want published", state)
+		}
+		if got := events(t, c); !slices.Equal(got, evs) {
+			t.Errorf("events = %v, want %v: the adoption emitted the scope's", got, evs)
+		}
+	})
+}
+
+// A close the horizon guard refuses tombstones its key and is abandoned, never retried; a tombstoned key abandons it too.
+func TestPublishCloseAbandoned(t *testing.T) {
+	t.Parallel()
+	for _, beyond := range []bool{true, false} {
+		engines(t, func(t *testing.T, c *Catalog) {
+			l := compactorLease(t, c, "h")
+			capture, in := intended(t, c, l)
+			p := closePack(t, capture, in.PackID)
+			horizon := int64(0)
+			if beyond {
+				horizon = 3
+			} else if _, err := c.write.ExecContext(t.Context(), `INSERT INTO tombstones (object_key, reason, at) VALUES (?, 'beyond-retention', 1)`, p.Key); err != nil {
+				t.Fatal(err)
+			}
+			if state := publish(t, c, l, p, horizon); state != "abandoned" {
+				t.Fatalf("PublishClose = %s, want abandoned", state)
+			}
+			if got, err := c.KeyStanding(t.Context(), p.Key); err != nil || got != KeyTombstoned {
+				t.Errorf("the key's standing = %v, %v; want tombstoned", got, err)
+			}
+			if n := count(t, c, `SELECT COUNT(*) FROM packs WHERE pack_id = ?`, p.ID[:]); n != 0 {
+				t.Errorf("packs = %d, want none", n)
+			}
+			if len(pendingCloses(t, c)) != 0 {
+				t.Error("the abandoned intent is still pending")
+			}
+			if state := publish(t, c, l, p, 0); state != "abandoned" {
+				t.Errorf("a retried PublishClose = %s, want abandoned as it was", state)
+			}
+		})
+	}
+}
+
+func TestPublishCloseUnderALostLease(t *testing.T) {
+	t.Parallel()
+	engines(t, func(t *testing.T, c *Catalog) {
+		stale := compactorLease(t, c, "old")
+		capture, in := intended(t, c, stale)
+		lapse(t, c, `UPDATE leases SET until_ns = 0 WHERE name = 'compactor'`)
+		compactorLease(t, c, "new")
+		if _, err := c.PublishClose(t.Context(), stale, closePack(t, capture, in.PackID), 0); !errors.Is(err, ErrLeaseLost) {
+			t.Fatalf("PublishClose = %v, want ErrLeaseLost", err)
+		}
+		if len(pendingCloses(t, c)) != 1 {
+			t.Error("the intent is no longer pending")
+		}
+	})
+}

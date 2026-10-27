@@ -128,13 +128,17 @@ func (c *Catalog) RegisterPack(ctx context.Context, p *Pack, r Registration) (Pa
 	}
 	var out PackOutcome
 	err := outcome(c.inTx(ctx, func(tx *sqlx.Tx) error {
+		var evs []event
 		var err error
-		out, err = c.registerIn(ctx, tx, p, r)
+		out, evs, err = c.registerIn(ctx, tx, p, r)
 		if err == nil && out != Registered && out != BeyondHorizon && out != LostToTermination {
 			err = errRollback
 		}
+		if err != nil {
+			return err
+		}
 
-		return err
+		return c.emit(ctx, tx, evs)
 	}))
 	if err != nil {
 		return 0, fmt.Errorf("catalog: register pack %s: %w", p.ID, err)
@@ -208,45 +212,46 @@ func (e *Evidence) seqs(p *Pack) ([]uint64, error) {
 	return seqs, nil
 }
 
-func (c *Catalog) registerIn(ctx context.Context, tx *sqlx.Tx, p *Pack, r Registration) (PackOutcome, error) {
+// registerIn runs the registration's statements and returns the events it emits, which the caller allocates last (§7.3).
+func (c *Catalog) registerIn(ctx context.Context, tx *sqlx.Tx, p *Pack, r Registration) (PackOutcome, []event, error) {
 	row, err := c.lockCapture(ctx, tx, p.Capture)
 	if err != nil {
-		return 0, err
+		return 0, nil, err
 	}
 	if r.Lease != nil {
 		if err := c.checkLease(ctx, tx, *r.Lease); err != nil {
-			return 0, err
+			return 0, nil, err
 		}
 	}
 	if out, done, err := c.guards(ctx, tx, p, r, row); done || err != nil {
-		return out, err
+		return out, nil, err
 	}
 	if err := c.insertPack(ctx, tx, p, r); err != nil {
-		return 0, err
+		return 0, nil, err
 	}
 	scope, err := c.upsertScope(ctx, tx, p)
 	if err != nil {
-		return 0, err
+		return 0, nil, err
 	}
 	evs := scope.events
 	conflicts, err := c.recordConflicts(ctx, tx, p, scope.revision)
 	if err != nil {
-		return 0, err
+		return 0, nil, err
 	}
 	evs = append(evs, conflicts...)
 	if r.Evidence != nil {
 		if err := c.insertReceipts(ctx, tx, p, r.Evidence); err != nil {
-			return 0, err
+			return 0, nil, err
 		}
 		if err := c.stageParked(ctx, tx, r.Evidence); err != nil {
-			return 0, err
+			return 0, nil, err
 		}
 	}
 	if err := c.updateCapture(ctx, tx, p, row); err != nil {
-		return 0, err
+		return 0, nil, err
 	}
 
-	return Registered, c.emit(ctx, tx, evs)
+	return Registered, evs, nil
 }
 
 // guards runs the checks that end a registration before it writes the pack: done reports that out is final.
