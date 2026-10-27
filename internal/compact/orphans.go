@@ -52,6 +52,10 @@ type Compactor struct {
 	Writer      string
 	QuietPeriod time.Duration
 	Now         func() time.Time
+	// Inactivity is I, after which a capture without a registration is closed (compactor.md §8.2);
+	// FlushInterval is ingest's F, which a close's metadata carries as every segment of its capture does.
+	Inactivity    time.Duration
+	FlushInterval time.Duration
 
 	// lease is the compactor lease while this process holds it.
 	lease *catalog.Lease

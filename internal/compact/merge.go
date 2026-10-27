@@ -18,16 +18,18 @@ import (
 // workFilePattern names a merge's working file under the working directory.
 const workFilePattern = "archive-*.tpk"
 
-// CleanWorkDir removes the merges' working files a crashed process left (storage.md §5.1): their scopes are merged again next cycle.
-// It removes nothing else, so ingest's working files in the same directory stay.
+// CleanWorkDir removes the merges' and closes' working files a crashed process left (storage.md §5.1):
+// their scopes are merged again, and their closes written again from their intents, next cycle. It removes nothing else.
 func CleanWorkDir(dir string) error {
-	names, err := filepath.Glob(filepath.Join(dir, workFilePattern))
-	if err != nil {
-		return err
-	}
-	for _, n := range names {
-		if err := os.Remove(n); err != nil && !errors.Is(err, os.ErrNotExist) {
+	for _, pattern := range []string{workFilePattern, closeFilePattern} {
+		names, err := filepath.Glob(filepath.Join(dir, pattern))
+		if err != nil {
 			return err
+		}
+		for _, n := range names {
+			if err := os.Remove(n); err != nil && !errors.Is(err, os.ErrNotExist) {
+				return err
+			}
 		}
 	}
 

@@ -384,3 +384,39 @@ func TestPublishCloseUnderALostLease(t *testing.T) {
 		}
 	})
 }
+
+// A close request is decided under the capture row: open, it is left for the compactor to execute;
+// closed, it ends done; stopped or never admitted, it ends failed.
+func TestDecideCloseRequest(t *testing.T) {
+	t.Parallel()
+	engines(t, func(t *testing.T, c *Catalog) {
+		l := compactorLease(t, c, "h")
+		request := func(capture tracepack.UUID) Request {
+			t.Helper()
+			id, err := c.RequestCompaction(t.Context(), RequestClose, capture, nil, "op")
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			return Request{ID: id, Kind: RequestClose, Capture: capture}
+		}
+		open := admitted(t, c)
+		if got, err := c.DecideRequest(t.Context(), l, request(open)); err != nil || got != Mergeable {
+			t.Errorf("an open capture = %q, %v; want it left to execute", got, err)
+		}
+		closed, _ := intended(t, c, l)
+		if got, err := c.DecideRequest(t.Context(), l, request(closed)); err != nil || got != "closed" {
+			t.Errorf("a closed capture = %q, %v", got, err)
+		}
+		stopped := admitted(t, c)
+		p := segment(t, stopped, 1, 0, 9)
+		p.Stop = true
+		register(t, c, p, Registration{Evidence: &Evidence{}})
+		if got, err := c.DecideRequest(t.Context(), l, request(stopped)); err != nil || got != "the capture is not open" {
+			t.Errorf("a stopped capture = %q, %v", got, err)
+		}
+		if got, err := c.DecideRequest(t.Context(), l, request(newID(t))); err != nil || got != "the capture is not open" {
+			t.Errorf("an unknown capture = %q, %v", got, err)
+		}
+	})
+}

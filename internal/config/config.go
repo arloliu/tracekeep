@@ -115,7 +115,7 @@ type Parking struct {
 	RedeliveryDelay time.Duration `yaml:"redelivery_delay" default:"60s" env:"TRACEKEEP_PARKING_REDELIVERY_DELAY" validate:"gt=0"`
 }
 
-// Compact is the compact role: its reconciler (storage.md §5.4) and its merges (compactor.md §8.1).
+// Compact is the compact role: its reconciler (storage.md §5.4), its merges and its closes (compactor.md §8.1, §8.2).
 type Compact struct {
 	// LeaseTTL is how long a take or renewal holds the compactor lease.
 	LeaseTTL time.Duration `yaml:"lease_ttl" default:"1m" env:"TRACEKEEP_COMPACT_LEASE_TTL" validate:"gt=0"`
@@ -125,6 +125,8 @@ type Compact struct {
 	QuietPeriod time.Duration `yaml:"quiet_period" default:"15m" env:"TRACEKEEP_COMPACT_QUIET_PERIOD" validate:"gt=0"`
 	// RedeliverySlack is the time Q leaves after F and ack_wait for a redelivered message to be flushed (catalog.md §7.3, T-41).
 	RedeliverySlack time.Duration `yaml:"redelivery_slack" default:"2m" env:"TRACEKEEP_COMPACT_REDELIVERY_SLACK" validate:"gte=0"`
+	// Inactivity is I: an open capture without a registration for I is closed (compactor.md §8.2, T-12).
+	Inactivity time.Duration `yaml:"inactivity" default:"2h" env:"TRACEKEEP_COMPACT_INACTIVITY" validate:"gt=0"`
 }
 
 // Metrics is the metrics and health listener (operations.md §10.4).

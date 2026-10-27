@@ -24,6 +24,8 @@ const (
 	hookMergeCommitted
 	// hookCompared runs after a suspect's packs were compared, before the result is recorded.
 	hookCompared
+	// hookClosePut runs after a close was put, before its publication.
+	hookClosePut
 	numHooks
 )
 
@@ -55,7 +57,7 @@ func (r *Compactor) Run(ctx context.Context) error {
 }
 
 // Step is one cycle: the compactor lease taken or renewed and both streams checked against their incarnations before any effect,
-// then the orphan pass, the copy pass on both streams, the conflict pass, the operators' requests and the merge pass under the lease, which a keeper renews every third of LeaseTTL while they run.
+// then the orphan pass, the copy pass on both streams, the conflict pass, the operators' requests, the merge pass and the close pass under the lease, which a keeper renews every third of LeaseTTL while they run.
 // While another process holds the lease it does nothing. A lease lost during the cycle cancels it, and the next cycle takes the lease again
 // under a new fence token; a worker that lost its lease does nothing further under the old one (compactor.md §8.1).
 // The metrics count a cycle that lost its lease as failed, and the lease as held only until it lapses.
@@ -218,8 +220,21 @@ func (r *Compactor) cycle(ctx context.Context, lease catalog.Lease) error {
 	if conflicts.Failed > 0 {
 		r.Log.Warn("compact: suspects left uncompared", "failed", conflicts.Failed)
 	}
+	if err := r.mergePass(ctx, lease); err != nil {
+		return err
+	}
 
-	return r.mergePass(ctx, lease)
+	return r.closePass(ctx, lease)
+}
+
+// closePass runs the close pass and records its metrics: the task succeeds when it ended in no error and no close failed.
+func (r *Compactor) closePass(ctx context.Context, lease catalog.Lease) error {
+	started := time.Now()
+	rep, err := r.Closes(ctx, lease)
+	r.Metrics.Cycle("close", time.Since(started), err == nil && rep.Failed == 0)
+	r.Metrics.Closes(rep.Intended)
+
+	return err
 }
 
 // mergePass runs the operators' requests and the scheduled merges, one merge task, and records their metrics, then reads the scope gauges;

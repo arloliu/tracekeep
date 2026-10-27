@@ -39,11 +39,13 @@ func TestDefaults(t *testing.T) {
 		"retention": c.Retention, "ingest.flush_interval": c.Ingest.FlushInterval, "ingest.ack_wait": c.Ingest.AckWait,
 		"parking.redelivery_delay": c.Parking.RedeliveryDelay, "ingest.lease": c.Ingest.Lease,
 		"compact.quiet_period": c.Compact.QuietPeriod, "compact.redelivery_slack": c.Compact.RedeliverySlack,
+		"compact.inactivity": c.Compact.Inactivity,
 	} {
 		want := map[string]time.Duration{
 			"retention": 30 * 24 * time.Hour, "ingest.flush_interval": 5 * time.Minute, "ingest.ack_wait": 7 * time.Minute,
 			"parking.redelivery_delay": time.Minute, "ingest.lease": time.Minute,
 			"compact.quiet_period": 15 * time.Minute, "compact.redelivery_slack": 2 * time.Minute,
+			"compact.inactivity": 2 * time.Hour,
 		}[name]
 		if got != want {
 			t.Errorf("%s = %s, want %s", name, got, want)

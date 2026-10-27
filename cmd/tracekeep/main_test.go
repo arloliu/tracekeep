@@ -80,6 +80,7 @@ func TestMigrateAndAdmin(t *testing.T) {
 		{"parked", "terminate", "01234567-89ab-cdef-0123-456789abcdef"},
 		{"bus", "adopt-stream", "parking"},
 		{"scope", "merge", "01234567-89ab-cdef-0123-456789abcdef", "2026-10-27T08:00:00Z"},
+		{"capture", "close", "01234567-89ab-cdef-0123-456789abcdef"},
 	} {
 		code, stdout, stderr := tracekeep(t, append([]string{"admin", "--config", path, "--actor", "op"}, args...)...)
 		if code != 0 || !json.Valid([]byte(stdout)) {

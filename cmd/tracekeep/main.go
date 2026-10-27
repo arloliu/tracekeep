@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"syscall"
 	"time"
@@ -36,7 +37,7 @@ commands:
   dev        run a single-process development loop
   admin      run an operator command:
                parked list [capture] | parked terminate <capture> [seq]
-               capture terminate <capture> | capture show <capture>
+               capture terminate <capture> | capture show <capture> | capture close <capture>
                bus adopt-stream <traffic|parking> | object list [--unattributed|--survivors]
                conflict acknowledge <capture> <seq> | scope exclude-input <pack>
                scope merge <capture> <hour, RFC 3339>`
@@ -158,7 +159,7 @@ func operate(ctx context.Context, a *admin.Admin, cmd string, args []string) (an
 
 		return a.ParkedList(ctx, capture)
 	case cmd == "parked terminate" && (len(args) == 3 || len(args) == 4),
-		(cmd == "capture terminate" || cmd == "capture show") && len(args) == 3:
+		slices.Contains([]string{"capture terminate", "capture show", "capture close"}, cmd) && len(args) == 3:
 		return onCapture(ctx, a, cmd, args[2:])
 	case cmd == "bus adopt-stream" && len(args) == 3:
 		return a.AdoptStream(ctx, args[2])
@@ -184,6 +185,8 @@ func onCapture(ctx context.Context, a *admin.Admin, cmd string, args []string) (
 		return a.CaptureTerminate(ctx, capture)
 	case "capture show":
 		return a.CaptureShow(ctx, capture)
+	case "capture close":
+		return a.CaptureClose(ctx, capture)
 	default: // parked terminate
 		var seq *uint64
 		if len(args) == 2 {
