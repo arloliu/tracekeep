@@ -26,6 +26,8 @@ const (
 	hookCompared
 	// hookClosePut runs after a close was put, before its publication.
 	hookClosePut
+	// hookEvicted runs after an hour's eviction committed, before its objects are removed.
+	hookEvicted
 	numHooks
 )
 

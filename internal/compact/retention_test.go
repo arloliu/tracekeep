@@ -512,3 +512,36 @@ func TestRefusedEvictionIsCounted(t *testing.T) {
 		}
 	})
 }
+
+// A lease lost between an eviction's commit and its removals ends the pass with the loss, removes nothing and stamps no success;
+// the tombstoned key is the orphan pass's to delete.
+func TestLeaseLostBeforeAnEvictionsRemovals(t *testing.T) {
+	t.Parallel()
+	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
+		f := newFixture(t, c)
+		f.retaining(t)
+		s := metrics.NewServer()
+		var err error
+		if f.r.Metrics, err = metrics.NewCompact(s); err != nil {
+			t.Fatal(err)
+		}
+		seg := f.stage(t, writeSegment(t, f.admit(t), []uint64{0, 1}, noAdjust))
+		f.r.hooks[hookEvicted] = func() {
+			if err := c.ReleaseLease(t.Context(), f.lease); err != nil {
+				t.Error(err)
+			}
+			if _, ok, err := c.TakeLease(t.Context(), "compactor", "other", time.Hour); err != nil || !ok {
+				t.Errorf("TakeLease = %v, %v", ok, err)
+			}
+		}
+		if err := f.r.retentionPass(t.Context(), f.lease); !errors.Is(err, catalog.ErrLeaseLost) {
+			t.Fatalf("retentionPass = %v, want ErrLeaseLost", err)
+		}
+		if !f.present(t, seg.Key) {
+			t.Error("a worker that lost its lease removed an object")
+		}
+		if got := scrape(t, s); strings.Contains(got, `last_success_timestamp{task="retention"}`) {
+			t.Error("a retention task that lost its lease stamped a success")
+		}
+	})
+}
