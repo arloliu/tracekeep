@@ -149,7 +149,7 @@ func (r *Compactor) merge(ctx context.Context, lease catalog.Lease, s catalog.Sc
 		return 0, err
 	}
 	r.hook(hookMergePut)
-	m := &catalog.Merge{Scope: s, Revision: snap.Revision, Archive: archive, Request: request}
+	m := &catalog.Merge{Scope: s, Revision: snap.Revision, Archive: archive, Request: request, DeleteDelay: r.DeleteDelay}
 	for _, in := range snap.Inputs {
 		m.Inputs = append(m.Inputs, in.ID)
 	}

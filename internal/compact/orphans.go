@@ -56,6 +56,12 @@ type Compactor struct {
 	// FlushInterval is ingest's F, which a close's metadata carries as every segment of its capture does.
 	Inactivity    time.Duration
 	FlushInterval time.Duration
+	// Retention is the configured retention period the compactor records before every retention pass, and DeleteDelay is D:
+	// a merged input is deleted D after its merge, and a shortened period evicts nothing early for D (compactor.md §8.3).
+	// Claims is the claim bucket retention lists and deletes from.
+	Retention   time.Duration
+	DeleteDelay time.Duration
+	Claims      ClaimBucket
 
 	// lease is the compactor lease while this process holds it.
 	lease *catalog.Lease
