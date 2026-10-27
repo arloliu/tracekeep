@@ -20,6 +20,7 @@ import (
 	"github.com/arloliu/tracekeep/internal/bus"
 	"github.com/arloliu/tracekeep/internal/catalog"
 	"github.com/arloliu/tracekeep/internal/catalog/catalogtest"
+	"github.com/arloliu/tracekeep/internal/compact"
 	"github.com/arloliu/tracekeep/internal/config"
 	"github.com/arloliu/tracekeep/internal/store"
 	"github.com/arloliu/tracekeep/internal/testbus"
@@ -332,4 +333,44 @@ func TestObserveBindsAtStart(t *testing.T) {
 			t.Errorf("Close = %v, ServeFailed = %v; want an orderly stop", err, ServeFailed(ctx))
 		}
 	})
+}
+
+// Each role of each replica works in a directory of its own, so the files one removes at start are only the ones it left:
+// another replica's, and the other role's, stay.
+func TestOwnWorkDir(t *testing.T) {
+	t.Parallel()
+	base := t.TempDir()
+	mine, err := ownWorkDir(base, "compact", "pod/a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, other := range [][2]string{{"compact", "pod-b"}, {"ingest", "pod/a"}} {
+		dir, err := ownWorkDir(base, other[0], other[1])
+		if err != nil {
+			t.Fatal(err)
+		}
+		if dir == mine || filepath.Dir(dir) != base {
+			t.Fatalf("%v's directory %s, mine %s", other, dir, mine)
+		}
+		live := filepath.Join(dir, "archive-live.tpk")
+		if err := os.WriteFile(live, nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		left := filepath.Join(mine, "archive-left.tpk")
+		if err := os.WriteFile(left, nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := compact.CleanWorkDir(mine); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := os.Stat(left); !os.IsNotExist(err) {
+			t.Error("my abandoned file stays")
+		}
+		if _, err := os.Stat(live); err != nil {
+			t.Errorf("%v's live file was removed", other)
+		}
+	}
+	if again, err := ownWorkDir(base, "compact", "pod/a"); err != nil || again != mine {
+		t.Errorf("a restart's directory = %s, %v; want %s", again, err, mine)
+	}
 }

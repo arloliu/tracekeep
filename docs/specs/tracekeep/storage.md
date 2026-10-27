@@ -45,7 +45,8 @@ Contract changes go through proposals, which the subject [README.md](README.md) 
   `storage.work_dir` in the service configuration (T-22;
   default: the operating system's temporary directory; on Kubernetes an `emptyDir` with a `sizeLimit`).
   Files are created with mode 0600 and removed once their put returns or their batch is abandoned;
-  at start each role removes the working files it left behind.
+  each role of each replica works in a directory of its own under it, named for the role and the replica,
+  and at start removes the working files it left behind there, so it never removes another process's.
   A lost working file costs nothing:
   its messages were not acknowledged (`ingest`), or its scope is merged or its close written again next cycle (`compact`).
   The directory holds one segment per concurrent flush, plus one archive per concurrent merge for `compact`;
