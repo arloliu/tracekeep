@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/jmoiron/sqlx"
 
@@ -122,6 +123,8 @@ type Merge struct {
 	// Request is the operator's request this merge executes, nil for a scheduled merge:
 	// the commit ends it done in the same transaction, so a merge that committed never runs again for it.
 	Request *tracepack.UUID
+	// DeleteDelay is D: the commit fixes its inputs' deletion at its own time plus D (compactor.md §8.3).
+	DeleteDelay time.Duration
 }
 
 // MergeOutcome is what a merge commit did (catalog.md §7.2 `CommitMerge`).
@@ -203,8 +206,8 @@ func (c *Catalog) commitMergeIn(ctx context.Context, tx *sqlx.Tx, l Lease, m *Me
 	now := c.now()
 	a := m.Archive
 	// One merge per archive, so the archive's pack_id names the merge.
-	_, err := tx.ExecContext(ctx, `INSERT INTO merges (merge_id, capture_id, hour, output_pack_id, outcome, at) VALUES (?, ?, ?, ?, 'committed', ?)`,
-		a.ID[:], m.Capture[:], m.Hour, a.ID[:], now)
+	_, err := tx.ExecContext(ctx, `INSERT INTO merges (merge_id, capture_id, hour, output_pack_id, outcome, at, delete_at) VALUES (?, ?, ?, ?, 'committed', ?, ?)`,
+		a.ID[:], m.Capture[:], m.Hour, a.ID[:], now, now+m.DeleteDelay.Nanoseconds())
 	if err != nil {
 		return 0, err
 	}
