@@ -8,7 +8,6 @@ import (
 	"log/slog"
 	"math"
 	"slices"
-	"strings"
 	"testing"
 	"time"
 
@@ -504,13 +503,13 @@ type failingObject struct {
 
 func (o failingObject) ReadAt([]byte, int64) (int, error) { return 0, o.err }
 
-// A close's orphan, whose seq_start is the close sentinel, is reported and kept: only its publication registers it.
-func TestCloseOrphanLeftForItsPublication(t *testing.T) {
+// A close's orphan, whose seq_start is the close sentinel, is adopted as a pack holding no range: coverage and the highest seq stay.
+func TestCloseOrphanAdopted(t *testing.T) {
 	t.Parallel()
 	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
 		f := newFixture(t, c)
 		capture := f.admit(t)
-		meta := writeWith(t, capture, tracepack.PackRoleSegment, []uint64{1}, false, func(*tracepack.PackMeta) {})
+		meta := segment(t, capture, []uint64{1}, false)
 		rd, err := tracepack.Open(t.Context(), bytes.NewReader(meta.data), int64(len(meta.data)), tracepack.ReaderOptions{})
 		if err != nil {
 			t.Fatal(err)
@@ -527,14 +526,23 @@ func TestCloseOrphanLeftForItsPublication(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		f.put(t, meta.key, meta.data)
 		f.put(t, key, buf.Bytes())
 		f.pass(t)
 		rep := f.pass(t)
-		if len(rep.Quarantined) != 1 || rep.Quarantined[0].Key != key || !strings.Contains(rep.Quarantined[0].Reason, "close") {
-			t.Errorf("pass = %+v, want the close reported as one", rep)
+		if !slices.Contains(rep.Adopted, key) || len(rep.Quarantined) != 0 {
+			t.Fatalf("pass = %+v, want the close adopted", rep)
 		}
-		if got, _ := c.KeyStanding(t.Context(), key); got != catalog.KeyUnknown || !f.present(t, key) {
-			t.Errorf("standing %v, want the close unregistered and kept", got)
+		if got, _ := c.KeyStanding(t.Context(), key); got != catalog.KeyRegistered {
+			t.Errorf("standing %v, want registered", got)
+		}
+		got, err := c.Capture(t.Context(), capture)
+		if err != nil || got.HighestSeq != 1 {
+			t.Errorf("capture = %+v, %v; want the highest seq the segment set, 1", got, err)
+		}
+		snap, err := c.MergeSnapshot(t.Context(), catalog.Scope{Capture: capture, Hour: hour})
+		if err != nil || len(snap.Inputs) != 2 {
+			t.Errorf("snapshot = %+v, %v; want the segment and the close as the hour's inputs", snap, err)
 		}
 	})
 }
