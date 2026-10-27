@@ -12,7 +12,8 @@ import (
 // PruneEvents deletes the change cursor's seq prefix under the compactor lease l (catalog.md §7.3):
 // the events below the lowest seq of an event younger than period at now, never by time alone,
 // with counters.low_water raised to that seq, never lowered, in the same transaction, which allocates no seq.
-// With no younger event it deletes nothing. It returns how many events it deleted.
+// With no younger event it deletes nothing.
+// It returns how many events it deleted.
 func (c *Catalog) PruneEvents(ctx context.Context, l Lease, period time.Duration, now int64) (int, error) {
 	var n int64
 	err := c.inTx(ctx, func(tx *sqlx.Tx) error {

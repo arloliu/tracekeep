@@ -23,6 +23,30 @@ type Selector struct {
 	From, To int64
 }
 
+// maxDevices bounds the devices a selector names, each one bound parameter.
+const maxDevices = 1000
+
+// check refuses an empty or reversed window, which selects nothing, and more devices than maxDevices.
+func (sel Selector) check() error {
+	if sel.To <= sel.From {
+		return fmt.Errorf("the window [%d, %d) is empty", sel.From, sel.To)
+	}
+	if len(sel.Devices) > maxDevices {
+		return fmt.Errorf("%d devices, at most %d", len(sel.Devices), maxDevices)
+	}
+
+	return nil
+}
+
+// where is the SQL condition on the captures table selecting sel's captures (catalog.md §7.3 *Selection*), and its args;
+// a statement uses it as a subquery instead of binding the selected captures, whose number has no bound.
+func (sel Selector) where() (string, []any) {
+	filter, args := sel.filter("", sel.ToolID, sel.To, sel.From)
+
+	return `tool_id = ? AND state IN ` + admittedStates + `
+		AND COALESCE(origin_ns, 0) < ? AND (state = 'open' OR COALESCE(highest_seq_ts, origin_ns, 0) >= ?)` + filter, args
+}
+
 // filter is the SQL condition on sel's devices and capture for the captures table under prefix, and its args after lead.
 func (sel Selector) filter(prefix string, lead ...any) (string, []any) {
 	var cond string
@@ -106,6 +130,9 @@ func (s span) end() int64 {
 // ListCaptures lists the captures sel selects with their overlap flags and unregistered intervals against the quiet period q
 // (catalog.md §7.3), from one snapshot.
 func (c *Catalog) ListCaptures(ctx context.Context, sel Selector, q time.Duration) ([]CaptureInfo, error) {
+	if err := sel.check(); err != nil {
+		return nil, fmt.Errorf("catalog: list captures: %w", err)
+	}
 	var out []CaptureInfo
 	err := c.snapshot(ctx, func(tx *sqlx.Tx) error {
 		var err error
@@ -122,6 +149,9 @@ func (c *Catalog) ListCaptures(ctx context.Context, sel Selector, q time.Duratio
 
 // ListDevices lists per device what the captures sel selects report (catalog.md §7.3), from one snapshot.
 func (c *Catalog) ListDevices(ctx context.Context, sel Selector, q time.Duration) ([]DeviceInfo, error) {
+	if err := sel.check(); err != nil {
+		return nil, fmt.Errorf("catalog: list devices: %w", err)
+	}
 	var out []DeviceInfo
 	err := c.snapshot(ctx, func(tx *sqlx.Tx) error {
 		caps, err := c.selectCaptures(ctx, tx, sel, q)
@@ -170,9 +200,15 @@ func (c *Catalog) ListDevices(ctx context.Context, sel Selector, q time.Duration
 	return out, nil
 }
 
-// meets reports whether the gap's time interval meets [from, to), a nil bound unbounded.
+// meets reports whether the gap's time interval meets [from, to), a nil bound unbounded;
+// an interval running backwards after a clock step meets what lies between its endpoints.
 func (g Gap) meets(from, to int64) bool {
-	return (g.Start == nil || *g.Start < to) && (g.End == nil || *g.End > from)
+	lo, hi := g.Start, g.End
+	if lo != nil && hi != nil && *lo > *hi {
+		lo, hi = hi, lo
+	}
+
+	return (lo == nil || *lo < to) && (hi == nil || *hi > from)
 }
 
 // admittedStates are the states of an admitted capture, as SQL.
@@ -180,11 +216,9 @@ const admittedStates = `('open', 'stopped', 'closed')`
 
 // selectCaptures reads the captures sel selects, ordered by device, origin and id, with their recorders' other captures.
 func (c *Catalog) selectCaptures(ctx context.Context, tx *sqlx.Tx, sel Selector, q time.Duration) ([]CaptureInfo, error) {
+	cond, args := sel.where()
 	query := `SELECT capture_id, state, device, recorder_instance_id, previous_capture_id, origin_ns, highest_seq_ts, config_id, descriptor
-		FROM captures WHERE tool_id = ? AND state IN ` + admittedStates + `
-		AND COALESCE(origin_ns, 0) < ? AND (state = 'open' OR COALESCE(highest_seq_ts, origin_ns, 0) >= ?)`
-	filter, args := sel.filter("", sel.ToolID, sel.To, sel.From)
-	query += filter
+		FROM captures WHERE ` + cond
 	var rows []struct {
 		ID         []byte         `db:"capture_id"`
 		State      string         `db:"state"`
@@ -204,7 +238,6 @@ func (c *Catalog) selectCaptures(ctx context.Context, tx *sqlx.Tx, sel Selector,
 	}
 	out := make([]CaptureInfo, 0, len(rows))
 	spans := make([]span, 0, len(rows))
-	var instances, previous []tracepack.UUID
 	for _, r := range rows {
 		ci := CaptureInfo{
 			ID: tracepack.UUID(r.ID), State: r.State, Device: r.Device.String, RecorderInstanceID: tracepack.UUID(r.Instance),
@@ -213,7 +246,6 @@ func (c *Catalog) selectCaptures(ctx context.Context, tx *sqlx.Tx, sel Selector,
 		if r.Previous != nil {
 			p := tracepack.UUID(r.Previous)
 			ci.PreviousCaptureID = &p
-			previous = append(previous, p)
 		}
 		if r.Descriptor != nil {
 			m, err := tracepack.DecodeDescriptor(r.Descriptor)
@@ -222,15 +254,14 @@ func (c *Catalog) selectCaptures(ctx context.Context, tx *sqlx.Tx, sel Selector,
 			}
 			ci.Thinning, ci.EquipmentEndpoint, ci.DeviceID = m.Thinning, m.EquipmentEndpoint, m.DeviceID
 		}
-		instances = append(instances, ci.RecorderInstanceID)
 		out = append(out, ci)
 		spans = append(spans, span{id: ci.ID, instance: ci.RecorderInstanceID, origin: ci.OriginNS, last: r.Last})
 	}
-	peers, err := recorderSpans(ctx, tx, sel.ToolID, instances)
+	peers, err := recorderSpans(ctx, tx, sel)
 	if err != nil {
 		return nil, err
 	}
-	known, err := admittedIn(ctx, tx, previous)
+	known, err := admittedPredecessors(ctx, tx, sel)
 	if err != nil {
 		return nil, err
 	}
@@ -269,19 +300,18 @@ func relate(self span, peers []span, q int64) (bool, []UnregisteredInterval) {
 	return overlap, nil
 }
 
-// recorderSpans reads the spans of every admitted capture of tool and the recorder instances, keyed by instance.
-func recorderSpans(ctx context.Context, tx *sqlx.Tx, tool string, instances []tracepack.UUID) (map[tracepack.UUID][]span, error) {
-	slices.SortFunc(instances, compareUUIDs)
-	instances = slices.Compact(instances)
-	query, args := inList(`SELECT capture_id, recorder_instance_id, origin_ns, highest_seq_ts FROM captures
-		WHERE tool_id = ? AND state IN `+admittedStates+` AND recorder_instance_id IN`, instances, tool)
+// recorderSpans reads the spans of every admitted capture of sel's tool and of a recorder instance of a selected capture, keyed by instance.
+func recorderSpans(ctx context.Context, tx *sqlx.Tx, sel Selector) (map[tracepack.UUID][]span, error) {
+	cond, args := sel.where()
+	query := `SELECT capture_id, recorder_instance_id, origin_ns, highest_seq_ts FROM captures
+		WHERE tool_id = ? AND state IN ` + admittedStates + ` AND recorder_instance_id IN (SELECT recorder_instance_id FROM captures WHERE ` + cond + `)`
 	var rows []struct {
 		ID       []byte        `db:"capture_id"`
 		Instance []byte        `db:"recorder_instance_id"`
 		Origin   sql.NullInt64 `db:"origin_ns"`
 		Last     sql.NullInt64 `db:"highest_seq_ts"`
 	}
-	if err := tx.SelectContext(ctx, &rows, query, args...); err != nil {
+	if err := tx.SelectContext(ctx, &rows, query, append([]any{sel.ToolID}, args...)...); err != nil {
 		return nil, err
 	}
 	out := map[tracepack.UUID][]span{}
@@ -293,25 +323,22 @@ func recorderSpans(ctx context.Context, tx *sqlx.Tx, tool string, instances []tr
 	return out, nil
 }
 
-// admittedIn reports which of ids name an admitted capture.
-func admittedIn(ctx context.Context, tx *sqlx.Tx, ids []tracepack.UUID) (map[tracepack.UUID]bool, error) {
-	out := map[tracepack.UUID]bool{}
-	if len(ids) == 0 {
-		return out, nil
-	}
-	query, args := inList(`SELECT capture_id FROM captures WHERE state IN `+admittedStates+` AND capture_id IN`, ids)
+// admittedPredecessors reports which predecessors the selected captures name are admitted.
+func admittedPredecessors(ctx context.Context, tx *sqlx.Tx, sel Selector) (map[tracepack.UUID]bool, error) {
+	cond, args := sel.where()
+	query := `SELECT capture_id FROM captures WHERE state IN ` + admittedStates + `
+		AND capture_id IN (SELECT previous_capture_id FROM captures WHERE previous_capture_id IS NOT NULL AND ` + cond + `)`
 	var rows [][]byte
 	if err := tx.SelectContext(ctx, &rows, query, args...); err != nil {
 		return nil, err
 	}
+	out := make(map[tracepack.UUID]bool, len(rows))
 	for _, r := range rows {
 		out[tracepack.UUID(r)] = true
 	}
 
 	return out, nil
 }
-
-func compareUUIDs(a, b tracepack.UUID) int { return strings.Compare(string(a[:]), string(b[:])) }
 
 // Cursor is a position in the change cursor (catalog.md §7.3): every event up to Seq of Epoch has been read.
 type Cursor struct {
@@ -368,8 +395,8 @@ type CaptureListing struct {
 // ListPacks lists the hours of sel's window (catalog.md §7.3) from one snapshot whose first statement reads the watermark and the epoch,
 // so an event committed during the listing lies above the returned cursor.
 func (c *Catalog) ListPacks(ctx context.Context, sel Selector, q time.Duration) (Listing, error) {
-	if sel.To <= sel.From {
-		return Listing{}, fmt.Errorf("catalog: list packs: the window [%d, %d) is empty", sel.From, sel.To)
+	if err := sel.check(); err != nil {
+		return Listing{}, fmt.Errorf("catalog: list packs: %w", err)
 	}
 	var out Listing
 	err := c.snapshot(ctx, func(tx *sqlx.Tx) error {
@@ -382,17 +409,15 @@ func (c *Catalog) ListPacks(ctx context.Context, sel Selector, q time.Duration) 
 		if err != nil {
 			return err
 		}
-		ids := make([]tracepack.UUID, 0, len(caps))
 		for _, ci := range caps {
 			in, err := c.completenessInputs(ctx, tx, ci.ID)
 			if err != nil {
 				return err
 			}
 			out.Captures = append(out.Captures, CaptureListing{CaptureInfo: ci, Completeness: in.classify()})
-			ids = append(ids, ci.ID)
 		}
 		first, last := floorHour(sel.From), floorHour(sel.To-1)
-		out.Hours, err = listHours(ctx, tx, ids, first, last)
+		out.Hours, err = listHours(ctx, tx, sel, first, last)
 		if err != nil {
 			return err
 		}
@@ -409,9 +434,10 @@ func (c *Catalog) ListPacks(ctx context.Context, sel Selector, q time.Duration) 
 	return out, nil
 }
 
-// fill completes an hour with no scope from the captures' completeness: its parked seqs, or no-data with whether a span meets it.
+// fill completes an hour with no scope from the captures' completeness: its parked seqs, evicted or not,
+// or, holding nothing, no-data with whether a span meets it.
 func (hl *HourListing) fill(caps []CaptureListing) {
-	if len(hl.Scopes) > 0 || len(hl.Evicted) > 0 {
+	if len(hl.Scopes) > 0 {
 		return
 	}
 	start, end := hl.Hour*nsPerHour, (hl.Hour+1)*nsPerHour
@@ -435,18 +461,18 @@ func (hl *HourListing) fill(caps []CaptureListing) {
 		}
 		hl.Spanned = hl.Spanned || cl.OriginNS < end && spanEnd >= start
 	}
-	hl.NoData = len(hl.Deferred) == 0 && len(hl.Losses) == 0
+	hl.NoData = len(hl.Evicted) == 0 && len(hl.Deferred) == 0 && len(hl.Losses) == 0
 }
 
-// listHours reads the scopes, packs, ranges and evicted hours of the captures ids for the hours first through last.
-func listHours(ctx context.Context, tx *sqlx.Tx, ids []tracepack.UUID, first, last int64) ([]HourListing, error) {
+// listHours reads the scopes, packs, ranges and evicted hours of sel's captures for the hours first through last.
+func listHours(ctx context.Context, tx *sqlx.Tx, sel Selector, first, last int64) ([]HourListing, error) {
 	out := make([]HourListing, 0, last-first+1)
 	for h := first; h <= last; h++ {
 		out = append(out, HourListing{Hour: h})
 	}
-	if len(ids) == 0 {
-		return out, nil
-	}
+	cond, selArgs := sel.where()
+	selected := ` (SELECT capture_id FROM captures WHERE ` + cond + `)`
+	args := append([]any{first, last}, selArgs...)
 	at := func(hour int64) *HourListing { return &out[hour-first] }
 	var scopes []struct {
 		Capture  []byte `db:"capture_id"`
@@ -454,7 +480,7 @@ func listHours(ctx context.Context, tx *sqlx.Tx, ids []tracepack.UUID, first, la
 		State    string `db:"state"`
 		Revision int64  `db:"revision"`
 	}
-	query, args := inList(`SELECT capture_id, hour, state, revision FROM scopes WHERE hour BETWEEN ? AND ? AND capture_id IN`, ids, first, last)
+	query := `SELECT capture_id, hour, state, revision FROM scopes WHERE hour BETWEEN ? AND ? AND capture_id IN` + selected
 	if err := tx.SelectContext(ctx, &scopes, query+` ORDER BY hour, capture_id`, args...); err != nil {
 		return nil, err
 	}
@@ -477,8 +503,8 @@ func listHours(ctx context.Context, tx *sqlx.Tx, ids []tracepack.UUID, first, la
 		Size        int64  `db:"size"`
 		FormatMinor int    `db:"format_minor"`
 	}
-	query, args = inList(`SELECT pack_id, capture_id, hour, role, state, size, format_minor FROM packs
-		WHERE state <> 'deleted' AND hour BETWEEN ? AND ? AND capture_id IN`, ids, first, last)
+	query = `SELECT k.pack_id, k.capture_id, k.hour, k.role, k.state, k.size, k.format_minor FROM packs k
+		WHERE k.state <> 'deleted' AND k.hour BETWEEN ? AND ? AND k.capture_id IN` + selected
 	if err := tx.SelectContext(ctx, &packs, query+` ORDER BY hour, capture_id, pack_id`, args...); err != nil {
 		return nil, err
 	}
@@ -503,8 +529,8 @@ func listHours(ctx context.Context, tx *sqlx.Tx, ids []tracepack.UUID, first, la
 		TSFrom int64  `db:"ts_from"`
 		TSTo   int64  `db:"ts_to"`
 	}
-	query, args = inList(`SELECT r.pack_id, r.seq_from, r.seq_to, r.ts_from, r.ts_to FROM pack_ranges r JOIN packs k ON k.pack_id = r.pack_id
-		WHERE k.state <> 'deleted' AND k.hour BETWEEN ? AND ? AND k.capture_id IN`, ids, first, last)
+	query = `SELECT r.pack_id, r.seq_from, r.seq_to, r.ts_from, r.ts_to FROM pack_ranges r JOIN packs k ON k.pack_id = r.pack_id
+		WHERE k.state <> 'deleted' AND k.hour BETWEEN ? AND ? AND k.capture_id IN` + selected
 	if err := tx.SelectContext(ctx, &ranges, query+` ORDER BY r.pack_id, r.seq_from`, args...); err != nil {
 		return nil, err
 	}
@@ -518,7 +544,7 @@ func listHours(ctx context.Context, tx *sqlx.Tx, ids []tracepack.UUID, first, la
 		Capture []byte `db:"capture_id"`
 		Hour    int64  `db:"hour"`
 	}
-	query, args = inList(`SELECT DISTINCT capture_id, hour FROM evicted_ranges WHERE hour BETWEEN ? AND ? AND capture_id IN`, ids, first, last)
+	query = `SELECT DISTINCT capture_id, hour FROM evicted_ranges WHERE hour BETWEEN ? AND ? AND capture_id IN` + selected
 	if err := tx.SelectContext(ctx, &evicted, query+` ORDER BY hour, capture_id`, args...); err != nil {
 		return nil, err
 	}
@@ -555,8 +581,8 @@ type Changes struct {
 // from one snapshot whose first statement reads the watermark;
 // the next cursor is the last event's seq for a full page, else the watermark, so other tools' events never hold it back.
 func (c *Catalog) ListScopeChanges(ctx context.Context, after Cursor, sel Selector, limit int) (Changes, error) {
-	if limit <= 0 {
-		return Changes{}, fmt.Errorf("catalog: list scope changes: limit %d is not positive", limit)
+	if limit <= 0 || len(sel.Devices) > maxDevices {
+		return Changes{}, fmt.Errorf("catalog: list scope changes: limit %d, %d devices: want a positive limit and at most %d devices", limit, len(sel.Devices), maxDevices)
 	}
 	var out Changes
 	err := c.snapshot(ctx, func(tx *sqlx.Tx) error {
@@ -590,7 +616,7 @@ func (c *Catalog) ListScopeChanges(ctx context.Context, after Cursor, sel Select
 		for _, r := range rows {
 			out.Events = append(out.Events, ScopeEvent{Seq: r.Seq, Capture: tracepack.UUID(r.Capture), Hour: r.Hour, Event: r.Event, Revision: r.Revision, At: r.At})
 		}
-		out.Next = Cursor{Epoch: w.Epoch, Seq: max(after.Seq, w.Seq)}
+		out.Next = w
 		if len(rows) == limit {
 			out.Next.Seq = rows[len(rows)-1].Seq
 		}
