@@ -104,8 +104,8 @@ and a read whose range meets the gap reports `incomplete` ([STO §4]).
 
 A pack is deletable when it is an input of a successful merge
 whose output pack is in state `staged` or `merged` (the relation in `merges`/`merge_inputs`, never a flag or lineage tag);
-it is deleted after a delay D (default 1 hour) that exceeds the lifetime of any download URL, presigned or served by the API (§5.2 *Downloads*, §10.1), and any read in flight;
-a URL issued after the merge is clamped to `merged_at + D` instead (§10.1 *Downloads*, T-33),
+it is deleted a delay D (default 1 hour) after its own merge, at the `merges.delete_at` its commit fixed (`merges.at` + D), D exceeding the lifetime of any download URL, presigned or served by the API (§5.2 *Downloads*, §10.1), and any read in flight;
+a URL issued after the merge is clamped to that time instead (§10.1 *Downloads*, T-33),
 and a `tombstones` row is written in the same transaction as the `deleted` state.
 Every deletion, by this rule or by retention, runs a transaction
 whose **first statement updates the capture's row** (the same row every registration updates first, §6.3),
@@ -116,14 +116,36 @@ Registration and deletion of one key therefore serialize on the capture row befo
 either the tombstone commits first and the registration's predicate aborts it,
 or the registration commits first and the deletion finds a `packs` row and aborts.
 The lock order is capture row → `leases` row → `counters('membership')` row → `counters('scope_events')` row, each step optional, nothing else is locked (T-32).
-A download URL's expiry is clamped to its hour's eviction time (§10.1 *Downloads*),
-so a shortened retention period takes effect for an hour only once the longest URL lifetime has passed since the change,
+A download URL's expiry is clamped to its object's **deadline**, the earliest time it may be deleted (§10.1 *Downloads*),
 and retention never evicts an hour before a time an issued URL was promised (T-33).
+The deadline is **one function**, the same in the api role that clamps a URL and in the compactor that deletes,
+of catalog rows alone, the latest `retention_periods` row and a merged input's `merges.delete_at`, never of a process's own configuration,
+so every process and every restart computes the same deadline:
+- a row holds the retention period P and, after a shortening, the period H held in force until a time U;
+  the period in force at t is P, or the larger of P and H while t < U;
+- the compactor records its configured period under the lease before every retention pass, by inserting a row when it differs from the latest's P,
+  so the record locks no existing row (the lock order is unchanged):
+  a longer period is inserted with the latest row's H and U;
+  a shorter one with H the period in force at that moment and U now + D,
+  so two shortenings inside one window hold the longest;
+  D exceeds every URL's lifetime, so a URL issued before the change has expired by U;
+- an hour may be evicted at the first t at which its end plus the period in force at t has passed,
+  which is its deadline, and the eviction horizon is the hour that rule reaches now;
+  a merged input's deadline is the earlier of its hour's and its own merge's `delete_at` (through `merge_inputs`), never the scope's `merged_at`, which a later merge moves,
+  so a changed D applies to later merges only;
+- before the first record no deadline exists and no URL is issued.
+The registration's horizon guard (§6.3) follows the configured period at once:
+refusing a registration early loses nothing an issued URL was promised; only eviction waits.
 A completed export bundle under `exports/` is deleted at the end of its retention (default 24 h), its URLs clamped to that time likewise.
-Retention deletes whole hours older than the retention period:
-in one transaction per hour it copies the hour's `pack_ranges` union into `evicted_ranges`, deletes the packs, ranges, receipts, the hour's `claim_objects` rows **except survivors** (§8.4) and the scope row, and writes the tombstones;
-then it deletes the hour's claim objects, survivors excepted, from the bucket;
-`evicted_ranges` of a capture are coalesced.
+Retention deletes whole hours older than the eviction horizon:
+in one transaction per hour of one admitted capture it copies the hour's `pack_ranges` union into `evicted_ranges`, deletes the packs, ranges, receipts, the hour's `claim_objects` rows **except survivors** (§8.4) and the scope row, and writes the tombstones;
+then it deletes the hour's claim objects, survivors excepted, from the bucket.
+The rows of an evicted pack go with it: its `pack_ranges` and `pack_losses`, the `merges` and `merge_inputs` naming it and the `conflicts` rows naming it,
+so a declared loss of the hour reads afterwards as any hole outside `evicted_ranges` does;
+`evicted_ranges` are coalesced within their hour, keyed by capture, hour and first seq, so an evicted hour stays distinct from a `no-data` one.
+An hour holding claim objects but no scope is a candidate like any other:
+the claim bucket is listed before every retention pass, and an object without a `claim_objects` row is attributed by its name, `<capture_id>.<seq>`, and the SDK's metadata (§8.4) and given a `live` row,
+so a crash between an eviction's commit and its bucket deletions leaves objects the next listing attributes to the now scope-less hour, which is evicted again.
 The one retention decision therefore governs packs, receipts and claim objects alike, from the record's own `ts_utc_ns`, never from an object store clock.
 Seq order and hour order differ after a clock step, so evicted seqs are a set of ranges, not a prefix (§7.3).
 Holds for LS-13 (a), if the owner chooses them, exempt an hour from retention.
@@ -181,7 +203,8 @@ no proof about acceptance times, drained subjects or object incarnations is need
   mark the `claim_objects` row `deletable` under the capture row and the lease (the `parked` and `parked_copies` rows stay), delete the object from the bucket, remove the `claim_objects` row under the lease;
   an interrupted step resumes, never skips;
   `tracekeep admin object list --survivors` shows survivors with their evicted hour and bytes;
-  an object whose `Metadata` lacks the SDK's header and time (a non-SDK producer) is **never deleted automatically**:
+  an object whose `Metadata` lacks the SDK's header and time, or whose name, header seq and time disagree (a non-SDK producer), is **never deleted automatically**:
+  the listing records it in `unattributed_objects` until it is gone,
   `tracekeep admin object list --unattributed` shows it and the operator decides,
   which is the conservative disposition for a producer the design does not support.
 - A **conflicting version** of a claim-check record (a producer fault, G5-200, G5-214) is kept beside the staged one for as long as the hour is retained:
