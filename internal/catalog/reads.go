@@ -23,6 +23,9 @@ type Selector struct {
 	From, To int64
 }
 
+// maxHours bounds the hours one listing reports: a leap year.
+const maxHours = 24 * 366
+
 // maxDevices bounds the devices a selector names, each one bound parameter.
 const maxDevices = 1000
 
@@ -291,7 +294,8 @@ func relate(self span, peers []span, q int64) (bool, []UnregisteredInterval) {
 			earlier, latest = true, p.end()
 		}
 	}
-	if earlier && self.origin-latest > q {
+	// Unsigned, so a separation beyond the int64 range does not wrap.
+	if earlier && self.origin > latest && uint64(self.origin)-uint64(latest) > uint64(q) { //nolint:gosec // two's complement difference of ordered values
 		start := latest
 
 		return overlap, []UnregisteredInterval{{Start: &start, End: self.origin}}
@@ -398,6 +402,9 @@ func (c *Catalog) ListPacks(ctx context.Context, sel Selector, q time.Duration) 
 	if err := sel.check(); err != nil {
 		return Listing{}, fmt.Errorf("catalog: list packs: %w", err)
 	}
+	if n := floorHour(sel.To-1) - floorHour(sel.From) + 1; n > maxHours {
+		return Listing{}, fmt.Errorf("catalog: list packs: %d hours, at most %d", n, maxHours)
+	}
 	var out Listing
 	err := c.snapshot(ctx, func(tx *sqlx.Tx) error {
 		err := tx.QueryRowxContext(ctx, `SELECT epoch, value FROM counters WHERE name = 'scope_events'`).Scan(&out.Cursor.Epoch, &out.Cursor.Seq)
@@ -440,7 +447,6 @@ func (hl *HourListing) fill(caps []CaptureListing) {
 	if len(hl.Scopes) > 0 {
 		return
 	}
-	start, end := hl.Hour*nsPerHour, (hl.Hour+1)*nsPerHour
 	for _, cl := range caps {
 		for _, d := range cl.Completeness.Deferred {
 			if floorHour(d.TS) == hl.Hour {
@@ -452,14 +458,16 @@ func (hl *HourListing) fill(caps []CaptureListing) {
 				hl.Losses = append(hl.Losses, l)
 			}
 		}
-		spanEnd := end
-		if cl.State != StateOpen {
-			spanEnd = cl.OriginNS
+		// Compared as hours, so the first and last representable hours do not overflow.
+		reaches := cl.State == StateOpen
+		if !reaches {
+			end := cl.OriginNS
 			if cl.LastRecordNS != nil {
-				spanEnd = *cl.LastRecordNS
+				end = *cl.LastRecordNS
 			}
+			reaches = floorHour(end) >= hl.Hour
 		}
-		hl.Spanned = hl.Spanned || cl.OriginNS < end && spanEnd >= start
+		hl.Spanned = hl.Spanned || floorHour(cl.OriginNS) <= hl.Hour && reaches
 	}
 	hl.NoData = len(hl.Evicted) == 0 && len(hl.Deferred) == 0 && len(hl.Losses) == 0
 }

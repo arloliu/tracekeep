@@ -3,6 +3,7 @@ package catalog
 import (
 	"database/sql"
 	"encoding/binary"
+	"math"
 	"slices"
 	"testing"
 	"time"
@@ -503,6 +504,48 @@ func TestReadsOfManyCaptures(t *testing.T) {
 		})
 		if err != nil {
 			t.Errorf("listHours = %v", err)
+		}
+	})
+}
+
+// Hours and spans at the limits of a UTC nanosecond time compare without overflow:
+// an open capture spans the first and the last representable hour,
+// and an unregistered interval longer than the int64 range is still reported.
+func TestReadsAtTimeLimits(t *testing.T) {
+	t.Parallel()
+	engines(t, func(t *testing.T, c *Catalog) {
+		described(t, c, spec{instance: newID(t), origin: math.MinInt64, device: "first"})
+		described(t, c, spec{instance: newID(t), origin: 0, device: "last"})
+		last, first := window(math.MaxInt64-10, math.MaxInt64), window(math.MinInt64, math.MinInt64+10)
+		last.Devices, first.Devices = []string{"last"}, []string{"first"}
+		for _, w := range []Selector{last, first} {
+			got := listPacks(t, c, w)
+			if len(got.Hours) != 1 || !got.Hours[0].NoData || !got.Hours[0].Spanned {
+				t.Errorf("window [%d, %d): hours %+v, want one no-data hour the open capture spans", w.From, w.To, got.Hours)
+			}
+		}
+		r := newID(t)
+		described(t, c, spec{instance: r, origin: -5e18})
+		late := described(t, c, spec{instance: r, origin: 5e18})
+		got := listCaptures(t, c, window(4e18, 6e18))
+		if u := got[late].Unregistered; len(u) != 1 || u[0].Start == nil || *u[0].Start != -5e18 || u[0].End != 5e18 {
+			t.Errorf("unregistered %+v, want from the earlier capture's origin to the later one's", u)
+		}
+	})
+}
+
+// A listing spans at most maxHours hours.
+func TestListPacksRefusesTooManyHours(t *testing.T) {
+	t.Parallel()
+	engines(t, func(t *testing.T, c *Catalog) {
+		if _, err := c.ListPacks(t.Context(), window(0, hourNS(maxHours)), readQ); err != nil {
+			t.Errorf("maxHours hours: %v", err)
+		}
+		if _, err := c.ListPacks(t.Context(), window(0, hourNS(maxHours)+1), readQ); err == nil {
+			t.Error("maxHours hours and a nanosecond: listed, want refused")
+		}
+		if _, err := c.ListPacks(t.Context(), window(math.MinInt64, math.MaxInt64), readQ); err == nil {
+			t.Error("every representable hour: listed, want refused")
 		}
 	})
 }
