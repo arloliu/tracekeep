@@ -263,8 +263,9 @@ table "evicted_ranges" {
   column "ts_to" {
     type = bigint
   }
+  # Coalesced within the hour, so an evicted hour stays distinct from a no-data one (compactor.md §8.3).
   primary_key {
-    columns = [column.capture_id, column.seq_from]
+    columns = [column.capture_id, column.hour, column.seq_from]
   }
 }
 
@@ -612,6 +613,11 @@ table "merges" {
   column "at" {
     type = bigint
   }
+  # When the merge's inputs are deleted, at + D fixed at the commit, so every process reads one deadline (compactor.md §8.3).
+  column "delete_at" {
+    type    = bigint
+    default = 0
+  }
   primary_key {
     columns = [column.merge_id]
   }
@@ -636,6 +642,44 @@ table "merge_inputs" {
   }
   index "merge_inputs_pack" {
     columns = [column.pack_id]
+  }
+}
+
+# The retention period the compactor recorded, one row per change, the latest in force;
+# after a shortening the longer period stays held until held_until (compactor.md §8.3).
+table "retention_periods" {
+  schema = schema.main
+  column "recorded_at" {
+    type = bigint
+  }
+  column "period_ns" {
+    type = bigint
+  }
+  column "held_ns" {
+    type = bigint
+  }
+  column "held_until" {
+    type = bigint
+  }
+  primary_key {
+    columns = [column.recorded_at]
+  }
+}
+
+# Claim bucket objects without the SDK's metadata, which only an operator deletes (compactor.md §8.4).
+table "unattributed_objects" {
+  schema = schema.main
+  column "object_key" {
+    type = varchar(512)
+  }
+  column "size" {
+    type = bigint
+  }
+  column "seen_at" {
+    type = bigint
+  }
+  primary_key {
+    columns = [column.object_key]
   }
 }
 
