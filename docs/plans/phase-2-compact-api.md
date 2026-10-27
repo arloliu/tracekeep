@@ -1,6 +1,6 @@
 # Phase 2 — compact and machine API
 
-Status: active (2026-10-27) — phase 2.1 in progress
+Status: active (2026-10-27) — phase 2.2 in progress
 
 Milestone 2 of the [roadmap](../ROADMAP.md):
 the compactor's state machines, the catalog reads they make answerable, and the machine API the VE service reads them through.
@@ -26,8 +26,8 @@ This plan only orders the work.
 
 | Phase | Scope | State |
 |---|---|---|
-| 2.1 — merge and conflicts | the merge of §8.1 with `CommitMerge`, `RecordConflict` confirming or clearing suspects, `scope merge`, `conflict acknowledge`, `scope exclude-input`, and their metrics | in-progress |
-| 2.2 — close | `CloseIntent` and `PublishClose` of §8.2 with both triggers, `abandoned` intents (checklist 7's close), `capture close`, crash gaps in completeness, `closes_total{trigger}`; the reconciler adopting a close's orphan, which phase 1 reports and keeps (`internal/compact/orphans.go`), as a pack holding no producer range that moves neither coverage nor `highest_seq`, racing the publication in both orders | pending |
+| 2.1 — merge and conflicts | the merge of §8.1 with `CommitMerge`, `RecordConflict` confirming or clearing suspects, `scope merge`, `conflict acknowledge`, `scope exclude-input`, and their metrics | done (#22) |
+| 2.2 — close | `CloseIntent` and `PublishClose` of §8.2 with both triggers, `abandoned` intents (checklist 7's close), `capture close`, crash gaps in completeness, `closes_total{trigger}`; the reconciler adopting a close's orphan, which phase 1 reports and keeps (`internal/compact/orphans.go`), as a pack holding no producer range that moves neither coverage nor `highest_seq`, racing the publication in both orders | in-progress |
 | 2.3 — deletion and retention | each object's deletion deadline as one function (hour end + retention, `merged_at` + D for a merged input), D above the download URL's lifetime, and a shortened retention kept from evicting an hour before an issued URL's promise across restarts and processes (specified in `compactor.md` §8.3 first, then built); `DeletePack` after D; `EvictHour` with `evicted_ranges` and the `parked → evicted-hour` move; the claim bucket listed and its receipt-less objects attributed by the SDK's metadata (hour, capture, seq, the bare object name against the bucket-qualified `Tpk-Payload-Ref`), with their `claim_objects` rows, and hours that hold claim objects but no scope, before eviction reads them; §8.4's predicate as one function; survivors deleted by the reconciler; `object list --survivors` and `--unattributed`; and their metrics | pending |
 | 2.4 — reads and cursor | `ListDevices`, `ListCaptures`, `ListPacks` and `ListScopeChanges` as catalog reads (§7.3): `no-data` hours, unregistered intervals, overlap, the watermark read first, `low_water` and `epoch`, pruning by seq prefix | pending |
 | 2.5 — service auth | client credentials against the IdP's JWKS with lazy discovery and one refresh on an unknown `kid`, mTLS, the static-token flag never enabled by a failure, the role each operation checks, `auth_failures_total`; and the `download` key purpose of `masking-keys.md` §9 brought forward whole (T-41): the binding's insert-or-compare, the `file` and `env` providers, issuing and accepted key ids, purpose separation | pending |
@@ -44,6 +44,25 @@ the survivor, shared-object and unknown-capture races in 2.3, the cursor's commi
 2.8 audits them all, the membership and old-version cases phase 1 built included.
 The roadmap's gate case "a parked message replays in order after its blocker clears" is the parked consumer's own retry after `parking.redelivery_delay`,
 staged through a flush sorted by seq (T-40 withdrew an early replay to proposal P1).
+
+## Phase 2.2 — close
+
+Work on the branch `feat/compact/close`, one commit per step, test first;
+the branch merges by pull request once the whole phase passes an external post-implementation review.
+The close runs in the compactor's cycle under the one lease, after the merge pass, so a close's segment is merged with its hour's like any segment.
+The inactivity period I (default 2 hours, T-12) becomes `compact.inactivity` in the configuration and its guide.
+A changed check constraint is renamed with its change, since Atlas v1.3.0 writes MySQL's `DROP CHECK` for a modified check, which MariaDB refuses,
+and `DROP CONSTRAINT` for a dropped one.
+
+| Step | Scope | State |
+|---|---|---|
+| 1 | schema: `capture_closes.codec` dropped with the codec from `compactor.md` §8.2 and `catalog.md` §7.1 (T-36, closing the roadmap's open item), and a third trigger kind, `operator`, for `capture close` | pending |
+| 2 | catalog: the candidate scan, captures `open` without `stop_seen`, by inactivity (no registration for I, the capture's first sighting standing in for a capture never registered) or by successor (a later capture of its `tool_id` and `recorder_instance_id`, by origin, with a registration at least Q old, and none of its own for Q); `CloseIntent` under the capture row and the lease, eligibility re-read for its trigger inside, the intent row with its fixed `pack_id`, `writer_time`, serialized `PackMeta`, highest seq and its time and the gap bounds, the capture `closed`; an operator's request ended in the same commit; the pending intents read | pending |
+| 3 | catalog: `PublishClose` under the capture row and the lease, on the intent's `pack_id`: registered as a pack holding no range, or found registered (adopted first), and the intent `published`, the scope's event last; the horizon guard refusing it tombstones the key and abandons the intent, and a key already tombstoned abandons it too; neither coverage nor `highest_seq` moves | pending |
+| 4 | the close pass: candidates to intents, then every pending intent written by `tracepack.WriteClose` from exactly its stored options, put under its `staging/` key (a put whose result was lost checked by `Stat` against the written size), and published; `capture close` as a request decided under the capture row (not open or `stop_seen`: failed), its intent ending it | pending |
+| 5 | the reconciler adopting a close's orphan as a pack holding no range, before and after the publication | pending |
+| 6 | metrics: `closes_total{trigger}`, `cycle_seconds{task=close}`, `last_success_timestamp{task=close}`; `compact.inactivity` | pending |
+| 7 | schedules, barrier-controlled on both engines, asserting durable state: a registration between the candidate scan and the intent (no close), and one after it (staged, the capture stays `closed`, its close's bytes unchanged); a late `stop` before the intent (no close) and after it (staged; `stop_seen` set, the capture stays `closed`); the successor trigger refusing to close an overlapping capture still registering, and closing it once silent for Q; a crash after the intent, after the put and after the publication, each retried to the same bytes; the close's object adopted before its publication; a horizon refusal leaving the intent `abandoned` and never retried (checklist 7); a capture closed after seq 100 keeping `highest_seq` 100, its crash gap read by completeness; a lease lost before each commit | pending |
 
 ## Phase 2.1 — merge and conflicts
 
