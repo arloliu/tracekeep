@@ -379,3 +379,66 @@ func TestPublishAcceptedAfterTheCutOffRead(t *testing.T) {
 		}
 	})
 }
+
+// survivorAndStray leaves c a survivor, tk-claims/x.6 of hour 1, 70 bytes, and an unattributed object, tk-claims/upload.bin.
+func survivorAndStray(t *testing.T, c *catalog.Catalog) {
+	t.Helper()
+	ctx := t.Context()
+	lease, ok, err := c.TakeLease(ctx, "compactor", "w", time.Hour)
+	if err != nil || !ok {
+		t.Fatalf("TakeLease = %v, %v", ok, err)
+	}
+	if _, err := c.ActivateConfig(ctx, []byte("config")); err != nil {
+		t.Fatal(err)
+	}
+	capture := tracepack.UUID{3}
+	d := &catalog.Descriptor{Bytes: []byte("d"), ToolID: "T1", RecorderInstanceID: tracepack.UUID{4}, Device: "eqp", OriginNS: 1}
+	if _, err := c.Admit(ctx, identity(capture, 0, 1, 1), d); err != nil {
+		t.Fatal(err)
+	}
+	parked := identity(capture, 6, 1, 6)
+	if _, err := c.BeginParking(ctx, parked, "claim-conflict", "tk-claims/x.6", 0); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.AdvanceParked(ctx, &parked.Version); err != nil {
+		t.Fatal(err)
+	}
+	objs := []catalog.Listed{
+		{Key: "tk-claims/x.6", Size: 70, Attr: &catalog.ClaimObject{Capture: capture, Seq: 6, Hour: 1}},
+		{Key: "tk-claims/upload.bin", Size: 3},
+	}
+	if _, err := c.RecordListing(ctx, lease, objs, 5); err != nil {
+		t.Fatal(err)
+	}
+	now := int64(3 * time.Hour)
+	if _, err := c.RecordRetention(ctx, lease, time.Hour, time.Hour, now); err != nil {
+		t.Fatal(err)
+	}
+	if ev, err := c.EvictHour(ctx, lease, catalog.Scope{Capture: capture, Hour: 1}, now); err != nil || ev.Survivors != 1 {
+		t.Fatalf("EvictHour = %+v, %v", ev, err)
+	}
+}
+
+// object list shows the survivors an eviction kept, with their evicted hour and size, and the unattributed objects.
+func TestObjectList(t *testing.T) {
+	t.Parallel()
+	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
+		ctx := t.Context()
+		a, _, _ := setup(t, c)
+		survivorAndStray(t, c)
+		got, err := a.ObjectList(ctx, true, false)
+		if err != nil || len(got.Survivors) != 1 || len(got.Unattributed) != 0 {
+			t.Fatalf("object list --survivors = %+v, %v", got, err)
+		}
+		if s := got.Survivors[0]; s.Key != "tk-claims/x.6" || s.Size != 70 || s.EvictedHour == nil || *s.EvictedHour != 1 {
+			t.Errorf("survivor = %+v, want its key, size and evicted hour", s)
+		}
+		got, err = a.ObjectList(ctx, false, true)
+		if err != nil || len(got.Survivors) != 0 || len(got.Unattributed) != 1 || got.Unattributed[0].Key != "tk-claims/upload.bin" {
+			t.Errorf("object list --unattributed = %+v, %v", got, err)
+		}
+		if got, err = a.ObjectList(ctx, false, false); err != nil || len(got.Survivors) != 1 || len(got.Unattributed) != 1 {
+			t.Errorf("object list = %+v, %v, want both", got, err)
+		}
+	})
+}
