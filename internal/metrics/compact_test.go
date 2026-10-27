@@ -80,3 +80,25 @@ func TestCloseMetrics(t *testing.T) {
 		}
 	}
 }
+
+// Deletion and retention count their deletions and tombstones, and the claim gauges are set as read.
+func TestRetentionMetrics(t *testing.T) {
+	t.Parallel()
+	s := NewServer()
+	m, err := NewCompact(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.Orphans(0, 0, 1)
+	m.Retention(2, 5)
+	m.Claims(7, 7000, 1)
+	b := body(t, s)
+	for _, want := range []string{
+		"tracekeep_compact_deletions_total 2", "tracekeep_compact_tombstones_total 6", "tracekeep_compact_claim_objects 7",
+		"tracekeep_compact_claim_object_bytes 7000", "tracekeep_compact_claim_objects_survivors 1",
+	} {
+		if !strings.Contains(b, want) {
+			t.Errorf("/metrics lacks %s:\n%s", want, b)
+		}
+	}
+}

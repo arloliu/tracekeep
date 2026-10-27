@@ -119,7 +119,7 @@ func (r *Compactor) Deletions(ctx context.Context, lease catalog.Lease, rep *Ret
 		}
 		rep.Deleted++
 		rep.Tombstoned++
-		r.removeObject(ctx, lease, d.Key)
+		r.removeObject(ctx, lease, d.Key, rep)
 	}
 
 	return nil
@@ -166,10 +166,10 @@ func (r *Compactor) Retain(ctx context.Context, lease catalog.Lease, rep *Retent
 		rep.Tombstoned += len(ev.Packs)
 		rep.Survivors += ev.Survivors
 		for _, key := range ev.Packs {
-			r.removeObject(ctx, lease, key)
+			r.removeObject(ctx, lease, key, rep)
 		}
 		for _, key := range ev.Claims {
-			r.removeClaim(ctx, lease, key)
+			r.removeClaim(ctx, lease, key, rep)
 		}
 	}
 
@@ -188,7 +188,7 @@ func (r *Compactor) releaseSurvivors(ctx context.Context, lease catalog.Lease, r
 		if err := r.stepFailed(ctx, err, "release a survivor", o.Key, rep); err != nil {
 			return err
 		}
-		if !ok || !r.removeClaim(ctx, lease, o.Key) {
+		if !ok || !r.removeClaim(ctx, lease, o.Key, rep) {
 			continue
 		}
 		err = r.Catalog.RemoveClaimObject(ctx, lease, o.Key)
@@ -217,19 +217,21 @@ func (r *Compactor) stepFailed(ctx context.Context, err error, what, key string,
 	return nil
 }
 
-// removeObject removes the tombstoned pack key from the store while lease is held; a failure is logged and left to the orphan pass.
-func (r *Compactor) removeObject(ctx context.Context, lease catalog.Lease, key string) {
+// removeObject removes the tombstoned pack key from the store while lease is held;
+// a failure is logged, counted and left to the orphan pass.
+func (r *Compactor) removeObject(ctx context.Context, lease catalog.Lease, key string, rep *RetentionReport) {
 	if err := r.Catalog.VerifyLease(ctx, lease); err != nil {
 		return
 	}
 	if err := r.Store.Delete(ctx, key); err != nil {
 		r.Log.Warn("compact: delete a tombstoned pack", "key", key, "error", err)
+		rep.Failed++
 	}
 }
 
 // removeClaim deletes the claim object of key from the bucket while lease is held and reports whether it is gone;
-// a failure is logged, and the next listing attributes the object again.
-func (r *Compactor) removeClaim(ctx context.Context, lease catalog.Lease, key string) bool {
+// a failure is logged and counted, and the next listing attributes the object again, or the next cycle resumes the survivor's release.
+func (r *Compactor) removeClaim(ctx context.Context, lease catalog.Lease, key string, rep *RetentionReport) bool {
 	name, ok := r.claimName(key)
 	if !ok {
 		r.Log.Warn("compact: a claim object of another bucket", "key", key)
@@ -240,6 +242,8 @@ func (r *Compactor) removeClaim(ctx context.Context, lease catalog.Lease, key st
 	}
 	if err := r.Claims.Delete(ctx, name); err != nil {
 		r.Log.Warn("compact: delete a claim object", "key", key, "error", err)
+		rep.Failed++
+
 		return false
 	}
 

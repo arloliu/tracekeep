@@ -73,6 +73,9 @@ func TestRecordListing(t *testing.T) {
 		if got := claimStates(t, c); !maps.Equal(got, want) {
 			t.Errorf("claim objects = %v, want %v", got, want)
 		}
+		if st, err := c.ClaimStats(t.Context()); err != nil || st != (ClaimStats{Objects: 3, Bytes: 60, Survivors: 1}) {
+			t.Errorf("ClaimStats = %+v, %v", st, err)
+		}
 		if got := unattributedKeys(t, c); !slices.Equal(got, []string{"claims/odd", "claims/odder"}) {
 			t.Errorf("unattributed = %v", got)
 		}

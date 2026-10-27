@@ -8,16 +8,20 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 )
 
-// Compact is the compact role's metrics (operations.md §10.4 compact) for the work it does: the reconciler's and the merge's.
+// Compact is the compact role's metrics (operations.md §10.4 compact) for the work it does:
+// the reconciler's, the merge's, the close's, deletion's and retention's.
 // Every method records nothing on a nil *Compact.
 type Compact struct {
 	cycle                            *prometheus.HistogramVec
 	lastSuccess                      *prometheus.GaugeVec
 	leaseHeld                        prometheus.GaugeFunc
 	adopted, quarantined, tombstones prometheus.Counter
+	deletions                        prometheus.Counter
 	merges, closes                   *prometheus.CounterVec
 	scopes                           *prometheus.GaugeVec
 	conflictsOpen, oldestUnmerged    prometheus.Gauge
+	claimObjects, claimBytes         prometheus.Gauge
+	survivors                        prometheus.Gauge
 	// leaseUntil is when the lease this process last took or renewed lapses, in Unix nanoseconds; 0 when it holds none.
 	leaseUntil atomic.Int64
 	now        func() time.Time
@@ -35,7 +39,9 @@ func NewCompact(s *Server) (*Compact, error) {
 			Help: "When a task's cycle last succeeded, in Unix seconds."}, []string{"task"}),
 		adopted:     counter("orphans_adopted_total", "Orphaned packs the reconciler registered as adopted."),
 		quarantined: counter("orphans_quarantined_total", "Orphans the reconciler quarantined: reported, never registered or deleted."),
-		tombstones:  counter("tombstones_total", "Keys the reconciler tombstoned: beyond the horizon or lost to a termination."),
+		tombstones: counter("tombstones_total",
+			"Keys the compactor tombstoned: beyond the horizon, lost to a termination, a merged input deleted or an hour evicted."),
+		deletions: counter("deletions_total", "Merged inputs deleted D after their merge."),
 		merges: prometheus.NewCounterVec(prometheus.CounterOpts{Namespace: "tracekeep", Subsystem: "compact", Name: "merges_total",
 			Help: "Merges by outcome: merged, stale (retried next cycle), conflicted or failed."}, []string{"outcome"}),
 		closes: prometheus.NewCounterVec(prometheus.CounterOpts{Namespace: "tracekeep", Subsystem: "compact", Name: "closes_total",
@@ -46,11 +52,18 @@ func NewCompact(s *Server) (*Compact, error) {
 			Help: "Conflicts no operator acknowledged, as the lease holder last read them."}),
 		oldestUnmerged: prometheus.NewGauge(prometheus.GaugeOpts{Namespace: "tracekeep", Subsystem: "compact", Name: "oldest_unmerged_scope_age_seconds",
 			Help: "How long ago the hour of the oldest open or reopened scope ended, 0 when none has; as the lease holder last read it."}),
+		claimObjects: prometheus.NewGauge(prometheus.GaugeOpts{Namespace: "tracekeep", Subsystem: "compact", Name: "claim_objects",
+			Help: "Claim objects the catalog knows, in every state, as the lease holder last read them."}),
+		claimBytes: prometheus.NewGauge(prometheus.GaugeOpts{Namespace: "tracekeep", Subsystem: "compact", Name: "claim_object_bytes",
+			Help: "The bytes of the claim objects the catalog knows, as the lease holder last read them."}),
+		survivors: prometheus.NewGauge(prometheus.GaugeOpts{Namespace: "tracekeep", Subsystem: "compact", Name: "claim_objects_survivors",
+			Help: "Claim objects retention kept for an unresolved parked version, as the lease holder last read them."}),
 	}
 	m.leaseHeld = prometheus.NewGaugeFunc(prometheus.GaugeOpts{Namespace: "tracekeep", Subsystem: "compact", Name: "lease_held",
 		Help: "1 while this process holds the compactor lease: taken or renewed, and not lapsed since."}, m.held)
 	for _, c := range []prometheus.Collector{
-		m.cycle, m.lastSuccess, m.leaseHeld, m.adopted, m.quarantined, m.tombstones, m.merges, m.closes, m.scopes, m.conflictsOpen, m.oldestUnmerged,
+		m.cycle, m.lastSuccess, m.leaseHeld, m.adopted, m.quarantined, m.tombstones, m.deletions, m.merges, m.closes, m.scopes,
+		m.conflictsOpen, m.oldestUnmerged, m.claimObjects, m.claimBytes, m.survivors,
 	} {
 		if err := s.Registry().Register(c); err != nil {
 			return nil, fmt.Errorf("metrics: compact: %w", err)
@@ -137,4 +150,23 @@ func (m *Compact) Closes(byTrigger map[string]int) {
 	for trigger, n := range byTrigger {
 		m.closes.WithLabelValues(trigger).Add(float64(n))
 	}
+}
+
+// Retention counts the merged inputs deletion deleted and the keys deletion and retention tombstoned.
+func (m *Compact) Retention(deleted, tombstoned int) {
+	if m == nil {
+		return
+	}
+	m.deletions.Add(float64(deleted))
+	m.tombstones.Add(float64(tombstoned))
+}
+
+// Claims sets the claim object gauges: the objects the catalog knows, their bytes, and the survivors among them.
+func (m *Compact) Claims(objects, bytes, survivors int64) {
+	if m == nil {
+		return
+	}
+	m.claimObjects.Set(float64(objects))
+	m.claimBytes.Set(float64(bytes))
+	m.survivors.Set(float64(survivors))
 }
