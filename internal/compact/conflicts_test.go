@@ -1,8 +1,10 @@
 package compact
 
 import (
+	"errors"
 	"slices"
 	"testing"
+	"time"
 
 	"github.com/arloliu/go-secs/tracepack"
 
@@ -110,11 +112,11 @@ func TestDifferingCopiesConfirmTheSuspect(t *testing.T) {
 		"differing redaction entries": {
 			a: func(t *testing.T, capture tracepack.UUID) built {
 				t.Helper()
-				return segmentOf(t, capture, hour, withBody(recordsAt(hour, 0, 1, 2, 3, 4), 4), redacted(4, 1))
+				return segmentOf(t, capture, hour, withBody(recordsAt(hour, 0, 1, 2, 3, 4)), redacted(1))
 			},
 			b: func(t *testing.T, capture tracepack.UUID) built {
 				t.Helper()
-				return segmentOf(t, capture, hour, withBody(recordsAt(hour, 3, 4, 5), 4), redacted(4, 2))
+				return segmentOf(t, capture, hour, withBody(recordsAt(hour, 3, 4, 5)), redacted(2))
 			},
 		},
 	}
@@ -141,10 +143,13 @@ func TestDifferingCopiesConfirmTheSuspect(t *testing.T) {
 	}
 }
 
-// withBody gives the record of seq a two-byte message body after its frame prefix, which a mask may cover.
-func withBody(recs []tracepack.Record, seq uint64) []tracepack.Record {
+// maskedSeq is the seq whose record the redaction tests mask.
+const maskedSeq = 4
+
+// withBody gives the record of maskedSeq a two-byte message body after its frame prefix, which a mask may cover.
+func withBody(recs []tracepack.Record) []tracepack.Record {
 	for i := range recs {
-		if recs[i].Seq == seq {
+		if recs[i].Seq == maskedSeq {
 			p := append(append([]byte(nil), recs[i].Payload...), 0xaa, 0xbb)
 			p[3] += 2
 			recs[i].Payload = p
@@ -154,8 +159,8 @@ func withBody(recs []tracepack.Record, seq uint64) []tracepack.Record {
 	return recs
 }
 
-// redacted adds a redaction policy and one entry for seq, masking the first n bytes of its message body.
-func redacted(seq, n uint64) func(*tracepack.PackMeta) {
+// redacted adds a redaction policy and one entry for maskedSeq, masking the first n bytes of its message body.
+func redacted(n uint64) func(*tracepack.PackMeta) {
 	return func(m *tracepack.PackMeta) {
 		alg, key := tracepack.EncryptionAlgorithmAESSIVCMAC512, "k"
 		m.RedactionPolicy = &tracepack.RedactionPolicy{
@@ -164,7 +169,7 @@ func redacted(seq, n uint64) func(*tracepack.PackMeta) {
 		}
 		m.Classifiers = []string{"c"}
 		m.Redaction = []tracepack.RedactionEntry{{
-			Seq: seq, MaskedRanges: []tracepack.MaskedRange{{Offset: 14, Length: n}}, Domain: "d", Digest: make([]byte, 32),
+			Seq: maskedSeq, MaskedRanges: []tracepack.MaskedRange{{Offset: 14, Length: n}}, Domain: "d", Digest: make([]byte, 32),
 			SIV: make([]byte, 16), HasSIV: true,
 		}}
 	}
@@ -204,4 +209,126 @@ func TestMergeFailingOnAConflictRecordsIt(t *testing.T) {
 			t.Errorf("archives = %v, want none put", keys)
 		}
 	})
+}
+
+// Equal records whose redaction entries are equal too clear their suspect.
+func TestEqualRedactionEntriesClear(t *testing.T) {
+	t.Parallel()
+	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
+		f := newFixture(t, c)
+		capture := f.admit(t)
+		f.stage(t, segmentOf(t, capture, hour, withBody(recordsAt(hour, 0, 1, 2, 3, 4)), redacted(1)))
+		f.stage(t, segmentOf(t, capture, hour, withBody(recordsAt(hour, 3, 4, 5)), redacted(1)))
+		if rep := f.conflicts(t); rep.Cleared != 1 || rep.Confirmed != 0 {
+			t.Errorf("Conflicts = %+v, want one cleared", rep)
+		}
+	})
+}
+
+// What happens while a suspect is compared, outside any transaction:
+// a third pack registered keeps its own pair rows; an acknowledgement leaves the comparison nothing to record;
+// a lost lease ends the pass with nothing recorded; a read that fails records nothing, and a later pass converges.
+func TestDuringAComparison(t *testing.T) {
+	t.Parallel()
+	type outcome struct {
+		rep      ConflictReport
+		err      error
+		suspects int
+	}
+	cases := map[string]struct {
+		during func(t *testing.T, f *fixture, capture tracepack.UUID)
+		check  func(t *testing.T, f *fixture, o outcome)
+	}{
+		"a third pack": {
+			during: func(t *testing.T, f *fixture, capture tracepack.UUID) {
+				t.Helper()
+				f.r.hooks[hookCompared] = func() {
+					f.r.hooks[hookCompared] = nil
+					f.stage(t, segmentOf(t, capture, hour, recordsAt(hour, 3, 4), noAdjust))
+				}
+			},
+			// The compared pair is cleared; the third pack's rows against both stay suspects.
+			check: func(t *testing.T, _ *fixture, o outcome) {
+				t.Helper()
+				if o.err != nil || o.rep.Cleared != 1 || o.suspects != 2 {
+					t.Errorf("%+v, want one cleared and the third pack's two left", o)
+				}
+			},
+		},
+		"an acknowledgement": {
+			during: func(t *testing.T, f *fixture, capture tracepack.UUID) {
+				t.Helper()
+				f.r.hooks[hookCompared] = func() {
+					if _, err := f.c.AcknowledgeConflict(t.Context(), capture, 3, "op", "a1"); err != nil {
+						t.Error(err)
+					}
+				}
+			},
+			check: func(t *testing.T, f *fixture, o outcome) {
+				t.Helper()
+				if o.err != nil || o.rep.Changed != 1 || o.suspects != 0 || len(f.candidates(t)) != 0 {
+					t.Errorf("%+v, want changed, the scope unmerged", o)
+				}
+			},
+		},
+		"a lost lease": {
+			during: func(t *testing.T, f *fixture, _ tracepack.UUID) {
+				t.Helper()
+				f.r.hooks[hookCompared] = func() {
+					if err := f.c.ReleaseLease(t.Context(), f.lease); err != nil {
+						t.Error(err)
+					}
+					if _, ok, err := f.c.TakeLease(t.Context(), "compactor", "another", time.Hour); err != nil || !ok {
+						t.Errorf("TakeLease = %v, %v", ok, err)
+					}
+				}
+			},
+			check: func(t *testing.T, _ *fixture, o outcome) {
+				t.Helper()
+				if !errors.Is(o.err, catalog.ErrLeaseLost) || o.suspects != 1 {
+					t.Errorf("%+v, want ErrLeaseLost and the suspect kept", o)
+				}
+			},
+		},
+		"a failed read": {
+			during: func(t *testing.T, f *fixture, _ tracepack.UUID) {
+				t.Helper()
+				ss, err := f.c.Suspects(t.Context())
+				if err != nil {
+					t.Fatal(err)
+				}
+				f.r.Store = failingOpen{f.s, ss[0].Other.Key}
+			},
+			check: func(t *testing.T, f *fixture, o outcome) {
+				t.Helper()
+				if o.err != nil || o.rep.Failed != 1 || o.suspects != 1 {
+					t.Errorf("%+v, want failed and the suspect kept", o)
+				}
+				f.r.Store = f.s
+				if rep := f.conflicts(t); rep.Cleared != 1 {
+					t.Errorf("the next pass = %+v, want the suspect cleared", rep)
+				}
+			},
+		},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
+				f := newFixture(t, c)
+				capture := f.admit(t)
+				f.stage(t, segmentOf(t, capture, hour, recordsAt(hour, 0, 1, 2, 3), noAdjust))
+				f.stage(t, segmentOf(t, capture, hour, recordsAt(hour, 3, 4, 5), noAdjust))
+				tc.during(t, f, capture)
+				var o outcome
+				o.rep, o.err = f.r.Conflicts(t.Context(), f.lease)
+				ss, err := c.Suspects(t.Context())
+				if err != nil {
+					t.Fatal(err)
+				}
+				o.suspects = len(ss)
+				tc.check(t, f, o)
+			})
+		})
+	}
 }
