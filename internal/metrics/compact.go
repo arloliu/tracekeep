@@ -15,7 +15,7 @@ type Compact struct {
 	lastSuccess                      *prometheus.GaugeVec
 	leaseHeld                        prometheus.GaugeFunc
 	adopted, quarantined, tombstones prometheus.Counter
-	merges                           *prometheus.CounterVec
+	merges, closes                   *prometheus.CounterVec
 	scopes                           *prometheus.GaugeVec
 	conflictsOpen, oldestUnmerged    prometheus.Gauge
 	// leaseUntil is when the lease this process last took or renewed lapses, in Unix nanoseconds; 0 when it holds none.
@@ -38,6 +38,8 @@ func NewCompact(s *Server) (*Compact, error) {
 		tombstones:  counter("tombstones_total", "Keys the reconciler tombstoned: beyond the horizon or lost to a termination."),
 		merges: prometheus.NewCounterVec(prometheus.CounterOpts{Namespace: "tracekeep", Subsystem: "compact", Name: "merges_total",
 			Help: "Merges by outcome: merged, stale (retried next cycle), conflicted or failed."}, []string{"outcome"}),
+		closes: prometheus.NewCounterVec(prometheus.CounterOpts{Namespace: "tracekeep", Subsystem: "compact", Name: "closes_total",
+			Help: "Captures closed by a close intent, by trigger: inactivity, successor or operator."}, []string{"trigger"}),
 		scopes: prometheus.NewGaugeVec(prometheus.GaugeOpts{Namespace: "tracekeep", Subsystem: "compact", Name: "scopes",
 			Help: "Scopes by state, as the lease holder last read them."}, []string{"state"}),
 		conflictsOpen: prometheus.NewGauge(prometheus.GaugeOpts{Namespace: "tracekeep", Subsystem: "compact", Name: "conflicts_open",
@@ -48,7 +50,7 @@ func NewCompact(s *Server) (*Compact, error) {
 	m.leaseHeld = prometheus.NewGaugeFunc(prometheus.GaugeOpts{Namespace: "tracekeep", Subsystem: "compact", Name: "lease_held",
 		Help: "1 while this process holds the compactor lease: taken or renewed, and not lapsed since."}, m.held)
 	for _, c := range []prometheus.Collector{
-		m.cycle, m.lastSuccess, m.leaseHeld, m.adopted, m.quarantined, m.tombstones, m.merges, m.scopes, m.conflictsOpen, m.oldestUnmerged,
+		m.cycle, m.lastSuccess, m.leaseHeld, m.adopted, m.quarantined, m.tombstones, m.merges, m.closes, m.scopes, m.conflictsOpen, m.oldestUnmerged,
 	} {
 		if err := s.Registry().Register(c); err != nil {
 			return nil, fmt.Errorf("metrics: compact: %w", err)
@@ -125,4 +127,14 @@ func (m *Compact) Scopes(byState map[string]int, openConflicts int, oldestUnmerg
 		age = max(0, m.now().Sub(oldestUnmergedEnd).Seconds())
 	}
 	m.oldestUnmerged.Set(age)
+}
+
+// Closes counts the captures a close pass closed, by trigger.
+func (m *Compact) Closes(byTrigger map[string]int) {
+	if m == nil {
+		return
+	}
+	for trigger, n := range byTrigger {
+		m.closes.WithLabelValues(trigger).Add(float64(n))
+	}
 }

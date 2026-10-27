@@ -18,6 +18,8 @@ type RequestReport struct {
 }
 
 // Requests executes the operators' pending requests under lease (T-41).
+// A close request whose capture cannot be closed now is ended by the catalog under the capture row (closed: done; not open or stopped: failed);
+// otherwise the capture is closed now by an intent with the operator's trigger, whose commit ends the request, and the close pass publishes it.
 // A merge request whose scope cannot be merged now is ended by the catalog under the scope's capture row:
 // done when the scope is settled, failed with the reason when it has no staged pack or a conflict touches it.
 // Otherwise its scope is merged now, its quiet period aside, and the merge's commit ends it done;
@@ -30,12 +32,13 @@ func (r *Compactor) Requests(ctx context.Context, lease catalog.Lease) (RequestR
 		return rep, err
 	}
 	for _, q := range reqs {
-		if q.Kind != catalog.RequestMerge || q.Hour == nil {
-			rep.Pending++ // a close is executed by the compactor that writes closes
-
-			continue
+		var ended string
+		var err error
+		if q.Kind == catalog.RequestClose {
+			ended, err = r.closeRequested(ctx, lease, q)
+		} else {
+			ended, err = r.mergeRequested(ctx, lease, q, &rep.Merges)
 		}
-		ended, err := r.mergeRequested(ctx, lease, q, &rep.Merges)
 		if ctx.Err() != nil {
 			return rep, ctx.Err()
 		}
@@ -48,13 +51,13 @@ func (r *Compactor) Requests(ctx context.Context, lease catalog.Lease) (RequestR
 			rep.Pending++
 		case ended == "":
 			rep.Pending++
-		case ended == "merged" || ended == "settled":
+		case ended == "merged" || ended == "settled" || ended == "closed":
 			rep.Done++
 		default:
 			rep.Failed++
 		}
 		if ended != "" {
-			r.Log.Info("compact: merge request ended", "request", q.ID, "capture", q.Capture, "hour", *q.Hour, "outcome", ended)
+			r.Log.Info("compact: request ended", "request", q.ID, "kind", q.Kind, "capture", q.Capture, "outcome", ended)
 		}
 	}
 
@@ -73,4 +76,19 @@ func (r *Compactor) mergeRequested(ctx context.Context, lease catalog.Lease, q c
 	}
 
 	return "merged", nil
+}
+
+// closeRequested closes the capture q names by an intent with the operator's trigger and returns how q ended, empty when it stays pending.
+func (r *Compactor) closeRequested(ctx context.Context, lease catalog.Lease, q catalog.Request) (string, error) {
+	ended, err := r.Catalog.DecideRequest(ctx, lease, q)
+	if err != nil || ended != catalog.Mergeable {
+		return ended, err
+	}
+	out, err := r.intend(ctx, lease, q.Capture, catalog.CloseOperator, r.now().UnixNano(), &q.ID)
+	if err != nil || out != catalog.Intended {
+		return "", err
+	}
+	r.Metrics.Closes(map[string]int{catalog.CloseOperator: 1})
+
+	return "closed", nil
 }

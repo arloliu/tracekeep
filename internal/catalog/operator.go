@@ -183,35 +183,38 @@ func (c *Catalog) PendingRequests(ctx context.Context) ([]Request, error) {
 	return out, nil
 }
 
-// Mergeable reports a merge request whose scope a merge may settle now: DecideRequest ended nothing,
-// and the request is ended by its merge's commit.
+// Mergeable reports a request the compactor may execute now: DecideRequest ended nothing,
+// and the request is ended by its merge's or its close intent's commit.
 const Mergeable = ""
 
-// DecideRequest ends the pending merge request q under l when its scope cannot be merged now,
-// judged under the scope's capture row in the transaction that ends it, so no observation made outside it decides (catalog.md §7.2):
-// a settled scope ends it done, a scope without a staged pack or touched by a conflict ends it failed, each with the reason it returns.
-// It returns Mergeable, writing nothing, for a scope a merge may settle, and for a request already ended.
+// DecideRequest ends the pending request q under l when it cannot be executed now,
+// judged under the capture row in the transaction that ends it, so no observation made outside it decides (catalog.md §7.2).
+// A merge request: a settled scope ends it done, a scope without a staged pack or touched by a conflict ends it failed.
+// A close request: a closed capture ends it done, a capture not open or with a stop ends it failed.
+// Each ending returns its reason; Mergeable, writing nothing, is returned for a request the compactor may execute, and for one already ended.
 func (c *Catalog) DecideRequest(ctx context.Context, l Lease, q Request) (string, error) {
-	if q.Kind != RequestMerge || q.Hour == nil {
-		return "", fmt.Errorf("catalog: decide request %s: not a merge request", q.ID)
+	if q.Kind == RequestMerge && q.Hour == nil || q.Kind != RequestMerge && q.Kind != RequestClose {
+		return "", fmt.Errorf("catalog: decide request %s: a %s request without its scope", q.ID, q.Kind)
 	}
 	var result string
 	err := outcome(c.inTx(ctx, func(tx *sqlx.Tx) error {
-		if _, err := c.lockCapture(ctx, tx, q.Capture); err != nil {
+		row, err := c.lockCapture(ctx, tx, q.Capture)
+		if err != nil {
 			return err
 		}
 		if err := c.checkLease(ctx, tx, l); err != nil {
 			return err
 		}
-		var err error
-		if result, err = c.requestVerdict(ctx, tx, Scope{Capture: q.Capture, Hour: *q.Hour}); err != nil {
+		if q.Kind == RequestClose {
+			result = closeVerdict(row)
+		} else if result, err = c.requestVerdict(ctx, tx, Scope{Capture: q.Capture, Hour: *q.Hour}); err != nil {
 			return err
 		}
 		if result == Mergeable {
 			return errRollback
 		}
 		state := "failed"
-		if result == "settled" {
+		if result == "settled" || result == "closed" {
 			state = "done"
 		}
 		res, err := tx.ExecContext(ctx, `UPDATE compact_requests SET state = ?, outcome = ?, done_at = ? WHERE request_id = ? AND state = 'pending'`,
@@ -229,6 +232,20 @@ func (c *Catalog) DecideRequest(ctx context.Context, l Lease, q Request) (string
 	}
 
 	return result, nil
+}
+
+// closeVerdict judges, from the capture row as read under its lock, whether a close request can be executed now, or why not.
+func closeVerdict(row captureRow) string {
+	switch {
+	case row.State == StateClosed:
+		return "closed"
+	case row.State != StateOpen:
+		return "the capture is not open"
+	case row.StopSeen:
+		return "the capture stopped"
+	default:
+		return Mergeable
+	}
 }
 
 // requestVerdict judges, under the capture row, whether the scope s can be merged now, or why not.

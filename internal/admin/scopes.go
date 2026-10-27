@@ -49,3 +49,11 @@ func (a *Admin) ScopeMerge(ctx context.Context, capture tracepack.UUID, hour int
 
 	return Requested{RequestID: id}, err
 }
+
+// CaptureClose is capture close: a request that the compactor close the capture at its next cycle instead of waiting for I;
+// the request's state shows how it ended.
+func (a *Admin) CaptureClose(ctx context.Context, capture tracepack.UUID) (Requested, error) {
+	id, err := a.Catalog.RequestCompaction(ctx, catalog.RequestClose, capture, nil, a.Actor)
+
+	return Requested{RequestID: id}, err
+}
