@@ -1,6 +1,7 @@
 package compact
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
@@ -233,15 +234,22 @@ func TestMergePutFailure(t *testing.T) {
 	}
 }
 
-// failingPut is a store whose archive puts fail, storing the object first when visible.
+// failingPut is a store whose puts fail, storing the object first when visible, its last byte flipped when garbled.
 type failingPut struct {
 	*store.Mem
-	visible bool
+	visible, garbled bool
 }
 
 func (s failingPut) Put(ctx context.Context, key string, r io.ReadSeeker, size int64) error {
 	if s.visible {
-		if err := s.Mem.Put(ctx, key, r, size); err != nil {
+		b, err := io.ReadAll(r)
+		if err != nil {
+			return err
+		}
+		if s.garbled {
+			b[len(b)-1] ^= 0xff
+		}
+		if err := s.Mem.Put(ctx, key, bytes.NewReader(b), size); err != nil {
 			return err
 		}
 	}

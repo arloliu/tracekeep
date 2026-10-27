@@ -1,8 +1,10 @@
 package compact
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"io"
@@ -142,9 +144,8 @@ func (r *Compactor) publishClose(ctx context.Context, lease catalog.Lease, c *ca
 		return "", err
 	}
 	if err := r.Store.Put(ctx, p.Key, tmp, p.Size); err != nil {
-		// A put whose result was lost: the object stands if it is there whole, and a retry writes the same bytes anyway.
-		info, serr := r.Store.Stat(ctx, p.Key)
-		if serr != nil || info.Size != p.Size {
+		// A put whose result was lost: the object stands only if it holds exactly the bytes written (compactor.md §8.2 step 2).
+		if same, serr := r.stored(ctx, p.Key, tmp, p.Size); serr != nil || !same {
 			return "", err
 		}
 	}
@@ -164,6 +165,28 @@ func (r *Compactor) publishClose(ctx context.Context, lease catalog.Lease, c *ca
 	}
 
 	return state, nil
+}
+
+// stored reports whether the object under key holds exactly the size bytes of w, compared by their SHA-256 digests.
+func (r *Compactor) stored(ctx context.Context, key string, w *os.File, size int64) (bool, error) {
+	info, err := r.Store.Stat(ctx, key)
+	if err != nil || info.Size != size {
+		return false, err
+	}
+	obj, err := r.Store.Open(ctx, key)
+	if err != nil {
+		return false, err
+	}
+	defer obj.Close()
+	want, got := sha256.New(), sha256.New()
+	if _, err := io.Copy(want, io.NewSectionReader(w, 0, size)); err != nil {
+		return false, err
+	}
+	if _, err := io.Copy(got, io.NewSectionReader(obj, 0, size)); err != nil {
+		return false, err
+	}
+
+	return bytes.Equal(want.Sum(nil), got.Sum(nil)), nil
 }
 
 // writeClose writes the close of c to w from exactly its intent's options and returns the pack to register.

@@ -155,12 +155,12 @@ func (p *Pack) check(r Registration) error {
 		return fmt.Errorf("%w: evidence with a lease or an adoption", ErrInvalidRegistration)
 	case r.Evidence == nil && r.Lease == nil:
 		return fmt.Errorf("%w: neither evidence nor the lease", ErrInvalidRegistration)
-	case len(p.Ranges) == 0 && p.Role != RoleClose:
-		// A close holds only the sentinel, which is never a range.
+	case len(p.Ranges) == 0 && !p.closeOnly():
+		// A close holds only the sentinel, which is never a range; so does an archive merged from closes alone.
 		return fmt.Errorf("%w: pack %s holds no range", ErrInvalidRegistration, p.ID)
 	}
 	// A close starts at the sentinel, its one record; every other seq fits a signed BIGINT below it (catalog.md §7.1).
-	if p.SeqStart > closeSentinel || (p.SeqStart == closeSentinel && p.Role != RoleClose) {
+	if p.SeqStart > closeSentinel || (p.SeqStart == closeSentinel && !p.closeOnly()) {
 		return fmt.Errorf("%w: pack %s: seq start %d", ErrInvalidRegistration, p.ID, p.SeqStart)
 	}
 	var seqs []uint64
@@ -194,6 +194,11 @@ func (p *Pack) check(r Registration) error {
 	}
 
 	return nil
+}
+
+// closeOnly reports a pack holding only a close's record: a close, or an archive merged from closes alone, which starts at the sentinel.
+func (p *Pack) closeOnly() bool {
+	return p.Role == RoleClose || p.Role == RoleArchive && p.SeqStart == closeSentinel && len(p.Ranges) == 0
 }
 
 // seqs are the seqs the evidence names; a delivery of another capture than p's is refused.

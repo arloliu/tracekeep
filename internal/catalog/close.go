@@ -282,6 +282,16 @@ func (c *Catalog) PublishClose(ctx context.Context, l Lease, p *Pack, horizonHou
 		if state = intent.State; state != "pending" {
 			return errRollback
 		}
+		if out == AlreadyRegistered {
+			// The registration's idempotence answers first; a key tombstoned since, its pack row deleted, still abandons the close.
+			var n int
+			if err := tx.GetContext(ctx, &n, `SELECT COUNT(*) FROM tombstones WHERE object_key = ?`, p.Key); err != nil {
+				return err
+			}
+			if n > 0 {
+				out = Tombstoned
+			}
+		}
 		switch out {
 		case Registered, AlreadyRegistered:
 			state = "published"
