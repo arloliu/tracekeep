@@ -167,8 +167,12 @@ func operate(ctx context.Context, a *admin.Admin, cmd string, args []string) (an
 		cmd == "scope exclude-input" && len(args) == 3:
 		return onScope(ctx, a, cmd, args[2:])
 	case cmd == "object list" && (len(args) == 2 || len(args) == 3 && (args[2] == "--unattributed" || args[2] == "--survivors")):
-		// Unattributed objects and survivors are what retention leaves, which phase 2 brings.
-		return []struct{}{}, nil
+		only := ""
+		if len(args) == 3 {
+			only = args[2]
+		}
+
+		return a.ObjectList(ctx, only == "--survivors", only == "--unattributed")
 	default:
 		return nil, fmt.Errorf("%w: admin %v", errUsage, args)
 	}
