@@ -1,6 +1,6 @@
 # Phase 2 — compact and machine API
 
-Status: active (2026-10-27) — phase 2.3 in progress
+Status: active (2026-10-27) — phase 2.4 in progress
 
 Milestone 2 of the [roadmap](../ROADMAP.md):
 the compactor's state machines, the catalog reads they make answerable, and the machine API the VE service reads them through.
@@ -28,8 +28,8 @@ This plan only orders the work.
 |---|---|---|
 | 2.1 — merge and conflicts | the merge of §8.1 with `CommitMerge`, `RecordConflict` confirming or clearing suspects, `scope merge`, `conflict acknowledge`, `scope exclude-input`, and their metrics | done (#22) |
 | 2.2 — close | `CloseIntent` and `PublishClose` of §8.2 with both triggers, `abandoned` intents (checklist 7's close), `capture close`, crash gaps in completeness, `closes_total{trigger}`; the reconciler adopting a close's orphan, which phase 1 reports and keeps (`internal/compact/orphans.go`), as a pack holding no producer range that moves neither coverage nor `highest_seq`, racing the publication in both orders | done (#23) |
-| 2.3 — deletion and retention | each object's deletion deadline as one function (hour end + retention, `merged_at` + D for a merged input), D above the download URL's lifetime, and a shortened retention kept from evicting an hour before an issued URL's promise across restarts and processes (specified in `compactor.md` §8.3 first, then built); `DeletePack` after D; `EvictHour` with `evicted_ranges` and the `parked → evicted-hour` move; the claim bucket listed and its receipt-less objects attributed by the SDK's metadata (hour, capture, seq, the bare object name against the bucket-qualified `Tpk-Payload-Ref`), with their `claim_objects` rows, and hours that hold claim objects but no scope, before eviction reads them; §8.4's predicate as one function; survivors deleted by the reconciler; `object list --survivors` and `--unattributed`; and their metrics | in-progress |
-| 2.4 — reads and cursor | `ListDevices`, `ListCaptures`, `ListPacks` and `ListScopeChanges` as catalog reads (§7.3): `no-data` hours, unregistered intervals, overlap, the watermark read first, `low_water` and `epoch`, pruning by seq prefix | pending |
+| 2.3 — deletion and retention | each object's deletion deadline as one function (hour end + retention, `merged_at` + D for a merged input), D above the download URL's lifetime, and a shortened retention kept from evicting an hour before an issued URL's promise across restarts and processes (specified in `compactor.md` §8.3 first, then built); `DeletePack` after D; `EvictHour` with `evicted_ranges` and the `parked → evicted-hour` move; the claim bucket listed and its receipt-less objects attributed by the SDK's metadata (hour, capture, seq, the bare object name against the bucket-qualified `Tpk-Payload-Ref`), with their `claim_objects` rows, and hours that hold claim objects but no scope, before eviction reads them; §8.4's predicate as one function; survivors deleted by the reconciler; `object list --survivors` and `--unattributed`; and their metrics | done (#24) |
+| 2.4 — reads and cursor | `ListDevices`, `ListCaptures`, `ListPacks` and `ListScopeChanges` as catalog reads (§7.3): `no-data` hours, unregistered intervals, overlap, the watermark read first, `low_water` and `epoch`, pruning by seq prefix | in-progress |
 | 2.5 — service auth | client credentials against the IdP's JWKS with lazy discovery and one refresh on an unknown `kid`, mTLS, the static-token flag never enabled by a failure, the role each operation checks, `auth_failures_total`; and the `download` key purpose of `masking-keys.md` §9 brought forward whole (T-41): the binding's insert-or-compare, the `file` and `env` providers, issuing and accepted key ids, purpose separation | pending |
 | 2.6 — api | `proto/`, connect-go behind 2.5's checks from its first served request, the `api` role in `all` and `dev` with its readiness and metrics, the four reads, `PackURL` with 2.3's deadline, a 15-minute lifetime, its margin and floor and `pack-superseded`, presigned where the store presigns and `storage.presign` is on, otherwise served by the API with a download token (`HEAD` and ranged `GET`), presigning checked at start, `audit_log` for API actions | pending |
 | 2.7 — admin and status | `tracekeep status`, `deferred list`, admin through the `api` process on SQLite, `tracekeep migrate` applying the catalog's migrations through Atlas's Go library with its own revision table (T-41), tested on a fresh catalog, an upgrade and a failed application, `gap_observations_total` and `captures_with_unknown_tail`, the cost of ingest's metrics read measured at fleet size | pending |
@@ -44,6 +44,27 @@ the survivor, shared-object and unknown-capture races in 2.3, the cursor's commi
 2.8 audits them all, the membership and old-version cases phase 1 built included.
 The roadmap's gate case "a parked message replays in order after its blocker clears" is the parked consumer's own retry after `parking.redelivery_delay`,
 staged through a flush sorted by seq (T-40 withdrew an early replay to proposal P1).
+
+## Phase 2.4 — reads and cursor
+
+Work on the branch `feat/catalog/reads`, one commit per step, test first;
+the branch merges by pull request once the whole phase passes an external post-implementation review.
+The reads are the catalog's domain results the API of phase 2.6 serves unchanged:
+they take no capture row and no lease, and each reads one snapshot, as `Completeness` does.
+Pruning is the one write: it runs in the retention pass under the lease, with the configured retention period, and allocates no seq.
+No proto, no transport and no operator truncation of the cursor come with it; a test sets `counters.epoch` by SQL.
+The gate and checklist cases this phase owns are the cursor's commit order and pruning:
+the VE service reads a settled hour and learns of a reopen, and an event cursor with an uncommitted earlier transaction and with pruning.
+
+| Step | Scope | State |
+|---|---|---|
+| 1 | spec: `catalog.md` §7.3 made exact where it is silent: the captures a window selects (admitted, of the tool and devices or the one capture, origin before the window's end and span reaching its start, an `open` capture's span unbounded), a capture's span (origin to `highest_seq_ts`, origin alone before any record) for overlap and as a predecessor, the first capture of a recorder (no interval unless `previous_capture_id` names no admitted capture), a `no-data` hour's flag from the spans, an hour without a scope whose ranges were evicted reported evicted, a scope-less hour's parked seqs read from the capture's completeness, `ListDevices`' fields (the latest capture's endpoint and device id, open captures, overlap, last record time, a gap whose interval meets the window, an unknown bound counting as meeting it), the cursor as (epoch, seq), stale when the epoch differs or a pruned seq lies above it (`after < low_water − 1`), a page's next cursor past the events it scanned and at the snapshot's watermark when the page is short, the tool and device filter, pruning with the configured retention period in the retention pass under the lease, `low_water` never lowered; §7.2's `PruneEvents` row | pending |
+| 2 | catalog: the window's captures and `ListCaptures`: state, device, recorder, predecessor, the descriptor's thinning entries, processing configuration, overlap from the spans of one (`tool_id`, `recorder_instance_id`), unregistered intervals against Q, tested at Q and past it, with overlapping predecessors, a missing predecessor and a capture with no record | pending |
+| 3 | catalog: `ListDevices`: per device its name, the latest capture's `equipment_endpoint` and `device_id`, open captures, overlap, last record time and whether the window holds a gap | pending |
+| 4 | catalog: `ListPacks`: one read snapshot whose first statement reads the watermark and epoch, then per requested hour the scopes of the window's captures with state, revision and packs with their ranges, a scope-less hour `no-data` with its flag, evicted, or holding deferred seqs and declared losses, and each capture's completeness and unregistered intervals | pending |
+| 5 | catalog: `ListScopeChanges`: events after a cursor for the tool and devices, paginated, the next cursor, stale by epoch and by `low_water`, tested at `after = low_water − 1` and `− 2` | pending |
+| 6 | catalog and the retention pass: `PruneEvents` under the lease, `low = MIN(seq)` over events younger than the period, nothing written without one, the prefix deleted and `low_water` raised monotonically in one transaction | pending |
+| 7 | schedules, barrier-controlled on both engines: an event allocated and uncommitted while a listing reads its watermark, then read after it; an event committed between the watermark and the listing's rows, replayed above the watermark; a settled hour listed, reopened by a registration, the `reopened` event read with its revision; pruning racing a reader; a stale cursor re-listing and continuing from the watermark; a lease lost before the prune commits | pending |
 
 ## Phase 2.3 — deletion and retention
 
