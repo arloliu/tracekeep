@@ -115,12 +115,14 @@ type Parking struct {
 	RedeliveryDelay time.Duration `yaml:"redelivery_delay" default:"60s" env:"TRACEKEEP_PARKING_REDELIVERY_DELAY" validate:"gt=0"`
 }
 
-// Compact is the compact role; for now its reconciler (storage.md §5.4).
+// Compact is the compact role: its reconciler (storage.md §5.4) and its merges (compactor.md §8.1).
 type Compact struct {
 	// LeaseTTL is how long a take or renewal holds the compactor lease.
 	LeaseTTL time.Duration `yaml:"lease_ttl" default:"1m" env:"TRACEKEEP_COMPACT_LEASE_TTL" validate:"gt=0"`
 	// Interval is the time between two reconciler cycles.
 	Interval time.Duration `yaml:"interval" default:"5m" env:"TRACEKEEP_COMPACT_INTERVAL" validate:"gt=0"`
+	// QuietPeriod is Q: a scope becomes a merge candidate once its hour ended Q ago (catalog.md §7.3, T-12).
+	QuietPeriod time.Duration `yaml:"quiet_period" default:"15m" env:"TRACEKEEP_COMPACT_QUIET_PERIOD" validate:"gt=0"`
 }
 
 // Metrics is the metrics and health listener (operations.md §10.4).
