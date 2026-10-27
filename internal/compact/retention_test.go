@@ -545,3 +545,36 @@ func TestLeaseLostBeforeAnEvictionsRemovals(t *testing.T) {
 		}
 	})
 }
+
+// The retention pass prunes the change cursor's events older than the period, a seq prefix only:
+// a cursor in the pruned prefix then reads stale.
+func TestRetainPrunesEvents(t *testing.T) {
+	t.Parallel()
+	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
+		f := newFixture(t, c)
+		f.retaining(t)
+		nowNs := f.r.Now().UnixNano()
+		write, _ := c.Pools()
+		capture := newID(t)
+		for seq, at := range []int64{0, nowNs - int64(month) - 1, nowNs - int64(time.Minute), 0} {
+			_, err := write.ExecContext(t.Context(), `INSERT INTO scope_events (seq, capture_id, hour, event, revision, at) VALUES (?, ?, 1, 'created', 1, ?)`,
+				seq+1, capture[:], at)
+			if err != nil {
+				t.Fatal(err)
+			}
+		}
+		if _, err := write.ExecContext(t.Context(), `UPDATE counters SET value = 4 WHERE name = 'scope_events'`); err != nil {
+			t.Fatal(err)
+		}
+		if rep := f.retain(t); rep.Pruned != 2 {
+			t.Fatalf("Retain = %+v, want seqs 1 and 2 pruned", rep)
+		}
+		sel := catalog.Selector{ToolID: tool}
+		for after, stale := range map[int64]bool{1: true, 2: false} {
+			got, err := c.ListScopeChanges(t.Context(), catalog.Cursor{Seq: after}, sel, 10)
+			if err != nil || got.Stale != stale {
+				t.Errorf("cursor at %d: stale %v, %v; want %v", after, got.Stale, err, stale)
+			}
+		}
+	})
+}
