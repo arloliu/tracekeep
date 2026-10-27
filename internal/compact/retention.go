@@ -106,12 +106,12 @@ type RetentionReport struct {
 // a failed removal is left to the orphan pass, which deletes a tombstoned key again.
 func (r *Compactor) Deletions(ctx context.Context, lease catalog.Lease, rep *RetentionReport) error {
 	nowNs := r.now().UnixNano()
-	cands, err := r.Catalog.DeleteCandidates(ctx, nowNs)
+	cands, err := r.Catalog.DeleteCandidates(ctx, nowNs, r.DeleteDelay)
 	if err != nil {
 		return err
 	}
 	for _, d := range cands {
-		ok, err := r.Catalog.DeletePack(ctx, lease, d, nowNs)
+		ok, err := r.Catalog.DeletePack(ctx, lease, d, nowNs, r.DeleteDelay)
 		if err := r.stepFailed(ctx, err, "delete a merged input", d.Key, rep); err != nil {
 			return err
 		}

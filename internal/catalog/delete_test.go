@@ -27,7 +27,7 @@ func mergedScope(t *testing.T, c *Catalog, l Lease, d time.Duration) (capture tr
 
 func deleteCandidates(t *testing.T, c *Catalog, now int64) []Deletable {
 	t.Helper()
-	got, err := c.DeleteCandidates(t.Context(), now)
+	got, err := c.DeleteCandidates(t.Context(), now, time.Hour)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -65,7 +65,7 @@ func TestDeletePack(t *testing.T) {
 			t.Fatalf("candidates at delete_at = %v, want both inputs", got)
 		}
 		for _, d := range got {
-			ok, err := c.DeletePack(t.Context(), l, d, at)
+			ok, err := c.DeletePack(t.Context(), l, d, at, time.Hour)
 			if err != nil || !ok {
 				t.Fatalf("DeletePack = %v, %v", ok, err)
 			}
@@ -86,7 +86,7 @@ func TestDeletePack(t *testing.T) {
 		}
 		// A deleted input is deleted once: a retried deletion writes nothing.
 		again := Deletable{Pack: inputs[0].ID, Capture: inputs[0].Capture, Key: inputs[0].Key}
-		if ok, err := c.DeletePack(t.Context(), l, again, at); err != nil || ok {
+		if ok, err := c.DeletePack(t.Context(), l, again, at, time.Hour); err != nil || ok {
 			t.Errorf("a second DeletePack = %v, %v, want nothing done", ok, err)
 		}
 	})
@@ -103,7 +103,7 @@ func TestDeletePackGuards(t *testing.T) {
 		lapse(t, c, `INSERT INTO packs (pack_id, capture_id, tool_id, hour, role, object_key, size, seq_start, format_minor, state, registered_at)
 			VALUES (X'`+hexOf(newID(t))+`', X'`+hexOf(capture)+`', 'T1', 1, 'segment', '`+shared.Key+`', 1, 0, 1, 'staged', 0)`)
 		d := Deletable{Pack: shared.ID, Capture: capture, Key: shared.Key}
-		if ok, err := c.DeletePack(t.Context(), l, d, now); err != nil || ok {
+		if ok, err := c.DeletePack(t.Context(), l, d, now, time.Hour); err != nil || ok {
 			t.Errorf("DeletePack of a shared key = %v, %v, want refused", ok, err)
 		}
 		if s := packState(t, c, shared.ID); s != "merged" {
@@ -117,7 +117,7 @@ func TestDeletePackGuards(t *testing.T) {
 			t.Errorf("candidates of an excluded output = %v, want none", got)
 		}
 		other := Deletable{Pack: inputs[1].ID, Capture: capture, Key: inputs[1].Key}
-		if ok, err := c.DeletePack(t.Context(), l, other, now); err != nil || ok {
+		if ok, err := c.DeletePack(t.Context(), l, other, now, time.Hour); err != nil || ok {
 			t.Errorf("DeletePack under an excluded output = %v, %v, want refused", ok, err)
 		}
 	})
@@ -131,7 +131,7 @@ func TestDeletePackUnderALostLease(t *testing.T) {
 		lapse(t, c, `UPDATE leases SET until_ns = 0 WHERE name = 'compactor'`)
 		compactorLease(t, c, "new")
 		d := Deletable{Pack: inputs[0].ID, Capture: capture, Key: inputs[0].Key}
-		if _, err := c.DeletePack(t.Context(), stale, d, deleteAt(t, c, archive)); !errors.Is(err, ErrLeaseLost) {
+		if _, err := c.DeletePack(t.Context(), stale, d, deleteAt(t, c, archive), time.Hour); !errors.Is(err, ErrLeaseLost) {
 			t.Fatalf("DeletePack = %v, want ErrLeaseLost", err)
 		}
 		if s := packState(t, c, d.Pack); s != "merged" || count(t, c, `SELECT COUNT(*) FROM tombstones`) != 0 {
@@ -146,7 +146,7 @@ func TestPackDeadline(t *testing.T) {
 	engines(t, func(t *testing.T, c *Catalog) {
 		l := compactorLease(t, c, "w")
 		_, inputs, archive := mergedScope(t, c, l, time.Hour)
-		if _, ok, err := c.Deadline(t.Context(), archive.ID); err != nil || ok {
+		if _, ok, err := c.Deadline(t.Context(), archive.ID, time.Hour); err != nil || ok {
 			t.Fatalf("Deadline before a retention record = %v, %v, want none", ok, err)
 		}
 		// A period long enough that hour 1 outlives the merge's delete_at.
@@ -155,15 +155,15 @@ func TestPackDeadline(t *testing.T) {
 		if hour <= deleteAt(t, c, archive) {
 			t.Fatal("the hour's deadline does not outlive delete_at")
 		}
-		got, ok, err := c.Deadline(t.Context(), archive.ID)
+		got, ok, err := c.Deadline(t.Context(), archive.ID, time.Hour)
 		if err != nil || !ok || got != hour {
 			t.Errorf("archive deadline = %d, %v, %v, want its hour's %d", got, ok, err, hour)
 		}
-		got, ok, err = c.Deadline(t.Context(), inputs[0].ID)
+		got, ok, err = c.Deadline(t.Context(), inputs[0].ID, time.Hour)
 		if want := deleteAt(t, c, archive); err != nil || !ok || got != want {
 			t.Errorf("merged input deadline = %d, %v, %v, want %d", got, ok, err, want)
 		}
-		if _, _, err := c.Deadline(t.Context(), newID(t)); !errors.Is(err, ErrUnknownPack) {
+		if _, _, err := c.Deadline(t.Context(), newID(t), time.Hour); !errors.Is(err, ErrUnknownPack) {
 			t.Errorf("Deadline of an unknown pack = %v, want ErrUnknownPack", err)
 		}
 	})
@@ -185,7 +185,7 @@ func TestDeletePackAlongAChainOfMerges(t *testing.T) {
 			t.Fatalf("second CommitMerge = %v", out)
 		}
 		now := deleteAt(t, c, y)
-		if ok, err := c.DeletePack(t.Context(), l, Deletable{Pack: x.ID, Capture: capture, Key: x.Key}, now); err != nil || !ok {
+		if ok, err := c.DeletePack(t.Context(), l, Deletable{Pack: x.ID, Capture: capture, Key: x.Key}, now, time.Hour); err != nil || !ok {
 			t.Fatalf("DeletePack of the intermediate archive = %v, %v", ok, err)
 		}
 		lapse(t, c, `INSERT INTO packs (pack_id, capture_id, tool_id, hour, role, object_key, size, seq_start, format_minor, state, registered_at)
@@ -200,11 +200,37 @@ func TestDeletePackAlongAChainOfMerges(t *testing.T) {
 				t.Fatalf("cycle %d: candidates %v, want the refused input every cycle and the other until deleted", cycle, got)
 			}
 			for _, d := range got {
-				ok, err := c.DeletePack(t.Context(), l, d, now)
+				ok, err := c.DeletePack(t.Context(), l, d, now, time.Hour)
 				if err != nil || ok != (d.Pack != inputs[0].ID) {
 					t.Fatalf("cycle %d: DeletePack(%s) = %v, %v", cycle, d.Key, ok, err)
 				}
 			}
+		}
+	})
+}
+
+// A merge a version before delete_at committed, even after the migration, leaves it 0, the column's default:
+// its inputs are deleted at its time plus the deciding process's D, never at once, and their deadline says so.
+func TestDeletePackOfALegacyMerge(t *testing.T) {
+	t.Parallel()
+	engines(t, func(t *testing.T, c *Catalog) {
+		l := compactorLease(t, c, "w")
+		_, inputs, archive := mergedScope(t, c, l, 0)
+		lapse(t, c, `UPDATE merges SET delete_at = 0`)
+		var at int64
+		if err := c.read.GetContext(t.Context(), &at, `SELECT at FROM merges WHERE output_pack_id = ?`, archive.ID[:]); err != nil {
+			t.Fatal(err)
+		}
+		due := at + int64(time.Hour)
+		if got, err := c.DeleteCandidates(t.Context(), due-1, time.Hour); err != nil || len(got) != 0 {
+			t.Fatalf("candidates before at + D = %v, %v, want none", got, err)
+		}
+		if got, err := c.DeleteCandidates(t.Context(), due, time.Hour); err != nil || len(got) != 2 {
+			t.Fatalf("candidates at at + D = %v, %v, want both inputs", got, err)
+		}
+		recordRetention(t, c, l, 1_000_000*time.Hour, c.now())
+		if got, ok, err := c.Deadline(t.Context(), inputs[0].ID, time.Hour); err != nil || !ok || got != due {
+			t.Errorf("deadline = %d, %v, %v, want %d", got, ok, err, due)
 		}
 	})
 }

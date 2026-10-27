@@ -135,6 +135,7 @@ so every process and every restart computes the same deadline:
   which is its deadline, and the eviction horizon is the hour that rule reaches now;
   a merged input's deadline is the earlier of its hour's and its own merge's `delete_at` (through `merge_inputs`), never the scope's `merged_at`, which a later merge moves,
   so a changed D applies to later merges only;
+  a merge a version before `delete_at` committed, during a rollout too, leaves it 0, the column's default, read as `merges.at` + the deciding process's D;
 - before the first record no deadline exists and no URL is issued.
 The registration's horizon guard (§6.3) follows the configured period at once:
 refusing a registration early loses nothing an issued URL was promised; only eviction waits.

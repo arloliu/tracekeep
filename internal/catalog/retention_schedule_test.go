@@ -4,6 +4,7 @@ import (
 	"errors"
 	"slices"
 	"testing"
+	"time"
 )
 
 // race runs first, holds it on the capture row, starts second, which waits on that row, and releases first.
@@ -36,7 +37,7 @@ func TestRegistrationRacingADeletion(t *testing.T) {
 				var errR, errD error
 				register := func() { out, errR = c.RegisterPack(t.Context(), in, Registration{Evidence: &Evidence{}}) }
 				del := func() {
-					deleted, errD = c.DeletePack(t.Context(), l, Deletable{Pack: in.ID, Capture: capture, Key: in.Key}, deleteAt(t, c, archive))
+					deleted, errD = c.DeletePack(t.Context(), l, Deletable{Pack: in.ID, Capture: capture, Key: in.Key}, deleteAt(t, c, archive), time.Hour)
 				}
 				if deleteFirst {
 					race(t, c, del, register)
@@ -73,7 +74,7 @@ func TestSharedKeyRegistrationRacingADeletion(t *testing.T) {
 				var errR, errD error
 				register := func() { out, errR = c.RegisterPack(t.Context(), twin, Registration{Evidence: &Evidence{}}) }
 				del := func() {
-					deleted, errD = c.DeletePack(t.Context(), l, Deletable{Pack: in.ID, Capture: capture, Key: in.Key}, deleteAt(t, c, archive))
+					deleted, errD = c.DeletePack(t.Context(), l, Deletable{Pack: in.ID, Capture: capture, Key: in.Key}, deleteAt(t, c, archive), time.Hour)
 				}
 				if deleteFirst {
 					race(t, c, del, register)
@@ -249,7 +250,7 @@ func TestLeaseTakeoverBeforeADeletionOrAnEviction(t *testing.T) {
 
 					return
 				}
-				_, err = c.DeletePack(t.Context(), l, Deletable{Pack: inputs[0].ID, Capture: capture, Key: inputs[0].Key}, deleteAt(t, c, archive))
+				_, err = c.DeletePack(t.Context(), l, Deletable{Pack: inputs[0].ID, Capture: capture, Key: inputs[0].Key}, deleteAt(t, c, archive), time.Hour)
 			})
 			<-held
 			lapse(t, c, `UPDATE leases SET until_ns = 0 WHERE name = 'compactor'`)
