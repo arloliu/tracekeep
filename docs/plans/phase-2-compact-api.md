@@ -10,9 +10,9 @@ This plan only orders the work.
 
 ## Before it starts
 
-- T-7's gate: connect-go's overhead against plain gRPC, measured for `ListPacks` and a streamed `QueryRecords` shape before phase 2.5 starts,
+- T-7's gate: connect-go's overhead against plain gRPC, measured for `ListPacks` and a streamed `QueryRecords` shape before phase 2.6 starts,
   the result recorded in the decision log.
-  It runs beside phases 2.1–2.4, which need no API.
+  It runs beside phases 2.1–2.5, which serve no API.
 - tracepack v0.9.0 is already the service's (T-36), so every close is written uncompressed (G5-272):
   phase 2.2 drops `capture_closes.codec` and the codec from `compactor.md` §8.2 and `catalog.md` §7.1,
   which closes the roadmap's open item on it.
@@ -26,11 +26,11 @@ This plan only orders the work.
 | Phase | Scope | State |
 |---|---|---|
 | 2.1 — merge and conflicts | the merge of §8.1 with `CommitMerge`, `RecordConflict` confirming or clearing suspects, `scope merge`, `conflict acknowledge`, `scope exclude-input`, and their metrics | pending |
-| 2.2 — close | `CloseIntent` and `PublishClose` of §8.2 with both triggers, `abandoned` intents (checklist 7's close), `capture close`, crash gaps in completeness, `closes_total{trigger}` | pending |
-| 2.3 — deletion and retention | `DeletePack` after D, `EvictHour` with `evicted_ranges` and the `parked → evicted-hour` move, §8.4's predicate as one function, survivors deleted by the reconciler, `object list --survivors` and `--unattributed`, and their metrics | pending |
+| 2.2 — close | `CloseIntent` and `PublishClose` of §8.2 with both triggers, `abandoned` intents (checklist 7's close), `capture close`, crash gaps in completeness, `closes_total{trigger}`; the reconciler adopting a close's orphan, which phase 1 reports and keeps (`internal/compact/orphans.go`), as a pack holding no producer range that moves neither coverage nor `highest_seq`, racing the publication in both orders | pending |
+| 2.3 — deletion and retention | each object's deletion deadline as one function (hour end + retention, `merged_at` + D for a merged input), D above the download URL's lifetime, and a shortened retention kept from evicting an hour before an issued URL's promise across restarts and processes (specified in `compactor.md` §8.3 first, then built); `DeletePack` after D; `EvictHour` with `evicted_ranges` and the `parked → evicted-hour` move; the claim bucket listed and its receipt-less objects attributed by the SDK's metadata (hour, capture, seq, the bare object name against the bucket-qualified `Tpk-Payload-Ref`), with their `claim_objects` rows, and hours that hold claim objects but no scope, before eviction reads them; §8.4's predicate as one function; survivors deleted by the reconciler; `object list --survivors` and `--unattributed`; and their metrics | pending |
 | 2.4 — reads and cursor | `ListCaptures`, `ListPacks` and `ListScopeChanges` as catalog reads (§7.3): `no-data` hours, unregistered intervals, overlap, the watermark read first, `low_water` and `epoch`, pruning by seq prefix | pending |
-| 2.5 — api | `proto/`, connect-go, the `api` role in `all` and `dev` with its readiness and metrics, the three reads, `PackURL` with the deadline clamp and `pack-superseded`, presigning checked at start, `audit_log` for API actions | pending |
-| 2.6 — service auth | client credentials against the IdP's JWKS with lazy discovery, mTLS, the static-token flag, the roles the phase's operations check, `auth_failures_total` | pending |
+| 2.5 — service auth | client credentials against the IdP's JWKS with lazy discovery and one refresh on an unknown `kid`, mTLS, the static-token flag never enabled by a failure, the role each operation checks, `auth_failures_total`; and the download keys the owner's first decision brings | pending |
+| 2.6 — api | `proto/`, connect-go behind 2.5's checks from its first served request, the `api` role in `all` and `dev` with its readiness and metrics, the three reads, `PackURL` with 2.3's deadline, its margin and floor and `pack-superseded`, presigned or API-served by the owner's first decision, presigning checked at start, `audit_log` for API actions | pending |
 | 2.7 — admin and status | `tracekeep status`, `deferred list`, admin through the `api` process on SQLite, `gap_observations_total` and `captures_with_unknown_tail`, the cost of ingest's metrics read measured at fleet size | pending |
 | 2.8 — gate | the roadmap row's cases and the checklist the phases before left open, audited against the tests as 1.7 did | pending |
 
@@ -38,6 +38,9 @@ Only the phase under way is detailed; the others are detailed when they start.
 Every compactor transaction starts with the capture-row helper and checks the lease after it (T-32, `.agents/rules/600-invariants.md`);
 every catalog step runs on both engines, and every concurrent schedule is barrier-controlled.
 Each phase lands the metrics of `operations.md` §10.4 for the code it adds.
+Each phase's detail names the gate and checklist cases it owns:
+the survivor, shared-object and unknown-capture races in 2.3, the cursor's commit order and pruning in 2.4, a promised download's lifetime in 2.6;
+2.8 audits them all, the membership and old-version cases phase 1 built included.
 The roadmap's gate case "a parked message replays in order after its blocker clears" is the parked consumer's own retry after `parking.redelivery_delay`,
 staged through a flush sorted by seq (T-40 withdrew an early replay to proposal P1).
 
@@ -51,20 +54,24 @@ The quiet period Q (default 15 minutes, T-12) becomes `compact.quiet_period` in 
 
 | Step | Scope | State |
 |---|---|---|
-| 1 | catalog: the candidate scan (`open` or `reopened`, hour end + Q passed, `staged` packs, no `conflicts` row), the snapshot (revision r and the `staged` inputs, segments and archives alike), `CommitMerge` with the revision and lease compare-and-sets, zero affected rows rolling back the whole transaction, the `settled` event last; barrier schedules on both engines: a registration between snapshot and commit in `open` and in `reopened`, a lease takeover between statements | pending |
+| 1 | catalog: the candidate scan (`open` or `reopened`, hour end + Q passed, `staged` packs, no `conflicts` row in any state), the snapshot (revision r and the `staged` inputs, segments and archives alike, read together with the eligibility), `CommitMerge` re-reading under the capture row that the scope has no `conflicts` row and every input is still `staged`, then the revision and lease compare-and-sets, zero affected rows or a failed re-read rolling back the whole transaction, the `settled` event last | pending |
 | 2 | the merge pass: `tracepack.Merge` over `ReaderAt`s of the inputs, the archive written to the working directory and put under its `archive/` key, then `CommitMerge`; a rolled-back merge or a crash after the put leaves the archive to the reconciler, which adopts it as a `staged` input of the next merge ([FMT I-12]); a merge failure leaves the scope as it was and is counted | pending |
 | 3 | `RecordConflict`: a suspect's overlapping records compared by bytes and redaction entries, cleared for equal copies and confirmed for differing ones only while the row names exactly the compared packs (otherwise `changed`); a merge failing on a conflict writes the row; every touched scope's revision advanced and a `conflict` event each | pending |
 | 4 | admin: `scope merge`, `conflict acknowledge` (a state the `conflicts` check gains; the scope stays unmerged), `scope exclude-input` (the pack `excluded` under the capture row, the revision advanced, an event emitted), each audited | pending |
 | 5 | metrics: `cycle_seconds{task=merge}`, `last_success_timestamp{task=merge}`, `merges_total{outcome}`, `scopes{state}`, `conflicts_open`, `oldest_unmerged_scope_age_seconds` | pending |
-| 6 | the gate's merge cases: registration between snapshot and commit in both states, lease takeover between statements, a crash after the put adopted and merged with its duplicate records once | pending |
+| 6 | barrier schedules on both engines, each asserting the durable rows and objects, not only the result: a registration between snapshot and commit in `open` and in `reopened`; a conflict raised, confirmed or cleared on the scope, from another hour included, between the candidate scan and the snapshot and between the snapshot and the commit, and an acknowledged conflict, none settling the scope; a lease takeover before the lease row's lock and one blocked behind it, a lease lapsed without takeover, and a stale worker that never deletes its archive; a losing commit leaving no archive row, range, loss, merge relation, input change or event; the archive adopted by the reconciler before and after `CommitMerge`, its suspects cleared and the scope settled with each record once; a staged archive merged again with a late segment, ranges, endpoint times and losses kept; a pack excluded before and after the snapshot, still readable and never an input; equal records with equal and with differing redaction entries; a third pack registered while a comparison runs, its pair rows kept; a damaged input, a failed read, a failed put and a put visible despite its error, the scope and inputs unchanged and no conflict fabricated | pending |
 
 ## Owner decisions
 
 To settle before this plan is `active`:
 
-1. Downloads with `storage.presign` off need a download-token key, a key purpose of the phase 3 `keys` module (`masking-keys.md` §9):
-   phase 2 serves presigned URLs only and the `api` role refuses to start with presigning off or on a store without it,
-   or it brings the download-token purpose forward with a file provider.
+1. Downloads from a store that does not presign (`fs`, which `dev` uses, or `storage.presign` off) need the `download` key purpose of the phase 3 `keys` module (`masking-keys.md` §9):
+   either 2.5 brings that purpose forward whole (the binding's insert-or-compare, the `file` and `env` providers, issuing and accepted key ids, purpose separation),
+   or phase 2 serves presigned URLs only, `PackURL` refused on such a store, `dev` included, with the specs and guide saying so.
 2. `ListDevices` is in `api.md` §10.1 but not in the roadmap row: in phase 2.5, or with the people's pages in phase 4.
 3. Applying the catalog's migrations from the binary, left to phase 2 by phase 1: in phase 2.7, or after the first release, the Atlas CLI staying `tracekeep migrate`'s engine (`catalog.md` §7.4).
 4. `object adopt` has no defined semantics: dropped from `operations.md` §10.4, or kept until a proposal specifies it.
+5. `api.md` §10.2 gives `ListPacks` and `PackURL` to `pack-reader` and names no role for `ListCaptures` and `ListScopeChanges`.
+6. The download URL's lifetime has no default in the specs; this plan proposes 15 minutes, below D (1 hour).
+
+Each answer goes to the decision log, and the specs it changes are amended in the commit that makes this plan `active`.
