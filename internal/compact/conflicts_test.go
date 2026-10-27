@@ -352,8 +352,8 @@ func (f *fixture) durable(t *testing.T, capture tracepack.UUID) durableState {
 	return durableState{capture: cp.DataRevision, scope: snap.Revision}
 }
 
-// While a pair is compared, its row is cleared and the pair raised again over another run, confirmed:
-// the stale comparison finds no row of its own and writes nothing.
+// While a pair is compared, its row is cleared and other pairs are raised over the same run, suspects:
+// the stale comparison finds no row naming its own packs, writes nothing, and leaves the other pairs' rows as they are.
 func TestReplacedRowDuringAComparison(t *testing.T) {
 	t.Parallel()
 	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
@@ -367,15 +367,14 @@ func TestReplacedRowDuringAComparison(t *testing.T) {
 		}
 		s := ss[0]
 		var mark durableState
+		var third *catalog.Pack
 		f.r.hooks[hookCompared] = func() {
 			f.r.hooks[hookCompared] = nil
 			if out, err := c.RecordConflict(t.Context(), f.lease, s, false); err != nil || out != catalog.ConflictRecorded {
 				t.Errorf("clearing the row = %v, %v", out, err)
 			}
-			found := []catalog.MergeConflict{{Seq: 2, Packs: [][]tracepack.UUID{{s.Pack.ID}, {s.Other.ID}}}}
-			if err := c.RecordMergeConflicts(t.Context(), f.lease, catalog.Scope{Capture: capture, Hour: hour}, found); err != nil {
-				t.Error(err)
-			}
+			// A third pack at seq 3 raises a suspect against each of the two, with the compared row's bounds.
+			third = f.stage(t, segmentOf(t, capture, hour, recordsAt(hour, 3), noAdjust))
 			mark = f.durable(t, capture)
 		}
 		rep, err := f.r.Conflicts(t.Context(), f.lease)
@@ -385,8 +384,14 @@ func TestReplacedRowDuringAComparison(t *testing.T) {
 		if got := f.durable(t, capture); got != mark {
 			t.Errorf("the stale comparison wrote: %+v, want %+v", got, mark)
 		}
-		if ss, err := c.Suspects(t.Context()); err != nil || len(ss) != 0 {
-			t.Errorf("suspects = %+v, %v; want the replacement confirmed, none suspect", ss, err)
+		left, err := c.Suspects(t.Context())
+		if err != nil || len(left) != 2 {
+			t.Fatalf("suspects = %+v, %v; want the third pack's two", left, err)
+		}
+		for _, l := range left {
+			if l.Pack.ID != third.ID || l.SeqFrom != s.SeqFrom || l.SeqTo != s.SeqTo {
+				t.Errorf("suspect %+v, want the third pack's at %d-%d", l, s.SeqFrom, s.SeqTo)
+			}
 		}
 	})
 }
