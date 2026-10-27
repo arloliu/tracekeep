@@ -138,17 +138,16 @@ table "capture_closes" {
   column "pack_meta" {
     type = sql(var.bytes)
   }
-  column "codec" {
-    type = varchar(32)
-  }
   column "state" {
     type = varchar(16)
   }
   primary_key {
     columns = [column.capture_id]
   }
-  check "capture_closes_trigger" {
-    expr = "trigger_kind IN ('inactivity', 'successor')"
+  # operator: capture close (operations.md §10.4). Renamed with each change of its values: Atlas v1.3.0 writes a modified check
+  # with MySQL's DROP CHECK, which MariaDB refuses, and a dropped one with DROP CONSTRAINT.
+  check "capture_closes_trigger_kind" {
+    expr = "trigger_kind IN ('inactivity', 'successor', 'operator')"
   }
   check "capture_closes_state" {
     expr = "state IN ('pending', 'published', 'abandoned')"

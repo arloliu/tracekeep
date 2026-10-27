@@ -84,7 +84,7 @@ records that arrive later are staged as below, and the inactivity trigger would 
    abort unless `state = 'open'` and not `stop_seen`;
    for the inactivity trigger abort unless `last_registered_at < now − I`, and for the successor trigger unless `last_registered_at < now − Q`,
    **inside this transaction** (eligibility is re-validated, not carried from the candidate scan);
-   `INSERT INTO capture_closes` with trigger time, those values, the bounds, a fixed `pack_id` and `writer_time`, and the **serialized `PackMeta` and codec** the close will be written with;
+   `INSERT INTO capture_closes` with trigger time, those values, the bounds, a fixed `pack_id` and `writer_time`, and the **serialized `PackMeta`** the close will be written with (a close is always written uncompressed, G5-272, T-36);
    `UPDATE captures SET state='closed' WHERE capture_id=? AND state='open' AND data_revision=d`;
    zero rows aborts (a registration raced the snapshot; retry next cycle).
 2. Write: `tracepack.WriteClose` with exactly the stored options and `Now` returning `writer_time`,
