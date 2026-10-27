@@ -18,9 +18,11 @@ type RequestReport struct {
 }
 
 // Requests executes the operators' pending requests under lease (T-41).
-// A merge request merges its scope now, its quiet period aside, if the scope can be merged, and its merge's commit ends it done;
-// a scope already settled ends it done, one that cannot be merged (a conflict, no staged pack, conflicting records) ends it failed with the reason.
-// A stale merge or an error leaves the request for the next cycle; a lost lease ends the pass with ErrLeaseLost.
+// A merge request whose scope cannot be merged now is ended by the catalog under the scope's capture row:
+// done when the scope is settled, failed with the reason when it has no staged pack or a conflict touches it.
+// Otherwise its scope is merged now, its quiet period aside, and the merge's commit ends it done;
+// a stale or failed merge leaves it for the next cycle, and a merge that fails on conflicting records leaves it to be ended
+// by the conflict that merge recorded. A lost lease ends the pass with ErrLeaseLost.
 func (r *Compactor) Requests(ctx context.Context, lease catalog.Lease) (RequestReport, error) {
 	var rep RequestReport
 	reqs, err := r.Catalog.PendingRequests(ctx)
@@ -33,7 +35,7 @@ func (r *Compactor) Requests(ctx context.Context, lease catalog.Lease) (RequestR
 
 			continue
 		}
-		end, err := r.mergeRequested(ctx, lease, q, &rep.Merges)
+		ended, err := r.mergeRequested(ctx, lease, q, &rep.Merges)
 		if ctx.Err() != nil {
 			return rep, ctx.Err()
 		}
@@ -44,53 +46,31 @@ func (r *Compactor) Requests(ctx context.Context, lease catalog.Lease) (RequestR
 		case err != nil:
 			r.Log.Warn("compact: merge request", "request", q.ID, "error", err)
 			rep.Pending++
-		case end == "merged":
-			rep.Done++ // ended by the merge's commit
-		case end == "":
+		case ended == "":
 			rep.Pending++
+		case ended == "merged" || ended == "settled":
+			rep.Done++
 		default:
-			failed := end != "settled"
-			if err := r.Catalog.FinishRequest(ctx, lease, q, failed, end); err != nil {
-				return rep, err
-			}
-			if failed {
-				rep.Failed++
-			} else {
-				rep.Done++
-			}
+			rep.Failed++
 		}
-		if end != "" {
-			r.Log.Info("compact: merge request ended", "request", q.ID, "capture", q.Capture, "hour", *q.Hour, "outcome", end)
+		if ended != "" {
+			r.Log.Info("compact: merge request ended", "request", q.ID, "capture", q.Capture, "hour", *q.Hour, "outcome", ended)
 		}
 	}
 
 	return rep, nil
 }
 
-// mergeRequested merges the scope q names and returns how q ends: merged (its merge's commit ended it), settled, a failure's reason,
-// or empty to leave it pending; the merge it attempts is added to merges.
+// mergeRequested executes q and returns how it ended, empty when it stays pending; the merge it attempts is added to merges.
 func (r *Compactor) mergeRequested(ctx context.Context, lease catalog.Lease, q catalog.Request, merges *MergeReport) (string, error) {
-	s := catalog.Scope{Capture: q.Capture, Hour: *q.Hour}
-	snap, err := r.Catalog.MergeSnapshot(ctx, s)
-	switch {
-	case err != nil:
-		return "", err
-	case snap.State == "settled":
-		return "settled", nil
-	case len(snap.Inputs) == 0:
-		return "the scope has no staged pack", nil
-	case !snap.Eligible:
-		return "a conflict touches the scope", nil
+	ended, err := r.Catalog.DecideRequest(ctx, lease, q)
+	if err != nil || ended != catalog.Mergeable {
+		return ended, err
 	}
-	out, err := r.attempt(ctx, lease, s, &q.ID, merges)
-	switch {
-	case err != nil:
+	out, err := r.attempt(ctx, lease, catalog.Scope{Capture: q.Capture, Hour: *q.Hour}, &q.ID, merges)
+	if err != nil || out != merged {
 		return "", err
-	case out == merged:
-		return "merged", nil
-	case out == conflicted:
-		return "the inputs hold conflicting records", nil
-	default:
-		return "", nil // stale, failed, or no longer eligible: judged again next cycle
 	}
+
+	return "merged", nil
 }

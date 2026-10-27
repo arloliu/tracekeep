@@ -78,7 +78,7 @@ func TestMergeRequests(t *testing.T) {
 	})
 }
 
-// A merge request whose merge fails on conflicting records ends failed, with the conflict recorded.
+// A merge request whose merge fails on conflicting records ends failed, on the conflict that merge recorded.
 func TestMergeRequestOnConflictingRecords(t *testing.T) {
 	t.Parallel()
 	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
@@ -101,10 +101,14 @@ func TestMergeRequestOnConflictingRecords(t *testing.T) {
 			t.Fatalf("RegisterPack = %v, %v", out, err)
 		}
 		id := f.request(t, catalog.RequestMerge, capture)
-		if rep, err := f.r.Requests(t.Context(), f.lease); err != nil || rep.Failed != 1 {
-			t.Fatalf("Requests = %+v, %v; want one failed", rep, err)
+		// The merge records the conflict and leaves the request; the next cycle ends it on that conflict.
+		if rep, err := f.r.Requests(t.Context(), f.lease); err != nil || rep.Pending != 1 || len(rep.Merges.Conflicted) != 1 {
+			t.Fatalf("Requests = %+v, %v; want the merge conflicted and the request pending", rep, err)
 		}
-		if state, outcome := f.status(t, id); state != "failed" || outcome != "the inputs hold conflicting records" {
+		if rep, err := f.r.Requests(t.Context(), f.lease); err != nil || rep.Failed != 1 {
+			t.Fatalf("the next Requests = %+v, %v; want one failed", rep, err)
+		}
+		if state, outcome := f.status(t, id); state != "failed" || outcome != "a conflict touches the scope" {
 			t.Errorf("request = %s, %q", state, outcome)
 		}
 	})

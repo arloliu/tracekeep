@@ -183,13 +183,19 @@ func (c *Catalog) PendingRequests(ctx context.Context) ([]Request, error) {
 	return out, nil
 }
 
-// FinishRequest ends the pending request q under l, done or failed with its result, in a transaction that starts with q's capture row;
-// a request already ended is left as it is, and nothing is written. A merge request that merged is ended by its merge's commit instead.
-func (c *Catalog) FinishRequest(ctx context.Context, l Lease, q Request, failed bool, result string) error {
-	state := "done"
-	if failed {
-		state = "failed"
+// Mergeable reports a merge request whose scope a merge may settle now: DecideRequest ended nothing,
+// and the request is ended by its merge's commit.
+const Mergeable = ""
+
+// DecideRequest ends the pending merge request q under l when its scope cannot be merged now,
+// judged under the scope's capture row in the transaction that ends it, so no observation made outside it decides (catalog.md §7.2):
+// a settled scope ends it done, a scope without a staged pack or touched by a conflict ends it failed, each with the reason it returns.
+// It returns Mergeable, writing nothing, for a scope a merge may settle, and for a request already ended.
+func (c *Catalog) DecideRequest(ctx context.Context, l Lease, q Request) (string, error) {
+	if q.Kind != RequestMerge || q.Hour == nil {
+		return "", fmt.Errorf("catalog: decide request %s: not a merge request", q.ID)
 	}
+	var result string
 	err := outcome(c.inTx(ctx, func(tx *sqlx.Tx) error {
 		if _, err := c.lockCapture(ctx, tx, q.Capture); err != nil {
 			return err
@@ -197,16 +203,58 @@ func (c *Catalog) FinishRequest(ctx context.Context, l Lease, q Request, failed 
 		if err := c.checkLease(ctx, tx, l); err != nil {
 			return err
 		}
+		var err error
+		if result, err = c.requestVerdict(ctx, tx, Scope{Capture: q.Capture, Hour: *q.Hour}); err != nil {
+			return err
+		}
+		if result == Mergeable {
+			return errRollback
+		}
+		state := "failed"
+		if result == "settled" {
+			state = "done"
+		}
 		res, err := tx.ExecContext(ctx, `UPDATE compact_requests SET state = ?, outcome = ?, done_at = ? WHERE request_id = ? AND state = 'pending'`,
 			state, result, c.now(), q.ID[:])
+		if err := affected(res, err, errRollback); err != nil {
+			result = Mergeable
 
-		return affected(res, err, errRollback)
+			return err
+		}
+
+		return nil
 	}))
 	if err != nil {
-		return fmt.Errorf("catalog: finish request %s: %w", q.ID, err)
+		return "", fmt.Errorf("catalog: decide request %s: %w", q.ID, err)
 	}
 
-	return nil
+	return result, nil
+}
+
+// requestVerdict judges, under the capture row, whether the scope s can be merged now, or why not.
+func (c *Catalog) requestVerdict(ctx context.Context, tx *sqlx.Tx, s Scope) (string, error) {
+	var head struct {
+		State   string `db:"state"`
+		Touched bool   `db:"touched"`
+		Staged  int    `db:"staged"`
+	}
+	err := tx.GetContext(ctx, &head, `SELECT s.state, `+touchingConflict+` AS touched,
+		(SELECT COUNT(*) FROM packs p WHERE p.capture_id = s.capture_id AND p.hour = s.hour AND p.state = 'staged') AS staged
+		FROM scopes s WHERE s.capture_id = ? AND s.hour = ?`, s.Capture[:], s.Hour)
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		return "the scope has no staged pack", nil
+	case err != nil:
+		return "", err
+	case head.State == "settled":
+		return "settled", nil
+	case head.Staged == 0:
+		return "the scope has no staged pack", nil
+	case head.Touched:
+		return "a conflict touches the scope", nil
+	default:
+		return Mergeable, nil
+	}
 }
 
 // RequestStatus reads a request's state, pending, done or failed, and its outcome once it ended.

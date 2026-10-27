@@ -4,6 +4,8 @@ import (
 	"errors"
 	"slices"
 	"testing"
+
+	"github.com/arloliu/go-secs/tracepack"
 )
 
 func TestAcknowledgeConflict(t *testing.T) {
@@ -107,38 +109,94 @@ func TestCompactRequests(t *testing.T) {
 		if err != nil || len(pending) != 1 || pending[0].ID != id || pending[0].Kind != RequestMerge || *pending[0].Hour != 1 {
 			t.Fatalf("PendingRequests = %+v, %v", pending, err)
 		}
+		q := pending[0]
 		if got := auditActions(t, c, capture); !slices.Equal(got, []string{"scope-merge"}) {
 			t.Errorf("audit = %v", got)
 		}
 		stale := compactorLease(t, c, "old")
 		lapse(t, c, `UPDATE leases SET until_ns = 0 WHERE name = 'compactor'`)
 		l := compactorLease(t, c, "new")
-		q := pending[0]
-		if err := c.FinishRequest(t.Context(), stale, q, false, "settled"); !errors.Is(err, ErrLeaseLost) {
-			t.Errorf("FinishRequest under a lost lease = %v, want ErrLeaseLost", err)
+		if _, err := c.DecideRequest(t.Context(), stale, q); !errors.Is(err, ErrLeaseLost) {
+			t.Errorf("DecideRequest under a lost lease = %v, want ErrLeaseLost", err)
 		}
+		// No scope yet: it ends failed, under the capture row, which its prologue advances.
 		before := captureRevision(t, c, capture)
-		if err := c.FinishRequest(t.Context(), l, q, false, "settled"); err != nil {
-			t.Fatal(err)
+		if got, err := c.DecideRequest(t.Context(), l, q); err != nil || got != "the scope has no staged pack" {
+			t.Fatalf("DecideRequest = %q, %v", got, err)
 		}
-		// It runs under the capture row, which its prologue advances.
-		rev := captureRevision(t, c, capture)
-		if rev != before+1 {
-			t.Errorf("finishing a request left the capture row at revision %d, want %d", rev, before+1)
+		if rev := captureRevision(t, c, capture); rev != before+1 {
+			t.Errorf("the decision left the capture row at revision %d, want %d", rev, before+1)
 		}
-		if err := c.FinishRequest(t.Context(), l, q, true, "again"); err != nil {
-			t.Errorf("finishing it again = %v, want nothing done", err)
-		}
-		if got := captureRevision(t, c, capture); got != rev {
-			t.Errorf("finishing an ended request wrote the capture row: revision %d, want %d", got, rev)
+		if state, outcome, err := c.RequestStatus(t.Context(), id); err != nil || state != "failed" || outcome != "the scope has no staged pack" {
+			t.Errorf("request = %s, %q, %v", state, outcome, err)
 		}
 		if pending, err := c.PendingRequests(t.Context()); err != nil || len(pending) != 0 {
 			t.Errorf("PendingRequests = %+v, %v; want none", pending, err)
 		}
-		var state, outcome string
-		row := c.read.QueryRowContext(t.Context(), `SELECT state, outcome FROM compact_requests WHERE request_id = ?`, id[:])
-		if err := row.Scan(&state, &outcome); err != nil || state != "done" || outcome != "settled" {
-			t.Errorf("request = %s, %q, %v; want done, settled", state, outcome, err)
+	})
+}
+
+// The decision reads the scope under its capture row, so a change after any earlier look decides:
+// a scope reopened after it settled is mergeable, one whose one staged pack was excluded ends failed,
+// one touched by a conflict ends failed, a settled one ends done; a mergeable one writes nothing.
+func TestDecideRequest(t *testing.T) {
+	t.Parallel()
+	engines(t, func(t *testing.T, c *Catalog) {
+		l := compactorLease(t, c, "h")
+		hour := int64(1)
+		request := func(capture tracepack.UUID) Request {
+			t.Helper()
+			id, err := c.RequestCompaction(t.Context(), RequestMerge, capture, &hour, "op")
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			return Request{ID: id, Kind: RequestMerge, Capture: capture, Hour: &hour}
+		}
+		decide := func(q Request) string {
+			t.Helper()
+			got, err := c.DecideRequest(t.Context(), l, q)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			return got
+		}
+		reopened := admitted(t, c)
+		first := segment(t, reopened, 1, 0, 9)
+		register(t, c, first, Registration{Evidence: &Evidence{}})
+		commit(t, c, l, mergeOf(snapshot(t, c, reopened), archiveOf(t, reopened, 1, first)))
+		settled := request(reopened)
+		if got := decide(settled); got != "settled" {
+			t.Errorf("a settled scope = %q, want settled", got)
+		}
+		register(t, c, segment(t, reopened, 1, 10, 19), Registration{Evidence: &Evidence{}})
+		q := request(reopened)
+		rev := captureRevision(t, c, reopened)
+		if got := decide(q); got != Mergeable {
+			t.Errorf("a reopened scope = %q, want mergeable", got)
+		}
+		if got := captureRevision(t, c, reopened); got != rev {
+			t.Errorf("a mergeable decision wrote the capture row: revision %d, want %d", got, rev)
+		}
+		if state, _, _ := c.RequestStatus(t.Context(), q.ID); state != "pending" {
+			t.Errorf("a mergeable request is %s, want pending", state)
+		}
+
+		excluded := admitted(t, c)
+		only := segment(t, excluded, 1, 0, 9)
+		register(t, c, only, Registration{Evidence: &Evidence{}})
+		q = request(excluded)
+		if _, err := c.ExcludeInput(t.Context(), only.ID, "op", "a1"); err != nil {
+			t.Fatal(err)
+		}
+		if got := decide(q); got != "the scope has no staged pack" {
+			t.Errorf("a scope whose one input was excluded = %q", got)
+		}
+
+		conflicted, _ := suspected(t, c)
+		if got := decide(request(conflicted)); got != "a conflict touches the scope" {
+			t.Errorf("a scope touched by a conflict = %q", got)
 		}
 	})
 }
