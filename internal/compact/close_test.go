@@ -338,3 +338,50 @@ func TestClosePassMetrics(t *testing.T) {
 		}
 	})
 }
+
+// Two overlapping leaders: the earlier capture still registering within Q is not closed by its successor,
+// and is once it has been silent for Q.
+func TestSuccessorSparesALiveCapture(t *testing.T) {
+	t.Parallel()
+	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
+		f := newFixture(t, c)
+		f.closing(t, time.Now().Add(20*time.Minute))
+		instance := newID(t)
+		originNs := time.Now().Add(-time.Hour).UnixNano()
+		live := f.described(t, instance, originNs)
+		next := f.described(t, instance, originNs+int64(time.Minute))
+		f.stage(t, segment(t, next, []uint64{0}, false))
+		// The earlier capture registers again just before the pass looks: inside Q of the pass's clock.
+		f.r.Now = func() time.Time { return time.Now().Add(10 * time.Minute) }
+		f.stage(t, segment(t, live, []uint64{0}, false))
+		if rep := f.closes(t); len(rep.Intended) != 0 {
+			t.Fatalf("Closes = %+v, want the live capture spared", rep)
+		}
+		f.r.Now = func() time.Time { return time.Now().Add(20 * time.Minute) }
+		if rep := f.closes(t); rep.Intended[catalog.CloseSuccessor] != 1 {
+			t.Errorf("Closes once it was silent for Q = %+v, want it closed by its successor", rep)
+		}
+		if f.mustState(t, next) != catalog.StateOpen {
+			t.Error("the successor was closed")
+		}
+	})
+}
+
+// An intent whose publication failed stays pending and the next cycle publishes it, from the intent alone.
+func TestClosePublishedAfterAFailure(t *testing.T) {
+	t.Parallel()
+	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
+		f := newFixture(t, c)
+		now := time.Now().Add(3 * time.Hour)
+		f.closing(t, now)
+		f.described(t, newID(t), now.Add(-4*time.Hour).UnixNano())
+		f.r.Store = failingPut{Mem: f.s}
+		if rep := f.closes(t); rep.Failed != 1 || rep.Intended[catalog.CloseInactivity] != 1 {
+			t.Fatalf("Closes = %+v, want the intent made and its publication failed", rep)
+		}
+		f.r.Store = f.s
+		if rep := f.closes(t); rep.Published != 1 || len(rep.Intended) != 0 {
+			t.Errorf("the next Closes = %+v, want the pending intent published", rep)
+		}
+	})
+}

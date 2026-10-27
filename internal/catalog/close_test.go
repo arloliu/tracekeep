@@ -3,6 +3,7 @@ package catalog
 import (
 	"errors"
 	"slices"
+	"strconv"
 	"testing"
 	"time"
 
@@ -420,3 +421,65 @@ func TestDecideCloseRequest(t *testing.T) {
 		}
 	})
 }
+
+// A registration racing a close intent waits on the capture row and lands after it: staged, the capture stays closed,
+// and the intent keeps the highest seq it fixed, so the close's bytes do not change.
+func TestRegistrationAfterACloseIntent(t *testing.T) {
+	t.Parallel()
+	for _, stop := range []bool{false, true} {
+		engines(t, func(t *testing.T, c *Catalog) {
+			capture := admitted(t, c)
+			register(t, c, segment(t, capture, 1, 0, 100), Registration{Evidence: &Evidence{}})
+			l := compactorLease(t, c, "h")
+			held, release := holdAt(c, hookLocked)
+			in := intentOf(t, capture, CloseOperator, c.now())
+			var out CloseOutcome
+			intended := run(func() { out, _ = c.CloseIntent(t.Context(), l, in) })
+			<-held
+			waits := c.write.Stats().WaitCount
+			late := segment(t, capture, 1, 101, 110)
+			late.Stop = stop
+			var reg PackOutcome
+			registered := run(func() { reg, _ = c.RegisterPack(t.Context(), late, Registration{Evidence: &Evidence{}}) })
+			waitBlocked(t, c, waits, "INSERT INTO captures", 1)
+			close(release)
+			<-intended
+			<-registered
+			if out != Intended || reg != Registered {
+				t.Fatalf("intent = %v, registration = %v; want both to land", out, reg)
+			}
+			got, err := c.Capture(t.Context(), capture)
+			if err != nil || got.State != StateClosed || got.HighestSeq != 110 || got.StopSeen != stop {
+				t.Errorf("capture = %+v, %v; want closed at highest seq 110, stop %v", got, err, stop)
+			}
+			closes := pendingCloses(t, c)
+			if len(closes) != 1 || *closes[0].HighestSeq != 100 {
+				t.Errorf("pending closes = %+v; want the intent's highest seq 100", closes)
+			}
+		})
+	}
+}
+
+// A registration that commits first refuses the inactivity intent judged before it: the capture is no longer silent for I.
+func TestRegistrationBeforeACloseIntent(t *testing.T) {
+	t.Parallel()
+	engines(t, func(t *testing.T, c *Catalog) {
+		capture := admitted(t, c)
+		register(t, c, segment(t, capture, 1, 0, 9), Registration{Evidence: &Evidence{}})
+		l := compactorLease(t, c, "h")
+		judged := c.now() + int64(inactivity) + 1
+		if got := candidates(t, c, judged); len(got) != 1 {
+			t.Fatalf("candidates = %v, want the silent capture", got)
+		}
+		// The registration lands after the scan, at a time the intent's judgement reaches.
+		lapse(t, c, "UPDATE captures SET last_registered_at = "+itoa(judged-1)+" WHERE state = 'open'")
+		if out := closeIntent(t, c, l, intentOf(t, capture, CloseInactivity, judged)); out != CloseIneligible {
+			t.Errorf("CloseIntent after a registration = %v, want ineligible", out)
+		}
+		if captureState(t, c, capture) != StateOpen {
+			t.Error("the capture was closed")
+		}
+	})
+}
+
+func itoa(v int64) string { return strconv.FormatInt(v, 10) }
