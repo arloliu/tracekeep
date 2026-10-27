@@ -37,7 +37,9 @@ commands:
   admin      run an operator command:
                parked list [capture] | parked terminate <capture> [seq]
                capture terminate <capture> | capture show <capture>
-               bus adopt-stream <traffic|parking> | object list [--unattributed|--survivors]`
+               bus adopt-stream <traffic|parking> | object list [--unattributed|--survivors]
+               conflict acknowledge <capture> <seq> | scope exclude-input <pack>
+               scope merge <capture> <hour, RFC 3339>`
 
 // errUsage marks a command line the binary cannot run; it exits 2.
 var errUsage = errors.New("usage")
@@ -131,30 +133,7 @@ func runAdmin(ctx context.Context, a *admin.Admin, args []string, stdout io.Writ
 	if len(args) < 2 {
 		return fmt.Errorf("%w: admin needs a command", errUsage)
 	}
-	var out any
-	var err error
-	switch cmd := args[0] + " " + args[1]; {
-	case cmd == "parked list" && len(args) <= 3:
-		var capture *tracepack.UUID
-		if len(args) == 3 {
-			id, perr := parseCapture(args[2])
-			if perr != nil {
-				return perr
-			}
-			capture = &id
-		}
-		out, err = a.ParkedList(ctx, capture)
-	case cmd == "parked terminate" && (len(args) == 3 || len(args) == 4),
-		(cmd == "capture terminate" || cmd == "capture show") && len(args) == 3:
-		out, err = onCapture(ctx, a, cmd, args[2:])
-	case cmd == "bus adopt-stream" && len(args) == 3:
-		out, err = a.AdoptStream(ctx, args[2])
-	case cmd == "object list" && (len(args) == 2 || len(args) == 3 && (args[2] == "--unattributed" || args[2] == "--survivors")):
-		// Unattributed objects and survivors are what retention leaves, which phase 2 brings.
-		out = []struct{}{}
-	default:
-		return fmt.Errorf("%w: admin %v", errUsage, args)
-	}
+	out, err := operate(ctx, a, args[0]+" "+args[1], args)
 	if err != nil {
 		return err
 	}
@@ -162,6 +141,36 @@ func runAdmin(ctx context.Context, a *admin.Admin, args []string, stdout io.Writ
 	enc.SetIndent("", "  ")
 
 	return enc.Encode(out)
+}
+
+// operate runs the operator command cmd, args being the whole command line.
+func operate(ctx context.Context, a *admin.Admin, cmd string, args []string) (any, error) {
+	switch {
+	case cmd == "parked list" && len(args) <= 3:
+		var capture *tracepack.UUID
+		if len(args) == 3 {
+			id, err := parseCapture(args[2])
+			if err != nil {
+				return nil, err
+			}
+			capture = &id
+		}
+
+		return a.ParkedList(ctx, capture)
+	case cmd == "parked terminate" && (len(args) == 3 || len(args) == 4),
+		(cmd == "capture terminate" || cmd == "capture show") && len(args) == 3:
+		return onCapture(ctx, a, cmd, args[2:])
+	case cmd == "bus adopt-stream" && len(args) == 3:
+		return a.AdoptStream(ctx, args[2])
+	case (cmd == "conflict acknowledge" || cmd == "scope merge") && len(args) == 4,
+		cmd == "scope exclude-input" && len(args) == 3:
+		return onScope(ctx, a, cmd, args[2:])
+	case cmd == "object list" && (len(args) == 2 || len(args) == 3 && (args[2] == "--unattributed" || args[2] == "--survivors")):
+		// Unattributed objects and survivors are what retention leaves, which phase 2 brings.
+		return []struct{}{}, nil
+	default:
+		return nil, fmt.Errorf("%w: admin %v", errUsage, args)
+	}
 }
 
 // onCapture runs an operator command on one capture, args being the capture and, for parked terminate, a seq.
@@ -186,6 +195,32 @@ func onCapture(ctx context.Context, a *admin.Admin, cmd string, args []string) (
 		}
 
 		return a.ParkedTerminate(ctx, capture, seq)
+	}
+}
+
+// onScope runs a command on a scope's conflicts, inputs or merge: args are a capture and a seq or an hour, or a pack.
+func onScope(ctx context.Context, a *admin.Admin, cmd string, args []string) (any, error) {
+	id, err := tracepack.ParseUUID(args[0])
+	if err != nil {
+		return nil, fmt.Errorf("%w: %q: %w", errUsage, args[0], err)
+	}
+	switch cmd {
+	case "scope exclude-input":
+		return a.ScopeExcludeInput(ctx, id)
+	case "scope merge":
+		at, err := time.Parse(time.RFC3339, args[1])
+		if err != nil {
+			return nil, fmt.Errorf("%w: hour %q: %w", errUsage, args[1], err)
+		}
+
+		return a.ScopeMerge(ctx, id, tracepack.HourOf(at))
+	default: // conflict acknowledge
+		seq, err := strconv.ParseUint(args[1], 10, 63)
+		if err != nil {
+			return nil, fmt.Errorf("%w: seq %q", errUsage, args[1])
+		}
+
+		return a.ConflictAcknowledge(ctx, id, seq)
 	}
 }
 

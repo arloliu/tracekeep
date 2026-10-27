@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -54,6 +55,9 @@ func TestUsage(t *testing.T) {
 		nil, {"serve"}, {"migrate", "--config", path, "extra"}, {"admin", "--config", path},
 		{"admin", "--config", path, "capture", "show", "not-a-uuid"}, {"admin", "--config", path, "parked", "terminate"},
 		{"dev", "--flush", "0s"}, {"dev", "--data", t.TempDir(), "extra"}, {"admin", "--config", path, "object", "list", "--all"},
+		{"admin", "--config", path, "scope", "merge", "01234567-89ab-cdef-0123-456789abcdef", "08:00"},
+		{"admin", "--config", path, "conflict", "acknowledge", "01234567-89ab-cdef-0123-456789abcdef", "-1"},
+		{"admin", "--config", path, "scope", "exclude-input", "not-a-uuid"},
 	} {
 		if code, _, stderr := tracekeep(t, args...); code != 2 || !strings.Contains(stderr, "usage:") {
 			t.Errorf("tracekeep %v = %d, %q; want 2 with the usage", args, code, stderr)
@@ -75,10 +79,26 @@ func TestMigrateAndAdmin(t *testing.T) {
 		{"parked", "list"}, {"object", "list"}, {"object", "list", "--unattributed"}, {"object", "list", "--survivors"},
 		{"parked", "terminate", "01234567-89ab-cdef-0123-456789abcdef"},
 		{"bus", "adopt-stream", "parking"},
+		{"scope", "merge", "01234567-89ab-cdef-0123-456789abcdef", "2026-10-27T08:00:00Z"},
 	} {
 		code, stdout, stderr := tracekeep(t, append([]string{"admin", "--config", path, "--actor", "op"}, args...)...)
 		if code != 0 || !json.Valid([]byte(stdout)) {
 			t.Errorf("admin %v = %d, %q, %s; want JSON", args, code, stdout, stderr)
+		}
+	}
+}
+
+// An operator command the catalog refuses exits 1 with the reason.
+func TestAdminRefused(t *testing.T) {
+	t.Parallel()
+	path := setup(t)
+	for args, reason := range map[[5]string]string{
+		{"conflict", "acknowledge", "01234567-89ab-cdef-0123-456789abcdef", "7"}: "no conflict",
+		{"scope", "exclude-input", "01234567-89ab-cdef-0123-456789abcdef"}:       "unknown pack",
+	} {
+		line := append([]string{"admin", "--config", path}, slices.DeleteFunc(args[:], func(s string) bool { return s == "" })...)
+		if code, _, stderr := tracekeep(t, line...); code != 1 || !strings.Contains(stderr, reason) {
+			t.Errorf("tracekeep %v = %d, %q; want 1 naming %q", line, code, stderr, reason)
 		}
 	}
 }

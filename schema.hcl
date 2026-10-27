@@ -353,8 +353,9 @@ table "conflicts" {
   primary_key {
     columns = [column.capture_id, column.seq_from, column.seq_to, column.pack_id, column.other_pack_id]
   }
+  # acknowledged: an operator closed the incident; the scope stays unmerged (operations.md §10.4).
   check "conflicts_state" {
-    expr = "state IN ('suspect', 'confirmed')"
+    expr = "state IN ('suspect', 'confirmed', 'acknowledged')"
   }
 }
 
@@ -564,7 +565,7 @@ table "scope_events" {
     columns = [column.seq]
   }
   check "scope_events_event" {
-    expr = "event IN ('created', 'settled', 'reopened', 'conflict', 'terminated')"
+    expr = "event IN ('created', 'settled', 'reopened', 'conflict', 'terminated', 'excluded')"
   }
 }
 
@@ -674,6 +675,53 @@ table "leases" {
   }
 }
 
+# An operator's scope merge or capture close, executed by the compactor holding the lease at its next cycle (T-41).
+table "compact_requests" {
+  schema = schema.main
+  column "request_id" {
+    type = sql(var.uuid)
+  }
+  column "kind" {
+    type = varchar(16)
+  }
+  column "capture_id" {
+    type = sql(var.uuid)
+  }
+  # The scope's hour for a merge; none for a close.
+  column "hour" {
+    type = bigint
+    null = true
+  }
+  column "requested_by" {
+    type = varchar(255)
+  }
+  column "requested_at" {
+    type = bigint
+  }
+  column "state" {
+    type = varchar(16)
+  }
+  column "outcome" {
+    type = text
+    null = true
+  }
+  column "done_at" {
+    type = bigint
+    null = true
+  }
+  primary_key {
+    columns = [column.request_id]
+  }
+  index "compact_requests_state" {
+    columns = [column.state, column.requested_at]
+  }
+  check "compact_requests_kind" {
+    expr = "kind IN ('merge', 'close')"
+  }
+  check "compact_requests_state" {
+    expr = "state IN ('pending', 'done', 'failed')"
+  }
+}
 table "audit_log" {
   schema = schema.main
   column "audit_id" {
