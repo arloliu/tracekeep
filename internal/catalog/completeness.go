@@ -85,10 +85,22 @@ type ConflictRange struct {
 // so a registration committing meanwhile can never turn a deferred seq into a gap.
 func (c *Catalog) Completeness(ctx context.Context, capture tracepack.UUID) (Completeness, error) {
 	var out Completeness
-	in, err := c.completenessInputs(ctx, capture)
+	err := c.snapshot(ctx, func(tx *sqlx.Tx) error {
+		in, err := c.completenessInputs(ctx, tx, capture)
+		out = in.classify()
+
+		return err
+	})
 	if err != nil {
-		return out, fmt.Errorf("catalog: completeness of %s: %w", capture, err)
+		return Completeness{}, fmt.Errorf("catalog: completeness of %s: %w", capture, err)
 	}
+
+	return out, nil
+}
+
+// classify classifies the inputs of one capture read from one snapshot (catalog.md §7.3).
+func (in *completenessInputs) classify() Completeness {
+	var out Completeness
 	// The diagnostics stand on their own: a capture with no producer seq may still have a close or a declared loss.
 	out.Losses, out.CrashGaps, out.Conflicts = slices.Clone(in.losses), in.crashGaps, in.conflicts
 	out.Retained = coalesce(in.retained)
@@ -100,7 +112,7 @@ func (c *Catalog) Completeness(ctx context.Context, capture tracepack.UUID) (Com
 		}
 	}
 	if !ok {
-		return out, nil
+		return out
 	}
 	out.Frontier, out.HasFrontier, out.UnknownTailFrom = frontier, true, frontier+1
 	covered := slices.Concat(out.Retained, in.evicted)
@@ -128,7 +140,7 @@ func (c *Catalog) Completeness(ctx context.Context, capture tracepack.UUID) (Com
 	}
 	out.Gaps = gaps(coalesceRuns(explained), frontier, in.origin)
 
-	return out, nil
+	return out
 }
 
 // parkedSeq is a parked version's seq, state, record time and terminating action.
@@ -151,18 +163,24 @@ type completenessInputs struct {
 	conflicts  []ConflictRange
 }
 
-func (c *Catalog) completenessInputs(ctx context.Context, capture tracepack.UUID) (in completenessInputs, err error) {
-	// One read-only snapshot: SQLite's from the first read of the transaction, MariaDB's under REPEATABLE READ,
-	// since the catalog's sessions otherwise read committed.
+// snapshot runs f in one read-only snapshot: SQLite's from the first read of the transaction, MariaDB's under REPEATABLE READ,
+// since the catalog's sessions otherwise read committed.
+func (c *Catalog) snapshot(ctx context.Context, f func(tx *sqlx.Tx) error) (err error) {
 	opts := &sql.TxOptions{ReadOnly: true}
 	if c.d.name == EngineMariaDB {
 		opts.Isolation = sql.LevelRepeatableRead
 	}
 	tx, err := c.read.BeginTxx(ctx, opts)
 	if err != nil {
-		return in, err
+		return err
 	}
 	defer func() { err = errors.Join(err, tx.Rollback()) }()
+
+	return f(tx)
+}
+
+// completenessInputs reads the rows capture's completeness classifies, inside the snapshot tx.
+func (c *Catalog) completenessInputs(ctx context.Context, tx *sqlx.Tx, capture tracepack.UUID) (in completenessInputs, err error) {
 	var row struct {
 		Highest sql.NullInt64 `db:"highest_seq"`
 		Origin  sql.NullInt64 `db:"origin_ns"`
