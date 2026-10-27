@@ -344,7 +344,8 @@ func TestOwnWorkDir(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, other := range [][2]string{{"compact", "pod-b"}, {"ingest", "pod/a"}} {
+	// pod_a reads as pod/a once both are made safe for a file name; the digest keeps them apart.
+	for _, other := range [][2]string{{"compact", "pod-b"}, {"compact", "pod_a"}, {"ingest", "pod/a"}} {
 		dir, err := ownWorkDir(base, other[0], other[1])
 		if err != nil {
 			t.Fatal(err)

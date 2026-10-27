@@ -5,6 +5,8 @@ package service
 import (
 	"cmp"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -497,7 +499,7 @@ func together(ctx context.Context, roles ...func(context.Context) error) error {
 
 // ownWorkDir is the working directory of role in this replica, under base (the system's temporary directory when empty):
 // a directory of its own, named for the role and the replica, so what a role removes at start is only what it left behind,
-// never another process's (storage.md §5.1).
+// never another process's (storage.md §5.1). The replica's readable part may alias another's, so a digest of the whole name follows it.
 func ownWorkDir(base, role, replica string) (string, error) {
 	if base == "" {
 		base = os.TempDir()
@@ -509,7 +511,8 @@ func ownWorkDir(base, role, replica string) (string, error) {
 
 		return '_'
 	}, replica)
-	dir := filepath.Join(base, "tracekeep-"+role+"-"+name)
+	sum := sha256.Sum256([]byte(replica))
+	dir := filepath.Join(base, "tracekeep-"+role+"-"+name+"-"+hex.EncodeToString(sum[:8]))
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return "", fmt.Errorf("service: working directory: %w", err)
 	}
