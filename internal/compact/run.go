@@ -20,6 +20,8 @@ const (
 	hookMergeSnapshot
 	// hookMergePut runs after a merge put its archive, before its commit.
 	hookMergePut
+	// hookCompared runs after a suspect's packs were compared, before the result is recorded.
+	hookCompared
 	numHooks
 )
 
@@ -51,7 +53,7 @@ func (r *Compactor) Run(ctx context.Context) error {
 }
 
 // Step is one cycle: the compactor lease taken or renewed and both streams checked against their incarnations before any effect,
-// then the orphan pass, the copy pass on both streams and the merge pass under the lease, which a keeper renews every third of LeaseTTL while they run.
+// then the orphan pass, the copy pass on both streams, the conflict pass and the merge pass under the lease, which a keeper renews every third of LeaseTTL while they run.
 // While another process holds the lease it does nothing. A lease lost during the cycle cancels it, and the next cycle takes the lease again
 // under a new fence token; a worker that lost its lease does nothing further under the old one (compactor.md §8.1).
 // The metrics count a cycle that lost its lease as failed, and the lease as held only until it lapses.
@@ -206,6 +208,13 @@ func (r *Compactor) cycle(ctx context.Context, lease catalog.Lease) error {
 		if _, err := r.Copies(ctx, lease, role, s); err != nil {
 			return err
 		}
+	}
+	conflicts, err := r.Conflicts(ctx, lease)
+	if err != nil {
+		return err
+	}
+	if conflicts.Failed > 0 {
+		r.Log.Warn("compact: suspects left uncompared", "failed", conflicts.Failed)
 	}
 	merges, err := r.Merges(ctx, lease)
 	if err != nil {
