@@ -447,3 +447,28 @@ func TestCloseLostPutWithOtherBytes(t *testing.T) {
 		}
 	})
 }
+
+// A candidate whose intent fails fails the close task too: no success is stamped, and its capture stays open for the next cycle.
+func TestCloseIntentFailureFailsTheTask(t *testing.T) {
+	t.Parallel()
+	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
+		f := newFixture(t, c)
+		f.closing(t, time.Now().Add(3*time.Hour))
+		s := metrics.NewServer()
+		var err error
+		if f.r.Metrics, err = metrics.NewCompact(s); err != nil {
+			t.Fatal(err)
+		}
+		undecodable := f.admit(t) // its descriptor is no tracepack descriptor
+		if err := f.r.closePass(t.Context(), f.lease); err != nil {
+			t.Fatal(err)
+		}
+		got := scrape(t, s)
+		if strings.Contains(got, `last_success_timestamp{task="close"}`) || !strings.Contains(got, `cycle_seconds_count{task="close"} 1`) {
+			t.Errorf("a pass whose intent failed stamped a success, or was not timed:\n%s", got)
+		}
+		if f.mustState(t, undecodable) != catalog.StateOpen {
+			t.Error("the capture whose intent failed was closed")
+		}
+	})
+}
