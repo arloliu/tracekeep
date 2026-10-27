@@ -51,10 +51,25 @@ func reconcilers(t *testing.T, c *catalog.Catalog) pair {
 		return &Compactor{
 			Catalog: c, Store: s, HorizonHour: func() int64 { return hour - 24 }, Log: slog.New(slog.DiscardHandler),
 			JS: js, Bus: cfg, Holder: holder, LeaseTTL: time.Hour, Interval: time.Minute,
+			Claims: claimBucket(t, js, cfg), Retention: decade, DeleteDelay: time.Hour,
 		}
 	}
 
 	return pair{a: mk("a"), b: mk("b"), s: s, js: js}
+}
+
+// decade is a retention under which no hour of these tests is evicted.
+const decade = 10 * 365 * 24 * time.Hour
+
+// claimBucket is the claim bucket bus.Ensure created.
+func claimBucket(t *testing.T, js jetstream.JetStream, cfg bus.Config) ObjectBucket {
+	t.Helper()
+	os, err := js.ObjectStore(t.Context(), cfg.ClaimBucket)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	return ObjectBucket{Store: os}
 }
 
 func step(t *testing.T, r *Compactor) {

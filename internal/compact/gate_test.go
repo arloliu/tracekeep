@@ -61,6 +61,7 @@ func TestSoleCopyReconciledAfterARestart(t *testing.T) {
 		r := &Compactor{
 			Catalog: c, Store: store.NewMem(), HorizonHour: func() int64 { return hour - 24 }, Log: slog.New(slog.DiscardHandler),
 			JS: js, Bus: cfg, Holder: "restarted", LeaseTTL: time.Hour, Interval: time.Minute,
+			Claims: claimBucket(t, js, cfg), Retention: decade, DeleteDelay: time.Hour,
 		}
 		step(t, r)
 		if got := copyState(t, c, d); got != "acked" {

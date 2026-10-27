@@ -57,7 +57,7 @@ func (r *Compactor) Run(ctx context.Context) error {
 }
 
 // Step is one cycle: the compactor lease taken or renewed and both streams checked against their incarnations before any effect,
-// then the orphan pass, the copy pass on both streams, the conflict pass, the operators' requests, the merge pass and the close pass under the lease, which a keeper renews every third of LeaseTTL while they run.
+// then the orphan pass, the copy pass on both streams, the conflict pass, the operators' requests, the merge pass, the close pass, deletion and retention under the lease, which a keeper renews every third of LeaseTTL while they run.
 // While another process holds the lease it does nothing. A lease lost during the cycle cancels it, and the next cycle takes the lease again
 // under a new fence token; a worker that lost its lease does nothing further under the old one (compactor.md §8.1).
 // The metrics count a cycle that lost its lease as failed, and the lease as held only until it lapses.
@@ -223,8 +223,32 @@ func (r *Compactor) cycle(ctx context.Context, lease catalog.Lease) error {
 	if err := r.mergePass(ctx, lease); err != nil {
 		return err
 	}
+	if err := r.closePass(ctx, lease); err != nil {
+		return err
+	}
 
-	return r.closePass(ctx, lease)
+	return r.retentionPass(ctx, lease)
+}
+
+// retentionPass runs the deletion task and then the retention task, and records their metrics:
+// each succeeds when it ended in no error and none of its steps failed.
+func (r *Compactor) retentionPass(ctx context.Context, lease catalog.Lease) error {
+	started := time.Now()
+	var del RetentionReport
+	err := r.Deletions(ctx, lease, &del)
+	r.Metrics.Cycle("delete", time.Since(started), err == nil && del.Failed == 0)
+	if err != nil {
+		return err
+	}
+	started = time.Now()
+	var ret RetentionReport
+	err = r.Retain(ctx, lease, &ret)
+	r.Metrics.Cycle("retention", time.Since(started), err == nil && ret.Failed == 0)
+	if ret.Unattributed > 0 {
+		r.Log.Warn("compact: claim objects without the SDK's metadata left for an operator", "objects", ret.Unattributed)
+	}
+
+	return err
 }
 
 // closePass runs the close pass and records its metrics: the task succeeds when it ended in no error and no close failed.

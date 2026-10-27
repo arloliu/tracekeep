@@ -39,13 +39,15 @@ func TestDefaults(t *testing.T) {
 		"retention": c.Retention, "ingest.flush_interval": c.Ingest.FlushInterval, "ingest.ack_wait": c.Ingest.AckWait,
 		"parking.redelivery_delay": c.Parking.RedeliveryDelay, "ingest.lease": c.Ingest.Lease,
 		"compact.quiet_period": c.Compact.QuietPeriod, "compact.redelivery_slack": c.Compact.RedeliverySlack,
-		"compact.inactivity": c.Compact.Inactivity,
+		"compact.inactivity": c.Compact.Inactivity, "compact.delete_delay": c.Compact.DeleteDelay,
+		"store.download_lifetime": c.Store.DownloadLifetime,
 	} {
 		want := map[string]time.Duration{
 			"retention": 30 * 24 * time.Hour, "ingest.flush_interval": 5 * time.Minute, "ingest.ack_wait": 7 * time.Minute,
 			"parking.redelivery_delay": time.Minute, "ingest.lease": time.Minute,
 			"compact.quiet_period": 15 * time.Minute, "compact.redelivery_slack": 2 * time.Minute,
-			"compact.inactivity": 2 * time.Hour,
+			"compact.inactivity": 2 * time.Hour, "compact.delete_delay": time.Hour,
+			"store.download_lifetime": 15 * time.Minute,
 		}[name]
 		if got != want {
 			t.Errorf("%s = %s, want %s", name, got, want)
@@ -128,6 +130,23 @@ func TestQuietPeriodBound(t *testing.T) {
 	// Raising F or ack_wait raises the bound.
 	if _, err := Load(write(t, yaml("", "", "", "ingest:\n  flush_interval: 6m\n  ack_wait: 7m\n"))); err == nil {
 		t.Error("the default Q under a 6-minute F = nil, want refused")
+	}
+}
+
+// D must exceed the download URL's lifetime strictly (compactor.md §8.3).
+func TestDeleteDelayBound(t *testing.T) {
+	t.Parallel()
+	timing := func(d string) string {
+		return yaml("", "", "  s3:\n    bucket: packs\n    access_key_id: ak\n    secret_access_key: sk\n  download_lifetime: 15m\n", "compact:\n  delete_delay: "+d+"\n")
+	}
+	for d, ok := range map[string]bool{"14m": false, "15m": false, "15m1s": true, "1h": true} {
+		_, err := Load(write(t, timing(d)))
+		if ok && err != nil {
+			t.Errorf("D %s: Load = %v, want it accepted", d, err)
+		}
+		if !ok && (err == nil || !strings.Contains(err.Error(), "compact.delete_delay")) {
+			t.Errorf("D %s: Load = %v, want an error naming compact.delete_delay", d, err)
+		}
 	}
 }
 
