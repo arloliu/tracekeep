@@ -45,12 +45,13 @@ func (r Retention) Deadline(hour int64) int64 {
 
 // HorizonHour returns the oldest hour retention keeps at now: every older hour is past its deadline.
 func (r Retention) HorizonHour(now int64) int64 {
-	return floorDiv(now-int64(r.InForce(now)), nsPerHour)
+	return floorHour(now - int64(r.InForce(now)))
 }
 
-func floorDiv(a, b int64) int64 {
-	q := a / b
-	if a%b < 0 {
+// floorHour is the hour, in hours since the Unix epoch, that holds the UTC time ns.
+func floorHour(ns int64) int64 {
+	q := ns / nsPerHour
+	if ns%nsPerHour < 0 {
 		q--
 	}
 

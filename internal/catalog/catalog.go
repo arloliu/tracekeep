@@ -74,6 +74,8 @@ const (
 	hookBeforeCommit
 	// hookCompletenessRead runs between the reads of a completeness, inside its snapshot.
 	hookCompletenessRead
+	// hookWatermarkRead runs once a listing read its watermark, inside its snapshot.
+	hookWatermarkRead
 	numHooks
 )
 
