@@ -251,7 +251,7 @@ func (r *Compactor) read(ctx context.Context, info store.ObjectInfo) (*catalog.P
 	if err := records(ctx, rd, p); err != nil {
 		return nil, "", err
 	}
-	if len(p.Ranges) == 0 {
+	if len(p.Ranges) == 0 && p.Role != catalog.RoleClose {
 		return nil, "the pack holds no record", nil
 	}
 
@@ -294,11 +294,6 @@ func describe(rd *tracepack.Reader, keyPrefix string, info store.ObjectInfo) (*c
 	if m == nil {
 		return nil, "the pack has no metadata"
 	}
-	// shortcut: a close (seq_start 2^63-1, the close sentinel, which no segment's registration takes) is left to the compactor that publishes it;
-	// adopt a close's orphan here, as a close holding no range, once the compactor writes closes.
-	if m.SeqStart == math.MaxInt64 {
-		return nil, "a close, which only its publication registers"
-	}
 	p := &catalog.Pack{
 		ID: h.PackID, Capture: h.CaptureID, ToolID: m.ToolID, Hour: floorHour(m.PeriodStart), Key: info.Key, Size: info.Size,
 		SeqStart: m.SeqStart, FormatMinor: int(h.FormatMinor),
@@ -307,7 +302,11 @@ func describe(rd *tracepack.Reader, keyPrefix string, info store.ObjectInfo) (*c
 	var err error
 	switch m.PackRole {
 	case tracepack.PackRoleSegment:
+		// A close is a segment starting at the close sentinel, 2^63-1, holding only its close record: a pack of no range (compactor.md §8.2).
 		p.Role = catalog.RoleSegment
+		if m.SeqStart == math.MaxInt64 {
+			p.Role = catalog.RoleClose
+		}
 		key, err = tracepack.SegmentKey(keyPrefix, m.ToolID, h.CaptureID, m.SeqStart, h.PackID)
 	case tracepack.PackRoleArchive:
 		p.Role = catalog.RoleArchive
@@ -351,6 +350,9 @@ func records(ctx context.Context, rd *tracepack.Reader, p *catalog.Pack) error {
 	// A stop is told by its transport event's payload, which Iterate reads only on request.
 	res, err := rd.Iterate(ctx, tracepack.Query{Payloads: true}, func(it *tracepack.Item) error {
 		rec := &it.Record
+		if rec.Seq == math.MaxInt64 {
+			return nil // a close's record, the close sentinel, which is never a range
+		}
 		pts = append(pts, point{rec.Seq, rec.TSUTCNs})
 		if isStop(rec) {
 			p.Stop = true

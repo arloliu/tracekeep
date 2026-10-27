@@ -269,3 +269,31 @@ func (f *fixture) mustState(t *testing.T, capture tracepack.UUID) string {
 
 	return got.State
 }
+
+// A crash after a close's put leaves its object to the reconciler, which adopts it; the publication then finds it registered.
+func TestCloseAdoptedBeforeItsPublication(t *testing.T) {
+	t.Parallel()
+	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
+		f := newFixture(t, c)
+		now := time.Now().Add(3 * time.Hour)
+		f.closing(t, now)
+		capture := f.described(t, newID(t), now.Add(-4*time.Hour).UnixNano())
+		f.stage(t, segment(t, capture, []uint64{0, 1}, false))
+		ctx, crash := context.WithCancel(t.Context())
+		f.r.hooks[hookClosePut] = func() { crash() }
+		if _, err := f.r.Closes(ctx, f.lease); !errors.Is(err, context.Canceled) {
+			t.Fatalf("Closes = %v, want the crash", err)
+		}
+		f.r.hooks[hookClosePut] = nil
+		f.pass(t)
+		if rep := f.pass(t); len(rep.Adopted) != 1 {
+			t.Fatalf("pass = %+v, want the close adopted", rep)
+		}
+		if rep := f.closes(t); rep.Published != 1 {
+			t.Fatalf("Closes = %+v, want the adopted close published", rep)
+		}
+		if got, err := c.Capture(t.Context(), capture); err != nil || got.HighestSeq != 1 || got.State != catalog.StateClosed {
+			t.Errorf("capture = %+v, %v; want closed at highest seq 1", got, err)
+		}
+	})
+}
