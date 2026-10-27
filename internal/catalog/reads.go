@@ -23,6 +23,24 @@ type Selector struct {
 	From, To int64
 }
 
+// filter is the SQL condition on sel's devices and capture for the captures table under prefix, and its args after lead.
+func (sel Selector) filter(prefix string, lead ...any) (string, []any) {
+	var cond string
+	args := lead
+	if len(sel.Devices) > 0 {
+		cond += ` AND ` + prefix + `device IN (` + strings.TrimSuffix(strings.Repeat("?, ", len(sel.Devices)), ", ") + `)`
+		for _, d := range sel.Devices {
+			args = append(args, d)
+		}
+	}
+	if sel.Capture != nil {
+		cond += ` AND ` + prefix + `capture_id = ?`
+		args = append(args, sel.Capture[:])
+	}
+
+	return cond, args
+}
+
 // CaptureInfo is one capture as ListCaptures reports it (api.md §10.1).
 type CaptureInfo struct {
 	ID                 tracepack.UUID
@@ -165,17 +183,8 @@ func (c *Catalog) selectCaptures(ctx context.Context, tx *sqlx.Tx, sel Selector,
 	query := `SELECT capture_id, state, device, recorder_instance_id, previous_capture_id, origin_ns, highest_seq_ts, config_id, descriptor
 		FROM captures WHERE tool_id = ? AND state IN ` + admittedStates + `
 		AND COALESCE(origin_ns, 0) < ? AND (state = 'open' OR COALESCE(highest_seq_ts, origin_ns, 0) >= ?)`
-	args := []any{sel.ToolID, sel.To, sel.From}
-	if len(sel.Devices) > 0 {
-		query += ` AND device IN (` + strings.TrimSuffix(strings.Repeat("?, ", len(sel.Devices)), ", ") + `)`
-		for _, d := range sel.Devices {
-			args = append(args, d)
-		}
-	}
-	if sel.Capture != nil {
-		query += ` AND capture_id = ?`
-		args = append(args, sel.Capture[:])
-	}
+	filter, args := sel.filter("", sel.ToolID, sel.To, sel.From)
+	query += filter
 	var rows []struct {
 		ID         []byte         `db:"capture_id"`
 		State      string         `db:"state"`
@@ -514,6 +523,78 @@ func listHours(ctx context.Context, tx *sqlx.Tx, ids []tracepack.UUID, first, la
 		if hl := at(e.Hour); len(hl.Scopes) == 0 {
 			hl.Evicted = append(hl.Evicted, tracepack.UUID(e.Capture))
 		}
+	}
+
+	return out, nil
+}
+
+// ScopeEvent is one event of the change cursor (catalog.md §7.3).
+type ScopeEvent struct {
+	Seq      int64
+	Capture  tracepack.UUID
+	Hour     int64
+	Event    string
+	Revision int64
+	At       int64
+}
+
+// Changes is one page of ListScopeChanges.
+type Changes struct {
+	Events []ScopeEvent
+	// Next is the cursor to continue from.
+	Next Cursor
+	// Stale is set when the cursor carries another epoch or a pruned seq lies above it:
+	// the client re-lists the window from ListPacks and continues from the cursor that listing returns.
+	Stale bool
+}
+
+// ListScopeChanges returns up to limit events above after whose capture sel's tool and devices select, in seq order (catalog.md §7.3),
+// from one snapshot whose first statement reads the watermark;
+// the next cursor is the last event's seq for a full page, else the watermark, so other tools' events never hold it back.
+func (c *Catalog) ListScopeChanges(ctx context.Context, after Cursor, sel Selector, limit int) (Changes, error) {
+	if limit <= 0 {
+		return Changes{}, fmt.Errorf("catalog: list scope changes: limit %d is not positive", limit)
+	}
+	var out Changes
+	err := c.snapshot(ctx, func(tx *sqlx.Tx) error {
+		var w Cursor
+		var low int64
+		err := tx.QueryRowxContext(ctx, `SELECT epoch, value, low_water FROM counters WHERE name = 'scope_events'`).Scan(&w.Epoch, &w.Seq, &low)
+		if err != nil {
+			return err
+		}
+		if after.Epoch != w.Epoch || after.Seq < low-1 {
+			out.Stale = true
+
+			return nil
+		}
+		query := `SELECT e.seq, e.capture_id, e.hour, e.event, e.revision, e.at FROM scope_events e JOIN captures k ON k.capture_id = e.capture_id
+			WHERE e.seq > ? AND e.seq <= ? AND k.tool_id = ?`
+		filter, args := sel.filter("k.", after.Seq, w.Seq, sel.ToolID)
+		query += filter
+		var rows []struct {
+			Seq      int64  `db:"seq"`
+			Capture  []byte `db:"capture_id"`
+			Hour     int64  `db:"hour"`
+			Event    string `db:"event"`
+			Revision int64  `db:"revision"`
+			At       int64  `db:"at"`
+		}
+		if err := tx.SelectContext(ctx, &rows, query+` ORDER BY e.seq LIMIT ?`, append(args, limit)...); err != nil {
+			return err
+		}
+		for _, r := range rows {
+			out.Events = append(out.Events, ScopeEvent{Seq: r.Seq, Capture: tracepack.UUID(r.Capture), Hour: r.Hour, Event: r.Event, Revision: r.Revision, At: r.At})
+		}
+		out.Next = Cursor{Epoch: w.Epoch, Seq: max(after.Seq, w.Seq)}
+		if len(rows) == limit {
+			out.Next.Seq = rows[len(rows)-1].Seq
+		}
+
+		return nil
+	})
+	if err != nil {
+		return Changes{}, fmt.Errorf("catalog: list scope changes: %w", err)
 	}
 
 	return out, nil

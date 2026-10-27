@@ -336,3 +336,100 @@ func checkHours(t *testing.T, hours []HourListing, a tracepack.UUID, p *Pack) ma
 
 	return byHour
 }
+
+// staged registers a segment of capture in hour holding seq, which creates the hour's scope and its event.
+func staged(t *testing.T, c *Catalog, capture tracepack.UUID, hour int64, seq uint64) {
+	t.Helper()
+	p := segment(t, capture, hour, seq, seq)
+	if out := register(t, c, p, Registration{Evidence: &Evidence{Deliveries: []Identity{*identity(capture, seq, int64(seq)+1)}}}); out != Registered {
+		t.Fatalf("RegisterPack = %v", out)
+	}
+}
+
+func changes(t *testing.T, c *Catalog, after Cursor, sel Selector, limit int) Changes {
+	t.Helper()
+	got, err := c.ListScopeChanges(t.Context(), after, sel, limit)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	return got
+}
+
+// A page holds the selected tool's and devices' events above the cursor in seq order;
+// its next cursor passes every event it scanned, and a short page ends at the watermark, past other tools' later events.
+func TestListScopeChanges(t *testing.T) {
+	t.Parallel()
+	engines(t, func(t *testing.T, c *Catalog) {
+		eqp := described(t, c, spec{instance: newID(t), origin: 1})
+		pdf := described(t, c, spec{instance: newID(t), origin: 1, device: "pdf"})
+		other := described(t, c, spec{instance: newID(t), origin: 1, toolID: "T2"})
+		staged(t, c, other, 1, 0)
+		staged(t, c, eqp, 1, 0)
+		staged(t, c, other, 2, 1)
+		staged(t, c, pdf, 1, 0)
+		staged(t, c, eqp, 2, 1)
+		staged(t, c, other, 3, 2)
+		var w int64
+		if err := c.read.GetContext(t.Context(), &w, `SELECT value FROM counters WHERE name = 'scope_events'`); err != nil {
+			t.Fatal(err)
+		}
+
+		var seen []ScopeEvent
+		cursor := Cursor{}
+		for page := 0; ; page++ {
+			got := changes(t, c, cursor, Selector{ToolID: "T1"}, 2)
+			if got.Stale || page > 3 {
+				t.Fatalf("page %d: %+v", page, got)
+			}
+			seen = append(seen, got.Events...)
+			if got.Next.Seq <= cursor.Seq && len(got.Events) > 0 {
+				t.Fatalf("page %d: next %d did not pass cursor %d", page, got.Next.Seq, cursor.Seq)
+			}
+			cursor = got.Next
+			if len(got.Events) < 2 {
+				break
+			}
+		}
+		if cursor != (Cursor{Seq: w}) {
+			t.Errorf("final cursor %+v, want the watermark %d past T2's last event", cursor, w)
+		}
+		want := []tracepack.UUID{eqp, pdf, eqp}
+		if len(seen) != len(want) {
+			t.Fatalf("%d events, want %d", len(seen), len(want))
+		}
+		for i, e := range seen {
+			if e.Capture != want[i] || e.Event != "created" || (i > 0 && e.Seq <= seen[i-1].Seq) {
+				t.Errorf("event %d: %+v", i, e)
+			}
+		}
+		if got := changes(t, c, Cursor{}, Selector{ToolID: "T1", Devices: []string{"pdf"}}, 10); len(got.Events) != 1 || got.Events[0].Capture != pdf || got.Next.Seq != w {
+			t.Errorf("one device: %+v", got)
+		}
+	})
+}
+
+// A cursor is stale when it carries another epoch or a pruned seq lies above it, and only then.
+func TestListScopeChangesStale(t *testing.T) {
+	t.Parallel()
+	engines(t, func(t *testing.T, c *Catalog) {
+		exec(t, c, `UPDATE counters SET value = 9, low_water = 5, epoch = 2 WHERE name = 'scope_events'`)
+		for _, tc := range []struct {
+			after Cursor
+			stale bool
+		}{
+			{Cursor{Epoch: 2, Seq: 4}, false}, // every seq below 5 was read
+			{Cursor{Epoch: 2, Seq: 3}, true},  // seq 4 was pruned unread
+			{Cursor{Epoch: 1, Seq: 9}, true},
+			{Cursor{Epoch: 2, Seq: 9}, false},
+		} {
+			got := changes(t, c, tc.after, Selector{ToolID: "T1"}, 10)
+			if got.Stale != tc.stale {
+				t.Errorf("cursor %+v: stale %v, want %v", tc.after, got.Stale, tc.stale)
+			}
+			if !got.Stale && got.Next != (Cursor{Epoch: 2, Seq: 9}) {
+				t.Errorf("cursor %+v: next %+v, want the watermark", tc.after, got.Next)
+			}
+		}
+	})
+}
