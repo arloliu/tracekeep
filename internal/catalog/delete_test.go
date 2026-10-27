@@ -168,3 +168,43 @@ func TestPackDeadline(t *testing.T) {
 		}
 	})
 }
+
+// In a chain of merges, A and B into X, then X and a late S into Y, deleting X first leaves A and B candidates:
+// X's records live on in Y, so an input whose output was deleted after its own merge is deleted all the same,
+// and an input refused for a shared key stays a candidate, refused again every cycle.
+func TestDeletePackAlongAChainOfMerges(t *testing.T) {
+	t.Parallel()
+	engines(t, func(t *testing.T, c *Catalog) {
+		l := compactorLease(t, c, "w")
+		capture, inputs, x := mergedScope(t, c, l, 0)
+		late := segment(t, capture, 1, 20, 29)
+		register(t, c, late, Registration{Evidence: &Evidence{}})
+		y := archiveOf(t, capture, 1, x, late)
+		m := mergeOf(snapshot(t, c, capture), y)
+		if out := commit(t, c, l, m); out != Merged {
+			t.Fatalf("second CommitMerge = %v", out)
+		}
+		now := deleteAt(t, c, y)
+		if ok, err := c.DeletePack(t.Context(), l, Deletable{Pack: x.ID, Capture: capture, Key: x.Key}, now); err != nil || !ok {
+			t.Fatalf("DeletePack of the intermediate archive = %v, %v", ok, err)
+		}
+		lapse(t, c, `INSERT INTO packs (pack_id, capture_id, tool_id, hour, role, object_key, size, seq_start, format_minor, state, registered_at)
+			VALUES (X'`+hexOf(newID(t))+`', X'`+hexOf(capture)+`', 'T1', 7, 'segment', '`+inputs[0].Key+`', 1, 0, 1, 'staged', 0)`)
+		for cycle := range 2 {
+			got := deleteCandidates(t, c, now)
+			ids := map[tracepack.UUID]bool{}
+			for _, d := range got {
+				ids[d.Pack] = true
+			}
+			if !ids[inputs[0].ID] || (cycle == 0) != ids[inputs[1].ID] {
+				t.Fatalf("cycle %d: candidates %v, want the refused input every cycle and the other until deleted", cycle, got)
+			}
+			for _, d := range got {
+				ok, err := c.DeletePack(t.Context(), l, d, now)
+				if err != nil || ok != (d.Pack != inputs[0].ID) {
+					t.Fatalf("cycle %d: DeletePack(%s) = %v, %v", cycle, d.Key, ok, err)
+				}
+			}
+		}
+	})
+}

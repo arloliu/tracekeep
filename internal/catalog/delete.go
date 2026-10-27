@@ -18,10 +18,11 @@ type Deletable struct {
 	Key     string
 }
 
-// deletableWhere is the deletion relation: a merged input of a committed merge whose output is staged or merged.
+// deletableWhere is the deletion relation: a merged input of a committed merge whose output is staged or merged,
+// or deleted, which only a merged pack becomes, its records living on in a later merge's output (compactor.md §8.3).
 const deletableWhere = `FROM packs p JOIN merge_inputs i ON i.pack_id = p.pack_id JOIN merges m ON m.merge_id = i.merge_id
 	JOIN packs o ON o.pack_id = m.output_pack_id
-	WHERE p.state = 'merged' AND m.outcome = 'committed' AND o.state IN ('staged', 'merged') AND m.delete_at <= ?`
+	WHERE p.state = 'merged' AND m.outcome = 'committed' AND o.state IN ('staged', 'merged', 'deleted') AND m.delete_at <= ?`
 
 // DeleteCandidates returns the merged inputs whose deletion time has passed at now.
 func (c *Catalog) DeleteCandidates(ctx context.Context, now int64) ([]Deletable, error) {
