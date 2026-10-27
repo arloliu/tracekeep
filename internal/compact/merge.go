@@ -119,9 +119,9 @@ func (r *Compactor) merge(ctx context.Context, lease catalog.Lease, s catalog.Sc
 	}
 	switch out {
 	case catalog.Merged, catalog.ArchiveRegistered:
-		// ArchiveRegistered: this merge's own commit, whose result was lost, or the reconciler's adoption of the archive.
+		// ArchiveRegistered: this merge's own commit, whose result was lost.
 		return merged, nil
-	case catalog.MergeStale, catalog.ArchiveTombstoned:
+	case catalog.MergeStale, catalog.ArchiveAdopted, catalog.ArchiveTombstoned:
 		return stale, nil
 	default:
 		return 0, fmt.Errorf("compact: unknown merge outcome %d", out)

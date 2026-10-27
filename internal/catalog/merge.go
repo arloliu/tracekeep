@@ -131,9 +131,11 @@ const (
 	// MergeStale: the scope changed since the snapshot (its revision, a conflict, an input no longer staged, its state);
 	// nothing was written, and the archive is left to the reconciler.
 	MergeStale
-	// ArchiveRegistered: the archive's pack is already in the catalog, committed by this merge before its result was lost
-	// or adopted by the reconciler; nothing more was written.
+	// ArchiveRegistered: this merge committed before its result was lost; nothing more was written.
 	ArchiveRegistered
+	// ArchiveAdopted: the reconciler adopted the archive before the commit, which raised its suspects and reopened the scope;
+	// nothing was written, and the next cycle merges the scope with the archive as an input.
+	ArchiveAdopted
 	// ArchiveTombstoned: the archive's key is tombstoned; nothing was written, and the reconciler deletes the object.
 	ArchiveTombstoned
 )
@@ -236,7 +238,14 @@ func (c *Catalog) mergeGuards(ctx context.Context, tx *sqlx.Tx, m *Merge) (Merge
 		return 0, true, err
 	}
 	if n > 0 {
-		return ArchiveRegistered, true, nil
+		if err := tx.GetContext(ctx, &n, `SELECT COUNT(*) FROM merges WHERE output_pack_id = ?`, m.Archive.ID[:]); err != nil {
+			return 0, true, err
+		}
+		if n > 0 {
+			return ArchiveRegistered, true, nil
+		}
+
+		return ArchiveAdopted, true, nil
 	}
 	if err := tx.GetContext(ctx, &n, `SELECT COUNT(*) FROM tombstones WHERE object_key = ?`, m.Archive.Key); err != nil {
 		return 0, true, err
