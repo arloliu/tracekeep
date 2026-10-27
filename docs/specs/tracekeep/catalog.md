@@ -73,6 +73,7 @@ Contract changes go through proposals, which the subject [README.md](README.md) 
 | `processing_configs`, `policies` | versioned configurations captures bind to | never updated in place |
 | `key_bindings` | `key_id`, kind, provider reference and version, material fingerprint | insert-or-compare, fail closed (§9) |
 | `leases` | name, holder, `fence_token`, `until` | compactor singleton |
+| `compact_requests` | an operator's `scope merge` or `capture close`: target, requester, time, `state` `pending`/`done`/`failed` with the outcome | executed by the compactor holding the lease at its next cycle, under that lease, and retried until it ends (T-41) |
 | `audit_log` | restores, digests, exports, admin changes, by whom | append-only |
 
 `seq` is at most 2^63 − 1, so it fits a signed `BIGINT`; times are `BIGINT` UTC nanoseconds; UUIDs are `BINARY(16)`.
@@ -193,14 +194,15 @@ and the caller acts on it: the merge and the close at the next cycle (§8.1, §8
   the flag is computed from the spans, not from the `open` state, so it survives the close of either capture.
   A read by device returns both, each with its own completeness, and never interleaves them into one series.
 - **Settled** means "merged, and nothing more is expected on the normal path":
-  a scope becomes a merge candidate at hour end + quiet period Q (default 15 minutes, above F + `ack_wait` + redelivery slack),
+  a scope becomes a merge candidate at hour end + quiet period Q (default 15 minutes, above F + `ack_wait` + the redelivery slack `compact.redelivery_slack`, default 2 minutes, T-41),
   and `settled` when the merge commits; a registration afterwards sets `reopened`; a re-merge sets `settled` again.
   Settlement is a scheduling fact; completeness is the ranges and gaps, reported beside it.
 - **Cursor**: `scope_events.seq` is allocated from the `counters` row as the last statement of the emitting transaction;
   the row lock makes allocation order commit order on MariaDB, and SQLite has one writer,
   so a reader that has seen seq s never misses a lower seq committed later.
   Events are emitted for `created`, `settled`, `reopened`, `conflict` (a suspect raised, confirmed or cleared on that scope, whichever hour the other version is in, §6.2)
-  and `terminated` (a seq of that hour terminated, deferred becoming a declared loss, §7.2, T-33);
+  `terminated` (a seq of that hour terminated, deferred becoming a declared loss, §7.2, T-33)
+  and `excluded` (a pack of that scope excluded from its merges by the operator, `operations.md` §10.4, T-41);
   every conflict transition, in registration or in `compact` (confirmation, clearing, a merge that fails on a conflict), increments the revision of **every** scope it touches in the same transaction, capture row first and `counters` last,
   so a replayed event is never ignored for a changed state.
   Pruning deletes a **seq prefix only**:
@@ -235,8 +237,9 @@ and the caller acts on it: the merge and the close at the next cycle (§8.1, §8
   `atlas migrate diff` produces `migrations/mariadb/` and `migrations/sqlite/` with their `atlas.sum`;
   CI runs `atlas migrate validate` and checks that `atlas migrate diff` finds nothing to add, on both engines
   (`atlas migrate lint` is available only to Atlas Pro users since Atlas v0.38).
-  The **first release applies them with the Atlas CLI** (`atlas migrate apply`: a Job or init container on Kubernetes, the binary shipped in the standalone package),
-  because the embedded Go library path is unverified;
-  `tracekeep migrate` wraps that CLI and is replaced by the library once verified.
+  `tracekeep migrate` applies them with Atlas's Go library (`ariga.io/atlas/sql/migrate` and its `mysql` and `sqlite` drivers, which build without cgo, T-41),
+  checking each directory's `atlas.sum` and recording every applied revision in a table of its own,
+  so a deployment needs no Atlas binary; the Atlas CLI stays the development tool for `diff` and `validate`,
+  and a catalog is migrated by one of the two, never both.
   Schema changes are expand-then-contract across two releases,
   so an old and a new consumer run against one schema during a rollout.

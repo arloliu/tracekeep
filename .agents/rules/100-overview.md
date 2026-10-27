@@ -64,7 +64,7 @@ Create a directory when its first code lands, not before.
   The SDK's requirement is a floor for every producer that links it (minimal version selection picks the highest),
   so raising it raises the gateway: that is a decision for the decision log, never a side effect of a feature.
 - The catalog uses sqlx with hand-written SQL over `database/sql` drivers for SQLite and MariaDB;
-  migrations are Atlas CLI.
+  migrations are Atlas: the CLI generates them, the binary applies them through Atlas's Go library (T-41).
 - Runtime dependencies are intentionally minimal — check `go.mod` before adding any.
   Prefer stdlib.
   A new dependency of the SDK is a decision, since every producer inherits it.
