@@ -116,10 +116,12 @@ func (c *Catalog) EvictCandidates(ctx context.Context, now int64) ([]Scope, erro
 // Eviction is what EvictHour did: whether it evicted the hour, the pack and claim objects its caller deletes after the commit,
 // and how many claim objects it kept as survivors.
 type Eviction struct {
-	Evicted   bool
-	Packs     []string
-	Claims    []string
-	Survivors int
+	Evicted bool
+	Packs   []string
+	Claims  []string
+	// Tombstoned counts the keys this eviction tombstoned, a key a deletion tombstoned before not among them.
+	Tombstoned int
+	Survivors  int
 }
 
 // EvictHour evicts one hour of one admitted capture under the capture row and l (compactor.md §8.3, catalog.md §7.2 `EvictHour`):
@@ -206,9 +208,15 @@ func (c *Catalog) evictPacks(ctx context.Context, tx *sqlx.Tx, s Scope, now int6
 		}
 	}
 	for _, key := range ev.Packs {
-		if _, err := tx.ExecContext(ctx, c.d.insertIgnore+` INTO tombstones (object_key, reason, at) VALUES (?, 'evicted', ?)`, key, now); err != nil {
+		res, err := tx.ExecContext(ctx, c.d.insertIgnore+` INTO tombstones (object_key, reason, at) VALUES (?, 'evicted', ?)`, key, now)
+		if err != nil {
 			return nil, err
 		}
+		n, err := res.RowsAffected()
+		if err != nil {
+			return nil, err
+		}
+		ev.Tombstoned += int(n)
 	}
 
 	return others, nil

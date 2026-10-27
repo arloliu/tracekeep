@@ -133,10 +133,12 @@ func TestEvictHour(t *testing.T) {
 		park(t, c, waiting, "parked")
 		claimRow(t, c, capture, 12, 1, "claims/12")
 		recordRetention(t, c, l, month, 0)
+		// a's key a deletion tombstoned already: the eviction tombstones the other two.
+		lapse(t, c, `INSERT INTO tombstones (object_key, reason, at) VALUES ('`+a.Key+`', 'deleted', 1)`)
 
 		got := evict(t, c, l, Scope{capture, 1}, hourEvictedNow)
-		if !got.Evicted || got.Survivors != 1 {
-			t.Fatalf("EvictHour = %+v, want evicted with one survivor", got)
+		if !got.Evicted || got.Survivors != 1 || got.Tombstoned != 2 {
+			t.Fatalf("EvictHour = %+v, want evicted with one survivor and two keys tombstoned", got)
 		}
 		slices.Sort(got.Packs)
 		wantKeys := []string{a.Key, archive.Key, b.Key}

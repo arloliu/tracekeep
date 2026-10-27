@@ -170,7 +170,7 @@ func (r *Compactor) Retain(ctx context.Context, lease catalog.Lease, rep *Retent
 			continue
 		}
 		rep.Evicted++
-		rep.Tombstoned += len(ev.Packs)
+		rep.Tombstoned += ev.Tombstoned
 		rep.Survivors += ev.Survivors
 		for _, key := range ev.Packs {
 			r.removeObject(ctx, lease, key, rep)
