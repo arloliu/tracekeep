@@ -178,7 +178,7 @@ and the caller acts on it: the merge and the close at the next cycle (§8.1, §8
   It selects the admitted captures (`open`, `stopped` or `closed`) of that tool and those devices whose span meets the window:
   a capture's **span** runs from `capture_origin_utc_ns` to `highest_seq_ts`, or is the origin alone before any record,
   and for the window only, a capture still `open` has a span without end, since it may yet record.
-- `ListPacks(tool, from, to)` iterates the requested hours:
+- `ListPacks(tool, from, to)` iterates the requested hours, at most a leap year's 8,784:
   for each, the scopes of every selected capture overlapping it, with packs, ranges, state and revision;
   an hour with no scope is reported as `no-data` together with whether a selected capture's span, unbounded while `open`, meets that hour,
   so a missing whole hour is a result, not an absence;
