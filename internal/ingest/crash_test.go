@@ -483,7 +483,7 @@ func TestAdoptionWinsAfterThePut(t *testing.T) {
 		if err != nil || !ok {
 			t.Fatalf("TakeLease = %v, %v", ok, err)
 		}
-		r := &compact.Reconciler{Catalog: c, Store: p.st, HorizonHour: p.f.HorizonHour, Log: slog.New(slog.DiscardHandler)}
+		r := &compact.Compactor{Catalog: c, Store: p.st, HorizonHour: p.f.HorizonHour, Log: slog.New(slog.DiscardHandler)}
 		// The hold point: the segment is put and not yet registered; two passes adopt it.
 		p.f.hooks[hookAfterPut] = func() error {
 			p.f.hooks[hookAfterPut] = nil

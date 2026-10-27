@@ -27,7 +27,7 @@ const (
 type fixture struct {
 	c     *catalog.Catalog
 	s     *store.Mem
-	r     *Reconciler
+	r     *Compactor
 	lease catalog.Lease
 	// horizon is the oldest hour retention keeps.
 	horizon int64
@@ -36,7 +36,7 @@ type fixture struct {
 func newFixture(t *testing.T, c *catalog.Catalog) *fixture {
 	t.Helper()
 	f := &fixture{c: c, s: store.NewMem(), horizon: hour - 24}
-	f.r = &Reconciler{Catalog: c, Store: f.s, HorizonHour: func() int64 { return f.horizon }, Log: slog.New(slog.DiscardHandler)}
+	f.r = &Compactor{Catalog: c, Store: f.s, HorizonHour: func() int64 { return f.horizon }, Log: slog.New(slog.DiscardHandler)}
 	lease, ok, err := c.TakeLease(t.Context(), "compactor", "reconciler", time.Hour)
 	if err != nil || !ok {
 		t.Fatalf("TakeLease = %v, %v", ok, err)
@@ -277,7 +277,7 @@ func TestOrphanDeleted(t *testing.T) {
 func TestReadDerivesThePack(t *testing.T) {
 	t.Parallel()
 	f := &fixture{s: store.NewMem()}
-	f.r = &Reconciler{Store: f.s}
+	f.r = &Compactor{Store: f.s}
 	capture := newID(t)
 	four, ts := uint64(4), hour*nsPerHour+4
 	b := writeWith(t, capture, tracepack.PackRoleSegment, []uint64{1, 2, 3, 5, 6}, true, func(m *tracepack.PackMeta) {

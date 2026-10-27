@@ -58,7 +58,7 @@ func TestSoleCopyReconciledAfterARestart(t *testing.T) {
 		if last := parked.CachedInfo().State.LastSeq; last != uint64(d.StreamSeq) { //nolint:gosec // a stream sequence fits
 			t.Fatalf("LastSeq %d, want the acknowledged copy's %d", last, d.StreamSeq)
 		}
-		r := &Reconciler{
+		r := &Compactor{
 			Catalog: c, Store: store.NewMem(), HorizonHour: func() int64 { return hour - 24 }, Log: slog.New(slog.DiscardHandler),
 			JS: js, Bus: cfg, Holder: "restarted", LeaseTTL: time.Hour, Interval: time.Minute,
 		}
