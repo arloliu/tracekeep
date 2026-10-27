@@ -174,7 +174,7 @@ and the caller acts on it: the merge and the close at the next cycle (§8.1, §8
 - **Declared losses** come from `pack_losses` and from `terminated` `parked` rows;
   **crash gaps** from `capture_closes` (`gap_start`, `gap_end`);
   **conflicts** from `conflicts`.
-- **Selection**: a read names a tool, optionally its devices or one capture, and a window [from, to).
+- **Selection**: a read names a tool, optionally its devices (at most 1,000) or one capture, and a nonempty window [from, to).
   It selects the admitted captures (`open`, `stopped` or `closed`) of that tool and those devices whose span meets the window:
   a capture's **span** runs from `capture_origin_utc_ns` to `highest_seq_ts`, or is the origin alone before any record,
   and for the window only, a capture still `open` has a span without end, since it may yet record.
