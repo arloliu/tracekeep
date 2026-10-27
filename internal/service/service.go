@@ -9,6 +9,8 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/nats-io/nats.go"
@@ -400,13 +402,15 @@ func ingesters(ctx context.Context, e *Env) (_ []*ingest.Ingester, err error) {
 		Catalog: e.Catalog, Store: e.Store, WorkDir: c.Ingest.WorkDir, KeyPrefix: c.Store.KeyPrefix, Configs: configs,
 		Interval: c.Ingest.FlushInterval, HorizonHour: func() int64 { return ingest.HourOf(e.horizon()) }, Writer: writerName, Now: e.now,
 	}
-	if f.WorkDir == "" {
-		f.WorkDir = os.TempDir()
-	}
-	// At start a role removes the working files it left behind (storage.md §5.1).
-	if err := ingest.CleanWorkDir(f.WorkDir); err != nil {
+	dir, err := ownWorkDir(f.WorkDir, "ingest", c.Replica)
+	if err != nil {
 		return nil, err
 	}
+	// At start a role removes the working files it left behind (storage.md §5.1).
+	if err := ingest.CleanWorkDir(dir); err != nil {
+		return nil, err
+	}
+	f.WorkDir = dir
 	var m *metrics.Ingest
 	if e.Metrics != nil {
 		if m, err = metrics.NewIngest(e.Metrics, e.now); err != nil {
@@ -451,12 +455,14 @@ func Compact(ctx context.Context, e *Env) error {
 		Log: e.Log.With("role", "compact"), JS: e.JS, Bus: e.Bus(), Holder: c.Replica, LeaseTTL: c.Compact.LeaseTTL, Interval: c.Compact.Interval,
 		WorkDir: c.Ingest.WorkDir, Writer: writerName, QuietPeriod: c.Compact.QuietPeriod, Now: e.now,
 	}
-	if r.WorkDir == "" {
-		r.WorkDir = os.TempDir()
-	}
-	if err := compact.CleanWorkDir(r.WorkDir); err != nil {
+	dir, err := ownWorkDir(r.WorkDir, "compact", c.Replica)
+	if err != nil {
 		return err
 	}
+	if err := compact.CleanWorkDir(dir); err != nil {
+		return err
+	}
+	r.WorkDir = dir
 	if e.Metrics != nil {
 		var err error
 		if r.Metrics, err = metrics.NewCompact(e.Metrics); err != nil {
@@ -464,7 +470,7 @@ func Compact(ctx context.Context, e *Env) error {
 		}
 		e.Metrics.Ready("compact", r.Ready)
 	}
-	err := r.Run(ctx)
+	err = r.Run(ctx)
 	if ctx.Err() != nil && errors.Is(err, ctx.Err()) {
 		return nil
 	}
@@ -487,4 +493,26 @@ func together(ctx context.Context, roles ...func(context.Context) error) error {
 	}
 
 	return g.Wait()
+}
+
+// ownWorkDir is the working directory of role in this replica, under base (the system's temporary directory when empty):
+// a directory of its own, named for the role and the replica, so what a role removes at start is only what it left behind,
+// never another process's (storage.md §5.1).
+func ownWorkDir(base, role, replica string) (string, error) {
+	if base == "" {
+		base = os.TempDir()
+	}
+	name := strings.Map(func(r rune) rune {
+		if r == '-' || r == '.' || r == '_' || ('0' <= r && r <= '9') || ('a' <= r && r <= 'z') || ('A' <= r && r <= 'Z') {
+			return r
+		}
+
+		return '_'
+	}, replica)
+	dir := filepath.Join(base, "tracekeep-"+role+"-"+name)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return "", fmt.Errorf("service: working directory: %w", err)
+	}
+
+	return dir, nil
 }
