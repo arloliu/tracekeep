@@ -59,3 +59,24 @@ func TestMergeMetrics(t *testing.T) {
 		t.Errorf("no unmerged scope, an age:\n%s", b)
 	}
 }
+
+// closes_total counts closes by trigger.
+func TestCloseMetrics(t *testing.T) {
+	t.Parallel()
+	s := NewServer()
+	m, err := NewCompact(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.Closes(map[string]int{"inactivity": 2, "successor": 1})
+	m.Closes(map[string]int{"operator": 1})
+	b := body(t, s)
+	for _, want := range []string{
+		`tracekeep_compact_closes_total{trigger="inactivity"} 2`, `tracekeep_compact_closes_total{trigger="successor"} 1`,
+		`tracekeep_compact_closes_total{trigger="operator"} 1`,
+	} {
+		if !strings.Contains(b, want) {
+			t.Errorf("/metrics lacks %s:\n%s", want, b)
+		}
+	}
+}
