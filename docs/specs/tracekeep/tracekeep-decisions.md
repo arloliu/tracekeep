@@ -139,7 +139,7 @@ receipt-less claim objects follow their record's hour once their capture is know
 compactor singleton under a catalog lease; parking enabled by default (G5-267);
 durable consumers named per stream incarnation, `Preflight` refusing a traffic or parking stream with a mirror, sources or `AllowDirect`, and **replacing, restoring or rewinding either stream only as the stop-the-world maintenance procedure of §6.1 that ends in `bus adopt-stream`**
 (an operational constraint on every deployment, cluster or host, made part of the design's approval in external review rounds 18–20, kept outside the repository);
-the traffic stream and claim bucket are created by `tracekeep migrate`; Atlas CLI for the first release; HSMS-SS only in phase 0;
+the traffic stream and claim bucket are created by `tracekeep migrate`; Atlas CLI for the first release (superseded by T-41); HSMS-SS only in phase 0;
 thinning disabled until the poll channel exists.
 
 ## Repository decisions
