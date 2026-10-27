@@ -13,6 +13,7 @@ import (
 
 	"github.com/arloliu/tracekeep/internal/catalog"
 	"github.com/arloliu/tracekeep/internal/catalog/catalogtest"
+	"github.com/arloliu/tracekeep/internal/metrics"
 	"github.com/arloliu/tracekeep/internal/store"
 )
 
@@ -261,6 +262,36 @@ func TestMergeUnderALostLease(t *testing.T) {
 		}
 		if got := f.candidates(t); len(got) != 1 {
 			t.Errorf("candidates = %v, want the scope unmerged", got)
+		}
+	})
+}
+
+// The merge pass counts its outcomes, times its cycle and reads the scope gauges.
+func TestMergePassMetrics(t *testing.T) {
+	t.Parallel()
+	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
+		f := newFixture(t, c)
+		f.merging(t)
+		s := metrics.NewServer()
+		var err error
+		if f.r.Metrics, err = metrics.NewCompact(s); err != nil {
+			t.Fatal(err)
+		}
+		f.stage(t, segment(t, f.admit(t), []uint64{0, 1}, false))
+		f.stage(t, segment(t, f.admit(t), []uint64{0, 1}, false))
+		if err := f.r.mergePass(t.Context(), f.lease); err != nil {
+			t.Fatal(err)
+		}
+		got := scrape(t, s)
+		for _, want := range []string{
+			`tracekeep_compact_merges_total{outcome="merged"} 2`, `tracekeep_compact_cycle_seconds_count{task="merge"} 1`,
+			`tracekeep_compact_last_success_timestamp{task="merge"}`, `tracekeep_compact_scopes{state="settled"} 2`,
+			`tracekeep_compact_scopes{state="open"} 0`, "tracekeep_compact_conflicts_open 0",
+			"tracekeep_compact_oldest_unmerged_scope_age_seconds 0",
+		} {
+			if !strings.Contains(got, want) {
+				t.Errorf("/metrics lacks %s", want)
+			}
 		}
 	})
 }

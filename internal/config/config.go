@@ -123,6 +123,8 @@ type Compact struct {
 	Interval time.Duration `yaml:"interval" default:"5m" env:"TRACEKEEP_COMPACT_INTERVAL" validate:"gt=0"`
 	// QuietPeriod is Q: a scope becomes a merge candidate once its hour ended Q ago (catalog.md §7.3, T-12).
 	QuietPeriod time.Duration `yaml:"quiet_period" default:"15m" env:"TRACEKEEP_COMPACT_QUIET_PERIOD" validate:"gt=0"`
+	// RedeliverySlack is the time Q leaves after F and ack_wait for a redelivered message to be flushed (catalog.md §7.3, T-41).
+	RedeliverySlack time.Duration `yaml:"redelivery_slack" default:"2m" env:"TRACEKEEP_COMPACT_REDELIVERY_SLACK" validate:"gte=0"`
 }
 
 // Metrics is the metrics and health listener (operations.md §10.4).
@@ -163,6 +165,10 @@ func (c *Config) check() error {
 	var errs []error
 	if c.Ingest.AckWait <= c.Ingest.FlushInterval {
 		errs = append(errs, fmt.Errorf("ingest.ack_wait %s must exceed ingest.flush_interval %s (T-25)", c.Ingest.AckWait, c.Ingest.FlushInterval))
+	}
+	if bound := c.Ingest.FlushInterval + c.Ingest.AckWait + c.Compact.RedeliverySlack; c.Compact.QuietPeriod <= bound {
+		errs = append(errs, fmt.Errorf("compact.quiet_period %s must exceed ingest.flush_interval + ingest.ack_wait + compact.redelivery_slack, %s (T-25, T-41)",
+			c.Compact.QuietPeriod, bound))
 	}
 	switch c.Store.Kind {
 	case "fs":
@@ -206,6 +212,7 @@ func Dev(dir, url string, flush time.Duration) (*Config, error) {
 	c.Store.Kind, c.Store.Dir, c.Store.Presign = "fs", filepath.Join(dir, "packs"), false
 	c.Ingest.FlushInterval, c.Ingest.AckWait, c.Ingest.MaxWait = flush, max(time.Minute, 2*flush), time.Second
 	c.Compact.Interval = 30 * time.Second
+	c.Compact.QuietPeriod = c.Ingest.FlushInterval + c.Ingest.AckWait + c.Compact.RedeliverySlack + time.Minute
 	c.Replica, c.Metrics.Listen = "dev", "" // dev serves metrics only where asked
 	if err := fuda.Validate(&c); err != nil {
 		return nil, fmt.Errorf("config: %w", err)

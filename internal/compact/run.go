@@ -219,13 +219,37 @@ func (r *Compactor) cycle(ctx context.Context, lease catalog.Lease) error {
 	if _, err := r.Requests(ctx, lease); err != nil {
 		return err
 	}
-	merges, err := r.Merges(ctx, lease)
+
+	return r.mergePass(ctx, lease)
+}
+
+// mergePass runs the merge pass and records its metrics, then reads the scope gauges;
+// a failed read of them keeps their previous values.
+func (r *Compactor) mergePass(ctx context.Context, lease catalog.Lease) error {
+	started := time.Now()
+	rep, err := r.Merges(ctx, lease)
+	r.Metrics.Cycle("merge", time.Since(started), err == nil)
+	r.Metrics.Merges(len(rep.Merged), len(rep.Stale), len(rep.Conflicted), len(rep.Failed))
 	if err != nil {
 		return err
 	}
-	if len(merges.Conflicted)+len(merges.Failed) > 0 {
-		r.Log.Warn("compact: scopes left unmerged", "conflicted", len(merges.Conflicted), "failed", len(merges.Failed))
+	if len(rep.Conflicted)+len(rep.Failed) > 0 {
+		r.Log.Warn("compact: scopes left unmerged", "conflicted", len(rep.Conflicted), "failed", len(rep.Failed))
 	}
+	if r.Metrics == nil {
+		return nil
+	}
+	st, err := r.Catalog.ScopeStats(ctx)
+	if err != nil {
+		r.Log.Warn("compact: read the scope gauges", "error", err)
+
+		return nil
+	}
+	var end time.Time
+	if st.OldestUnmerged != nil {
+		end = time.Unix(0, (*st.OldestUnmerged+1)*nsPerHour)
+	}
+	r.Metrics.Scopes(st.ByState, st.OpenConflicts, end)
 
 	return nil
 }

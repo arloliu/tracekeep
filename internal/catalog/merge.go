@@ -296,3 +296,40 @@ func rowsWant(res sql.Result, err error, want int) error {
 
 	return nil
 }
+
+// ScopeStats is what the compact metrics read of the scopes (operations.md §10.4 compact).
+type ScopeStats struct {
+	// ByState counts the scopes in each state.
+	ByState map[string]int
+	// OpenConflicts counts the conflicts an operator has not acknowledged: suspect or confirmed.
+	OpenConflicts int
+	// OldestUnmerged is the hour of the oldest open or reopened scope; nil when there is none.
+	OldestUnmerged *int64
+}
+
+// ScopeStats reads the scopes' counts by state, the open conflicts and the oldest unmerged scope's hour.
+func (c *Catalog) ScopeStats(ctx context.Context) (ScopeStats, error) {
+	st := ScopeStats{ByState: map[string]int{}}
+	var rows []struct {
+		State string `db:"state"`
+		N     int    `db:"n"`
+	}
+	if err := c.read.SelectContext(ctx, &rows, `SELECT state, COUNT(*) AS n FROM scopes GROUP BY state`); err != nil {
+		return st, fmt.Errorf("catalog: scope stats: %w", err)
+	}
+	for _, r := range rows {
+		st.ByState[r.State] = r.N
+	}
+	if err := c.read.GetContext(ctx, &st.OpenConflicts, `SELECT COUNT(*) FROM conflicts WHERE state IN ('suspect', 'confirmed')`); err != nil {
+		return st, fmt.Errorf("catalog: scope stats: %w", err)
+	}
+	var oldest sql.NullInt64
+	if err := c.read.GetContext(ctx, &oldest, `SELECT MIN(hour) FROM scopes WHERE state IN ('open', 'reopened')`); err != nil {
+		return st, fmt.Errorf("catalog: scope stats: %w", err)
+	}
+	if oldest.Valid {
+		st.OldestUnmerged = &oldest.Int64
+	}
+
+	return st, nil
+}
