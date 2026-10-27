@@ -433,3 +433,15 @@ func TestListScopeChangesStale(t *testing.T) {
 		}
 	})
 }
+
+// An empty or reversed window is refused, never listed as hours.
+func TestListPacksRefusesAnEmptyWindow(t *testing.T) {
+	t.Parallel()
+	engines(t, func(t *testing.T, c *Catalog) {
+		for _, w := range []Selector{window(hourNS(2), hourNS(2)), window(hourNS(3), hourNS(1))} {
+			if _, err := c.ListPacks(t.Context(), w, readQ); err == nil {
+				t.Errorf("window [%d, %d): listed, want refused", w.From, w.To)
+			}
+		}
+	})
+}

@@ -368,6 +368,9 @@ type CaptureListing struct {
 // ListPacks lists the hours of sel's window (catalog.md §7.3) from one snapshot whose first statement reads the watermark and the epoch,
 // so an event committed during the listing lies above the returned cursor.
 func (c *Catalog) ListPacks(ctx context.Context, sel Selector, q time.Duration) (Listing, error) {
+	if sel.To <= sel.From {
+		return Listing{}, fmt.Errorf("catalog: list packs: the window [%d, %d) is empty", sel.From, sel.To)
+	}
 	var out Listing
 	err := c.snapshot(ctx, func(tx *sqlx.Tx) error {
 		err := tx.QueryRowxContext(ctx, `SELECT epoch, value FROM counters WHERE name = 'scope_events'`).Scan(&out.Cursor.Epoch, &out.Cursor.Seq)
