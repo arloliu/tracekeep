@@ -138,8 +138,14 @@ func TestDev(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, flush := range []time.Duration{time.Second, 10 * time.Second, 5 * time.Minute} {
-		if _, err := Dev(dir, "nats://127.0.0.1:4222", flush); err != nil {
+		d, err := Dev(dir, "nats://127.0.0.1:4222", flush)
+		if err != nil {
 			t.Errorf("Dev with flush %s = %v", flush, err)
+			continue
+		}
+		// dev derives Q a minute above its bound.
+		if want := d.Ingest.FlushInterval + d.Ingest.AckWait + d.Compact.RedeliverySlack + time.Minute; d.Compact.QuietPeriod != want {
+			t.Errorf("dev's Q with flush %s = %s, want %s", flush, d.Compact.QuietPeriod, want)
 		}
 	}
 	if c.Catalog.DSN != filepath.Join(dir, "catalog.db") || c.Store.Dir != filepath.Join(dir, "packs") || c.Ingest.FlushInterval != 2*time.Second ||

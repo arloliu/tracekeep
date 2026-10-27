@@ -332,3 +332,61 @@ func TestDuringAComparison(t *testing.T) {
 		})
 	}
 }
+
+// durableState is what a recorded comparison writes: the capture row's revision and its scope's.
+type durableState struct {
+	capture, scope int64
+}
+
+func (f *fixture) durable(t *testing.T, capture tracepack.UUID) durableState {
+	t.Helper()
+	cp, err := f.c.Capture(t.Context(), capture)
+	if err != nil {
+		t.Fatal(err)
+	}
+	snap, err := f.c.MergeSnapshot(t.Context(), catalog.Scope{Capture: capture, Hour: hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	return durableState{capture: cp.DataRevision, scope: snap.Revision}
+}
+
+// While a pair is compared, its row is cleared and the pair raised again over another run, confirmed:
+// the stale comparison finds no row of its own and writes nothing.
+func TestReplacedRowDuringAComparison(t *testing.T) {
+	t.Parallel()
+	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
+		f := newFixture(t, c)
+		capture := f.admit(t)
+		f.stage(t, segmentOf(t, capture, hour, recordsAt(hour, 0, 1, 2, 3), noAdjust))
+		f.stage(t, segmentOf(t, capture, hour, recordsAt(hour, 3, 4, 5), noAdjust))
+		ss, err := c.Suspects(t.Context())
+		if err != nil || len(ss) != 1 {
+			t.Fatalf("Suspects = %+v, %v", ss, err)
+		}
+		s := ss[0]
+		var mark durableState
+		f.r.hooks[hookCompared] = func() {
+			f.r.hooks[hookCompared] = nil
+			if out, err := c.RecordConflict(t.Context(), f.lease, s, false); err != nil || out != catalog.ConflictRecorded {
+				t.Errorf("clearing the row = %v, %v", out, err)
+			}
+			found := []catalog.MergeConflict{{Seq: 2, Packs: [][]tracepack.UUID{{s.Pack.ID}, {s.Other.ID}}}}
+			if err := c.RecordMergeConflicts(t.Context(), f.lease, catalog.Scope{Capture: capture, Hour: hour}, found); err != nil {
+				t.Error(err)
+			}
+			mark = f.durable(t, capture)
+		}
+		rep, err := f.r.Conflicts(t.Context(), f.lease)
+		if err != nil || rep.Changed != 1 {
+			t.Fatalf("Conflicts = %+v, %v; want the stale comparison changed", rep, err)
+		}
+		if got := f.durable(t, capture); got != mark {
+			t.Errorf("the stale comparison wrote: %+v, want %+v", got, mark)
+		}
+		if ss, err := c.Suspects(t.Context()); err != nil || len(ss) != 0 {
+			t.Errorf("suspects = %+v, %v; want the replacement confirmed, none suspect", ss, err)
+		}
+	})
+}
