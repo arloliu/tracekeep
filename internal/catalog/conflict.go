@@ -1,6 +1,7 @@
 package catalog
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -118,9 +119,11 @@ type MergeConflict struct {
 }
 
 // RecordMergeConflicts records under l the conflicts a merge of s failed on (ingest.md §6.2):
-// every pair of packs holding different versions of a seq is written confirmed, a suspect of the pair confirmed in place,
-// and every scope they touch advances its revision and emits a conflict event, the counter last.
+// for every pair of packs holding different versions of a seq, the pair's seqs are coalesced into runs (catalog.md §7.1);
+// a suspect row of the pair that meets a run is confirmed in place, and a run no row of the pair meets is written confirmed;
+// every scope the packs touch advances its revision and emits a conflict event, the counter last.
 func (c *Catalog) RecordMergeConflicts(ctx context.Context, l Lease, s Scope, found []MergeConflict) error {
+	runs := conflictRuns(found)
 	err := c.inTx(ctx, func(tx *sqlx.Tx) error {
 		if _, err := c.lockCapture(ctx, tx, s.Capture); err != nil {
 			return err
@@ -129,19 +132,11 @@ func (c *Catalog) RecordMergeConflicts(ctx context.Context, l Lease, s Scope, fo
 			return err
 		}
 		var packs []tracepack.UUID
-		for _, f := range found {
-			for i, vi := range f.Packs {
-				for _, vj := range f.Packs[i+1:] {
-					for _, p := range vi {
-						for _, o := range vj {
-							if err := c.confirm(ctx, tx, s.Capture, f.Seq, p, o); err != nil {
-								return err
-							}
-							packs = append(packs, p, o)
-						}
-					}
-				}
+		for _, r := range runs {
+			if err := c.confirmRun(ctx, tx, s.Capture, r); err != nil {
+				return err
 			}
+			packs = append(packs, r.a, r.b)
 		}
 
 		return c.touchScopes(ctx, tx, s.Capture, packs)
@@ -153,17 +148,68 @@ func (c *Catalog) RecordMergeConflicts(ctx context.Context, l Lease, s Scope, fo
 	return nil
 }
 
-// confirm writes the conflict of p and o at seq confirmed.
-func (c *Catalog) confirm(ctx context.Context, tx *sqlx.Tx, capture tracepack.UUID, seq uint64, p, o tracepack.UUID) error {
-	at := int64(seq) //nolint:gosec // a seq is below 2^63
-	_, err := tx.ExecContext(ctx, `UPDATE conflicts SET state = 'confirmed'
-		WHERE capture_id = ? AND seq_from = ? AND seq_to = ? AND pack_id = ? AND other_pack_id = ? AND state = 'suspect'`,
-		capture[:], at, at, p[:], o[:])
-	if err != nil {
+// pairRun is a run of seqs at which two packs hold different versions.
+type pairRun struct {
+	a, b     tracepack.UUID
+	from, to uint64
+}
+
+// conflictRuns turns a merge's conflicts into runs: per unordered pair of packs holding different versions, consecutive seqs coalesced.
+func conflictRuns(found []MergeConflict) []pairRun {
+	type pair struct{ a, b tracepack.UUID }
+	seqs := map[pair][]uint64{}
+	var order []pair
+	for _, f := range found {
+		for i, vi := range f.Packs {
+			for _, vj := range f.Packs[i+1:] {
+				for _, p := range vi {
+					for _, o := range vj {
+						k := pair{p, o}
+						if bytes.Compare(o[:], p[:]) < 0 {
+							k = pair{o, p}
+						}
+						if _, ok := seqs[k]; !ok {
+							order = append(order, k)
+						}
+						seqs[k] = append(seqs[k], f.Seq)
+					}
+				}
+			}
+		}
+	}
+	var runs []pairRun
+	for _, k := range order {
+		ss := seqs[k]
+		slices.Sort(ss)
+		ss = slices.Compact(ss)
+		for i := 0; i < len(ss); {
+			j := i
+			for j+1 < len(ss) && ss[j+1] == ss[j]+1 {
+				j++
+			}
+			runs = append(runs, pairRun{a: k.a, b: k.b, from: ss[i], to: ss[j]})
+			i = j + 1
+		}
+	}
+
+	return runs
+}
+
+// confirmRun confirms the suspect rows of r's pair that meet r, either orientation, and writes r confirmed when no row of the pair meets it.
+func (c *Catalog) confirmRun(ctx context.Context, tx *sqlx.Tx, capture tracepack.UUID, r pairRun) error {
+	from, to := int64(r.from), int64(r.to) //nolint:gosec // seqs are below 2^63
+	const pairMeets = `capture_id = ? AND ((pack_id = ? AND other_pack_id = ?) OR (pack_id = ? AND other_pack_id = ?))
+		AND seq_from <= ? AND seq_to >= ?`
+	args := []any{capture[:], r.a[:], r.b[:], r.b[:], r.a[:], to, from}
+	if _, err := tx.ExecContext(ctx, `UPDATE conflicts SET state = 'confirmed' WHERE `+pairMeets+` AND state = 'suspect'`, args...); err != nil {
 		return err
 	}
-	_, err = tx.ExecContext(ctx, c.d.insertIgnore+` INTO conflicts (capture_id, seq_from, seq_to, pack_id, other_pack_id, state)
-		VALUES (?, ?, ?, ?, ?, 'confirmed')`, capture[:], at, at, p[:], o[:])
+	var n int
+	if err := tx.GetContext(ctx, &n, `SELECT COUNT(*) FROM conflicts WHERE `+pairMeets, args...); err != nil || n > 0 {
+		return err
+	}
+	_, err := tx.ExecContext(ctx, `INSERT INTO conflicts (capture_id, seq_from, seq_to, pack_id, other_pack_id, state) VALUES (?, ?, ?, ?, ?, 'confirmed')`,
+		capture[:], from, to, r.a[:], r.b[:])
 
 	return err
 }
