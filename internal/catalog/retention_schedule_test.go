@@ -54,6 +54,52 @@ func TestRegistrationRacingADeletion(t *testing.T) {
 	}
 }
 
+// A deletion and a registration of another pack naming the input's key serialize on the capture row, their outcomes exclusive:
+// the deletion first tombstones the key and the registration is refused for it; the registration first makes the deletion find
+// another row naming the key and refuse, the input left merged.
+func TestSharedKeyRegistrationRacingADeletion(t *testing.T) {
+	t.Parallel()
+	for _, deleteFirst := range []bool{true, false} {
+		t.Run(map[bool]string{true: "deletion first", false: "registration first"}[deleteFirst], func(t *testing.T) {
+			t.Parallel()
+			engines(t, func(t *testing.T, c *Catalog) {
+				l := compactorLease(t, c, "w")
+				capture, inputs, archive := mergedScope(t, c, l, 0)
+				in := inputs[0]
+				twin := segment(t, capture, 3, 40, 49)
+				twin.Key = in.Key
+				var out PackOutcome
+				var deleted bool
+				var errR, errD error
+				register := func() { out, errR = c.RegisterPack(t.Context(), twin, Registration{Evidence: &Evidence{}}) }
+				del := func() {
+					deleted, errD = c.DeletePack(t.Context(), l, Deletable{Pack: in.ID, Capture: capture, Key: in.Key}, deleteAt(t, c, archive))
+				}
+				if deleteFirst {
+					race(t, c, del, register)
+				} else {
+					race(t, c, register, del)
+				}
+				if errR != nil || errD != nil {
+					t.Fatalf("RegisterPack = %v, DeletePack = %v", errR, errD)
+				}
+				tombs := count(t, c, `SELECT COUNT(*) FROM tombstones WHERE object_key = ?`, in.Key)
+				twins := count(t, c, `SELECT COUNT(*) FROM packs WHERE pack_id = ?`, twin.ID[:])
+				if deleteFirst {
+					if !deleted || out != Tombstoned || tombs != 1 || twins != 0 || packState(t, c, in.ID) != "deleted" {
+						t.Errorf("deletion first: deleted %v, registration %v, tombstones %d, twin rows %d", deleted, out, tombs, twins)
+					}
+
+					return
+				}
+				if deleted || out != Registered || tombs != 0 || twins != 1 || packState(t, c, in.ID) != "merged" {
+					t.Errorf("registration first: deleted %v, registration %v, tombstones %d, twin rows %d", deleted, out, tombs, twins)
+				}
+			})
+		})
+	}
+}
+
 // An eviction and a registration into its hour by an ingest whose horizon is still older serialize on the capture row:
 // a registration first is evicted with the hour; one after the eviction makes the hour a candidate again.
 func TestRegistrationRacingAnEviction(t *testing.T) {
