@@ -434,7 +434,7 @@ func ingesters(ctx context.Context, e *Env) (_ []*ingest.Ingester, err error) {
 	return gs, nil
 }
 
-// Compact runs the compact role until ctx ends; for now its reconciler, under the compactor lease (storage.md §5.4).
+// Compact runs the compact role until ctx ends: its reconciler (storage.md §5.4) and its merges (compactor.md §8.1), under the compactor lease.
 func Compact(ctx context.Context, e *Env) error {
 	e.ready("compact", failing(errStarting))
 	defer e.ready("compact", failing(errStopped))
@@ -445,6 +445,10 @@ func Compact(ctx context.Context, e *Env) error {
 	r := &compact.Compactor{
 		Catalog: e.Catalog, Store: e.Store, KeyPrefix: c.Store.KeyPrefix, HorizonHour: func() int64 { return ingest.HourOf(e.horizon()) },
 		Log: e.Log.With("role", "compact"), JS: e.JS, Bus: e.Bus(), Holder: c.Replica, LeaseTTL: c.Compact.LeaseTTL, Interval: c.Compact.Interval,
+		WorkDir: c.Ingest.WorkDir, Writer: writerName, QuietPeriod: c.Compact.QuietPeriod, Now: e.now,
+	}
+	if r.WorkDir == "" {
+		r.WorkDir = os.TempDir()
 	}
 	if e.Metrics != nil {
 		var err error

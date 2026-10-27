@@ -45,6 +45,13 @@ type Compactor struct {
 	Holder   string
 	LeaseTTL time.Duration
 	Interval time.Duration
+	// WorkDir holds the merge's working files; Writer is the service's writer tag, which every archive carries;
+	// QuietPeriod is Q, how long after its hour ends a scope becomes a merge candidate (compactor.md §8.1);
+	// Now is the clock that judges it, nil for time.Now.
+	WorkDir     string
+	Writer      string
+	QuietPeriod time.Duration
+	Now         func() time.Time
 
 	// lease is the compactor lease while this process holds it.
 	lease *catalog.Lease
