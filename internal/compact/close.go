@@ -24,7 +24,8 @@ const closeFilePattern = "close-*.tpk"
 type CloseReport struct {
 	// Intended counts the captures closed by an intent, by trigger.
 	Intended map[string]int
-	// Published and Abandoned count the intents that ended each way; Failed those left pending for the next cycle.
+	// Published and Abandoned count the intents that ended each way;
+	// Failed counts the candidates whose intent failed and the intents whose publication failed, each left for the next cycle.
 	Published, Abandoned, Failed int
 }
 
@@ -53,6 +54,8 @@ func (r *Compactor) Closes(ctx context.Context, lease catalog.Lease) (CloseRepor
 		}
 		if err != nil {
 			r.Log.Error("compact: close intent", "capture", cand.Capture, "error", err)
+			rep.Failed++
+
 			continue
 		}
 		if out == catalog.Intended {
