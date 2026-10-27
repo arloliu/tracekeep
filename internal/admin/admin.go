@@ -1,6 +1,7 @@
-// Package admin is the operator's side of parking and termination (docs/specs/tracekeep/operations.md §10.4, parking.md):
+// Package admin is the operator's side of parking, termination and the compactor's scopes (docs/specs/tracekeep/operations.md §10.4, parking.md):
 // the operations the admin commands run, each audited.
-// They write the catalog and hold no message: every acknowledgement they decide happens at the message's next delivery.
+// They write the catalog and hold no message: every acknowledgement they decide happens at the message's next delivery,
+// and every merge they ask for is the compactor's, under its lease.
 package admin
 
 import (

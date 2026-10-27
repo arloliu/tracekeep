@@ -18,9 +18,11 @@ type Scope struct {
 	Hour    int64
 }
 
-// touchingConflict is true when a conflicts row touches the scope s: either of its packs is a pack of s, in any state (§8.1 step 2).
+// touchingConflict is true when a conflicts row touches the scope s: either of its packs is a pack of s, in any state,
+// and neither is excluded, since an excluded pack is never a merge input (compactor.md §8.1 step 2).
 const touchingConflict = `EXISTS (SELECT 1 FROM conflicts f JOIN packs k ON k.pack_id IN (f.pack_id, f.other_pack_id)
-	WHERE f.capture_id = s.capture_id AND k.capture_id = s.capture_id AND k.hour = s.hour)`
+	WHERE f.capture_id = s.capture_id AND k.capture_id = s.capture_id AND k.hour = s.hour
+	AND NOT EXISTS (SELECT 1 FROM packs x WHERE x.pack_id IN (f.pack_id, f.other_pack_id) AND x.state = 'excluded'))`
 
 // MergeCandidates lists the scopes a merge may settle (compactor.md §8.1 step 2):
 // open or reopened, of an hour before readyHour (its end plus the quiet period passed), holding staged packs, and touched by no conflict.
@@ -58,6 +60,8 @@ type Input struct {
 type Snapshot struct {
 	Scope
 	ToolID string
+	// State is the scope's state, empty for a scope the catalog does not hold.
+	State string
 	// Revision is the scope's revision, read before everything else:
 	// whatever changes after it advances the revision, so the commit's compare-and-set catches it on either engine.
 	Revision int64
@@ -81,7 +85,7 @@ func (c *Catalog) MergeSnapshot(ctx context.Context, s Scope) (Snapshot, error) 
 	if err != nil {
 		return snap, fmt.Errorf("catalog: merge snapshot: %w", err)
 	}
-	snap.Revision = head.Revision
+	snap.State, snap.Revision = head.State, head.Revision
 	var rows []struct {
 		ID     []byte `db:"pack_id"`
 		ToolID string `db:"tool_id"`

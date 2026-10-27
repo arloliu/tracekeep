@@ -37,7 +37,8 @@ Contract changes go through proposals, which the subject [README.md](README.md) 
 
 1. Take the compactor lease (`leases`, `fence_token` = a monotonic counter) and renew it.
 2. Candidate scopes: `open` or `reopened`, hour end + Q passed, having packs in state `staged`, and no `conflicts` row
-   (a row touches a scope when either of its packs is a pack of that capture and hour, in any state).
+   (a row touches a scope when either of its packs is a pack of that capture and hour, in any state,
+   unless either pack is `excluded`, which is never an input).
 3. Snapshot: read `scopes.revision` = r first, then the **inputs**:
    every pack of the scope in state `staged`, segments and archives alike (an archive stays `staged` until it is an input of a later merge);
    whatever changes after r was read advances the revision, so the commit's compare-and-set catches it on either engine.
