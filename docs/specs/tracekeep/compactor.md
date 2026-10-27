@@ -160,6 +160,7 @@ it only inserts a missing row, as `ingest`'s receipt does, both ignoring an exis
 and taking the row of a capture the catalog does not know would create a `pending` capture for a stray object.
 The one retention decision therefore governs packs, receipts and claim objects alike, from the record's own `ts_utc_ns`, never from an object store clock.
 Seq order and hour order differ after a clock step, so evicted seqs are a set of ranges, not a prefix (§7.3).
+The same pass prunes the change cursor's events by seq prefix with the configured retention period (`catalog.md` §7.3), under the lease.
 Holds for LS-13 (a), if the owner chooses them, exempt an hour from retention.
 
 ### 8.4 Claim-check objects
