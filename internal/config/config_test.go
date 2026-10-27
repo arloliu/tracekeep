@@ -38,10 +38,12 @@ func TestDefaults(t *testing.T) {
 	for name, got := range map[string]time.Duration{
 		"retention": c.Retention, "ingest.flush_interval": c.Ingest.FlushInterval, "ingest.ack_wait": c.Ingest.AckWait,
 		"parking.redelivery_delay": c.Parking.RedeliveryDelay, "ingest.lease": c.Ingest.Lease,
+		"compact.quiet_period": c.Compact.QuietPeriod, "compact.redelivery_slack": c.Compact.RedeliverySlack,
 	} {
 		want := map[string]time.Duration{
 			"retention": 30 * 24 * time.Hour, "ingest.flush_interval": 5 * time.Minute, "ingest.ack_wait": 7 * time.Minute,
 			"parking.redelivery_delay": time.Minute, "ingest.lease": time.Minute,
+			"compact.quiet_period": 15 * time.Minute, "compact.redelivery_slack": 2 * time.Minute,
 		}[name]
 		if got != want {
 			t.Errorf("%s = %s, want %s", name, got, want)
@@ -106,6 +108,27 @@ func TestValidation(t *testing.T) {
 	}
 }
 
+// Q must exceed F + ack_wait + the redelivery slack strictly (catalog.md §7.3, T-25, T-41).
+func TestQuietPeriodBound(t *testing.T) {
+	t.Parallel()
+	timing := func(q string) string {
+		return yaml("", "", "", "ingest:\n  flush_interval: 5m\n  ack_wait: 7m\ncompact:\n  redelivery_slack: 2m\n  quiet_period: "+q+"\n")
+	}
+	for q, ok := range map[string]bool{"13m59s": false, "14m": false, "14m1s": true, "15m": true} {
+		_, err := Load(write(t, timing(q)))
+		if ok && err != nil {
+			t.Errorf("Q %s: Load = %v, want it accepted", q, err)
+		}
+		if !ok && (err == nil || !strings.Contains(err.Error(), "compact.quiet_period")) {
+			t.Errorf("Q %s: Load = %v, want an error naming compact.quiet_period", q, err)
+		}
+	}
+	// Raising F or ack_wait raises the bound.
+	if _, err := Load(write(t, yaml("", "", "", "ingest:\n  flush_interval: 6m\n  ack_wait: 7m\n"))); err == nil {
+		t.Error("the default Q under a 6-minute F = nil, want refused")
+	}
+}
+
 // dev's configuration is valid, its stores under the given directory.
 func TestDev(t *testing.T) {
 	t.Parallel()
@@ -113,6 +136,11 @@ func TestDev(t *testing.T) {
 	c, err := Dev(dir, "nats://127.0.0.1:4222", 2*time.Second)
 	if err != nil {
 		t.Fatal(err)
+	}
+	for _, flush := range []time.Duration{time.Second, 10 * time.Second, 5 * time.Minute} {
+		if _, err := Dev(dir, "nats://127.0.0.1:4222", flush); err != nil {
+			t.Errorf("Dev with flush %s = %v", flush, err)
+		}
 	}
 	if c.Catalog.DSN != filepath.Join(dir, "catalog.db") || c.Store.Dir != filepath.Join(dir, "packs") || c.Ingest.FlushInterval != 2*time.Second ||
 		c.Ingest.AckWait <= c.Ingest.FlushInterval || !c.Parking.Enabled || c.Retention != 30*24*time.Hour {

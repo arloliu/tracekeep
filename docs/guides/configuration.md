@@ -42,5 +42,6 @@ The tunables of later phases (Q, I, L, D, the masking keys) join this file with 
 | `parking.redelivery_delay` | `60s` | `TRACEKEEP_PARKING_REDELIVERY_DELAY` | how soon a parked copy is tried again; the completion signal is `parked list`, not a time |
 | `compact.lease_ttl` | `1m` | `TRACEKEEP_COMPACT_LEASE_TTL` | the compactor lease: renewed every third of it while a cycle runs; a standby takes over once it lapses |
 | `compact.interval` | `5m` | `TRACEKEEP_COMPACT_INTERVAL` | the time between two compactor cycles; an orphan is adopted on the second cycle that finds it, and a scope is merged by the first cycle after it became a candidate |
-| `compact.quiet_period` | `15m` | `TRACEKEEP_COMPACT_QUIET_PERIOD` | Q (T-12): a scope becomes a merge candidate once its hour ended Q ago; shorter settles sooner and reopens more often after a late flush |
+| `compact.quiet_period` | `15m` | `TRACEKEEP_COMPACT_QUIET_PERIOD` | Q (T-12): a scope becomes a merge candidate once its hour ended Q ago; must exceed F + `ack_wait` + the redelivery slack; shorter settles sooner and reopens more often after a late flush |
+| `compact.redelivery_slack` | `2m` | `TRACEKEEP_COMPACT_REDELIVERY_SLACK` | the time Q leaves after F and `ack_wait` for a redelivered message to be flushed (T-41) |
 | `metrics.listen` | `:9090` | `TRACEKEEP_METRICS_LISTEN` | where `/metrics`, `/healthz` and `/readyz` are served (`operations.md` §10.4); empty serves none |

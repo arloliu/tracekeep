@@ -8,13 +8,16 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 )
 
-// Compact is the compact role's metrics (operations.md §10.4 compact) whose data phase 1 produces: the reconciler's.
+// Compact is the compact role's metrics (operations.md §10.4 compact) for the work it does: the reconciler's and the merge's.
 // Every method records nothing on a nil *Compact.
 type Compact struct {
 	cycle                            *prometheus.HistogramVec
 	lastSuccess                      *prometheus.GaugeVec
 	leaseHeld                        prometheus.GaugeFunc
 	adopted, quarantined, tombstones prometheus.Counter
+	merges                           *prometheus.CounterVec
+	scopes                           *prometheus.GaugeVec
+	conflictsOpen, oldestUnmerged    prometheus.Gauge
 	// leaseUntil is when the lease this process last took or renewed lapses, in Unix nanoseconds; 0 when it holds none.
 	leaseUntil atomic.Int64
 	now        func() time.Time
@@ -33,10 +36,20 @@ func NewCompact(s *Server) (*Compact, error) {
 		adopted:     counter("orphans_adopted_total", "Orphaned packs the reconciler registered as adopted."),
 		quarantined: counter("orphans_quarantined_total", "Orphans the reconciler quarantined: reported, never registered or deleted."),
 		tombstones:  counter("tombstones_total", "Keys the reconciler tombstoned: beyond the horizon or lost to a termination."),
+		merges: prometheus.NewCounterVec(prometheus.CounterOpts{Namespace: "tracekeep", Subsystem: "compact", Name: "merges_total",
+			Help: "Merges by outcome: merged, stale (retried next cycle), conflicted or failed."}, []string{"outcome"}),
+		scopes: prometheus.NewGaugeVec(prometheus.GaugeOpts{Namespace: "tracekeep", Subsystem: "compact", Name: "scopes",
+			Help: "Scopes by state, as the lease holder last read them."}, []string{"state"}),
+		conflictsOpen: prometheus.NewGauge(prometheus.GaugeOpts{Namespace: "tracekeep", Subsystem: "compact", Name: "conflicts_open",
+			Help: "Conflicts no operator acknowledged, as the lease holder last read them."}),
+		oldestUnmerged: prometheus.NewGauge(prometheus.GaugeOpts{Namespace: "tracekeep", Subsystem: "compact", Name: "oldest_unmerged_scope_age_seconds",
+			Help: "How long ago the hour of the oldest open or reopened scope ended, 0 when none has; as the lease holder last read it."}),
 	}
 	m.leaseHeld = prometheus.NewGaugeFunc(prometheus.GaugeOpts{Namespace: "tracekeep", Subsystem: "compact", Name: "lease_held",
 		Help: "1 while this process holds the compactor lease: taken or renewed, and not lapsed since."}, m.held)
-	for _, c := range []prometheus.Collector{m.cycle, m.lastSuccess, m.leaseHeld, m.adopted, m.quarantined, m.tombstones} {
+	for _, c := range []prometheus.Collector{
+		m.cycle, m.lastSuccess, m.leaseHeld, m.adopted, m.quarantined, m.tombstones, m.merges, m.scopes, m.conflictsOpen, m.oldestUnmerged,
+	} {
 		if err := s.Registry().Register(c); err != nil {
 			return nil, fmt.Errorf("metrics: compact: %w", err)
 		}
@@ -85,4 +98,31 @@ func (m *Compact) Orphans(adopted, quarantined, tombstoned int) {
 	m.adopted.Add(float64(adopted))
 	m.quarantined.Add(float64(quarantined))
 	m.tombstones.Add(float64(tombstoned))
+}
+
+// Merges counts what a merge pass did, by outcome.
+func (m *Compact) Merges(merged, stale, conflicted, failed int) {
+	if m == nil {
+		return
+	}
+	for outcome, n := range map[string]int{"merged": merged, "stale": stale, "conflicted": conflicted, "failed": failed} {
+		m.merges.WithLabelValues(outcome).Add(float64(n))
+	}
+}
+
+// Scopes sets the scope gauges: the count of each state of scopes (every state a scope can take, absent ones 0),
+// the open conflicts, and the end of the oldest unmerged scope's hour, the zero time when there is none.
+func (m *Compact) Scopes(byState map[string]int, openConflicts int, oldestUnmergedEnd time.Time) {
+	if m == nil {
+		return
+	}
+	for _, state := range []string{"open", "settled", "reopened"} {
+		m.scopes.WithLabelValues(state).Set(float64(byState[state]))
+	}
+	m.conflictsOpen.Set(float64(openConflicts))
+	age := 0.0
+	if !oldestUnmergedEnd.IsZero() {
+		age = max(0, m.now().Sub(oldestUnmergedEnd).Seconds())
+	}
+	m.oldestUnmerged.Set(age)
 }
