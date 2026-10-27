@@ -14,6 +14,7 @@ import (
 
 	"github.com/arloliu/tracekeep/internal/catalog"
 	"github.com/arloliu/tracekeep/internal/catalog/catalogtest"
+	"github.com/arloliu/tracekeep/internal/metrics"
 	"github.com/arloliu/tracekeep/internal/store"
 )
 
@@ -294,6 +295,46 @@ func TestCloseAdoptedBeforeItsPublication(t *testing.T) {
 		}
 		if got, err := c.Capture(t.Context(), capture); err != nil || got.HighestSeq != 1 || got.State != catalog.StateClosed {
 			t.Errorf("capture = %+v, %v; want closed at highest seq 1", got, err)
+		}
+	})
+}
+
+// The close pass counts its closes by trigger and times its task, a pass with a failed close stamping no success.
+func TestClosePassMetrics(t *testing.T) {
+	t.Parallel()
+	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
+		f := newFixture(t, c)
+		now := time.Now().Add(3 * time.Hour)
+		f.closing(t, now)
+		s := metrics.NewServer()
+		var err error
+		if f.r.Metrics, err = metrics.NewCompact(s); err != nil {
+			t.Fatal(err)
+		}
+		f.described(t, newID(t), now.Add(-4*time.Hour).UnixNano())
+		if err := f.r.closePass(t.Context(), f.lease); err != nil {
+			t.Fatal(err)
+		}
+		got := scrape(t, s)
+		for _, want := range []string{
+			`tracekeep_compact_closes_total{trigger="inactivity"} 1`, `tracekeep_compact_cycle_seconds_count{task="close"} 1`,
+			`tracekeep_compact_last_success_timestamp{task="close"}`,
+		} {
+			if !strings.Contains(got, want) {
+				t.Errorf("/metrics lacks %s", want)
+			}
+		}
+		g := metrics.NewServer()
+		if f.r.Metrics, err = metrics.NewCompact(g); err != nil {
+			t.Fatal(err)
+		}
+		f.described(t, newID(t), now.Add(-4*time.Hour).UnixNano())
+		f.r.Store = failingPut{Mem: f.s}
+		if err := f.r.closePass(t.Context(), f.lease); err != nil {
+			t.Fatal(err)
+		}
+		if got := scrape(t, g); strings.Contains(got, `last_success_timestamp{task="close"}`) || !strings.Contains(got, `cycle_seconds_count{task="close"} 1`) {
+			t.Errorf("a pass with a failed close stamped a success, or was not timed:\n%s", got)
 		}
 	})
 }
