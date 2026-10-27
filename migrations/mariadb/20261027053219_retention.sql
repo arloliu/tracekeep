@@ -2,6 +2,8 @@
 ALTER TABLE `evicted_ranges` DROP PRIMARY KEY, ADD PRIMARY KEY (`capture_id`, `hour`, `seq_from`);
 -- Modify "merges" table
 ALTER TABLE `merges` ADD COLUMN `delete_at` bigint NOT NULL DEFAULT 0;
+-- A merge committed before the column existed deletes its inputs the default D, 1 hour, after it (hand-edited, rehashed).
+UPDATE `merges` SET `delete_at` = `at` + 3600000000000 WHERE `delete_at` = 0;
 -- Create "retention_periods" table
 CREATE TABLE `retention_periods` (
   `recorded_at` bigint NOT NULL,
