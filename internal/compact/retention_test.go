@@ -8,6 +8,7 @@ import (
 	"maps"
 	"slices"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -18,6 +19,7 @@ import (
 	"github.com/arloliu/tracekeep/internal/bus"
 	"github.com/arloliu/tracekeep/internal/catalog"
 	"github.com/arloliu/tracekeep/internal/catalog/catalogtest"
+	"github.com/arloliu/tracekeep/internal/metrics"
 	"github.com/arloliu/tracekeep/internal/store"
 	"github.com/arloliu/tracekeep/internal/testbus"
 	"github.com/arloliu/tracekeep/producer"
@@ -264,7 +266,7 @@ func TestRetainConvergesAfterFailedDeletions(t *testing.T) {
 		obj := sdkObject(t, capture, 5, hour*nsPerHour+10)
 		b.put(obj)
 		b.failDeletes = true
-		if rep := f.retain(t); rep.Evicted != 1 {
+		if rep := f.retain(t); rep.Evicted != 1 || rep.Failed != 1 {
 			t.Fatalf("Retain = %+v", rep)
 		}
 		if got := b.names(); !slices.Equal(got, []string{obj.Name}) {
@@ -337,4 +339,52 @@ func TestObjectBucket(t *testing.T) {
 	if got, err := b.List(t.Context()); err != nil || len(got) != 0 {
 		t.Errorf("List of an empty bucket = %v, %v", got, err)
 	}
+}
+
+// Deletion and retention time their tasks, count tombstones and read the claim gauges; a failed removal stamps no success.
+func TestRetentionPassMetrics(t *testing.T) {
+	t.Parallel()
+	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
+		f := newFixture(t, c)
+		b := f.retaining(t)
+		s := metrics.NewServer()
+		var err error
+		if f.r.Metrics, err = metrics.NewCompact(s); err != nil {
+			t.Fatal(err)
+		}
+		capture := f.admit(t)
+		f.stage(t, writeSegment(t, capture, []uint64{0, 1}, noAdjust))
+		needed := sdkObject(t, capture, 6, hour*nsPerHour+10)
+		b.put(needed)
+		v := &catalog.Identity{Version: catalog.VersionKey{Capture: capture, Seq: 6, Digest: [32]byte{6}}, Incarnation: 99, StreamSeq: 6, Hour: hour}
+		if _, err := c.BeginParking(t.Context(), v, "claim-conflict", "claims/"+needed.Name, 0); err != nil {
+			t.Fatal(err)
+		}
+		if err := f.r.retentionPass(t.Context(), f.lease); err != nil {
+			t.Fatal(err)
+		}
+		got := scrape(t, s)
+		for _, want := range []string{
+			`tracekeep_compact_cycle_seconds_count{task="delete"} 1`, `tracekeep_compact_cycle_seconds_count{task="retention"} 1`,
+			`tracekeep_compact_last_success_timestamp{task="delete"}`, `tracekeep_compact_last_success_timestamp{task="retention"}`,
+			"tracekeep_compact_tombstones_total 1", "tracekeep_compact_deletions_total 0",
+			"tracekeep_compact_claim_objects 1", "tracekeep_compact_claim_object_bytes 64", "tracekeep_compact_claim_objects_survivors 1",
+		} {
+			if !strings.Contains(got, want) {
+				t.Errorf("/metrics lacks %s", want)
+			}
+		}
+		g := metrics.NewServer()
+		if f.r.Metrics, err = metrics.NewCompact(g); err != nil {
+			t.Fatal(err)
+		}
+		f.stage(t, writeSegment(t, f.admit(t), []uint64{0}, noAdjust))
+		f.r.Store = failingDelete{f.s}
+		if err := f.r.retentionPass(t.Context(), f.lease); err != nil {
+			t.Fatal(err)
+		}
+		if got := scrape(t, g); strings.Contains(got, `last_success_timestamp{task="retention"}`) {
+			t.Error("a retention task with a failed removal stamped a success")
+		}
+	})
 }

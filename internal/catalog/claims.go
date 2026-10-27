@@ -234,3 +234,24 @@ func (c *Catalog) RemoveClaimObject(ctx context.Context, l Lease, key string) er
 
 	return nil
 }
+
+// ClaimStats is what the claim object gauges read: the rows in every state, their bytes, and the survivors among them.
+type ClaimStats struct {
+	Objects, Bytes, Survivors int64
+}
+
+// ClaimStats reads the claim object gauges.
+func (c *Catalog) ClaimStats(ctx context.Context) (ClaimStats, error) {
+	var st struct {
+		Objects   int64 `db:"objects"`
+		Bytes     int64 `db:"bytes"`
+		Survivors int64 `db:"survivors"`
+	}
+	err := c.read.GetContext(ctx, &st, `SELECT COUNT(*) AS objects, COALESCE(SUM(size), 0) AS bytes,
+		COALESCE(SUM(CASE WHEN state IN ('survivor', 'deletable') THEN 1 ELSE 0 END), 0) AS survivors FROM claim_objects`)
+	if err != nil {
+		return ClaimStats{}, fmt.Errorf("catalog: claim stats: %w", err)
+	}
+
+	return ClaimStats{Objects: st.Objects, Bytes: st.Bytes, Survivors: st.Survivors}, nil
+}

@@ -238,17 +238,33 @@ func (r *Compactor) retentionPass(ctx context.Context, lease catalog.Lease) erro
 	err := r.Deletions(ctx, lease, &del)
 	r.Metrics.Cycle("delete", time.Since(started), err == nil && del.Failed == 0)
 	if err != nil {
+		r.Metrics.Retention(del.Deleted, del.Tombstoned)
+
 		return err
 	}
 	started = time.Now()
 	var ret RetentionReport
 	err = r.Retain(ctx, lease, &ret)
 	r.Metrics.Cycle("retention", time.Since(started), err == nil && ret.Failed == 0)
+	r.Metrics.Retention(del.Deleted, del.Tombstoned+ret.Tombstoned)
+	if err != nil {
+		return err
+	}
 	if ret.Unattributed > 0 {
 		r.Log.Warn("compact: claim objects without the SDK's metadata left for an operator", "objects", ret.Unattributed)
 	}
+	if r.Metrics == nil {
+		return nil
+	}
+	st, err := r.Catalog.ClaimStats(ctx)
+	if err != nil {
+		r.Log.Warn("compact: read the claim object gauges", "error", err)
 
-	return err
+		return nil
+	}
+	r.Metrics.Claims(st.Objects, st.Bytes, st.Survivors)
+
+	return nil
 }
 
 // closePass runs the close pass and records its metrics: the task succeeds when it ended in no error and no close failed.
