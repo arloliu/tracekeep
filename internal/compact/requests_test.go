@@ -8,6 +8,7 @@ import (
 
 	"github.com/arloliu/tracekeep/internal/catalog"
 	"github.com/arloliu/tracekeep/internal/catalog/catalogtest"
+	"github.com/arloliu/tracekeep/internal/store"
 )
 
 func (f *fixture) request(t *testing.T, kind string, capture tracepack.UUID) tracepack.UUID {
@@ -71,6 +72,38 @@ func TestMergeRequests(t *testing.T) {
 		}
 		if state, outcome := f.status(t, again); state != "done" || outcome != "settled" {
 			t.Errorf("a request for a settled scope = %s, %q; want done, settled", state, outcome)
+		}
+	})
+}
+
+// A merge request whose merge fails on conflicting records ends failed, with the conflict recorded.
+func TestMergeRequestOnConflictingRecords(t *testing.T) {
+	t.Parallel()
+	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
+		f := newFixture(t, c)
+		f.merging(t)
+		capture := f.admit(t)
+		f.stage(t, segmentOf(t, capture, hour, recordsAt(hour, 0, 1, 2), noAdjust))
+		// The second segment holds a differing seq 2, but its registration names 3 only: no suspect is raised.
+		changed := recordsAt(hour, 2, 3)
+		changed[0].Payload = append([]byte(nil), changed[0].Payload...)
+		changed[0].Payload[0] ^= 0xff
+		b := segmentOf(t, capture, hour, changed, noAdjust)
+		f.put(t, b.key, b.data)
+		p, reason, err := f.r.read(t.Context(), store.ObjectInfo{Key: b.key, Size: int64(len(b.data))})
+		if err != nil || reason != "" {
+			t.Fatalf("read = %q, %v", reason, err)
+		}
+		p.Ranges = []catalog.Range{{SeqFrom: 3, SeqTo: 3, TSFrom: p.Ranges[0].TSTo, TSTo: p.Ranges[0].TSTo}}
+		if out, err := c.RegisterPack(t.Context(), p, catalog.Registration{Evidence: &catalog.Evidence{}, HorizonHour: f.horizon}); err != nil || out != catalog.Registered {
+			t.Fatalf("RegisterPack = %v, %v", out, err)
+		}
+		id := f.request(t, catalog.RequestMerge, capture)
+		if rep, err := f.r.Requests(t.Context(), f.lease); err != nil || rep.Failed != 1 {
+			t.Fatalf("Requests = %+v, %v; want one failed", rep, err)
+		}
+		if state, outcome := f.status(t, id); state != "failed" || outcome != "the inputs hold conflicting records" {
+			t.Errorf("request = %s, %q", state, outcome)
 		}
 	})
 }
