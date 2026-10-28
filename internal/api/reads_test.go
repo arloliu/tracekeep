@@ -176,6 +176,63 @@ func TestListScopeChanges(t *testing.T) {
 	})
 }
 
+// Gate case 1 through the API: the VE service lists a settled hour, a later registration reopens it,
+// and ListScopeChanges from the listing's cursor reports the reopen at the scope's new revision, which a relisting shows.
+func TestSettledHourReopenedThroughTheAPI(t *testing.T) {
+	t.Parallel()
+	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
+		w := newWorld(t, c)
+		ctx := t.Context()
+		capture := w.admit(t)
+		in := w.stage(t, capture)
+		lease, ok, err := c.TakeLease(ctx, "compactor", "merger", time.Hour)
+		if err != nil || !ok {
+			t.Fatalf("TakeLease = %v, %v", ok, err)
+		}
+		scope := catalog.Scope{Capture: capture, Hour: hour}
+		snap, err := c.MergeSnapshot(ctx, scope)
+		if err != nil {
+			t.Fatal(err)
+		}
+		id := newID(t)
+		archive := &catalog.Pack{
+			ID: id, Capture: capture, ToolID: tool, Hour: hour, Role: catalog.RoleArchive, Key: "archive/" + id.String(), Size: 200,
+			SeqStart: in.SeqStart, FormatMinor: 1, Ranges: in.Ranges,
+		}
+		m := &catalog.Merge{Scope: scope, Revision: snap.Revision, Inputs: []tracepack.UUID{in.ID}, Archive: archive, DeleteDelay: time.Hour}
+		if out, err := c.CommitMerge(ctx, lease, m); err != nil || out != catalog.Merged {
+			t.Fatalf("CommitMerge = %v, %v", out, err)
+		}
+		base := hour * nsPerHour
+		window := sel(base, base+nsPerHour)
+		listing, err := w.cl.ListPacks(ctx, reader(&tkv1.ListPacksRequest{Selector: window}))
+		if err != nil || len(listing.Msg.Hours) != 1 || len(listing.Msg.Hours[0].Scopes) != 1 || listing.Msg.Hours[0].Scopes[0].State != "settled" {
+			t.Fatalf("ListPacks = %v, %v; want the settled scope", listing, err)
+		}
+		settled := listing.Msg.Hours[0].Scopes[0]
+		late := &catalog.Pack{
+			ID: newID(t), Capture: capture, ToolID: tool, Hour: hour, Role: catalog.RoleSegment, Size: 100, SeqStart: 10, FormatMinor: 1,
+			Ranges: []catalog.Range{{SeqFrom: 10, SeqTo: 19, TSFrom: base + 10, TSTo: base + 19}},
+		}
+		late.Key = "staging/" + late.ID.String()
+		if out, err := c.RegisterPack(ctx, late, catalog.Registration{Evidence: &catalog.Evidence{}}); err != nil || out != catalog.Registered {
+			t.Fatalf("RegisterPack = %v, %v", out, err)
+		}
+		changes, err := w.cl.ListScopeChanges(ctx, reader(&tkv1.ListScopeChangesRequest{After: listing.Msg.Cursor, Selector: window}))
+		if err != nil || len(changes.Msg.Events) != 1 {
+			t.Fatalf("ListScopeChanges = %v, %v; want the reopen", changes, err)
+		}
+		ev := changes.Msg.Events[0]
+		if ev.Event != "reopened" || ev.CaptureId != capture.String() || ev.Hour.AsTime().UnixNano() != base || ev.Revision <= settled.Revision {
+			t.Errorf("event %v, want the reopen of the hour above revision %d", ev, settled.Revision)
+		}
+		relisted, err := w.cl.ListPacks(ctx, reader(&tkv1.ListPacksRequest{Selector: window}))
+		if err != nil || relisted.Msg.Hours[0].Scopes[0].State != "reopened" || relisted.Msg.Hours[0].Scopes[0].Revision != ev.Revision {
+			t.Errorf("relisted = %v, %v; want the scope reopened at the event's revision", relisted, err)
+		}
+	})
+}
+
 // onePack checks that hours are hour alone, holding one scope of p alone, its range 0..9 at hour's start plus the seq.
 func onePack(t *testing.T, hours []*tkv1.Hour, p *catalog.Pack) {
 	t.Helper()
