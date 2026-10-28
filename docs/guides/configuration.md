@@ -11,6 +11,11 @@ and a secret is read from a reference (`file:///run/secrets/x` or `env://NAME`) 
 It is read once at start; a change takes a restart.
 The tunables of later phases (the masking keys' other purposes) join this file with the code that reads them.
 
+**A standalone host upgraded to phase 2** runs the `api` role inside `all`, which then needs:
+`api.tls_cert_file` and `api.tls_key_file`, without which it fails at start and stops the other roles with it;
+a way for services to authenticate, `auth.oidc`, `auth.mtls` or, without an IdP, `auth.static`, without which every request is refused;
+and where the API serves downloads itself (an `fs` store, or `store.presign` off) `api.public_url` and a `keys.download` key, without which it fails at start.
+
 ## Keys
 
 | Key | Default | Environment | Meaning and cost of moving it |
@@ -30,7 +35,7 @@ The tunables of later phases (the masking keys' other purposes) join this file w
 | `store.dir` | — | `TRACEKEEP_STORE_DIR` | the `fs` store's root |
 | `store.s3.endpoint`, `.region`, `.bucket`, `.access_key_id`, `.secret_access_key_ref` | — | `TRACEKEEP_S3_…` | an S3-compatible endpoint (T-34); empty endpoint for AWS; the bucket and both credentials are required, the store taking static credentials only |
 | `store.presign` | `true` | `TRACEKEEP_STORE_PRESIGN` | readers download by presigned URL (T-33); off for a store whose URLs they cannot use |
-| `store.download_lifetime` | `15m` | `TRACEKEEP_STORE_DOWNLOAD_LIFETIME` | the longest a download URL lives (T-41); `compact.delete_delay` must exceed it by more than 4 minutes |
+| `store.download_lifetime` | `15m` | `TRACEKEEP_STORE_DOWNLOAD_LIFETIME` | the longest a download URL lives (T-41), at most a day; `compact.delete_delay` must exceed it by more than 4 minutes |
 | `ingest.flush_interval` | `5m` | `TRACEKEEP_INGEST_FLUSH_INTERVAL` | F (T-25): longer makes fewer, larger segments and a later registration; Q must exceed F plus `ack_wait` plus slack |
 | `ingest.ack_wait` | `7m` | `TRACEKEEP_INGEST_ACK_WAIT` | must exceed F plus an upload, and with the redelivery slack stay below Q minus F (T-25); 7 minutes, the plan's middle of that range |
 | `ingest.max_ack_pending` | `50000` | `TRACEKEEP_INGEST_MAX_ACK_PENDING` | above the peak message rate times F plus an upload, or delivery stalls |
@@ -51,7 +56,7 @@ The tunables of later phases (the masking keys' other purposes) join this file w
 | `api.listen` | `:8443` | `TRACEKEEP_API_LISTEN` | where the `api` role (and `all`) serves the machine API and its downloads, over TLS |
 | `api.tls_cert_file`, `api.tls_key_file` | — | `TRACEKEEP_API_TLS_…` | the API's certificate and key, given together and required to serve; client certificates are verified against `auth.mtls.client_ca_file` when given |
 | `api.public_url` | — | `TRACEKEEP_API_PUBLIC_URL` | the https base of the download URLs the API serves itself, as readers reach it; required when the store does not presign or `store.presign` is off, with a `keys.download` issuing key id |
-| `api.download_margin`, `api.download_floor` | `2m`, `1m` | `TRACEKEEP_API_DOWNLOAD_…` | a download URL expires at the earlier of `store.download_lifetime` from now and its object's deadline less the margin, and is refused as `pack-superseded` when that leaves less than the floor (T-33); the floor stays below the lifetime |
+| `api.download_margin`, `api.download_floor` | `2m`, `1m` | `TRACEKEEP_API_DOWNLOAD_…` | a download URL expires at the earlier of `store.download_lifetime` from now and its object's deadline less the margin, and is refused as `pack-superseded` when that leaves less than the floor (T-33); the floor stays below the lifetime, and each is at most a day |
 | `auth.oidc.issuer`, `auth.oidc.audience` | — | `TRACEKEEP_AUTH_OIDC_…` | the IdP service tokens are validated against (`api.md` §10.2), an https URL, and the audience a token must name; empty configures no IdP |
 | `auth.oidc.roles_claim`, `auth.oidc.roles` | `roles`, — | `TRACEKEEP_AUTH_OIDC_ROLES_CLAIM` | the claim holding a token's role values, and the roles each value grants; a value it does not name grants none |
 | `auth.oidc.jwks_ttl`, `.fetch_interval`, `.leeway` | `1h`, `10s`, `1m` | `TRACEKEEP_AUTH_OIDC_…` | how long cached keys verify, an outage longer than it refusing every token; the least time between two fetches of the JWKS, which bounds the IdP's load from unknown `kid`s and how soon its return is noticed; the clock tolerance of `exp`, `nbf` and `iat` |
