@@ -22,6 +22,7 @@ import (
 	"github.com/arloliu/tracekeep/internal/catalog/catalogtest"
 	"github.com/arloliu/tracekeep/internal/keys"
 	"github.com/arloliu/tracekeep/internal/metrics"
+	"github.com/arloliu/tracekeep/internal/store"
 	tkv1 "github.com/arloliu/tracekeep/proto/tracekeep/v1"
 )
 
@@ -163,6 +164,9 @@ func TestPackURLSuperseded(t *testing.T) {
 	if !errors.As(err, &ce) || ce.Code() != connect.CodeFailedPrecondition || len(ce.Details()) != 1 {
 		t.Fatalf("PackURL 59 s inside the floor = %v, want pack-superseded with a detail", err)
 	}
+	if audit, _ := w.c.AuditEntries(t.Context(), p.Capture); len(audit) != 0 {
+		t.Errorf("a URL refused before signing was audited: %+v", audit)
+	}
 	v, derr := ce.Details()[0].Value()
 	if d, ok := v.(*tkv1.PackSuperseded); derr != nil || !ok || d.PackId != p.ID.String() {
 		t.Errorf("detail = %v, %v; want PackSuperseded naming %s", v, derr, p.ID)
@@ -286,7 +290,10 @@ func TestPackURLStalledPastAShortening(t *testing.T) {
 	p := w.stage(t, w.admit(t))
 	l := w.lease
 	const hold = time.Hour
-	w.srv.afterRead = func() {
+	w.srv.stall = func(stage string) {
+		if stage != "read" {
+			return
+		}
 		recorded := now.Add(time.Second)
 		if _, err := c.RecordRetention(context.Background(), l, time.Hour, hold, recorded.UnixNano()); err != nil {
 			t.Error(err)
@@ -298,5 +305,35 @@ func TestPackURLStalledPastAShortening(t *testing.T) {
 	}
 	if audit, _ := c.AuditEntries(t.Context(), p.Capture); len(audit) != 0 {
 		t.Errorf("a refused URL was audited: %+v", audit)
+	}
+}
+
+// noLifetime is a store that refuses every presign: until leaves no lifetime by its clock.
+type noLifetime struct{}
+
+func (noLifetime) PresignGet(context.Context, string, time.Time) (string, time.Time, error) {
+	return "", time.Time{}, store.ErrNoLifetime
+}
+
+// A request that stalls after signing or after its audit row, or whose store finds no lifetime left, issues nothing living less than the floor.
+func TestPackURLStalledAtEachStage(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		stage     string
+		presigner store.Presigner
+	}{{"signed", &presigner{}}, {"signed", nil}, {"audited", &presigner{}}, {"audited", nil}, {"", noLifetime{}}} {
+		w := newWorld(t, catalogtest.Open(t, catalog.EngineSQLite))
+		now := deadlineOf().Add(-24 * time.Hour)
+		w.urls(t, &now, true)
+		w.srv.Downloads.Presigner = tc.presigner
+		p := w.stage(t, w.admit(t))
+		w.srv.stall = func(stage string) {
+			if stage == tc.stage {
+				now = now.Add(14*time.Minute + 30*time.Second) // 30 s left of a 15-minute URL
+			}
+		}
+		if got, err := packURL(t, w, p.ID.String()); connect.CodeOf(err) != connect.CodeFailedPrecondition {
+			t.Errorf("stalled at %q, presigned %v: PackURL = %v, %v; want pack-superseded", tc.stage, tc.presigner != nil, got, err)
+		}
 	}
 }
