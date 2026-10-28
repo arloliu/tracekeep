@@ -51,6 +51,9 @@ type ObjectInfo struct {
 	Size int64
 }
 
+// ErrNoLifetime marks a presigned URL refused because until leaves it no lifetime.
+var ErrNoLifetime = errors.New("store: no lifetime left before until")
+
 // Presigner is the optional capability of a store that hands readers a URL (storage.md §5.2 *Downloads*).
 type Presigner interface {
 	// PresignGet returns a URL that reads the object under key and never outlives until,

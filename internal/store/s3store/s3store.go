@@ -7,6 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/url"
+	"strconv"
 	"sync"
 	"time"
 
@@ -48,6 +50,8 @@ type Store struct {
 	client  *s3.Client
 	presign *s3.PresignClient
 	bucket  string
+	// sign presigns a GET of key for lifetime; the SDK's, or a test's that signs late.
+	sign func(ctx context.Context, key string, lifetime time.Duration) (string, error)
 }
 
 var (
@@ -78,7 +82,17 @@ func New(cfg Config) (*Store, error) {
 		o.ResponseChecksumValidation = aws.ResponseChecksumValidationWhenRequired
 	})
 
-	return &Store{client: client, presign: s3.NewPresignClient(client), bucket: cfg.Bucket}, nil
+	st := &Store{client: client, presign: s3.NewPresignClient(client), bucket: cfg.Bucket}
+	st.sign = func(ctx context.Context, key string, lifetime time.Duration) (string, error) {
+		req, err := st.presign.PresignGetObject(ctx, &s3.GetObjectInput{Bucket: &st.bucket, Key: &key}, s3.WithPresignExpires(lifetime))
+		if err != nil {
+			return "", err
+		}
+
+		return req.URL, nil
+	}
+
+	return st, nil
 }
 
 // Client is the store's S3 client, for setup the ObjectStore interface does not cover, such as creating the bucket in tests.
@@ -154,21 +168,49 @@ func (s *Store) Delete(ctx context.Context, key string) error {
 }
 
 // PresignGet implements store.Presigner.
-// The signature carries its signing time in whole seconds, sampled by the SDK at signing, and a lifetime in whole seconds:
-// a lifetime a second shorter than until leaves from the second before signing keeps the URL inside until
-// while signing takes less than a second, and the URL surely reads until that second plus the lifetime.
+// A signature carries the SDK's signing time and its lifetime, each in whole seconds, and the URL stops reading at their sum:
+// the lifetime is computed from the clock before signing, and the sum is read back from the signed URL itself,
+// a URL signed late re-signed for what until leaves then; the sum is the expiry returned.
 func (s *Store) PresignGet(ctx context.Context, key string, until time.Time) (string, time.Time, error) {
-	from := time.Now().Truncate(time.Second)
-	lifetime := until.Sub(from).Truncate(time.Second) - time.Second
-	if lifetime < time.Second {
-		return "", time.Time{}, fmt.Errorf("s3store: presign %s: %s leaves no lifetime", key, until)
-	}
-	req, err := s.presign.PresignGetObject(ctx, &s3.GetObjectInput{Bucket: &s.bucket, Key: &key}, s3.WithPresignExpires(lifetime))
-	if err != nil {
-		return "", time.Time{}, fmt.Errorf("s3store: presign %s: %w", key, err)
+	lifetime := until.Sub(time.Now().Truncate(time.Second)).Truncate(time.Second)
+	for range 3 {
+		if lifetime < time.Second {
+			return "", time.Time{}, fmt.Errorf("s3store: presign %s: %w", key, store.ErrNoLifetime)
+		}
+		u, err := s.sign(ctx, key, lifetime)
+		if err != nil {
+			return "", time.Time{}, fmt.Errorf("s3store: presign %s: %w", key, err)
+		}
+		end, err := SignedEnd(u)
+		if err != nil {
+			return "", time.Time{}, fmt.Errorf("s3store: presign %s: %w", key, err)
+		}
+		if !end.After(until) {
+			return u, end, nil
+		}
+		lifetime -= end.Sub(until).Truncate(time.Second) + time.Second
 	}
 
-	return req.URL, from.Add(lifetime), nil
+	return "", time.Time{}, fmt.Errorf("s3store: presign %s: the signatures keep outliving %s", key, until)
+}
+
+// SignedEnd is the time a presigned URL stops reading: its X-Amz-Date plus its X-Amz-Expires.
+func SignedEnd(u string) (time.Time, error) {
+	parsed, err := url.Parse(u)
+	if err != nil {
+		return time.Time{}, errors.New("a presigned URL that does not parse")
+	}
+	q := parsed.Query()
+	signed, err := time.Parse("20060102T150405Z", q.Get("X-Amz-Date"))
+	if err != nil {
+		return time.Time{}, errors.New("a presigned URL without its X-Amz-Date")
+	}
+	secs, err := strconv.ParseInt(q.Get("X-Amz-Expires"), 10, 64)
+	if err != nil || secs <= 0 {
+		return time.Time{}, errors.New("a presigned URL without its X-Amz-Expires")
+	}
+
+	return signed.Add(time.Duration(secs) * time.Second), nil
 }
 
 // get fills buf from key's bytes at from with one ranged GET.
