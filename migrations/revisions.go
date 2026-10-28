@@ -11,8 +11,8 @@ import (
 	"ariga.io/atlas/sql/migrate"
 )
 
-// revisions is Atlas's revision storage over Table.
-type revisions struct{ db *sql.DB }
+// revisions is Atlas's revision storage over Table, on the migrator's connection.
+type revisions struct{ db *sql.Conn }
 
 var _ migrate.RevisionReadWriter = (*revisions)(nil)
 

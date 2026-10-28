@@ -62,27 +62,50 @@ func Apply(ctx context.Context, db *sql.DB, engine string) error {
 	return ApplyDir(ctx, db, engine, dir)
 }
 
-// ApplyDir applies dir's pending migrations to db with Atlas's executor, statement by statement:
+// lockName and lockWait are MariaDB's migration lock: one migrator applies at a time, a second waiting up to lockWait.
+const (
+	lockName = "tracekeep_migrate"
+	lockWait = 10 * 60 // seconds
+)
+
+// ApplyDir applies dir's pending migrations to db with Atlas's executor, statement by statement, on one connection:
 // dir's atlas.sum must match its files, each revision is recorded in Table, a migration that failed resumes from its failed statement,
 // and a catalog another tool migrated is refused.
-func ApplyDir(ctx context.Context, db *sql.DB, engine string, dir migrate.Dir) error {
+// On MariaDB the connection holds a named lock from before the revisions are read until the last statement,
+// so two migrators never apply at once; on SQLite the caller holds the catalog's writer lock (catalog.md §7.4).
+func ApplyDir(ctx context.Context, db *sql.DB, engine string, dir migrate.Dir) (err error) {
+	conn, err := db.Conn(ctx)
+	if err != nil {
+		return fmt.Errorf("migrations: %w", err)
+	}
+	defer func() { err = errors.Join(err, conn.Close()) }()
 	var drv migrate.Driver
-	var err error
 	switch engine {
 	case "sqlite":
-		drv, err = sqlite.Open(db)
+		drv, err = sqlite.Open(conn)
 	case "mariadb":
-		drv, err = mysql.Open(db)
+		var got sql.NullInt64
+		if err := conn.QueryRowContext(ctx, "SELECT GET_LOCK(?, ?)", lockName, lockWait).Scan(&got); err != nil {
+			return fmt.Errorf("migrations: the lock %s: %w", lockName, err)
+		}
+		if got.Int64 != 1 {
+			return fmt.Errorf("migrations: another migrator held the lock %s for %d s", lockName, lockWait)
+		}
+		defer func() {
+			_, uerr := conn.ExecContext(context.WithoutCancel(ctx), "SELECT RELEASE_LOCK(?)", lockName)
+			err = errors.Join(err, uerr)
+		}()
+		drv, err = mysql.Open(conn)
 	default:
 		err = fmt.Errorf("unknown engine %q", engine)
 	}
 	if err != nil {
 		return fmt.Errorf("migrations: %w", err)
 	}
-	if _, err := db.ExecContext(ctx, revisionTable(engine)); err != nil {
+	if _, err := conn.ExecContext(ctx, revisionTable(engine)); err != nil {
 		return fmt.Errorf("migrations: %s: %w", Table, err)
 	}
-	ex, err := migrate.NewExecutor(drv, dir, &revisions{db: db})
+	ex, err := migrate.NewExecutor(drv, dir, &revisions{db: conn})
 	if err != nil {
 		return fmt.Errorf("migrations: %w", err)
 	}

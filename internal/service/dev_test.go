@@ -2,8 +2,12 @@ package service
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"io"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -11,7 +15,9 @@ import (
 	"github.com/arloliu/go-secs/tracepack"
 
 	"github.com/arloliu/tracekeep/internal/catalog"
+	"github.com/arloliu/tracekeep/internal/config"
 	"github.com/arloliu/tracekeep/internal/store"
+	"github.com/arloliu/tracekeep/migrations"
 )
 
 // putting signals every put of a segment.
@@ -122,4 +128,44 @@ func registered(t *testing.T, e *Env) reading {
 	}
 
 	return g
+}
+
+// tracekeep migrate takes the SQLite catalog's writer lock: beside a running service it is refused and changes nothing.
+func TestMigrateCatalogBesideARunningService(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "catalog.db")
+	if err := os.WriteFile(path, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	held, err := catalog.Open(t.Context(), catalog.Config{Engine: catalog.EngineSQLite, DSN: path})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer held.Close()
+	if err := MigrateCatalog(t.Context(), &config.Catalog{Engine: catalog.EngineSQLite, DSN: path}); !errors.Is(err, catalog.ErrSecondWriter) {
+		t.Fatalf("MigrateCatalog beside a held catalog = %v, want ErrSecondWriter", err)
+	}
+	_, read := held.Pools()
+	var n int
+	if err := read.QueryRowContext(t.Context(), "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table'").Scan(&n); err != nil || n != 0 {
+		t.Errorf("%d tables after a refused migration, %v; want none", n, err)
+	}
+}
+
+// A dev directory whose catalog an earlier build made, tables and no revisions, is refused with the way out.
+func TestDevRefusesACatalogWithoutRevisions(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	db, err := sql.Open("sqlite", catalog.SQLiteURI(filepath.Join(dir, "catalog.db")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(t.Context(), "CREATE TABLE captures (a INTEGER)"); err != nil {
+		t.Fatal(err)
+	}
+	_ = db.Close()
+	_, err = NewDev(t.Context(), DevOptions{Dir: dir, Flush: time.Second, API: "127.0.0.1:0", Log: slog.New(slog.DiscardHandler)})
+	if !errors.Is(err, migrations.ErrOtherTool) || !strings.Contains(err.Error(), "fresh --data") {
+		t.Errorf("NewDev over a catalog without revisions = %v, want refused with the way out", err)
+	}
 }

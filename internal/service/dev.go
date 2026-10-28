@@ -135,22 +135,37 @@ func generate(path string, content func() []byte) error {
 }
 
 // MigrateCatalog applies the catalog's pending migrations (catalog.md §7.4), creating a SQLite catalog's file when there is none.
-// It runs before the catalog is opened, which on SQLite takes the writer's lock.
+// A SQLite catalog is migrated under the writer's lock the service holds, so it is refused beside a running service (ErrSecondWriter);
+// a MariaDB one under the migrator's named lock (migrations.ApplyDir).
 func MigrateCatalog(ctx context.Context, c *config.Catalog) error {
-	driver, dsn := "mysql", c.DSN
-	if c.Engine == catalog.EngineSQLite {
-		driver, dsn = "sqlite", catalog.SQLiteURI(c.DSN)
+	if c.Engine != catalog.EngineSQLite {
+		db, err := sql.Open("mysql", c.DSN)
+		if err != nil {
+			return fmt.Errorf("service: migrate the catalog: %w", err)
+		}
+		defer db.Close()
+		if err := migrations.Apply(ctx, db, c.Engine); err != nil {
+			return fmt.Errorf("service: migrate the catalog: %w", err)
+		}
+
+		return nil
 	}
-	db, err := sql.Open(driver, dsn)
+	f, err := os.OpenFile(c.DSN, os.O_RDWR|os.O_CREATE, 0o600)
 	if err != nil {
 		return fmt.Errorf("service: migrate the catalog: %w", err)
 	}
-	defer db.Close()
-	if err := migrations.Apply(ctx, db, c.Engine); err != nil {
+	_ = f.Close()
+	held, err := catalog.Open(ctx, catalog.Config{Engine: c.Engine, DSN: c.DSN})
+	if err != nil {
 		return fmt.Errorf("service: migrate the catalog: %w", err)
 	}
+	write, _ := held.Pools()
+	err = migrations.Apply(ctx, write, c.Engine)
+	if errors.Is(err, migrations.ErrOtherTool) {
+		err = fmt.Errorf("%w; a tracekeep dev directory made before phase 2.7 holds no revisions: start dev with a fresh --data", err)
+	}
 
-	return nil
+	return errors.Join(err, held.Close())
 }
 
 // URL is the embedded bus's client URL.

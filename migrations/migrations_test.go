@@ -7,6 +7,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"ariga.io/atlas/sql/migrate"
 	"github.com/go-sql-driver/mysql"
@@ -240,4 +241,56 @@ func TestChangedSumRefused(t *testing.T) {
 			t.Errorf("%d revisions written from an edited directory", n)
 		}
 	})
+}
+
+// Two migrators of one MariaDB catalog take turns: the second waits on the first's lock before it reads any revision,
+// then finds nothing to apply.
+func TestMigratorsTakeTurns(t *testing.T) {
+	t.Parallel()
+	db := open(t, "mariadb")
+	holder, err := db.Conn(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer holder.Close()
+	var got int
+	if err := holder.QueryRowContext(t.Context(), "SELECT GET_LOCK('tracekeep_migrate', 0)").Scan(&got); err != nil || got != 1 {
+		t.Fatalf("GET_LOCK = %d, %v", got, err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- migrations.Apply(t.Context(), db, "mariadb") }()
+	// The migrator is inside GET_LOCK, waiting: it has read no revision and created nothing but its table's absence.
+	waitInside(t, db, "SELECT GET_LOCK")
+	select {
+	case err := <-done:
+		t.Fatalf("Apply returned while another migrator held the lock: %v", err)
+	default:
+	}
+	if _, err := holder.ExecContext(t.Context(), "SELECT RELEASE_LOCK('tracekeep_migrate')"); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-done; err != nil {
+		t.Fatalf("Apply after the lock was released = %v", err)
+	}
+	if err := migrations.Apply(t.Context(), db, "mariadb"); err != nil {
+		t.Errorf("a second Apply = %v", err)
+	}
+}
+
+// waitInside waits until a session of db's database runs a statement starting with stmt.
+func waitInside(t *testing.T, db *sql.DB, stmt string) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		var n int
+		err := db.QueryRowContext(t.Context(), "SELECT COUNT(*) FROM information_schema.PROCESSLIST WHERE DB = DATABASE() AND INFO LIKE ?", stmt+"%").Scan(&n)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if n > 0 {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatalf("no session ran %q", stmt)
 }
