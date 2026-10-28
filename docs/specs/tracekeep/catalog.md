@@ -265,7 +265,7 @@ and the caller acts on it: the merge and the close at the next cycle (§8.1, §8
   a catalog that holds tables but no revision in `tracekeep_revisions` was migrated by another tool and is refused.
   A migration runs statement by statement, as Atlas runs it; one that fails is recorded with the statements it applied,
   and the next `tracekeep migrate`, once the failure's cause is gone, resumes from the statement that failed.
-  Migrators take turns: on MariaDB under a named lock (`GET_LOCK`) held from before the revisions are read to the last statement,
+  Migrators take turns: on MariaDB under a named lock (`GET_LOCK`, named for the database) held from before the revisions are read to the last statement,
   on SQLite under the catalog's writer lock, so a SQLite catalog is never migrated beside a running service.
   A `tracekeep dev` directory made before this path existed holds tables and no revisions, and is refused like any other tool's: dev starts on a fresh one.
   `tracekeep migrate` applies the catalog first, then ensures the bus, whose incarnations it records in the catalog.
