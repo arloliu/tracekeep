@@ -75,7 +75,7 @@ and **every branch serializes on the capture row**:
 (the discipline of §6.3 and §8.3, so admission, retention and parking of one capture serialize on both engines,
 and two first sightings serialize on the primary key),
 which then **re-reads the capture's state under that lock** and chooses its branch:
-for an admitted capture (`open`, `stopped`, `closed`) a **new** row passes one guard, a record whose hour is older than the retention horizon is not parked but terminated as `beyond-retention` (the age row above),
+for an admitted capture (`open`, `stopped`, `closed`) a **new** row passes one guard, a record whose hour is older than the retention horizon or holds the capture's `evicted_ranges` is not parked but terminated as `beyond-retention` (the age row above),
 since retention may already have evicted its hour;
 for a `pending` or `rejected` capture no guard applies (G5-251: never terminated by age);
 it then inserts-or-finds the `parked` row, keyed by the version (capture, seq, the carried header bytes, payload digest)
@@ -241,7 +241,9 @@ and the parked consumer, when the horizon guard refuses the registration of a ve
 Retention, admission and parking therefore have mutually exclusive durable outcomes on the capture row:
 an **unresolved** row (state neither `staged` nor `terminated`) committed first is seen by retention,
 which keeps the object (§8.4 *survivors*);
-an eviction committed first makes the horizon guard terminate the delivery instead;
+an eviction committed first makes the horizon guard terminate the delivery instead, the hour's `evicted_ranges` refusing it whatever horizon the caller read;
+an hour evicted while it held no pack keeps no range, so a parking whose horizon was read before that eviction parks the version,
+which the parked consumer, its horizon read afresh, then moves to `evicted-hour`, its object already released;
 an admission committed first is seen by the re-read, so the branch is chosen against the admitted state.
 Parking takes the capture row and no other lock, and touches no counter except a termination's scope event (`catalog.md` §7.2, which holds the full lock order).
 The **parked consumer** is a second pull consumer of `ingest` on the parking stream, with its own acknowledgement budget,

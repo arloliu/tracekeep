@@ -151,7 +151,10 @@ in one transaction per hour of one admitted capture it copies the hour's `pack_r
 then it deletes the hour's claim objects, survivors excepted, from the bucket.
 The rows of an evicted pack go with it: its `pack_ranges` and `pack_losses`, the `merges` and `merge_inputs` naming it and the `conflicts` rows naming it,
 so a declared loss of the hour reads afterwards as any hole outside `evicted_ranges` does;
-`evicted_ranges` are coalesced within their hour, keyed by capture, hour and first seq, so an evicted hour stays distinct from a `no-data` one.
+`evicted_ranges` are coalesced within their hour, keyed by capture, hour and first seq, so an evicted hour stays distinct from a `no-data` one,
+and they end the hour for the capture: a registration (`ingest`'s, the reconciler's adoption, a close's publication) or a parking into an hour they hold is refused as beyond the horizon whatever horizon its caller read (`ingest.md` §6.3),
+so a late pack never makes an evicted hour a candidate again;
+an hour evicted while it held no pack keeps none, and what a caller's earlier horizon lets into it is evicted again (`parking.md` *Retention, admission and parking*).
 An hour holding claim objects but no scope is a candidate like any other:
 the claim bucket is listed before every retention pass, and an object without a `claim_objects` row is attributed by its name, `<capture_id>.<seq>`, and the SDK's metadata (§8.4) and given a `live` row,
 so a crash between an eviction's commit and its bucket deletions leaves objects the next listing attributes to the now scope-less hour, which is evicted again.
