@@ -62,9 +62,10 @@ func Apply(ctx context.Context, db *sql.DB, engine string) error {
 	return ApplyDir(ctx, db, engine, dir)
 }
 
-// lockName and lockWait are MariaDB's migration lock: one migrator applies at a time, a second waiting up to lockWait.
+// lockName and lockWait are MariaDB's migration lock, named for the database since a named lock is the server's:
+// one migrator of a catalog applies at a time, a second waiting up to lockWait.
 const (
-	lockName = "tracekeep_migrate"
+	lockName = "tracekeep_migrate."
 	lockWait = 10 * 60 // seconds
 )
 
@@ -85,14 +86,14 @@ func ApplyDir(ctx context.Context, db *sql.DB, engine string, dir migrate.Dir) (
 		drv, err = sqlite.Open(conn)
 	case "mariadb":
 		var got sql.NullInt64
-		if err := conn.QueryRowContext(ctx, "SELECT GET_LOCK(?, ?)", lockName, lockWait).Scan(&got); err != nil {
+		if err := conn.QueryRowContext(ctx, "SELECT GET_LOCK(CONCAT(?, DATABASE()), ?)", lockName, lockWait).Scan(&got); err != nil {
 			return fmt.Errorf("migrations: the lock %s: %w", lockName, err)
 		}
 		if got.Int64 != 1 {
 			return fmt.Errorf("migrations: another migrator held the lock %s for %d s", lockName, lockWait)
 		}
 		defer func() {
-			_, uerr := conn.ExecContext(context.WithoutCancel(ctx), "SELECT RELEASE_LOCK(?)", lockName)
+			_, uerr := conn.ExecContext(context.WithoutCancel(ctx), "SELECT RELEASE_LOCK(CONCAT(?, DATABASE()))", lockName)
 			err = errors.Join(err, uerr)
 		}()
 		drv, err = mysql.Open(conn)

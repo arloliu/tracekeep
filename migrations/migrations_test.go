@@ -254,7 +254,7 @@ func TestMigratorsTakeTurns(t *testing.T) {
 	}
 	defer holder.Close()
 	var got int
-	if err := holder.QueryRowContext(t.Context(), "SELECT GET_LOCK('tracekeep_migrate', 0)").Scan(&got); err != nil || got != 1 {
+	if err := holder.QueryRowContext(t.Context(), "SELECT GET_LOCK(CONCAT('tracekeep_migrate.', DATABASE()), 0)").Scan(&got); err != nil || got != 1 {
 		t.Fatalf("GET_LOCK = %d, %v", got, err)
 	}
 	done := make(chan error, 1)
@@ -266,7 +266,7 @@ func TestMigratorsTakeTurns(t *testing.T) {
 		t.Fatalf("Apply returned while another migrator held the lock: %v", err)
 	default:
 	}
-	if _, err := holder.ExecContext(t.Context(), "SELECT RELEASE_LOCK('tracekeep_migrate')"); err != nil {
+	if _, err := holder.ExecContext(t.Context(), "SELECT RELEASE_LOCK(CONCAT('tracekeep_migrate.', DATABASE()))"); err != nil {
 		t.Fatal(err)
 	}
 	if err := <-done; err != nil {
