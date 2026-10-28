@@ -290,6 +290,7 @@ func TestLeaseTakeoverBehindADeletionOrAnEviction(t *testing.T) {
 				})
 				<-held
 				waits := c.write.Stats().WaitCount
+				leaseRowHeld(t, c, release)
 				var lerr error
 				lapsed := run(func() {
 					_, lerr = c.write.ExecContext(t.Context(), `UPDATE leases SET until_ns = 0 WHERE name = 'compactor'`)

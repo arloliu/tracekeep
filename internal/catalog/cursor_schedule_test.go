@@ -183,6 +183,7 @@ func TestLeaseTakeoverAgainstAPrune(t *testing.T) {
 		pruned := run(func() { n, perr = c.PruneEvents(t.Context(), l, 25, 80) })
 		<-held
 		waits := c.write.Stats().WaitCount
+		leaseRowHeld(t, c, release)
 		lapsed := run(func() {
 			_, lerr = c.write.ExecContext(t.Context(), `UPDATE leases SET until_ns = 0 WHERE name = 'compactor'`)
 		})
