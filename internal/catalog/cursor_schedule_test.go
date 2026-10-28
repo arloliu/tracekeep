@@ -186,7 +186,7 @@ func TestLeaseTakeoverAgainstAPrune(t *testing.T) {
 		lapsed := run(func() {
 			_, lerr = c.write.ExecContext(t.Context(), `UPDATE leases SET until_ns = 0 WHERE name = 'compactor'`)
 		})
-		waitBlocked(t, c, waits, "UPDATE leases", 1)
+		waitBehindLeaseRow(t, c, waits, release)
 		close(release)
 		<-pruned
 		<-lapsed
