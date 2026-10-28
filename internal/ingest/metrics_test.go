@@ -175,3 +175,26 @@ func TestGapObservationsCounted(t *testing.T) {
 		}
 	})
 }
+
+// An equal copy of a registered seq registers nothing, so gap_observations_total stays where its first registration put it.
+func TestGapObservationsNotCountedForACopy(t *testing.T) {
+	t.Parallel()
+	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
+		p := newPipeline(t, c)
+		s := metrics.NewServer()
+		m, err := metrics.NewIngest(s, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		p.f.Metrics = m
+		capture := tracepack.UUID{81}
+		p.feed(t, inline(t, capture, startRecord(t, now), descriptorOf(t, "eqp")))
+		p.feed(t, inline(t, capture, dataRecord(2, now+2), nil)) // seq 1 never arrives
+		p.flushAll(t)
+		p.feed(t, inline(t, capture, dataRecord(2, now+2), nil)) // a redelivered copy
+		p.flushAll(t)
+		if body := scrape(t, s); !strings.Contains(body, `tracekeep_ingest_gap_observations_total{tool_id="T1"} 1`) {
+			t.Errorf("gap_observations_total after a hole and a copy:\n%s", body)
+		}
+	})
+}

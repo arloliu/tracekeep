@@ -105,7 +105,7 @@ type Pack struct {
 	Stop bool
 	// Conflicts are the other versions the batch put in other packs.
 	Conflicts []Version
-	// Gaps is set by a registration that committed: the holes in the producer coverage the pack opened
+	// Gaps is set by a registration that committed, and zero after any other: the holes in the producer coverage the pack opened
 	// above the capture's highest seq before it, a missing prefix included (operations.md §10.4 gap_observations_total).
 	Gaps int
 }
@@ -132,10 +132,13 @@ func (c *Catalog) RegisterPack(ctx context.Context, p *Pack, r Registration) (Pa
 		return 0, err
 	}
 	var out PackOutcome
+	p.Gaps = 0
+	gaps := 0
 	err := outcome(c.inTx(ctx, func(tx *sqlx.Tx) error {
 		var evs []event
 		var err error
 		out, evs, err = c.registerIn(ctx, tx, p, r)
+		gaps, p.Gaps = p.Gaps, 0
 		if err == nil && out != Registered && out != BeyondHorizon && out != LostToTermination {
 			err = errRollback
 		}
@@ -148,6 +151,7 @@ func (c *Catalog) RegisterPack(ctx context.Context, p *Pack, r Registration) (Pa
 	if err != nil {
 		return 0, fmt.Errorf("catalog: register pack %s: %w", p.ID, err)
 	}
+	p.Gaps = gaps // set by updateCapture, which only a registration runs, and kept only once it committed
 
 	return out, nil
 }

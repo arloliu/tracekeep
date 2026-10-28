@@ -1,6 +1,7 @@
 package catalog
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"slices"
@@ -423,6 +424,27 @@ func TestRegistrationCountsTheGapsItOpens(t *testing.T) {
 			if out := register(t, c, p, Registration{Evidence: &Evidence{}}); out != Registered || p.Gaps != tc.want {
 				t.Errorf("ranges %v: %v with %d gaps, want %d", tc.ranges, out, p.Gaps, tc.want)
 			}
+		}
+	})
+}
+
+// Only a registration that committed reports gaps: a duplicate and a registration that failed before its commit report none.
+func TestGapsOnlyOfACommittedRegistration(t *testing.T) {
+	t.Parallel()
+	engines(t, func(t *testing.T, c *Catalog) {
+		capture := admitted(t, c)
+		p := segment(t, capture, 1, 5, 6) // a missing prefix
+		if out := register(t, c, p, Registration{Evidence: &Evidence{}}); out != Registered || p.Gaps != 1 {
+			t.Fatalf("first registration = %v with %d gaps", out, p.Gaps)
+		}
+		if out := register(t, c, p, Registration{Evidence: &Evidence{}}); out != AlreadyRegistered || p.Gaps != 0 {
+			t.Errorf("a duplicate = %v with %d gaps, want none", out, p.Gaps)
+		}
+		ctx, cancel := context.WithCancel(t.Context())
+		c.hooks[hookBeforeCommit] = cancel
+		failing := segment(t, capture, 1, 20, 21) // would open a hole 7..19
+		if _, err := c.RegisterPack(ctx, failing, Registration{Evidence: &Evidence{}}); err == nil || failing.Gaps != 0 {
+			t.Errorf("a registration failing at its commit = %v with %d gaps, want an error and none", err, failing.Gaps)
 		}
 	})
 }
