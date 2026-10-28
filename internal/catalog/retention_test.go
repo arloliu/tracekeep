@@ -2,6 +2,7 @@ package catalog
 
 import (
 	"errors"
+	"math"
 	"testing"
 	"time"
 )
@@ -159,6 +160,25 @@ func TestDeletionTimeAcrossSkewedClocks(t *testing.T) {
 			if safe := !accepted(at); safe != tc.safe {
 				t.Errorf("D %s: %s %s after the issue while the URL is accepted: safe %v, want %v", tc.d, name, time.Duration(at-real0), safe, tc.safe)
 			}
+		}
+	}
+}
+
+// At the end of int64 nanoseconds a deadline saturates rather than wrapping into the past, so no future pack reads as due.
+func TestRetentionDeadlineAtTheLimit(t *testing.T) {
+	t.Parallel()
+	last := int64(math.MaxInt64) / nsPerHour
+	for _, r := range []Retention{
+		{Known: true, Period: 720 * time.Hour},
+		{Known: true, Period: time.Hour, Held: 720 * time.Hour, HeldUntil: math.MaxInt64},
+	} {
+		for _, h := range []int64{last - 1, last} {
+			if got := r.Deadline(h); got != math.MaxInt64 {
+				t.Errorf("%+v: Deadline(%d) = %d, want the last representable time", r, h, got)
+			}
+		}
+		if got, want := r.Deadline(0), nsPerHour+int64(max(r.Period, r.Held)); r.HeldUntil == 0 && got != want {
+			t.Errorf("Deadline(0) = %d, want %d", got, want)
 		}
 	}
 }
