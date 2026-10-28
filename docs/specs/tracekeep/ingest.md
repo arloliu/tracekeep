@@ -184,7 +184,9 @@ so on MariaDB READ COMMITTED they serialize on that row before reading any predi
 and on SQLite the single writer serializes them;
 it then checks its **guards** and aborts on any of them:
 a `tombstones` row for the key;
-the pack's hour older than the retention horizon (the key is then tombstoned and the object deleted, so a put delayed across eviction never registers);
+the pack's hour older than the retention horizon, or holding the capture's `evicted_ranges`, which a caller whose horizon was read before an eviction committed meets under the capture row
+(the key is then tombstoned and the object deleted, so a put delayed across eviction never registers;
+an hour evicted while it held no pack of the capture keeps no range, and what lands in it later is evicted again);
 for `ingest`, which passes **delivery evidence** (each record's version key, bus incarnation and stream seq), a version of the batch found `terminated` or a message covered by an active termination order
 (the key is then tombstoned in the same transaction and the object deleted after the commit; the batch is not acknowledged, and each message is classified again at its redelivery, T-32);
 for the reconciler, the lease, and a seq of the pack with a `terminated` `parked` row or a capture with a termination order (tombstoned likewise, `storage.md` §5.4).
