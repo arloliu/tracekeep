@@ -69,6 +69,28 @@ the device being the gateway's configured `eqp-hsms` device name (`producer.md` 
   results mark each capture boundary, gap and unknown tail where it falls,
   so a reader can tell "no traffic" from "data missing".
   Overlapping captures of one device are returned side by side, each with its own completeness, never interleaved (§7.3 *Overlap*).
+- The selector is refused as invalid without a `tool_id`, with an empty or reversed window, or naming more than 1,000 devices;
+  `ListPacks` also refuses a window of more than 8,784 hours, a leap year (§7.3).
+- `ListScopeChanges` filters its events by the tool, the devices and the capture, not by the window:
+  a cursor follows every change of the selected connections, whatever hour it lands in.
+
+**Wire.**
+The service is `tracekeep.v1.MachineService` in `proto/tracekeep/v1`, its messages the catalog's read results field for field (§7.3):
+times are `google.protobuf.Timestamp` (RFC 3339 in JSON, as the selector above), hours their start, ids the canonical text of a UUID, seqs `uint64`, and a time or a seq the catalog may lack is a field with presence.
+Every handler has response compression off: connect's default gzip costs a pack listing and a record stream several times their transfer (T-7).
+A refused request carries a Connect code:
+
+| Code | When |
+|---|---|
+| `unauthenticated` | no credential, or one auth refuses (§10.2 *Failures*, every reason but `forbidden`) |
+| `permission_denied` | `forbidden`: no role of the principal admits the operation |
+| `invalid_argument` | a selector, a cursor or a pack id that does not parse or breaks the bounds above |
+| `not_found` | a `PackURL` of a pack the catalog does not know |
+| `failed_precondition` | `pack-superseded`, with the error detail `tracekeep.v1.PackSuperseded` naming the pack |
+| `unavailable` | a `PackURL` before the compactor's first retention record, when no deadline exists (`compactor.md` §8.3), or a catalog that does not answer |
+
+Every issued `PackURL` appends an `audit_log` row naming the principal's subject, the capture, the pack and the URL's expiry, never the URL:
+the VE service reads packs that hold ciphertext in place (T-5), one row per URL issued.
 
 **Record predicates of `QueryRecords`.**
 
@@ -123,6 +145,12 @@ otherwise it is a URL on the API itself carrying a download token, and the API s
 - The API answers `HEAD` and ranged `GET` (`Range`, `206 Partial Content`) as S3 does, reading through `ObjectStore.Open`'s `io.ReaderAt`,
   so tracepack's reader works over either kind of URL unchanged.
 - A download URL, presigned or not, is a bearer credential until it expires and is never logged.
+- A URL on the API is `<api.public_url>/download/<token>`, the token in the path;
+  its responses carry `Cache-Control: no-store` and `Referrer-Policy: no-referrer`, and the server logs neither the path nor the token.
+- With presigning on, the `api` role presigns a GET of a key that does not exist at start and fetches it:
+  not-found means the store accepts the signature, and any other answer fails the start with the advice to turn `storage.presign` off,
+  since every URL it issued would be refused.
+- The `api` role is ready once its listener is bound and the catalog answers.
 
 ### 10.2 Auth
 
