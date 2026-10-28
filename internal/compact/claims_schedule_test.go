@@ -328,8 +328,8 @@ func TestConflictingClaimVersionKeptUntilEviction(t *testing.T) {
 }
 
 // Gate case 5: a claim-check record's receipt and object outlive every pass short of its hour's eviction:
-// staged with its receipt, its pack merged and deleted, and a retention pass inside retention, a late copy's lookup still finds
-// its receipt, and its object is in the bucket under a live row.
+// staged with its receipt, its pack merged and deleted, and a retention pass inside retention,
+// a late copy's lookup still finds its receipt, and its object is in the bucket under a live row.
 func TestLateClaimReferenceInsideRetention(t *testing.T) {
 	t.Parallel()
 	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
