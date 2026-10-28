@@ -25,6 +25,11 @@ import (
 
 const readyTimeout = 10 * time.Second
 
+// electionTimeout bounds a RAFT group's election on the cluster, the JetStream meta group's or a replicated stream's.
+// A group that misses its first campaign, its peers' routes not yet up, waits nats-server's election timeout of 4 to 9 s
+// before the next, and a loaded runner can need two such rounds.
+const electionTimeout = 30 * time.Second
+
 // Options adjusts StartServer; a zero field takes the server's default.
 type Options struct {
 	// MaxPayload is the server's max_payload.
@@ -197,26 +202,31 @@ func StartCluster(t testing.TB, n int) string {
 		urls[i] = srv.ClientURL()
 	}
 	// A stream is placed only once the meta leader knows every peer and each server is current with it.
-	await(t, func() bool {
+	await(t, "meta leader of the cluster", func() bool {
 		return slices.ContainsFunc(srvs, func(s *server.Server) bool { return s.JetStreamIsLeader() && len(s.JetStreamClusterPeers()) == n }) &&
 			!slices.ContainsFunc(srvs, func(s *server.Server) bool { return !s.JetStreamIsCurrent() })
-	})
+	}, func() string { return clusterState(srvs) })
 
 	return strings.Join(urls, ",")
 }
 
-// await polls f until it returns a value other than the zero one, within the readiness bound:
-// no event announces a route listener or a meta leader's election.
-func await[T comparable](t testing.TB, f func() T) T {
+// await polls f until it returns a value other than the zero one, within electionTimeout:
+// no event announces a route listener or a RAFT group's election.
+// On a timeout it fails naming what it waited for, with state's account of the cluster when state is not nil.
+func await[T comparable](t testing.TB, what string, f func() T, state func() string) T {
 	t.Helper()
 	var zero T
-	deadline := time.Now().Add(readyTimeout)
+	deadline := time.Now().Add(electionTimeout)
 	for {
 		if v := f(); v != zero {
 			return v
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("testbus: cluster not formed within %s", readyTimeout)
+			detail := ""
+			if state != nil {
+				detail = ": " + state()
+			}
+			t.Fatalf("testbus: no %s within %s%s", what, electionTimeout, detail)
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
@@ -228,12 +238,24 @@ func await[T comparable](t testing.TB, f func() T) T {
 func AwaitStream(t testing.TB, js jetstream.JetStream, s jetstream.Stream) {
 	t.Helper()
 	subject := strings.NewReplacer(">", "probe", "*", "probe").Replace(s.CachedInfo().Config.Subjects[0])
-	await(t, func() bool {
+	await(t, "leader of the stream "+s.CachedInfo().Config.Name, func() bool {
 		_, err := js.Publish(t.Context(), subject, nil, jetstream.WithExpectLastSequence(math.MaxInt64))
 		var api *jetstream.APIError
 
 		return errors.As(err, &api) && api.ErrorCode == jetstream.JSErrCodeStreamWrongLastSequence
-	})
+	}, nil)
+}
+
+// clusterState is each server's routes, meta leadership, known peers and currency,
+// which tell a route that never connected (its port taken before the server bound it) from a slow election.
+func clusterState(srvs []*server.Server) string {
+	parts := make([]string, 0, len(srvs))
+	for _, s := range srvs {
+		parts = append(parts, fmt.Sprintf("%s routes=%d leader=%t peers=%d current=%t",
+			s.Name(), s.NumRoutes(), s.JetStreamIsLeader(), len(s.JetStreamClusterPeers()), s.JetStreamIsCurrent()))
+	}
+
+	return strings.Join(parts, "; ")
 }
 
 // Snapshot reads a snapshot of stream over nc, its consumers included, as an operator's backup does,
