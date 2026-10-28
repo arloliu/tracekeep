@@ -13,17 +13,28 @@ import (
 	"connectrpc.com/connect"
 
 	"github.com/arloliu/tracekeep/internal/auth"
+	"github.com/arloliu/tracekeep/internal/catalog"
 	"github.com/arloliu/tracekeep/internal/metrics"
 	"github.com/arloliu/tracekeep/proto/tracekeep/v1/tracekeepv1connect"
 )
 
 // Server is the machine API.
 type Server struct {
+	tracekeepv1connect.UnimplementedMachineServiceHandler
+
+	Catalog *catalog.Catalog
+	// QuietPeriod is Q, against which the reads report unregistered intervals (catalog.md §7.3).
+	QuietPeriod time.Duration
 	// Auth checks every request; Metrics records them, nil for none; Log logs failures, nil for none.
 	Auth    *auth.Authenticator
 	Metrics *metrics.API
 	Log     *slog.Logger
 }
+
+var _ tracekeepv1connect.MachineServiceHandler = (*Server)(nil)
+
+// Handler is the HTTP handler serving the machine API.
+func (s *Server) Handler() http.Handler { return s.routes(s) }
 
 // principalKey is the context key of the authenticated principal.
 type principalKey struct{}

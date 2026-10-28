@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -29,13 +30,19 @@ const maxHours = 24 * 366
 // maxDevices bounds the devices a selector names, each one bound parameter.
 const maxDevices = 1000
 
-// check refuses an empty or reversed window, which selects nothing, and more devices than maxDevices.
+// ErrInvalidSelector marks a selector or a listing request a read refuses: a caller's error, not the catalog's.
+var ErrInvalidSelector = errors.New("catalog: invalid selector")
+
+// check refuses a selector without a tool, an empty or reversed window, which selects nothing, and more devices than maxDevices.
 func (sel Selector) check() error {
+	if sel.ToolID == "" {
+		return fmt.Errorf("%w: no tool", ErrInvalidSelector)
+	}
 	if sel.To <= sel.From {
-		return fmt.Errorf("the window [%d, %d) is empty", sel.From, sel.To)
+		return fmt.Errorf("%w: the window [%d, %d) is empty", ErrInvalidSelector, sel.From, sel.To)
 	}
 	if len(sel.Devices) > maxDevices {
-		return fmt.Errorf("%d devices, at most %d", len(sel.Devices), maxDevices)
+		return fmt.Errorf("%w: %d devices, at most %d", ErrInvalidSelector, len(sel.Devices), maxDevices)
 	}
 
 	return nil
@@ -403,7 +410,7 @@ func (c *Catalog) ListPacks(ctx context.Context, sel Selector, q time.Duration) 
 		return Listing{}, fmt.Errorf("catalog: list packs: %w", err)
 	}
 	if n := floorHour(sel.To-1) - floorHour(sel.From) + 1; n > maxHours {
-		return Listing{}, fmt.Errorf("catalog: list packs: %d hours, at most %d", n, maxHours)
+		return Listing{}, fmt.Errorf("%w: %d hours, at most %d", ErrInvalidSelector, n, maxHours)
 	}
 	var out Listing
 	err := c.snapshot(ctx, func(tx *sqlx.Tx) error {
@@ -589,8 +596,9 @@ type Changes struct {
 // from one snapshot whose first statement reads the watermark;
 // the next cursor is the last event's seq for a full page, else the watermark, so other tools' events never hold it back.
 func (c *Catalog) ListScopeChanges(ctx context.Context, after Cursor, sel Selector, limit int) (Changes, error) {
-	if limit <= 0 || len(sel.Devices) > maxDevices {
-		return Changes{}, fmt.Errorf("catalog: list scope changes: limit %d, %d devices: want a positive limit and at most %d devices", limit, len(sel.Devices), maxDevices)
+	if limit <= 0 || len(sel.Devices) > maxDevices || sel.ToolID == "" {
+		return Changes{}, fmt.Errorf("%w: limit %d, %d devices, tool %q: want a positive limit, at most %d devices and a tool",
+			ErrInvalidSelector, limit, len(sel.Devices), sel.ToolID, maxDevices)
 	}
 	var out Changes
 	err := c.snapshot(ctx, func(tx *sqlx.Tx) error {
