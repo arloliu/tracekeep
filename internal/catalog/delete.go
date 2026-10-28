@@ -92,31 +92,60 @@ func (c *Catalog) DeletePack(ctx context.Context, l Lease, d Deletable, now int6
 // its hour's under the recorded retention, and for a merged input the earlier of that and its merge's deletion time,
 // delay being this process's D for a merge that recorded none. ok is false before the compactor's first retention record, when no deadline exists.
 func (c *Catalog) Deadline(ctx context.Context, pack tracepack.UUID, delay time.Duration) (int64, bool, error) {
-	var p struct {
-		Hour  int64  `db:"hour"`
-		State string `db:"state"`
-	}
-	err := c.read.GetContext(ctx, &p, `SELECT hour, state FROM packs WHERE pack_id = ?`, pack[:])
-	if errors.Is(err, sql.ErrNoRows) {
-		return 0, false, fmt.Errorf("%w: %s", ErrUnknownPack, pack)
-	}
-	if err != nil {
-		return 0, false, fmt.Errorf("catalog: deadline of %s: %w", pack, err)
-	}
-	r, err := c.Retention(ctx)
-	if err != nil || !r.Known {
-		return 0, false, err
-	}
-	deadline := r.Deadline(p.Hour)
-	var at sql.NullInt64
-	err = c.read.GetContext(ctx, &at, `SELECT MIN(`+deleteAtSQL+`) FROM merge_inputs i JOIN merges m ON m.merge_id = i.merge_id
-		WHERE i.pack_id = ? AND m.outcome = 'committed'`, delay.Nanoseconds(), pack[:])
-	if err != nil {
-		return 0, false, fmt.Errorf("catalog: deadline of %s: %w", pack, err)
-	}
-	if at.Valid {
-		deadline = min(deadline, at.Int64)
+	d, err := c.PackDownload(ctx, pack, delay)
+
+	return d.Deadline, d.Known, err
+}
+
+// Download is what a download URL of a pack needs (api.md §10.1 *Downloads*): its object, capture and state, and its deadline,
+// Known false before the compactor's first retention record, when no deadline exists.
+type Download struct {
+	Key      string
+	Capture  tracepack.UUID
+	State    string
+	Deadline int64
+	Known    bool
+}
+
+// PackDownload reads pack's object, capture, state and deadline (Deadline) from one snapshot.
+func (c *Catalog) PackDownload(ctx context.Context, pack tracepack.UUID, delay time.Duration) (Download, error) {
+	var out Download
+	err := c.snapshot(ctx, func(tx *sqlx.Tx) error {
+		var p struct {
+			Hour    int64  `db:"hour"`
+			State   string `db:"state"`
+			Key     string `db:"object_key"`
+			Capture []byte `db:"capture_id"`
+		}
+		err := tx.GetContext(ctx, &p, `SELECT hour, state, object_key, capture_id FROM packs WHERE pack_id = ?`, pack[:])
+		if errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("%w: %s", ErrUnknownPack, pack)
+		}
+		if err != nil {
+			return err
+		}
+		out.Key, out.State = p.Key, p.State
+		copy(out.Capture[:], p.Capture)
+		w, ok, err := readRetention(ctx, tx)
+		if err != nil || !ok {
+			return err
+		}
+		out.Deadline, out.Known = w.retention().Deadline(p.Hour), true
+		var at sql.NullInt64
+		err = tx.GetContext(ctx, &at, `SELECT MIN(`+deleteAtSQL+`) FROM merge_inputs i JOIN merges m ON m.merge_id = i.merge_id
+			WHERE i.pack_id = ? AND m.outcome = 'committed'`, delay.Nanoseconds(), pack[:])
+		if err != nil {
+			return err
+		}
+		if at.Valid {
+			out.Deadline = min(out.Deadline, at.Int64)
+		}
+
+		return nil
+	})
+	if err != nil && !errors.Is(err, ErrUnknownPack) {
+		return Download{}, fmt.Errorf("catalog: deadline of %s: %w", pack, err)
 	}
 
-	return deadline, true, nil
+	return out, err
 }
