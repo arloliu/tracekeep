@@ -166,6 +166,11 @@ func TestPackDeadline(t *testing.T) {
 		if _, _, err := c.Deadline(t.Context(), newID(t), time.Hour); !errors.Is(err, ErrUnknownPack) {
 			t.Errorf("Deadline of an unknown pack = %v, want ErrUnknownPack", err)
 		}
+		d, err := c.PackDownload(t.Context(), inputs[0].ID, time.Hour)
+		if want := deleteAt(t, c, archive); err != nil || !d.Known || d.Deadline != want || d.Key != inputs[0].Key ||
+			d.Capture != inputs[0].Capture || d.State != "merged" {
+			t.Errorf("PackDownload of a merged input = %+v, %v; want its key, capture, state and deadline %d", d, err, want)
+		}
 	})
 }
 

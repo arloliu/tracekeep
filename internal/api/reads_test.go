@@ -52,9 +52,10 @@ func newWorld(t *testing.T, c *catalog.Catalog) *world {
 	return w
 }
 
-// admit admits a fresh capture of device eqp whose capture began at origin, as ingest's admission of its start would.
-func (w *world) admit(t *testing.T, origin int64) tracepack.UUID {
+// admit admits a fresh capture of device eqp begun at hour's start, as ingest's admission of its start would.
+func (w *world) admit(t *testing.T) tracepack.UUID {
 	t.Helper()
+	origin := hour * nsPerHour
 	ctx := t.Context()
 	cfg, err := w.c.ActivateConfig(ctx, []byte("config"))
 	if err != nil {
@@ -85,9 +86,10 @@ func (w *world) admit(t *testing.T, origin int64) tracepack.UUID {
 	return id
 }
 
-// stage registers a segment of capture in hour holding seqs from..to, their records at hour's start plus the seq in ns.
-func (w *world) stage(t *testing.T, capture tracepack.UUID, from, to uint64) *catalog.Pack {
+// stage registers a segment of capture in hour holding seqs 0..9, their records at hour's start plus the seq in ns.
+func (w *world) stage(t *testing.T, capture tracepack.UUID) *catalog.Pack {
 	t.Helper()
+	from, to := uint64(0), uint64(9)
 	id := newID(t)
 	base := hour * nsPerHour
 	p := &catalog.Pack{
@@ -115,8 +117,8 @@ func TestReads(t *testing.T) {
 		w := newWorld(t, c)
 		ctx := t.Context()
 		base := hour * nsPerHour
-		capture := w.admit(t, base)
-		p := w.stage(t, capture, 0, 9)
+		capture := w.admit(t)
+		p := w.stage(t, capture)
 		window := sel(base, base+nsPerHour)
 
 		devs, err := w.cl.ListDevices(ctx, reader(&tkv1.ListDevicesRequest{Selector: window}))
@@ -147,7 +149,7 @@ func TestListScopeChanges(t *testing.T) {
 		w := newWorld(t, c)
 		ctx := t.Context()
 		base := hour * nsPerHour
-		w.stage(t, w.admit(t, base), 0, 9)
+		w.stage(t, w.admit(t))
 		window := sel(base, base+nsPerHour)
 		packs, err := w.cl.ListPacks(ctx, reader(&tkv1.ListPacksRequest{Selector: window}))
 		if err != nil {
@@ -158,7 +160,7 @@ func TestListScopeChanges(t *testing.T) {
 			changes.Msg.Next.Seq != packs.Msg.Cursor.Seq {
 			t.Errorf("ListScopeChanges from the start = %v, %v; want the created event, next at the listing's cursor", changes, err)
 		}
-		w.stage(t, w.admit(t, base), 0, 9) // another capture's scope: a created event
+		w.stage(t, w.admit(t)) // another capture's scope: a created event
 		// The window does not filter the events: one far from the change still follows it.
 		elsewhere := sel(base+100*nsPerHour, base+101*nsPerHour)
 		next, err := w.cl.ListScopeChanges(ctx, reader(&tkv1.ListScopeChangesRequest{After: packs.Msg.Cursor, Selector: elsewhere}))

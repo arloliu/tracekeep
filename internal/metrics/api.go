@@ -11,8 +11,9 @@ import (
 // requests by operation and code with their durations, and auth's refusals.
 // Every method records nothing on a nil *API.
 type API struct {
-	authFailures, requests *prometheus.CounterVec
-	duration               *prometheus.HistogramVec
+	authFailures, requests, downloadURLs *prometheus.CounterVec
+	downloadsRefused                     prometheus.Counter
+	duration                             *prometheus.HistogramVec
 }
 
 // NewAPI registers the api role's collectors on s.
@@ -25,7 +26,11 @@ func NewAPI(s *Server) (*API, error) {
 		duration: prometheus.NewHistogramVec(prometheus.HistogramOpts{Namespace: "tracekeep", Subsystem: "api", Name: "request_seconds",
 			Help: "A request's duration by operation.", Buckets: prometheus.ExponentialBuckets(0.0005, 2, 16)}, []string{"operation"}),
 	}
-	for _, c := range []prometheus.Collector{m.authFailures, m.requests, m.duration} {
+	m.downloadURLs = prometheus.NewCounterVec(prometheus.CounterOpts{Namespace: "tracekeep", Subsystem: "api", Name: "download_urls_total",
+		Help: "Download URLs issued, by kind: presigned by the store, or served by the API."}, []string{"kind"})
+	m.downloadsRefused = prometheus.NewCounter(prometheus.CounterOpts{Namespace: "tracekeep", Subsystem: "api", Name: "download_urls_refused_total",
+		Help: "Download URLs refused as pack-superseded: the object's deadline too near, or the pack deleted."})
+	for _, c := range []prometheus.Collector{m.authFailures, m.requests, m.duration, m.downloadURLs, m.downloadsRefused} {
 		if err := s.Registry().Register(c); err != nil {
 			return nil, fmt.Errorf("metrics: api: %w", err)
 		}
@@ -49,4 +54,20 @@ func (m *API) Request(operation, code string, d time.Duration) {
 	}
 	m.requests.WithLabelValues(operation, code).Inc()
 	m.duration.WithLabelValues(operation).Observe(d.Seconds())
+}
+
+// DownloadURL counts one download URL issued of kind, presigned or api.
+func (m *API) DownloadURL(kind string) {
+	if m == nil {
+		return
+	}
+	m.downloadURLs.WithLabelValues(kind).Inc()
+}
+
+// DownloadRefused counts one download URL refused as pack-superseded.
+func (m *API) DownloadRefused() {
+	if m == nil {
+		return
+	}
+	m.downloadsRefused.Inc()
 }

@@ -25,6 +25,7 @@ type Server struct {
 	Catalog *catalog.Catalog
 	// QuietPeriod is Q, against which the reads report unregistered intervals (catalog.md §7.3).
 	QuietPeriod time.Duration
+	Downloads   Downloads
 	// Auth checks every request; Metrics records them, nil for none; Log logs failures, nil for none.
 	Auth    *auth.Authenticator
 	Metrics *metrics.API
