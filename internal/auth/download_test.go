@@ -63,6 +63,12 @@ func TestDownloadToken(t *testing.T) {
 	if err := d.Verify(t.Context(), tok, packKey); err != nil {
 		t.Errorf("Verify = %v", err)
 	}
+	if key, err := d.Object(t.Context(), tok); err != nil || key != packKey {
+		t.Errorf("Object = %q, %v; want the token's object", key, err)
+	}
+	if _, err := d.Object(t.Context(), tok+"A"); reason(err) != ReasonDownload {
+		t.Errorf("Object of a changed token = %v, want refused", err)
+	}
 	payload, mac, _ := strings.Cut(tok, ".")
 	flipped := []byte(payload)
 	flipped[len(flipped)-1] ^= 1 // the object key's last byte
@@ -84,8 +90,8 @@ func TestDownloadToken(t *testing.T) {
 			t.Errorf("Verify of %s = %v, want refused as download", name, err)
 		}
 	}
-	if got := f.got(); len(got) != 8 || slices.IndexFunc(got, func(r string) bool { return r != ReasonDownload }) >= 0 {
-		t.Errorf("failures counted %v, want eight download refusals", got)
+	if got := f.got(); len(got) != 9 || slices.IndexFunc(got, func(r string) bool { return r != ReasonDownload }) >= 0 {
+		t.Errorf("failures counted %v, want nine download refusals", got)
 	}
 }
 

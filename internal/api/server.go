@@ -15,6 +15,7 @@ import (
 	"github.com/arloliu/tracekeep/internal/auth"
 	"github.com/arloliu/tracekeep/internal/catalog"
 	"github.com/arloliu/tracekeep/internal/metrics"
+	"github.com/arloliu/tracekeep/internal/store"
 	"github.com/arloliu/tracekeep/proto/tracekeep/v1/tracekeepv1connect"
 )
 
@@ -25,7 +26,9 @@ type Server struct {
 	Catalog *catalog.Catalog
 	// QuietPeriod is Q, against which the reads report unregistered intervals (catalog.md §7.3).
 	QuietPeriod time.Duration
-	Downloads   Downloads
+	// Store serves the downloads the API serves itself; Downloads issues every download URL.
+	Store     store.ObjectStore
+	Downloads Downloads
 	// Auth checks every request; Metrics records them, nil for none; Log logs failures, nil for none.
 	Auth    *auth.Authenticator
 	Metrics *metrics.API
@@ -53,6 +56,7 @@ func (s *Server) routes(impl tracekeepv1connect.MachineServiceHandler) http.Hand
 	path, h := tracekeepv1connect.NewMachineServiceHandler(impl,
 		connect.WithCompression("gzip", nil, nil), connect.WithInterceptors(s.observe()))
 	mux.Handle(path, s.authenticate(path, h))
+	mux.HandleFunc("/download/", s.download)
 
 	return mux
 }
