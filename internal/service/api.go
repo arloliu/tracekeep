@@ -192,7 +192,8 @@ func checkPresign(ctx context.Context, p store.Presigner) error {
 	}
 	_ = resp.Body.Close()
 	if resp.StatusCode != http.StatusNotFound {
-		return fmt.Errorf("service: api: the store answers a presigned GET %s, not 404: turn store.presign off if readers cannot use its presigned URLs", resp.Status)
+		// The status code alone: a reason phrase is the store's text, which can quote the signed URL.
+		return fmt.Errorf("service: api: the store answers a presigned GET %d, not 404: turn store.presign off if readers cannot use its presigned URLs", resp.StatusCode)
 	}
 
 	return nil
