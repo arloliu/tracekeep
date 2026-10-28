@@ -1,6 +1,6 @@
 # Phase 2 — compact and machine API
 
-Status: active (2026-10-28) — phase 2.6 in progress
+Status: active (2026-10-28) — phase 2.7 in progress
 
 Milestone 2 of the [roadmap](../ROADMAP.md):
 the compactor's state machines, the catalog reads they make answerable, and the machine API the VE service reads them through.
@@ -32,8 +32,8 @@ This plan only orders the work.
 | 2.3 — deletion and retention | each object's deletion deadline as one function (hour end + retention, `merged_at` + D for a merged input), D above the download URL's lifetime, and a shortened retention kept from evicting an hour before an issued URL's promise across restarts and processes (specified in `compactor.md` §8.3 first, then built); `DeletePack` after D; `EvictHour` with `evicted_ranges` and the `parked → evicted-hour` move; the claim bucket listed and its receipt-less objects attributed by the SDK's metadata (hour, capture, seq, the bare object name against the bucket-qualified `Tpk-Payload-Ref`), with their `claim_objects` rows, and hours that hold claim objects but no scope, before eviction reads them; §8.4's predicate as one function; survivors deleted by the reconciler; `object list --survivors` and `--unattributed`; and their metrics | done (#24) |
 | 2.4 — reads and cursor | `ListDevices`, `ListCaptures`, `ListPacks` and `ListScopeChanges` as catalog reads (§7.3): `no-data` hours, unregistered intervals, overlap, the watermark read first, `low_water` and `epoch`, pruning by seq prefix | done (#25) |
 | 2.5 — service auth | client credentials against the IdP's JWKS with lazy discovery and one refresh on an unknown `kid`, mTLS, the static-token flag never enabled by a failure, the role each operation checks, `auth_failures_total`; and the `download` key purpose of `masking-keys.md` §9 brought forward whole (T-41): the binding's insert-or-compare, the `file` and `env` providers, issuing and accepted key ids, purpose separation | done (#26) |
-| 2.6 — api | `proto/`, connect-go behind 2.5's checks from its first served request, the `api` role in `all` and `dev` with its readiness and metrics, the four reads, `PackURL` with 2.3's deadline, a 15-minute lifetime, its margin and floor and `pack-superseded`, presigned where the store presigns and `storage.presign` is on, otherwise served by the API with a download token (`HEAD` and ranged `GET`), presigning checked at start, `audit_log` for API actions | in-progress |
-| 2.7 — admin and status | `tracekeep status`, `deferred list`, admin through the `api` process on SQLite, `tracekeep migrate` applying the catalog's migrations through Atlas's Go library with its own revision table (T-41), tested on a fresh catalog, an upgrade and a failed application, `gap_observations_total` and `captures_with_unknown_tail`, the cost of ingest's metrics read measured at fleet size | pending |
+| 2.6 — api | `proto/`, connect-go behind 2.5's checks from its first served request, the `api` role in `all` and `dev` with its readiness and metrics, the four reads, `PackURL` with 2.3's deadline, a 15-minute lifetime, its margin and floor and `pack-superseded`, presigned where the store presigns and `storage.presign` is on, otherwise served by the API with a download token (`HEAD` and ranged `GET`), presigning checked at start, `audit_log` for API actions | done (#27) |
+| 2.7 — admin and status | `tracekeep status`, `deferred list`, admin through the `api` process on SQLite, `tracekeep migrate` applying the catalog's migrations through Atlas's Go library with its own revision table (T-41), tested on a fresh catalog, an upgrade and a failed application, `gap_observations_total` and `captures_with_unknown_tail`, the cost of ingest's metrics read measured at fleet size | in-progress |
 | 2.8 — gate | the roadmap row's cases and the checklist the phases before left open, audited against the tests as 1.7 did | pending |
 
 Only the phase under way is detailed; the others are detailed when they start.
@@ -45,6 +45,30 @@ the survivor, shared-object and unknown-capture races in 2.3, the cursor's commi
 2.8 audits them all, the membership and old-version cases phase 1 built included.
 The roadmap's gate case "a parked message replays in order after its blocker clears" is the parked consumer's own retry after `parking.redelivery_delay`,
 staged through a flush sorted by seq (T-40 withdrew an early replay to proposal P1).
+
+## Phase 2.7 — admin and status
+
+Work on the branch `feat/admin/status`, one commit per step, test first;
+the branch merges by pull request once the whole phase passes an external post-implementation review.
+The catalog's migrations get one path: `migrations.Apply`, which tests, `catalogtest` and `dev` use, runs Atlas's executor (`ariga.io/atlas` v1.3.0, `sql/migrate` with its `mysql` and `sqlite` drivers, built without cgo)
+over the embedded directories with their `atlas.sum`, recording every revision in a table of the service's own, `tracekeep_revisions`;
+a catalog holding tables but no revision of its own was migrated by another tool and is refused.
+`tracekeep migrate` applies the catalog before the bus, whose incarnations it records in the catalog.
+`deferred list` is a view of the catalog's unresolved parked versions, by capture and reason, with the oldest's time:
+an indefinite deferral is parked (`ingest.md` §6.1), and a short nak that never parks lives only in ingest's metrics.
+Admin through the `api` process is a transport for the same commands, not a new API:
+the CLI tries the catalog and, finding a running service holding its SQLite catalog, sends the command's words to that process's `AdminService`,
+under the `admin` role with the principal's subject as the audited actor; the typed admin operations of §10.1's table stay phases 3 and 4.
+The F8 measurement is a section of this plan, below the table.
+
+| Step | Scope | State |
+|---|---|---|
+| 1 | spec: `catalog.md` §7.4's revision table and the refusal of a catalog another tool migrated; `api.md` §10.1's `AdminService` (the command's words in, the CLI's JSON out, `admin` role, the principal as actor, `--actor` the direct path's only); `operations.md` §10.4's `tracekeep status` fields, each tool's backlog in messages from the traffic stream's subjects and the stream's bytes once, and `deferred list` as the parked view; the CLI's credential for the API path | pending |
+| 2 | migrations: `Apply` over Atlas's executor with the service's revision table: a fresh catalog, an upgrade from the first migrations to the rest, a failed application resumed from the statement that failed once its cause is gone, a catalog another tool migrated refused, a changed `atlas.sum` refused, on both engines; `tracekeep migrate` applying the catalog before the bus, `dev` and `catalogtest` through it | pending |
+| 3 | ingest metrics: `gap_observations_total{tool_id}`, a hole first seen at a registration and counted on `Registered` only, and `captures_with_unknown_tail{tool_id}` from the refresh's completeness pass, a closed capture dropping out | pending |
+| 4 | `tracekeep status` and `deferred list`: `pending` captures first by id, then per tool the last record time, open captures, deferred messages and backlog; the parked view by capture and reason; both engines | pending |
+| 5 | admin through the API: `AdminService` in `proto/tracekeep/v1`, its procedure behind auth as `OpAdmin`, the CLI's fallback on `ErrSecondWriter` with the configured admin token, a non-admin principal refused, the audit row's actor the principal's, a command run through a dev loop | pending |
+| 6 | F8: ingest's metrics read (`readCatalog`) seeded with 1,500 tools' open captures and packs, benchmarked on both engines, recorded below; tuned only if it does not fit the 30-second refresh | pending |
 
 ## Phase 2.6 — api
 
