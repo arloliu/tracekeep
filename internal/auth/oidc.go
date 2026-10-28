@@ -24,8 +24,11 @@ var signatureAlgs = []jose.SignatureAlgorithm{
 // parseAlgs are the algorithms a token is parsed under, so that a refused one is told apart from a malformed token.
 var parseAlgs = append(slices.Clone(signatureAlgs), jose.HS256, jose.HS384, jose.HS512, jose.EdDSA)
 
-// maxDocument bounds a discovery document's or a JWKS's read.
-const maxDocument = 1 << 20
+// maxDocument bounds a discovery document's or a JWKS's read, and fetchTimeout each fetch.
+const (
+	maxDocument  = 1 << 20
+	fetchTimeout = 10 * time.Second
+)
 
 // OIDCConfig is the IdP a service token is validated against (api.md §10.2).
 type OIDCConfig struct {
@@ -37,7 +40,7 @@ type OIDCConfig struct {
 	// TTL is how long a fetched JWKS verifies, MinInterval the least time between two fetches' starts,
 	// and Leeway the clock tolerance of exp, nbf and iat.
 	TTL, MinInterval, Leeway time.Duration
-	// Client fetches discovery and the JWKS; nil is a client with a 10 s timeout.
+	// Client fetches discovery and the JWKS, over https only; nil, or a zero timeout, takes a 10 s timeout.
 	Client *http.Client
 	// Now is the clock; nil is time.Now.
 	Now func() time.Time
@@ -65,9 +68,29 @@ func NewVerifier(cfg OIDCConfig) *Verifier {
 	if cfg.RolesClaim == "" {
 		cfg.RolesClaim = "roles"
 	}
-	if cfg.Client == nil {
-		cfg.Client = &http.Client{Timeout: 10 * time.Second}
+	// The client is a copy: keys come over https only, every redirect included, and a fetch is bounded in time.
+	client := &http.Client{}
+	if cfg.Client != nil {
+		*client = *cfg.Client
 	}
+	if client.Timeout == 0 {
+		client.Timeout = fetchTimeout
+	}
+	prior := client.CheckRedirect
+	client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+		if req.URL.Scheme != "https" {
+			return fmt.Errorf("a redirect to %s, not https", req.URL.Redacted())
+		}
+		if prior != nil {
+			return prior(req, via)
+		}
+		if len(via) >= 10 {
+			return errors.New("too many redirects")
+		}
+
+		return nil
+	}
+	cfg.Client = client
 	if cfg.Now == nil {
 		cfg.Now = time.Now
 	}
@@ -247,8 +270,9 @@ func (v *Verifier) refresh(ctx context.Context, done chan struct{}) {
 	keys, err = v.fetch(context.WithoutCancel(ctx))
 }
 
-// fetch reads the issuer's discovery document, which must name the configured issuer, and the public signing keys of its JWKS;
-// a key of a type it cannot read is skipped.
+// fetch reads the issuer's discovery document, which must name the configured issuer, and the public signing keys of its JWKS,
+// both over https; a key of a type it cannot read is skipped, and a JWKS without a usable key is a failed fetch,
+// which keeps the keys cached before it.
 func (v *Verifier) fetch(ctx context.Context) ([]jose.JSONWebKey, error) {
 	var doc struct {
 		Issuer  string `json:"issuer"`
@@ -275,6 +299,10 @@ func (v *Verifier) fetch(ctx context.Context) ([]jose.JSONWebKey, error) {
 		keys = append(keys, k)
 	}
 
+	if len(keys) == 0 {
+		return nil, errors.New("jwks: no usable signing key")
+	}
+
 	return keys, nil
 }
 
@@ -282,6 +310,9 @@ func (v *Verifier) get(ctx context.Context, url string, dst any) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, http.NoBody)
 	if err != nil {
 		return err
+	}
+	if req.URL.Scheme != "https" {
+		return fmt.Errorf("%s is not https", req.URL.Redacted())
 	}
 	resp, err := v.cfg.Client.Do(req)
 	if err != nil {
