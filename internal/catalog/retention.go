@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"math"
 	"time"
 
 	"github.com/jmoiron/sqlx"
@@ -34,13 +35,26 @@ func (r Retention) InForce(t int64) time.Duration {
 
 // Deadline returns the earliest time hour may be evicted:
 // the first t at which the hour's end plus the period in force at t has passed.
+// It saturates at the last representable time, which an hour at the end of int64 nanoseconds reaches.
 func (r Retention) Deadline(hour int64) int64 {
-	end := (hour + 1) * nsPerHour
-	if held := end + int64(max(r.Period, r.Held)); held < r.HeldUntil {
+	end := int64(math.MaxInt64)
+	if hour < math.MaxInt64/nsPerHour {
+		end = (hour + 1) * nsPerHour
+	}
+	if held := satAdd(end, int64(max(r.Period, r.Held))); held < r.HeldUntil {
 		return held
 	}
 
-	return max(r.HeldUntil, end+int64(r.Period))
+	return max(r.HeldUntil, satAdd(end, int64(r.Period)))
+}
+
+// satAdd is a + b for b ≥ 0, saturated at the last representable time.
+func satAdd(a, b int64) int64 {
+	if a > math.MaxInt64-b {
+		return math.MaxInt64
+	}
+
+	return a + b
 }
 
 // HorizonHour returns the oldest hour retention keeps at now: every older hour is past its deadline.
