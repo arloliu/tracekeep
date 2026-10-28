@@ -71,7 +71,7 @@ func NewDev(ctx context.Context, o DevOptions) (*Dev, error) {
 	if err := devAPI(o, cfg); err != nil {
 		return nil, errors.Join(err, d.Close())
 	}
-	if err := createCatalog(ctx, cfg.Catalog.DSN); err != nil {
+	if err := MigrateCatalog(ctx, &cfg.Catalog); err != nil {
 		return nil, errors.Join(err, d.Close())
 	}
 	if d.Env, err = Open(ctx, cfg, o.Log); err != nil {
@@ -134,18 +134,20 @@ func generate(path string, content func() []byte) error {
 	return errors.Join(err, f.Close())
 }
 
-// createCatalog applies the embedded migrations to a SQLite catalog the file does not hold yet.
-func createCatalog(ctx context.Context, path string) error {
-	if _, err := os.Stat(path); err == nil {
-		return nil
+// MigrateCatalog applies the catalog's pending migrations (catalog.md §7.4), creating a SQLite catalog's file when there is none.
+// It runs before the catalog is opened, which on SQLite takes the writer's lock.
+func MigrateCatalog(ctx context.Context, c *config.Catalog) error {
+	driver, dsn := "mysql", c.DSN
+	if c.Engine == catalog.EngineSQLite {
+		driver, dsn = "sqlite", catalog.SQLiteURI(c.DSN)
 	}
-	db, err := sql.Open("sqlite", catalog.SQLiteURI(path))
+	db, err := sql.Open(driver, dsn)
 	if err != nil {
-		return fmt.Errorf("dev: catalog: %w", err)
+		return fmt.Errorf("service: migrate the catalog: %w", err)
 	}
 	defer db.Close()
-	if err := migrations.Apply(ctx, db, catalog.EngineSQLite); err != nil {
-		return fmt.Errorf("dev: catalog: %w", err)
+	if err := migrations.Apply(ctx, db, c.Engine); err != nil {
+		return fmt.Errorf("service: migrate the catalog: %w", err)
 	}
 
 	return nil
