@@ -78,7 +78,7 @@ type Store struct {
 	// Presign lets readers download by presigned URL (T-33); off for an s3 store whose URLs readers cannot use.
 	Presign bool `yaml:"presign" default:"true" env:"TRACEKEEP_STORE_PRESIGN"`
 	// DownloadLifetime is the longest a download URL lives (T-41); compact.delete_delay exceeds it by more than twice the clock skew.
-	DownloadLifetime time.Duration `yaml:"download_lifetime" default:"15m" env:"TRACEKEEP_STORE_DOWNLOAD_LIFETIME" validate:"gt=0"`
+	DownloadLifetime time.Duration `yaml:"download_lifetime" default:"15m" env:"TRACEKEEP_STORE_DOWNLOAD_LIFETIME" validate:"gt=0,lte=24h"`
 }
 
 // S3 is an S3-compatible endpoint (T-34).
@@ -150,8 +150,8 @@ type API struct {
 	// PublicURL is the base of the download URLs the API serves itself, as readers reach it.
 	PublicURL string `yaml:"public_url" env:"TRACEKEEP_API_PUBLIC_URL"`
 	// DownloadMargin is kept between a URL's expiry and its object's deadline; a URL that would live less than DownloadFloor is refused (T-33).
-	DownloadMargin time.Duration `yaml:"download_margin" default:"2m" env:"TRACEKEEP_API_DOWNLOAD_MARGIN" validate:"gte=0"`
-	DownloadFloor  time.Duration `yaml:"download_floor" default:"1m" env:"TRACEKEEP_API_DOWNLOAD_FLOOR" validate:"gt=0"`
+	DownloadMargin time.Duration `yaml:"download_margin" default:"2m" env:"TRACEKEEP_API_DOWNLOAD_MARGIN" validate:"gte=0,lte=24h"`
+	DownloadFloor  time.Duration `yaml:"download_floor" default:"1m" env:"TRACEKEEP_API_DOWNLOAD_FLOOR" validate:"gt=0,lte=24h"`
 }
 
 // Metrics is the metrics and health listener (operations.md §10.4).

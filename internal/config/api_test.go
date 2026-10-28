@@ -22,8 +22,14 @@ func TestAPIKeys(t *testing.T) {
 		"a plain-text URL":           {"api:\n  public_url: http://tracekeep.example.invalid\n", "api.public_url"},
 		"a retention past a century": {"retention: 876001h\n", "Retention"},
 		"a delay past a century":     {"compact:\n  delete_delay: 876001h\n", "DeleteDelay"},
+		"a lifetime past a day":      {"compact:\n  delete_delay: 26h\n", "DownloadLifetime"},
+		"a margin past a day":        {"api:\n  download_margin: 25h\n", "DownloadMargin"},
 	} {
-		if _, err := Load(write(t, minimal+tc.extra)); err == nil || !strings.Contains(err.Error(), tc.want) {
+		base := minimal
+		if name == "a lifetime past a day" {
+			base = yaml("", "", "  s3:\n    bucket: packs\n    access_key_id: ak\n    secret_access_key: sk\n  download_lifetime: 25h\n", "")
+		}
+		if _, err := Load(write(t, base+tc.extra)); err == nil || !strings.Contains(err.Error(), tc.want) {
 			t.Errorf("%s: Load = %v, want an error naming %s", name, err, tc.want)
 		}
 	}
