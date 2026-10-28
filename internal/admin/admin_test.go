@@ -517,3 +517,39 @@ func TestDeferredListByCapture(t *testing.T) {
 		}
 	})
 }
+
+// Every command is audited: one that only reads by a row its run writes, naming the actor and the words,
+// and a read whose row cannot be written answers nothing.
+func TestReadCommandsAudited(t *testing.T) {
+	t.Parallel()
+	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
+		ctx := t.Context()
+		a, _, _ := setup(t, c)
+		a.Actor = "reader-op"
+		capture := tracepack.UUID{0x33}
+		if _, err := c.BeginParking(ctx, identity(capture, 1, 1, 1), "unknown-capture", "", 0); err != nil { // a capture to show
+			t.Fatal(err)
+		}
+		for _, words := range [][]string{
+			{"status"}, {"deferred", "list"}, {"parked", "list"}, {"object", "list"}, {"capture", "show", capture.String()},
+		} {
+			if _, err := admin.Run(ctx, a, words); err != nil {
+				t.Fatalf("%v: %v", words, err)
+			}
+		}
+		rows, err := c.AuditByActor(ctx, "reader-op")
+		if err != nil || len(rows) != 5 {
+			t.Fatalf("audit = %+v, %v; want a row per read", rows, err)
+		}
+		if last := rows[4]; last.Action != "capture show" || last.Capture == nil || *last.Capture != capture || !strings.Contains(last.Detail, capture.String()) {
+			t.Errorf("capture show's row = %+v", last)
+		}
+		write, _ := c.Pools()
+		if err := write.Close(); err != nil {
+			t.Fatal(err)
+		}
+		if out, err := admin.Run(ctx, a, []string{"parked", "list"}); err == nil {
+			t.Errorf("parked list with its audit row refused = %v, want an error and no answer", out)
+		}
+	})
+}

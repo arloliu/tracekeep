@@ -179,6 +179,31 @@ func (c *Catalog) AuditEntries(ctx context.Context, capture tracepack.UUID) ([]A
 	return out, nil
 }
 
+// AuditByActor returns the audit rows actor wrote, oldest first.
+func (c *Catalog) AuditByActor(ctx context.Context, actor string) ([]AuditEntry, error) {
+	var rows []struct {
+		Actor    string         `db:"actor"`
+		Action   string         `db:"action"`
+		ActionID sql.NullString `db:"action_id"`
+		Capture  []byte         `db:"capture_id"`
+		Detail   sql.NullString `db:"detail"`
+	}
+	err := c.read.SelectContext(ctx, &rows, `SELECT actor, action, action_id, capture_id, detail FROM audit_log WHERE actor = ? ORDER BY at, audit_id`, actor)
+	if err != nil {
+		return nil, fmt.Errorf("catalog: audit by %s: %w", actor, err)
+	}
+	out := make([]AuditEntry, len(rows))
+	for i, r := range rows {
+		out[i] = AuditEntry{Actor: r.Actor, Action: r.Action, ActionID: r.ActionID.String, Detail: r.Detail.String}
+		if len(r.Capture) == 16 {
+			id := tracepack.UUID(r.Capture)
+			out[i].Capture = &id
+		}
+	}
+
+	return out, nil
+}
+
 func nullString(s string) sql.NullString {
 	return sql.NullString{String: s, Valid: s != ""}
 }
