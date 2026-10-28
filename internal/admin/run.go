@@ -6,16 +6,22 @@ import (
 	"fmt"
 	"slices"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/arloliu/go-secs/tracepack"
+	"github.com/arloliu/tracekeep/internal/catalog"
 )
 
 // ErrUsage marks an operator command the words do not name: a usage error.
 var ErrUsage = errors.New("usage")
 
+// reads are the commands that only read, which audit their run here; every other command audits itself in its transaction.
+var reads = []string{"status", "deferred list", "parked list", "capture show", "object list"}
+
 // Run runs the operator command words name (operations.md §10.4) and returns what it prints as JSON:
 // the one dispatch tracekeep admin and status share, whether the CLI runs it on the catalog or the api process does (api.md §10.1).
+// Every command is audited under a.Actor: one that only reads by a row written here before its answer is returned.
 func Run(ctx context.Context, a *Admin, words []string) (any, error) {
 	if len(words) == 0 {
 		return nil, fmt.Errorf("%w: admin needs a command", ErrUsage)
@@ -24,8 +30,21 @@ func Run(ctx context.Context, a *Admin, words []string) (any, error) {
 	if len(words) > 1 {
 		cmd += " " + words[1]
 	}
+	out, err := operate(ctx, a, cmd, words)
+	if err != nil || !slices.Contains(reads, cmd) {
+		return out, err
+	}
+	entry := catalog.AuditEntry{Actor: a.Actor, Action: cmd, Detail: strings.Join(words, " ")}
+	if cmd == "capture show" {
+		if id, perr := tracepack.ParseUUID(words[2]); perr == nil {
+			entry.Capture = &id
+		}
+	}
+	if err := a.Catalog.Audit(ctx, entry); err != nil {
+		return nil, fmt.Errorf("admin: audit %s: %w", cmd, err)
+	}
 
-	return operate(ctx, a, cmd, words)
+	return out, nil
 }
 
 // operate runs the operator command cmd, args being the whole command line.

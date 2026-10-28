@@ -41,6 +41,9 @@ func TestAdminOverTheAPI(t *testing.T) {
 		if err != nil || !json.Valid([]byte(got.GetJson())) {
 			t.Fatalf("parked list = %v, %v; want its JSON", got, err)
 		}
+		if rows, err := c.AuditByActor(t.Context(), "operator"); err != nil || len(rows) != 1 || rows[0].Action != "parked list" {
+			t.Errorf("audit of parked list = %+v, %v; want a row with the principal as actor", rows, err)
+		}
 		capture := tracepack.UUID{0x42}
 		if _, err := call(adminToken, "capture", "close", capture.String()); err != nil {
 			t.Fatalf("capture close = %v", err)
