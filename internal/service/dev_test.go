@@ -38,7 +38,7 @@ func (s *putting) Put(ctx context.Context, key string, r io.ReadSeeker, size int
 func TestDevLoopbackCapture(t *testing.T) {
 	t.Parallel()
 	ctx := t.Context()
-	d, err := NewDev(ctx, DevOptions{Dir: t.TempDir(), Flush: 200 * time.Millisecond, Rate: 50, Log: slog.New(slog.DiscardHandler)})
+	d, err := NewDev(ctx, DevOptions{Dir: t.TempDir(), Flush: 200 * time.Millisecond, Rate: 50, API: "127.0.0.1:0", Log: slog.New(slog.DiscardHandler)})
 	if err != nil {
 		t.Fatal(err)
 	}

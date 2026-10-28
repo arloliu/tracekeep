@@ -1,0 +1,210 @@
+package service
+
+import (
+	"context"
+	"crypto/rand"
+	"crypto/tls"
+	"crypto/x509"
+	"errors"
+	"fmt"
+	"log/slog"
+	"net"
+	"net/http"
+	"os"
+	"time"
+
+	"github.com/arloliu/tracekeep/internal/api"
+	"github.com/arloliu/tracekeep/internal/auth"
+	"github.com/arloliu/tracekeep/internal/catalog"
+	"github.com/arloliu/tracekeep/internal/config"
+	"github.com/arloliu/tracekeep/internal/keys"
+	"github.com/arloliu/tracekeep/internal/metrics"
+	"github.com/arloliu/tracekeep/internal/store"
+)
+
+// apiShutdown bounds the requests in flight when the api role stops.
+const apiShutdown = 10 * time.Second
+
+// API runs the api role until ctx ends (architecture.md §3.1): the machine API and its downloads on api.listen,
+// over TLS with client certificates verified when given, or over HTTP/2 without TLS under tracekeep dev.
+// It is ready once its listener is bound and the catalog answers (api.md §10.1 *Downloads*).
+func API(ctx context.Context, e *Env) error {
+	e.ready("api", failing(errStarting))
+	defer e.ready("api", failing(errStopped))
+	c := e.Config
+	var m *metrics.API
+	if e.Metrics != nil {
+		var err error
+		if m, err = metrics.NewAPI(e.Metrics); err != nil {
+			return err
+		}
+	}
+	log := e.Log.With("role", "api")
+	s := &api.Server{
+		Catalog: e.Catalog, QuietPeriod: c.Compact.QuietPeriod, Store: e.Store, Metrics: m, Log: log,
+		Auth: authenticator(&c.Auth, m, log),
+		Downloads: api.Downloads{
+			PublicURL: c.API.PublicURL, Lifetime: c.Store.DownloadLifetime, Margin: c.API.DownloadMargin, Floor: c.API.DownloadFloor,
+			DeleteDelay: c.Compact.DeleteDelay, Now: e.Now,
+		},
+	}
+	srv := &http.Server{
+		Handler: s.Handler(), ReadHeaderTimeout: 10 * time.Second, Protocols: new(http.Protocols),
+		ErrorLog: slog.NewLogLogger(log.Handler(), slog.LevelWarn),
+	}
+	srv.Protocols.SetHTTP1(true)
+	if c.API.Plaintext {
+		srv.Protocols.SetUnencryptedHTTP2(true)
+	} else {
+		srv.Protocols.SetHTTP2(true)
+		var err error
+		if srv.TLSConfig, err = serverTLS(&c.API, &c.Auth.MTLS); err != nil {
+			return err
+		}
+	}
+	ln, err := net.Listen("tcp", c.API.Listen)
+	if err != nil {
+		return fmt.Errorf("service: api: %w", err)
+	}
+	defer ln.Close()
+	e.apiAddr.Store(ln.Addr().String())
+	if c.API.Plaintext && s.Downloads.PublicURL == "" {
+		// tracekeep dev's downloads are served where it listens.
+		s.Downloads.PublicURL = "http://" + ln.Addr().String()
+	}
+	if err := e.downloads(ctx, &s.Downloads, m); err != nil {
+		return err
+	}
+	e.ready("api", e.Catalog.Ping)
+	log.Info("api: serving", "listen", ln.Addr().String(), "tls", !c.API.Plaintext, "presigned", s.Downloads.Presigner != nil)
+	served := make(chan error, 1)
+	go func() {
+		if c.API.Plaintext {
+			served <- srv.Serve(ln)
+		} else {
+			served <- srv.ServeTLS(ln, "", "")
+		}
+	}()
+	select {
+	case err := <-served:
+		return fmt.Errorf("service: api: %w", err)
+	case <-ctx.Done():
+	}
+	sctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), apiShutdown)
+	defer cancel()
+	if err := srv.Shutdown(sctx); err != nil {
+		return fmt.Errorf("service: api: %w", err)
+	}
+
+	return ctx.Err()
+}
+
+// authenticator builds the checks of a, counting refusals in m.
+func authenticator(a *config.Auth, m *metrics.API, log *slog.Logger) *auth.Authenticator {
+	cfg := auth.AuthenticatorConfig{MTLS: a.MTLS.Subjects, StaticEnabled: a.Static.Enabled, Log: log}
+	if m != nil {
+		cfg.Failures = m
+	}
+	if o := a.OIDC; o.Issuer != "" {
+		cfg.OIDC = auth.NewVerifier(auth.OIDCConfig{
+			Issuer: o.Issuer, Audience: o.Audience, RolesClaim: o.RolesClaim, Roles: o.Roles,
+			TTL: o.JWKSTTL, MinInterval: o.FetchInterval, Leeway: o.Leeway,
+		})
+	}
+	for _, t := range a.Static.Tokens {
+		cfg.Static = append(cfg.Static, auth.StaticToken{Token: t.Token, Subject: t.Subject, Roles: t.Roles})
+	}
+
+	return auth.NewAuthenticator(cfg)
+}
+
+// downloads readies dl: presigned URLs where the store presigns and presigning is on, once a presigned GET is shown to work,
+// and otherwise download tokens under the download keys, which need a public URL.
+func (e *Env) downloads(ctx context.Context, dl *api.Downloads, m *metrics.API) error {
+	c := e.Config
+	if p, ok := e.Store.(store.Presigner); ok && c.Store.Presign {
+		if err := checkPresign(ctx, p); err != nil {
+			return err
+		}
+		dl.Presigner = p
+
+		return nil
+	}
+	if dl.PublicURL == "" || c.Keys.Download.Issuing == "" {
+		return errors.New("service: api: downloads go through the API (the store does not presign, or store.presign is off), " +
+			"which needs api.public_url and a keys.download issuing key id")
+	}
+	declared := map[string]keys.Declaration{}
+	for id, d := range c.Keys.Declared {
+		declared[id] = keys.Declaration{Provider: d.Provider, Ref: d.Ref, Version: d.Version}
+	}
+	k, err := keys.New(keys.Config{
+		Dev: e.Dev, Declared: declared, Download: keys.Purpose{Issuing: c.Keys.Download.Issuing, Accepted: c.Keys.Download.Accepted},
+	}, e.Catalog)
+	if err != nil {
+		return err
+	}
+	dl.Tokens = &auth.Downloads{Keys: k, Now: e.Now}
+	if m != nil {
+		dl.Tokens.Failures = m
+	}
+	// The issuing key resolves and binds now, so a bad key fails the start rather than the first URL.
+	_, _, err = k.Issuing(ctx, catalog.KindDownload)
+
+	return err
+}
+
+// checkPresign presigns a GET of a key that does not exist and fetches it (storage.md §5.2 *Downloads*):
+// not-found shows the store accepts the signature, and anything else fails the start.
+func checkPresign(ctx context.Context, p store.Presigner) error {
+	u, err := p.PresignGet(ctx, "tracekeep-presign-check/"+rand.Text(), time.Minute)
+	if err != nil {
+		return fmt.Errorf("service: api: presign: %w", err)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, http.NoBody)
+	if err != nil {
+		return fmt.Errorf("service: api: presign: %w", err)
+	}
+	resp, err := (&http.Client{Timeout: 10 * time.Second}).Do(req)
+	if err != nil {
+		return fmt.Errorf("service: api: presign check: %w; turn store.presign off if readers cannot use the store's presigned URLs", err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		return fmt.Errorf("service: api: the store answers a presigned GET %s, not 404: turn store.presign off if readers cannot use its presigned URLs", resp.Status)
+	}
+
+	return nil
+}
+
+// serverTLS is the listener's TLS: a's certificate, and client certificates verified against m's CA when given.
+func serverTLS(a *config.API, m *config.MTLS) (*tls.Config, error) {
+	if a.TLSCertFile == "" {
+		return nil, errors.New("service: api: api.tls_cert_file and api.tls_key_file are required")
+	}
+	cert, err := tls.LoadX509KeyPair(a.TLSCertFile, a.TLSKeyFile)
+	if err != nil {
+		return nil, fmt.Errorf("service: api: %w", err)
+	}
+	cfg := &tls.Config{Certificates: []tls.Certificate{cert}, MinVersion: tls.VersionTLS12}
+	if m.ClientCAFile != "" {
+		pem, err := os.ReadFile(m.ClientCAFile)
+		if err != nil {
+			return nil, fmt.Errorf("service: api: %w", err)
+		}
+		pool := x509.NewCertPool()
+		if !pool.AppendCertsFromPEM(pem) {
+			return nil, fmt.Errorf("service: api: %s holds no certificate", m.ClientCAFile)
+		}
+		cfg.ClientCAs, cfg.ClientAuth = pool, tls.VerifyClientCertIfGiven
+	}
+
+	return cfg, nil
+}
+
+// APIAddr is the address the api role listens on, empty before it is bound.
+func (e *Env) APIAddr() string {
+	a, _ := e.apiAddr.Load().(string)
+
+	return a
+}

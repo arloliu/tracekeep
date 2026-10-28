@@ -1,5 +1,5 @@
 // Package service wires the roles of the tracekeep binary (architecture.md §3.1) from the configuration:
-// migrate, ingest, compact and all, each over the catalog, the bus and the object store the configuration names.
+// migrate, ingest, compact, api and all, each over the catalog, the bus and the object store the configuration names.
 package service
 
 import (
@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/nats-io/nats.go"
@@ -44,8 +45,8 @@ type Env struct {
 	NC      *nats.Conn
 	JS      jetstream.JetStream
 	Store   store.ObjectStore
-	// AllowUnversioned accepts a build whose classifier names no version; only dev sets it.
-	AllowUnversioned bool
+	// AllowUnversioned accepts a build whose classifier names no version, and Dev admits the env key provider; only dev sets them.
+	AllowUnversioned, Dev bool
 	// Now is the clock; nil takes time.Now.
 	Now func() time.Time
 	// Metrics is the process's metrics and health server; nil records and serves none.
@@ -53,6 +54,8 @@ type Env struct {
 
 	// joined, when not nil, runs once Ingest's consumers joined and its readiness is registered; a test's barrier.
 	joined func()
+	// apiAddr is the api role's bound address.
+	apiAddr atomic.Value
 }
 
 // refreshInterval is how often ingest's metrics read the catalog and the bus.
@@ -486,11 +489,12 @@ func Compact(ctx context.Context, e *Env) error {
 	return err
 }
 
-// All runs every role of this phase in one process, for a standalone host: ingest and compact.
+// All runs every role of this phase in one process, for a standalone host: ingest, compact and api.
 func All(ctx context.Context, e *Env) error {
 	return together(ctx,
 		func(ctx context.Context) error { return Ingest(ctx, e) },
-		func(ctx context.Context) error { return Compact(ctx, e) })
+		func(ctx context.Context) error { return Compact(ctx, e) },
+		func(ctx context.Context) error { return API(ctx, e) })
 }
 
 // together runs roles until each returns; the first to fail cancels the others, and its error is returned.

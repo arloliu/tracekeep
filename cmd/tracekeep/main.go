@@ -1,5 +1,5 @@
 // Command tracekeep is the traffic-log service, one binary whose first argument names the role (architecture.md §3.1):
-// migrate, ingest, compact, all, dev, or admin with an operator command (operations.md §10.4).
+// migrate, ingest, compact, api, all, dev, or admin with an operator command (operations.md §10.4).
 // The design is in docs/specs/tracekeep/; the configuration's keys are in docs/guides/configuration.md.
 package main
 
@@ -33,6 +33,7 @@ commands:
   migrate    ensure the bus's streams and claim bucket and record their incarnations
   ingest     run the ingest role
   compact    run the compact role
+  api        run the api role: the machine API and its downloads
   all        run every role in one process
   dev        run a single-process development loop
   admin      run an operator command:
@@ -83,10 +84,10 @@ func dispatch(ctx context.Context, args []string, stdout, stderr io.Writer) erro
 		return fmt.Errorf("%w: %w", errUsage, err)
 	}
 	roles := map[string]func(context.Context, *service.Env) error{
-		"migrate": service.Migrate, "ingest": service.Ingest, "compact": service.Compact, "all": service.All,
+		"migrate": service.Migrate, "ingest": service.Ingest, "compact": service.Compact, "api": service.API, "all": service.All,
 	}
 	// The roles each command runs, not ready until each has started.
-	readiness := map[string][]string{"ingest": {"ingest"}, "compact": {"compact"}, "all": {"ingest", "compact"}}
+	readiness := map[string][]string{"ingest": {"ingest"}, "compact": {"compact"}, "api": {"api"}, "all": {"ingest", "compact", "api"}}
 	role, isRole := roles[command]
 	if !isRole && command != "admin" {
 		return fmt.Errorf("%w: unknown command %q", errUsage, command)
@@ -249,6 +250,7 @@ func runDev(ctx context.Context, args []string, stderr io.Writer) error {
 	flush := fs.Duration("flush", 10*time.Second, "ingest's flush interval")
 	rate := fs.Float64("rate", 10, "the simulator's forwarded requests per second; 0 runs no simulator")
 	listen := fs.String("metrics", "", "where to serve /metrics, /healthz and /readyz; empty serves none")
+	apiAddr := fs.String("api", "127.0.0.1:8080", "where to serve the machine API, over HTTP/2 without TLS")
 	if err := fs.Parse(args); err != nil {
 		return fmt.Errorf("%w: %w", errUsage, err)
 	}
@@ -263,17 +265,18 @@ func runDev(ctx context.Context, args []string, stderr io.Writer) error {
 		*dir = d
 	}
 	log := slog.New(slog.NewJSONHandler(stderr, nil))
-	d, err := service.NewDev(ctx, service.DevOptions{Dir: *dir, Port: *port, Flush: *flush, Rate: *rate, Log: log})
+	d, err := service.NewDev(ctx, service.DevOptions{Dir: *dir, Port: *port, Flush: *flush, Rate: *rate, API: *apiAddr, Log: log})
 	if err != nil {
 		return err
 	}
 	defer func() { _ = d.Close() }()
 	d.Env.Config.Metrics.Listen = *listen
-	octx, err := d.Env.Observe(ctx, "ingest", "compact")
+	octx, err := d.Env.Observe(ctx, "ingest", "compact", "api")
 	if err != nil {
 		return err
 	}
-	log.Info("tracekeep dev: running", "data", *dir, "bus", d.URL(), "packs", filepath.Join(*dir, "packs"))
+	log.Info("tracekeep dev: running", "data", *dir, "bus", d.URL(), "packs", filepath.Join(*dir, "packs"),
+		"api", "http://"+*apiAddr, "token_file", filepath.Join(*dir, service.DevTokenFile))
 	err = d.Run(octx)
 	if failed := service.ServeFailed(octx); failed != nil {
 		return errors.Join(failed, err)
