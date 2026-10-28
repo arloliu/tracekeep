@@ -1,6 +1,6 @@
 # Phase 2 — compact and machine API
 
-Status: active (2026-10-28) — phase 2.5 in progress
+Status: active (2026-10-28) — phase 2.6 in progress
 
 Milestone 2 of the [roadmap](../ROADMAP.md):
 the compactor's state machines, the catalog reads they make answerable, and the machine API the VE service reads them through.
@@ -31,8 +31,8 @@ This plan only orders the work.
 | 2.2 — close | `CloseIntent` and `PublishClose` of §8.2 with both triggers, `abandoned` intents (checklist 7's close), `capture close`, crash gaps in completeness, `closes_total{trigger}`; the reconciler adopting a close's orphan, which phase 1 reports and keeps (`internal/compact/orphans.go`), as a pack holding no producer range that moves neither coverage nor `highest_seq`, racing the publication in both orders | done (#23) |
 | 2.3 — deletion and retention | each object's deletion deadline as one function (hour end + retention, `merged_at` + D for a merged input), D above the download URL's lifetime, and a shortened retention kept from evicting an hour before an issued URL's promise across restarts and processes (specified in `compactor.md` §8.3 first, then built); `DeletePack` after D; `EvictHour` with `evicted_ranges` and the `parked → evicted-hour` move; the claim bucket listed and its receipt-less objects attributed by the SDK's metadata (hour, capture, seq, the bare object name against the bucket-qualified `Tpk-Payload-Ref`), with their `claim_objects` rows, and hours that hold claim objects but no scope, before eviction reads them; §8.4's predicate as one function; survivors deleted by the reconciler; `object list --survivors` and `--unattributed`; and their metrics | done (#24) |
 | 2.4 — reads and cursor | `ListDevices`, `ListCaptures`, `ListPacks` and `ListScopeChanges` as catalog reads (§7.3): `no-data` hours, unregistered intervals, overlap, the watermark read first, `low_water` and `epoch`, pruning by seq prefix | done (#25) |
-| 2.5 — service auth | client credentials against the IdP's JWKS with lazy discovery and one refresh on an unknown `kid`, mTLS, the static-token flag never enabled by a failure, the role each operation checks, `auth_failures_total`; and the `download` key purpose of `masking-keys.md` §9 brought forward whole (T-41): the binding's insert-or-compare, the `file` and `env` providers, issuing and accepted key ids, purpose separation | in-progress |
-| 2.6 — api | `proto/`, connect-go behind 2.5's checks from its first served request, the `api` role in `all` and `dev` with its readiness and metrics, the four reads, `PackURL` with 2.3's deadline, a 15-minute lifetime, its margin and floor and `pack-superseded`, presigned where the store presigns and `storage.presign` is on, otherwise served by the API with a download token (`HEAD` and ranged `GET`), presigning checked at start, `audit_log` for API actions | pending |
+| 2.5 — service auth | client credentials against the IdP's JWKS with lazy discovery and one refresh on an unknown `kid`, mTLS, the static-token flag never enabled by a failure, the role each operation checks, `auth_failures_total`; and the `download` key purpose of `masking-keys.md` §9 brought forward whole (T-41): the binding's insert-or-compare, the `file` and `env` providers, issuing and accepted key ids, purpose separation | done (#26) |
+| 2.6 — api | `proto/`, connect-go behind 2.5's checks from its first served request, the `api` role in `all` and `dev` with its readiness and metrics, the four reads, `PackURL` with 2.3's deadline, a 15-minute lifetime, its margin and floor and `pack-superseded`, presigned where the store presigns and `storage.presign` is on, otherwise served by the API with a download token (`HEAD` and ranged `GET`), presigning checked at start, `audit_log` for API actions | in-progress |
 | 2.7 — admin and status | `tracekeep status`, `deferred list`, admin through the `api` process on SQLite, `tracekeep migrate` applying the catalog's migrations through Atlas's Go library with its own revision table (T-41), tested on a fresh catalog, an upgrade and a failed application, `gap_observations_total` and `captures_with_unknown_tail`, the cost of ingest's metrics read measured at fleet size | pending |
 | 2.8 — gate | the roadmap row's cases and the checklist the phases before left open, audited against the tests as 1.7 did | pending |
 
@@ -45,6 +45,32 @@ the survivor, shared-object and unknown-capture races in 2.3, the cursor's commi
 2.8 audits them all, the membership and old-version cases phase 1 built included.
 The roadmap's gate case "a parked message replays in order after its blocker clears" is the parked consumer's own retry after `parking.redelivery_delay`,
 staged through a flush sorted by seq (T-40 withdrew an early replay to proposal P1).
+
+## Phase 2.6 — api
+
+Work on the branch `feat/api/machine-api`, one commit per step, test first;
+the branch merges by pull request once the whole phase passes an external post-implementation review.
+The machine API serves 2.4's reads and `PackURL` over connect-go, behind 2.5's checks from its first served request:
+authentication and the role check are HTTP middleware in front of every handler, since a client certificate's verified chain is on the `*http.Request` and not on a Connect peer,
+and a refused request never reaches a handler.
+Response compression is off on every handler (T-7).
+The generated Go is committed, so the build needs no protoc;
+`make proto` regenerates it with protoc and the plugins pinned at `protoc-gen-go` v1.36.12 (the `protobuf` module's) and `protoc-gen-connect-go` v1.21.1 (the `connect` module's), built under `tmp/bin`.
+A `PackURL` is the one API action phase 2 audits: the VE service is a privileged reader of packs (T-5), so every issued URL writes an `audit_log` row.
+Before the compactor's first retention record no deadline exists and no URL is issued (`compactor.md` §8.3).
+`QueryRecords`, `FindTransaction`, `Export`, `Restore`, `Digest`, admin over the API and people's sessions are later phases'.
+The gate case this phase owns is a promised download's lifetime.
+
+| Step | Scope | State |
+|---|---|---|
+| 1 | spec: `api.md` §10.1 made exact where it is silent: the `tracekeep.v1` service and its messages as the catalog's reads, times in Unix nanoseconds and ids as 16 bytes; a selector refused as invalid without a tool, with an empty window, above 1,000 devices or, for `ListPacks`, above 8,784 hours; `ListScopeChanges` filtered by tool and devices and not by the window; the Connect code of each refusal (`unauthenticated`, `permission_denied`, `invalid_argument`, `not_found`, `unavailable` before the first retention record) and `pack-superseded` as `failed_precondition` with a named detail; the download URL's form (the token in the path under the configured public URL, `Cache-Control: no-store`, `Referrer-Policy: no-referrer`, never logged); compression off; the `api` role's readiness and its start-time presigning check, a refused signature failing the start; the `audit_log` row of each `PackURL`; the `api.*` keys | pending |
+| 2 | `proto/tracekeep/v1` and its generated Go, `make proto` with the pinned plugins | pending |
+| 3 | api: the Connect handler behind the auth middleware, each procedure mapped to its operation, the principal in the context, refusals as Connect errors, compression off, and the request, error and duration metrics per operation; every operation refused unauthenticated and without its role before its handler runs | pending |
+| 4 | api: `ListDevices`, `ListCaptures`, `ListPacks` and `ListScopeChanges`, mapped from the catalog's results, the selector validated at the handler, the cursor's round trip with its staleness | pending |
+| 5 | catalog and api: `PackURL`: the pack's key and deadline from one snapshot, the expiry at the earlier of now plus the lifetime and the deadline less the margin, `pack-superseded` below the floor or for a deleted pack, a presigned URL where the store presigns and `store.presign` is on and otherwise an API URL with a download token, `download_urls_total{kind}` and `download_urls_refused_total`, the audit row | pending |
+| 6 | api: the download endpoint: the token verified for its object, `HEAD` and ranged `GET` (`206`) through `ObjectStore.Open`, an expired token or one of another object refused, nothing of the URL logged | pending |
+| 7 | service: the `api` role: its listener with TLS and client certificates verified when given, or plain HTTP/2 without TLS for `dev`, its readiness, the presigning check at start; `api` in `all` and `dev`, `dev` generating its static token and download key under its directory; a `dev` client listing packs and downloading one | pending |
+| 8 | schedules and the gate case: a URL issued, the retention shortened, and the token and object valid until the URL's expiry, a second api process validating the first's token; `pack-superseded` after a merge's deletion; the generated client against the served API over TLS with a client certificate | pending |
 
 ## Phase 2.5 — service auth
 
