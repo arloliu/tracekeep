@@ -31,8 +31,8 @@ const month = 720 * time.Hour
 type memBucket struct {
 	mu   sync.Mutex
 	objs map[string]ClaimInfo
-	// failDeletes makes every deletion fail.
-	failDeletes bool
+	// failDeletes makes every deletion fail; crashAfterDelete makes it fail once the object is deleted.
+	failDeletes, crashAfterDelete bool
 }
 
 func newBucket() *memBucket { return &memBucket{objs: map[string]ClaimInfo{}} }
@@ -51,6 +51,9 @@ func (b *memBucket) Delete(_ context.Context, name string) error {
 		return errors.New("delete refused")
 	}
 	delete(b.objs, name)
+	if b.crashAfterDelete {
+		return errors.New("crash after the delete")
+	}
 
 	return nil
 }
