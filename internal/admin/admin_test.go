@@ -442,3 +442,55 @@ func TestObjectList(t *testing.T) {
 		}
 	})
 }
+
+// status lists the pending captures by id first, then each tool with its open captures, deferred versions
+// and the backlog on its subjects, and the stream's whole backlog; deferred list groups what waits by capture and reason.
+func TestStatusAndDeferredList(t *testing.T) {
+	t.Parallel()
+	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
+		ctx := t.Context()
+		a, js, _ := setup(t, c)
+		admittedCapture := tracepack.UUID{9}
+		if _, err := c.ActivateConfig(ctx, []byte("config")); err != nil {
+			t.Fatal(err)
+		}
+		d := &catalog.Descriptor{Bytes: []byte("d"), ToolID: "T1", RecorderInstanceID: tracepack.UUID{4}, Device: "eqp", OriginNS: 1}
+		if _, err := c.Admit(ctx, identity(admittedCapture, 0, 1, 1), d); err != nil {
+			t.Fatal(err)
+		}
+		pending := tracepack.UUID{8}
+		if _, err := c.BeginParking(ctx, identity(pending, 1, 1, 2), "unknown-capture", "", 0); err != nil {
+			t.Fatal(err)
+		}
+		t1, err := tracepack.BusSubject("tk", "T1", admittedCapture)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t2, err := tracepack.BusSubject("tk", "T2", tracepack.UUID{7})
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, subject := range []string{t1, t1, t2} {
+			if _, err := js.Publish(ctx, subject, nil); err != nil {
+				t.Fatal(err)
+			}
+		}
+		st, err := a.Status(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(st.Pending) != 1 || st.Pending[0].Capture != pending.String() {
+			t.Errorf("pending = %+v", st.Pending)
+		}
+		if len(st.Tools) != 1 || st.Tools[0].ToolID != "T1" || st.Tools[0].OpenCaptures != 1 || st.Tools[0].Backlog != 2 {
+			t.Errorf("tools = %+v, want T1 with its open capture and two messages of backlog", st.Tools)
+		}
+		if st.BacklogMessages != 3 || st.BacklogBytes == 0 {
+			t.Errorf("the stream's backlog = %d messages, %d bytes; want all three", st.BacklogMessages, st.BacklogBytes)
+		}
+		groups, err := a.DeferredList(ctx, nil)
+		if err != nil || len(groups) != 1 || groups[0].Capture != pending.String() || groups[0].Reason != "unknown-capture" || groups[0].Count != 1 {
+			t.Errorf("DeferredList = %+v, %v", groups, err)
+		}
+	})
+}
