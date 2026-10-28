@@ -6,6 +6,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	neturl "net/url"
 	"os"
 	"path/filepath"
 	"time"
@@ -22,6 +23,7 @@ type Config struct {
 	Parking Parking `yaml:"parking"`
 	Compact Compact `yaml:"compact"`
 	Metrics Metrics `yaml:"metrics"`
+	API     API     `yaml:"api"`
 	Auth    Auth    `yaml:"auth"`
 	Keys    Keys    `yaml:"keys"`
 	// Retention is how long whole hours are kept; a record older than the retention horizon is beyond retention.
@@ -136,6 +138,21 @@ type Compact struct {
 	DeleteDelay time.Duration `yaml:"delete_delay" default:"1h" env:"TRACEKEEP_COMPACT_DELETE_DELAY" validate:"gt=0"`
 }
 
+// API is the api role's listener and download URLs (api.md §10.1).
+type API struct {
+	// Listen is the address the machine API and its downloads are served on, over TLS with the certificate and key below.
+	Listen      string `yaml:"listen" default:":8443" env:"TRACEKEEP_API_LISTEN"`
+	TLSCertFile string `yaml:"tls_cert_file" env:"TRACEKEEP_API_TLS_CERT_FILE"`
+	TLSKeyFile  string `yaml:"tls_key_file" env:"TRACEKEEP_API_TLS_KEY_FILE"`
+	// Plaintext serves HTTP/2 without TLS; only tracekeep dev sets it, never a file.
+	Plaintext bool `yaml:"-"`
+	// PublicURL is the base of the download URLs the API serves itself, as readers reach it.
+	PublicURL string `yaml:"public_url" env:"TRACEKEEP_API_PUBLIC_URL"`
+	// DownloadMargin is kept between a URL's expiry and its object's deadline; a URL that would live less than DownloadFloor is refused (T-33).
+	DownloadMargin time.Duration `yaml:"download_margin" default:"2m" env:"TRACEKEEP_API_DOWNLOAD_MARGIN" validate:"gte=0"`
+	DownloadFloor  time.Duration `yaml:"download_floor" default:"1m" env:"TRACEKEEP_API_DOWNLOAD_FLOOR" validate:"gt=0"`
+}
+
 // Metrics is the metrics and health listener (operations.md §10.4).
 type Metrics struct {
 	// Listen is the address /metrics, /healthz and /readyz are served on; empty serves none.
@@ -205,6 +222,15 @@ func (c *Config) check(dev bool) error {
 		}
 	default:
 		// The kind's own validation names it.
+	}
+	if (c.API.TLSCertFile == "") != (c.API.TLSKeyFile == "") {
+		errs = append(errs, errors.New("api.tls_cert_file and api.tls_key_file go together"))
+	}
+	if c.API.DownloadFloor >= c.Store.DownloadLifetime {
+		errs = append(errs, fmt.Errorf("api.download_floor %s must be below store.download_lifetime %s", c.API.DownloadFloor, c.Store.DownloadLifetime))
+	}
+	if u, err := neturl.Parse(c.API.PublicURL); c.API.PublicURL != "" && (err != nil || (u.Scheme != "https" && !dev) || u.Host == "") {
+		errs = append(errs, fmt.Errorf("api.public_url %q must be an https URL", c.API.PublicURL))
 	}
 	if (c.Bus.CertFile == "") != (c.Bus.KeyFile == "") {
 		errs = append(errs, errors.New("bus.cert_file and bus.key_file go together, for mutual TLS"))

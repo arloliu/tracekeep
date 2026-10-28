@@ -1,8 +1,11 @@
 package service
 
 import (
+	"cmp"
 	"context"
+	"crypto/rand"
 	"database/sql"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -13,8 +16,10 @@ import (
 	"github.com/nats-io/nats-server/v2/server"
 	"golang.org/x/sync/errgroup"
 
+	"github.com/arloliu/tracekeep/internal/auth"
 	"github.com/arloliu/tracekeep/internal/catalog"
 	"github.com/arloliu/tracekeep/internal/config"
+	"github.com/arloliu/tracekeep/internal/keys"
 	"github.com/arloliu/tracekeep/internal/sim"
 	"github.com/arloliu/tracekeep/internal/testbus"
 	"github.com/arloliu/tracekeep/migrations"
@@ -34,11 +39,13 @@ type DevOptions struct {
 	Flush time.Duration
 	// Rate is the simulator's forwarded requests per second; 0 runs no simulator.
 	Rate float64
-	Log  *slog.Logger
+	// API is where the machine API listens, over HTTP/2 without TLS; empty takes 127.0.0.1:8080.
+	API string
+	Log *slog.Logger
 }
 
 // Dev is tracekeep dev: an embedded bus, a SQLite catalog and an fs store under one directory,
-// ingest and compact, and the loopback simulator publishing to the bus, in one process (docs/ROADMAP.md phase 1).
+// ingest, compact and the machine API, and the loopback simulator publishing to the bus, in one process (docs/ROADMAP.md phase 1).
 type Dev struct {
 	Env  *Env
 	bus  *server.Server
@@ -61,6 +68,9 @@ func NewDev(ctx context.Context, o DevOptions) (*Dev, error) {
 	if err != nil {
 		return nil, errors.Join(err, d.Close())
 	}
+	if err := devAPI(o, cfg); err != nil {
+		return nil, errors.Join(err, d.Close())
+	}
 	if err := createCatalog(ctx, cfg.Catalog.DSN); err != nil {
 		return nil, errors.Join(err, d.Close())
 	}
@@ -68,12 +78,60 @@ func NewDev(ctx context.Context, o DevOptions) (*Dev, error) {
 		return nil, errors.Join(err, d.Close())
 	}
 	// A dev build is often a workspace build, whose classifier names no version.
-	d.Env.AllowUnversioned = true
+	d.Env.AllowUnversioned, d.Env.Dev = true, true
 	if err := Migrate(ctx, d.Env); err != nil {
 		return nil, errors.Join(err, d.Close())
 	}
 
 	return d, nil
+}
+
+// Dev's credentials, under its directory: the static token its API admits and its download key.
+const (
+	DevTokenFile = "api-token"
+	devKeyFile   = "download-key"
+	devKeyID     = "dev-download-1"
+)
+
+// devAPI configures dev's machine API in cfg: plain HTTP/2 on o.API, a static token admitting pack reads,
+// and a download key, each generated once under o.Dir with mode 0600 and kept across runs.
+func devAPI(o DevOptions, cfg *config.Config) error {
+	cfg.API.Listen, cfg.API.Plaintext, cfg.API.PublicURL = cmp.Or(o.API, "127.0.0.1:8080"), true, ""
+	token := filepath.Join(o.Dir, DevTokenFile)
+	if err := generate(token, func() []byte { return []byte(rand.Text() + rand.Text()) }); err != nil {
+		return err
+	}
+	b, err := os.ReadFile(token)
+	if err != nil {
+		return fmt.Errorf("dev: %w", err)
+	}
+	cfg.Auth.Static = config.Static{Enabled: true, Tokens: []config.StaticToken{
+		{Subject: "dev", TokenRef: "file://" + token, Token: string(b), Roles: []string{auth.RolePackReader, auth.RoleViewer}},
+	}}
+	key := filepath.Join(o.Dir, devKeyFile)
+	if err := generate(key, func() []byte { return []byte(base64.StdEncoding.EncodeToString([]byte(rand.Text() + rand.Text()))) }); err != nil {
+		return err
+	}
+	cfg.Keys = config.Keys{
+		Declared: map[string]config.KeyDeclaration{devKeyID: {Provider: keys.ProviderFile, Ref: key}},
+		Download: config.KeyPurpose{Issuing: devKeyID, Accepted: []string{devKeyID}},
+	}
+
+	return nil
+}
+
+// generate writes what content returns to a new file at path, mode 0600, unless one is there.
+func generate(path string, content func() []byte) error {
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if errors.Is(err, os.ErrExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("dev: %w", err)
+	}
+	_, err = f.Write(content())
+
+	return errors.Join(err, f.Close())
 }
 
 // createCatalog applies the embedded migrations to a SQLite catalog the file does not hold yet.
@@ -96,7 +154,7 @@ func createCatalog(ctx context.Context, path string) error {
 // URL is the embedded bus's client URL.
 func (d *Dev) URL() string { return d.bus.ClientURL() }
 
-// Run runs ingest, compact and the simulator until ctx ends.
+// Run runs ingest, compact, the machine API and the simulator until ctx ends.
 func (d *Dev) Run(ctx context.Context) error {
 	g, gctx := errgroup.WithContext(ctx)
 	g.Go(func() error { return All(gctx, d.Env) })
