@@ -524,3 +524,54 @@ func TestAdoptionWinsAfterThePut(t *testing.T) {
 		}
 	})
 }
+
+// Gate case 9: a put delayed across its hour's eviction never registers, though its flush read the horizon before the eviction.
+// The hour's first batch is registered; retention evicts the hour while the second batch's put is in flight,
+// and the registration that follows meets the hour's evicted ranges: nothing registered, the object deleted,
+// and each message terminated as beyond retention.
+func TestFlushPutAcrossAnEviction(t *testing.T) {
+	t.Parallel()
+	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
+		ctx := t.Context()
+		p := newPipeline(t, c)
+		g := p.ingester(slog.New(slog.DiscardHandler))
+		capture := tracepack.UUID{49}
+		p.deliver(t, traffic(t, capture))
+		if err := g.flush(ctx, p.b.All()); err != nil {
+			t.Fatal(err)
+		}
+		first := keys(t, p.st)
+		lease, ok, err := c.TakeLease(ctx, "compactor", "retention", time.Hour)
+		if err != nil || !ok {
+			t.Fatalf("TakeLease = %v, %v", ok, err)
+		}
+		if _, err := c.RecordRetention(ctx, lease, time.Hour, 0, 0); err != nil {
+			t.Fatal(err)
+		}
+		hour := HourOf(now)
+		hs := p.deliver(t, []Message{inline(t, capture, dataRecord(4, now+4), nil), inline(t, capture, dataRecord(5, now+5), nil)})
+		p.f.hooks[hookAfterPut] = func() error {
+			p.f.hooks[hookAfterPut] = nil
+			ev, err := c.EvictHour(ctx, lease, catalog.Scope{Capture: capture, Hour: hour}, (hour+3)*nsPerHour)
+			if err == nil && !ev.Evicted {
+				err = errors.New("the hour was not evicted")
+			}
+
+			return err
+		}
+		if err := g.flush(ctx, p.b.All()); err != nil {
+			t.Fatal(err)
+		}
+		for i, h := range hs {
+			if got := h.done(); !slices.Equal(got, []string{"term"}) {
+				t.Errorf("message %d: %v, want terminated", i, got)
+			}
+		}
+		if ks := keys(t, p.st); !slices.Equal(ks, first) {
+			t.Errorf("objects %v, want only the evicted batch's %v: the late put deleted", ks, first)
+		}
+		if got, err := c.Capture(ctx, capture); err != nil || got.HighestSeq != 3 {
+			t.Errorf("Capture = %+v, %v; want the highest seq 3, the late batch never registered", got, err)
+		}
+	})
+}
