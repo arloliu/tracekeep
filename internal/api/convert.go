@@ -21,13 +21,13 @@ func invalid(format string, args ...any) error {
 	return connect.NewError(connect.CodeInvalidArgument, fmt.Errorf(format, args...))
 }
 
-// failed maps a catalog error: a refused selector as invalid, anything else as internal.
+// failed maps a catalog error: a refused selector as invalid, anything else as the catalog unavailable, which a client retries.
 func failed(err error) error {
 	if errors.Is(err, catalog.ErrInvalidSelector) {
 		return connect.NewError(connect.CodeInvalidArgument, err)
 	}
 
-	return connect.NewError(connect.CodeInternal, err)
+	return connect.NewError(connect.CodeUnavailable, err)
 }
 
 // selector parses sel, refusing a missing selector, tool or window bound and an id that does not parse;

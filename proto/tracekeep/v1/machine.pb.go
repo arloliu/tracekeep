@@ -1675,7 +1675,7 @@ type ListScopeChangesRequest struct {
 	state    protoimpl.MessageState `protogen:"open.v1"`
 	After    *Cursor                `protobuf:"bytes,1,opt,name=after,proto3" json:"after,omitempty"`
 	Selector *Selector              `protobuf:"bytes,2,opt,name=selector,proto3" json:"selector,omitempty"`
-	// limit bounds the page; 0 takes the server's default.
+	// limit bounds the page: 0 takes 1,000, and above 10,000 is refused as invalid.
 	Limit         uint32 `protobuf:"varint,3,opt,name=limit,proto3" json:"limit,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache

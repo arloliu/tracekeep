@@ -152,6 +152,18 @@ func TestPromisedDownloadOutlivesAShortenedRetention(t *testing.T) {
 		if got, err := second.packURL(t, p); err != nil || !got.Expires.AsTime().Equal(at.Add(time.Hour-2*time.Minute)) {
 			t.Errorf("a URL after the shortening = %v, %v; want it clamped to the held deadline less the margin", got, err)
 		}
+		// Once the hour is evicted its pack's rows are gone, and a URL of it is not found.
+		evictNs := at.Add(f.r.DeleteDelay + time.Second).UnixNano()
+		cands, err := c.EvictCandidates(t.Context(), evictNs)
+		if err != nil || len(cands) != 1 {
+			t.Fatalf("EvictCandidates = %v, %v", cands, err)
+		}
+		if ev, err := c.EvictHour(t.Context(), f.lease, cands[0], evictNs); err != nil || !ev.Evicted {
+			t.Fatalf("EvictHour = %+v, %v", ev, err)
+		}
+		if _, err := second.packURL(t, p); connectrpc.CodeOf(err) != connectrpc.CodeNotFound {
+			t.Errorf("PackURL of an evicted pack = %v, want not found", err)
+		}
 	})
 }
 
