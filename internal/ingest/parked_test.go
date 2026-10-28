@@ -1,8 +1,12 @@
 package ingest
 
 import (
+	"bytes"
+	"encoding/hex"
+	"errors"
 	"log/slog"
 	"slices"
+	"strconv"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -13,6 +17,8 @@ import (
 	"github.com/arloliu/tracekeep/internal/bus"
 	"github.com/arloliu/tracekeep/internal/catalog"
 	"github.com/arloliu/tracekeep/internal/catalog/catalogtest"
+	"github.com/arloliu/tracekeep/internal/compact"
+	"github.com/arloliu/tracekeep/producer"
 	"github.com/arloliu/tracekeep/producer/busconfig"
 )
 
@@ -496,8 +502,9 @@ func TestConsumersProcessAtOnce(t *testing.T) {
 	})
 }
 
-// Checklist 5's claim-bearing case: a claim-check version parked, its hour evicted (an evicted-hour version, its object kept),
-// then terminated; once its object is deleted, as survivor cleanup does when its predicate holds, a late message of the same version
+// Checklist 5's claim-bearing case and gate case 20: a claim-check version parked, its hour evicted by retention (an evicted-hour version,
+// its object kept as a survivor), then terminated and its known copy acknowledged under the termination;
+// retention's survivor cleanup then releases the object, and a late message of the same version
 // is acknowledged under the termination without the object, with its own audit row.
 func TestLateClaimMessageAfterItsObjectIsGone(t *testing.T) {
 	t.Parallel()
@@ -510,23 +517,41 @@ func TestLateClaimMessageAfterItsObjectIsGone(t *testing.T) {
 		cl := newClaims()
 		late := claimCheck(t, cl, capture, dataRecord(1, now-int64(48*time.Hour)), nil)
 		r.publish(t, late, cl.objs[late.Env.MsgID])
+		sdkMetadata(t, r, late, now-int64(48*time.Hour))
 		r.step(t) // parked: expired, its capture unknown
 		// The start by claim-check too: its acknowledgement is confirmed, so the stream reflects it once a step returns.
 		start := claimCheck(t, cl, capture, startRecord(t, now), descriptorOf(t, "eqp"))
 		r.publish(t, start, cl.objs[start.Env.MsgID])
 		r.step(t)
 		pg := r.parkedConsumer(t)
+		pg.RedeliveryDelay = time.Millisecond // the evicted-hour copy returns for the step that acknowledges it under the termination
 		if err := pg.Step(ctx); err != nil {
 			t.Fatal(err)
 		}
 		if vs := versions(t, c, capture); len(vs) != 1 || vs[0].State != catalog.VersionEvictedHour {
 			t.Fatalf("versions %+v, want the claim-check version evicted-hour", vs)
 		}
+		rc := r.retention(t)
+		if rep := rc.retain(t); rep.Evicted != 1 || rep.Survivors != 1 {
+			t.Fatalf("Retain = %+v, want the hour evicted and the object a survivor", rep)
+		}
 		if n, err := c.TerminateParked(ctx, capture, nil, "op", "p5"); err != nil || n != 1 {
 			t.Fatalf("TerminateParked = %d, %v", n, err)
 		}
-		if err := r.claims.Delete(ctx, late.Env.MsgID); err != nil { // the survivor's object deleted
+		if rep := rc.retain(t); rep.Released != 0 {
+			t.Fatalf("Retain with the known copy waiting = %+v, want the survivor kept", rep)
+		}
+		if err := pg.Step(ctx); err != nil { // the known copy acknowledged under the termination
 			t.Fatal(err)
+		}
+		if got := copyStates(versions(t, c, capture), pg.Incarnation.ID); !slices.Equal(got, []string{"acked"}) {
+			t.Fatalf("copy rows %v, want the known copy acked", got)
+		}
+		if rep := rc.retain(t); rep.Released != 1 {
+			t.Fatalf("Retain once the copy is acked = %+v, want the survivor released", rep)
+		}
+		if _, err := r.claims.GetInfo(ctx, late.Env.MsgID); !errors.Is(err, jetstream.ErrObjectNotFound) {
+			t.Fatalf("the released survivor's object: %v, want it deleted", err)
 		}
 
 		time.Sleep(2 * window) // the scenario's delay: the late message comes after the window
@@ -548,6 +573,51 @@ func TestLateClaimMessageAfterItsObjectIsGone(t *testing.T) {
 			t.Errorf("the traffic stream holds %d messages, want the late message acknowledged without its object", n)
 		}
 	})
+}
+
+// sdkMetadata puts m's claim object again with the SDK's metadata, its record header and time, which retention's listing attributes it by.
+func sdkMetadata(t *testing.T, r *replica, m Message, ts int64) {
+	t.Helper()
+	data, err := r.claims.GetBytes(t.Context(), m.Env.MsgID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	meta := jetstream.ObjectMeta{Name: m.Env.MsgID, Metadata: map[string]string{
+		producer.ObjectMetaRecordHeader: hex.EncodeToString(m.Body), producer.ObjectMetaTSUTCNs: strconv.FormatInt(ts, 16),
+	}}
+	if _, err := r.claims.Put(t.Context(), meta, bytes.NewReader(data)); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// retainer is a compactor's retention over a replica's catalog, store and claim bucket, keeping a day.
+type retainer struct {
+	r     *compact.Compactor
+	lease catalog.Lease
+}
+
+func (r *replica) retention(t *testing.T) *retainer {
+	t.Helper()
+	lease, ok, err := r.cat.TakeLease(t.Context(), "compactor", "retention", time.Hour)
+	if err != nil || !ok {
+		t.Fatalf("TakeLease = %v, %v", ok, err)
+	}
+	c := &compact.Compactor{
+		Catalog: r.cat, Store: r.st, Log: slog.New(slog.DiscardHandler), Claims: compact.ObjectBucket{Store: r.claims},
+		Bus: bus.Config{ClaimBucket: bucket}, Retention: 24 * time.Hour, DeleteDelay: time.Hour, Now: r.clk.now,
+	}
+
+	return &retainer{r: c, lease: lease}
+}
+
+func (rt *retainer) retain(t *testing.T) compact.RetentionReport {
+	t.Helper()
+	var rep compact.RetentionReport
+	if err := rt.r.Retain(t.Context(), rt.lease, &rep); err != nil {
+		t.Fatal(err)
+	}
+
+	return rep
 }
 
 // shortenWindow sets s's duplicate window, before the scenario stores anything on it.
