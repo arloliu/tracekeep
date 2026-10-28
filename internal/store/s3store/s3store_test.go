@@ -6,7 +6,9 @@ import (
 	"crypto/rand"
 	"io"
 	"net/http"
+	neturl "net/url"
 	"os"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -79,7 +81,7 @@ func newStore(t *testing.T) *s3store.Store {
 
 func fetch(t *testing.T, s *s3store.Store, key string) ([]byte, int) {
 	t.Helper()
-	url, err := s.PresignGet(t.Context(), key, time.Minute)
+	url, _, err := s.PresignGet(t.Context(), key, time.Now().Add(time.Minute))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -113,5 +115,41 @@ func TestMissingBucketIsNotAMissingKey(t *testing.T) {
 	}
 	if err := missing.Delete(t.Context(), "staging/x"); err == nil {
 		t.Error("Delete in a missing bucket succeeded")
+	}
+}
+
+// A presigned URL never outlives until and surely reads until the expiry PresignGet returns: its signed date plus its lifetime lie between them.
+// Presigning needs no store, so this runs without one.
+func TestPresignStaysInsideUntil(t *testing.T) {
+	t.Parallel()
+	s, err := s3store.New(s3store.Config{Endpoint: "https://s3.example.invalid", Bucket: "packs", Region: "us-east-1", AccessKeyID: "ak", SecretAccessKey: "sk"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, life := range []time.Duration{15 * time.Minute, 15*time.Minute + 700*time.Millisecond, 3 * time.Second} {
+		until := time.Now().Add(life)
+		u, expires, err := s.PresignGet(t.Context(), "archive/c1/p1", until)
+		if err != nil {
+			t.Fatal(err)
+		}
+		q, err := neturl.ParseQuery(u[strings.Index(u, "?")+1:])
+		if err != nil {
+			t.Fatal(err)
+		}
+		signed, err := time.Parse("20060102T150405Z", q.Get("X-Amz-Date"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		secs, err := strconv.Atoi(q.Get("X-Amz-Expires"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		end := signed.Add(time.Duration(secs) * time.Second)
+		if end.After(until) || end.Before(expires) {
+			t.Errorf("lifetime %s: the URL ends %s, outside [%s, %s]", life, end, expires, until)
+		}
+	}
+	if _, _, err := s.PresignGet(t.Context(), "archive/c1/p1", time.Now().Add(time.Second)); err == nil {
+		t.Error("PresignGet with no whole second left succeeded")
 	}
 }

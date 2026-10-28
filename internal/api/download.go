@@ -17,30 +17,28 @@ const opDownload = "Download"
 // download serves the object a download token in the path names (api.md §10.1 *Downloads*):
 // HEAD and ranged GET as S3 answers them, through the store's ReaderAt; a refused token is forbidden and an absent object not found.
 // Neither the path nor the token is logged, and no response is cached or sent as a referrer.
-func (s *Server) download(w http.ResponseWriter, r *http.Request) {
+func (s *Server) download(w *downloadWriter, r *http.Request) {
 	start := time.Now()
-	w.Header().Set("Cache-Control", "no-store")
-	w.Header().Set("Referrer-Policy", "no-referrer")
-	status := s.serveDownload(w, r)
-	s.Metrics.Request(opDownload, strconv.Itoa(status), time.Since(start))
+	s.serveDownload(w, r)
+	s.Metrics.Request(opDownload, strconv.Itoa(w.status), time.Since(start))
 }
 
-func (s *Server) serveDownload(w http.ResponseWriter, r *http.Request) int {
+func (s *Server) serveDownload(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
 		w.Header().Set("Allow", "GET, HEAD")
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 
-		return http.StatusMethodNotAllowed
+		return
 	}
 	key, err := s.Downloads.Tokens.Object(r.Context(), strings.TrimPrefix(r.URL.Path, "/download/"))
 	if err != nil {
 		http.Error(w, "download refused", http.StatusForbidden)
-		return http.StatusForbidden
+		return
 	}
 	obj, err := s.Store.Open(r.Context(), key)
 	if errors.Is(err, store.ErrNotFound) {
 		http.Error(w, "not found", http.StatusNotFound)
-		return http.StatusNotFound
+		return
 	}
 	if err != nil {
 		if s.Log != nil {
@@ -48,24 +46,35 @@ func (s *Server) serveDownload(w http.ResponseWriter, r *http.Request) int {
 		}
 		http.Error(w, "the store failed", http.StatusBadGateway)
 
-		return http.StatusBadGateway
+		return
 	}
 	defer obj.Close()
 	w.Header().Set("Content-Type", "application/octet-stream")
 	// ServeContent answers HEAD, Range (206) and its refusals (416); no modification time is sent.
-	sw := &statusWriter{ResponseWriter: w, status: http.StatusOK}
-	http.ServeContent(sw, r, "", time.Time{}, io.NewSectionReader(obj, 0, obj.Size()))
-
-	return sw.status
+	http.ServeContent(w, r, "", time.Time{}, io.NewSectionReader(obj, 0, obj.Size()))
 }
 
-// statusWriter records the status a handler wrote.
-type statusWriter struct {
+// downloadWriter stamps every response it commits as uncached and sent as no referrer, whatever the handler removed before,
+// and records the status.
+type downloadWriter struct {
 	http.ResponseWriter
 	status int
 }
 
-func (s *statusWriter) WriteHeader(status int) {
-	s.status = status
-	s.ResponseWriter.WriteHeader(status)
+func (d *downloadWriter) WriteHeader(status int) {
+	if d.status == 0 {
+		d.status = status
+		h := d.Header()
+		h.Set("Cache-Control", "no-store")
+		h.Set("Referrer-Policy", "no-referrer")
+	}
+	d.ResponseWriter.WriteHeader(status)
+}
+
+func (d *downloadWriter) Write(b []byte) (int, error) {
+	if d.status == 0 {
+		d.WriteHeader(http.StatusOK)
+	}
+
+	return d.ResponseWriter.Write(b)
 }

@@ -20,6 +20,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -27,6 +28,9 @@ import (
 	"github.com/arloliu/go-secs/tracepack"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
+	"github.com/arloliu/tracekeep/internal/auth"
+	"github.com/arloliu/tracekeep/internal/keys"
+	"github.com/arloliu/tracekeep/internal/store"
 	tkv1 "github.com/arloliu/tracekeep/proto/tracekeep/v1"
 	"github.com/arloliu/tracekeep/proto/tracekeep/v1/tracekeepv1connect"
 )
@@ -39,7 +43,8 @@ func h2c() *http.Client {
 	return &http.Client{Transport: tr, Timeout: 10 * time.Second}
 }
 
-// waitFor calls f until it returns true or the deadline passes.
+// waitFor calls f until it returns true or the deadline passes: the state of roles running on their own
+// (ingest's registrations, the compactor's first retention record), which no barrier reaches from a dev loop.
 func waitFor(t *testing.T, what string, f func() bool) {
 	t.Helper()
 	deadline := time.Now().Add(30 * time.Second)
@@ -62,6 +67,8 @@ func TestDevServesTheMachineAPI(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = d.Close() })
+	bound := make(chan struct{})
+	d.Env.apiBound = func() { close(bound) }
 	run, stop := context.WithCancel(ctx)
 	done := make(chan error, 1)
 	go func() { done <- d.Run(run) }()
@@ -69,7 +76,7 @@ func TestDevServesTheMachineAPI(t *testing.T) {
 		stop()
 		<-done //nolint:errcheck // the run's end, its error the cancellation's
 	})
-	waitFor(t, "the api to listen", func() bool { return d.Env.APIAddr() != "" })
+	<-bound
 	token, err := os.ReadFile(filepath.Join(dir, DevTokenFile))
 	if err != nil {
 		t.Fatal(err)
@@ -145,11 +152,13 @@ func TestDevServesTheMachineAPI(t *testing.T) {
 	}
 }
 
-// presigning is a store whose presigned GETs reach srv.
+// presigning is a store whose presigned GETs reach url, each signed with a synthetic signature.
 type presigning struct{ url string }
 
-func (p presigning) PresignGet(_ context.Context, key string, _ time.Duration) (string, error) {
-	return p.url + "/" + key, nil
+const signature = "X-Amz-Signature=0123456789abcdef"
+
+func (p presigning) PresignGet(_ context.Context, key string, until time.Time) (string, time.Time, error) {
+	return p.url + "/" + key + "?" + signature, until, nil
 }
 
 // The start-time check: a presigned GET of an absent key answered not-found passes, any other answer fails the start.
@@ -169,8 +178,19 @@ func TestPresignCheck(t *testing.T) {
 	}
 	addr := ln.Addr().String()
 	_ = ln.Close()
-	if err := checkPresign(t.Context(), presigning{"http://" + addr}); err == nil || !strings.Contains(err.Error(), "store.presign") {
-		t.Errorf("an unreachable store: check = %v, want the advice to turn presigning off", err)
+	err = checkPresign(t.Context(), presigning{"http://" + addr})
+	if err == nil || !strings.Contains(err.Error(), "store.presign") || strings.Contains(err.Error(), signature) {
+		t.Errorf("an unreachable store: check = %v, want the advice to turn presigning off and no signed URL", err)
+	}
+	// A redirect to a page that is not found is the store refusing the signature, not accepting it.
+	notFound := httptest.NewServer(http.NotFoundHandler())
+	defer notFound.Close()
+	redirecting := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, notFound.URL+"/login", http.StatusFound)
+	}))
+	defer redirecting.Close()
+	if err := checkPresign(t.Context(), presigning{redirecting.URL}); err == nil || strings.Contains(err.Error(), signature) {
+		t.Errorf("a store redirecting to a 404: check = %v, want the start failed without the signed URL", err)
 	}
 }
 
@@ -299,6 +319,8 @@ func TestAPIRoleOverTLSWithAClientCertificate(t *testing.T) {
 	c.API.Plaintext, c.API.Listen, c.API.TLSCertFile, c.API.TLSKeyFile = false, "127.0.0.1:0", cert, key
 	c.API.PublicURL = "https://127.0.0.1"
 	c.Auth.MTLS.ClientCAFile, c.Auth.MTLS.Subjects = ca.file, map[string][]string{generator: {"pack-reader"}}
+	bound := make(chan struct{})
+	e.apiBound = func() { close(bound) }
 	run, stop := context.WithCancel(t.Context())
 	done := make(chan error, 1)
 	go func() { done <- API(run, e) }()
@@ -306,7 +328,7 @@ func TestAPIRoleOverTLSWithAClientCertificate(t *testing.T) {
 		stop()
 		<-done //nolint:errcheck // the role's end, its error the cancellation's
 	})
-	waitFor(t, "the api to listen", func() bool { return e.APIAddr() != "" })
+	<-bound
 	pemCert, err := os.ReadFile(cert)
 	if err != nil {
 		t.Fatal(err)
@@ -340,5 +362,93 @@ func TestAPIRoleOverTLSWithAClientCertificate(t *testing.T) {
 	stranger := client(newClientCA(t).issue(t, generator))
 	if _, err := stranger.ListPacks(t.Context(), connectrpc.NewRequest(&tkv1.ListPacksRequest{Selector: sel})); err == nil {
 		t.Error("ListPacks with a certificate of another authority succeeded")
+	}
+}
+
+// blocking is a store whose object reads block until their Open's context ends, signalling the first read and every close.
+type blocking struct {
+	store.ObjectStore
+	reading chan struct{}
+	closed  atomic.Bool
+}
+
+func (b *blocking) Open(ctx context.Context, key string) (store.Object, error) {
+	obj, err := b.ObjectStore.Open(ctx, key)
+	if err != nil {
+		return nil, err
+	}
+
+	return &blockingObject{Object: obj, ctx: ctx, b: b}, nil
+}
+
+type blockingObject struct {
+	store.Object
+	ctx context.Context //nolint:containedctx // the Open's context, which an object's reads use (store.ObjectStore)
+	b   *blocking
+}
+
+func (o *blockingObject) ReadAt(p []byte, off int64) (int, error) {
+	select {
+	case o.b.reading <- struct{}{}:
+	default:
+	}
+	<-o.ctx.Done()
+
+	return 0, o.ctx.Err()
+}
+
+func (o *blockingObject) Close() error {
+	o.b.closed.Store(true)
+	return o.Object.Close()
+}
+
+// A download still running when the role stops is cut once the shutdown bound passes,
+// and the role returns only after its handler ended and closed its object, before the store and catalog close.
+func TestAPIRoleStopsWithADownloadInFlight(t *testing.T) {
+	t.Parallel()
+	e := devEnv(t)
+	bound := make(chan struct{})
+	e.apiBound = func() { close(bound) }
+	e.apiShutdown = 100 * time.Millisecond
+	mem := store.NewMem()
+	body := bytes.Repeat([]byte("x"), 1<<20)
+	if err := mem.Put(t.Context(), "staging/blocked.tpk", bytes.NewReader(body), int64(len(body))); err != nil {
+		t.Fatal(err)
+	}
+	b := &blocking{ObjectStore: mem, reading: make(chan struct{}, 1)}
+	e.Store = b
+	c := e.Config
+	declared := map[string]keys.Declaration{}
+	for id, d := range c.Keys.Declared {
+		declared[id] = keys.Declaration{Provider: d.Provider, Ref: d.Ref}
+	}
+	k, err := keys.New(keys.Config{Declared: declared, Download: keys.Purpose{Issuing: c.Keys.Download.Issuing, Accepted: c.Keys.Download.Accepted}}, e.Catalog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tok, err := (&auth.Downloads{Keys: k}).Sign(t.Context(), "staging/blocked.tpk", time.Now().Add(time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, stop := context.WithCancel(t.Context())
+	done := make(chan error, 1)
+	go func() { done <- API(run, e) }()
+	<-bound
+	go func() {
+		resp, err := h2c().Get("http://" + e.APIAddr() + "/download/" + tok) //nolint:noctx // a test's download, cut by the server
+		if err == nil {
+			_, _ = io.Copy(io.Discard, resp.Body)
+			_ = resp.Body.Close()
+		}
+	}()
+	<-b.reading
+	stop()
+	select {
+	case <-done: //nolint:errcheck // the role's end, its error the cancellation's
+	case <-time.After(10 * time.Second):
+		t.Fatal("the role did not return after its shutdown bound")
+	}
+	if !b.closed.Load() {
+		t.Error("the role returned while the download's handler still held its object")
 	}
 }

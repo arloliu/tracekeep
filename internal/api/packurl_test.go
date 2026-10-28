@@ -45,18 +45,18 @@ func downloadKeys(t *testing.T, c *catalog.Catalog) *keys.Keys {
 	return k
 }
 
-// presigner records the lifetimes it presigned for.
+// presigner records the untils it presigned for, and reports each URL surely read until 1.5 s before its until, as a store signing in whole seconds would.
 type presigner struct {
-	mu        sync.Mutex
-	lifetimes []time.Duration
+	mu     sync.Mutex
+	untils []time.Time
 }
 
-func (p *presigner) PresignGet(_ context.Context, key string, lifetime time.Duration) (string, error) {
+func (p *presigner) PresignGet(_ context.Context, key string, until time.Time) (string, time.Time, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	p.lifetimes = append(p.lifetimes, lifetime)
+	p.untils = append(p.untils, until)
 
-	return "https://store.example.invalid/" + key + "?X-Amz-Signature=synthetic", nil
+	return "https://store.example.invalid/" + key + "?X-Amz-Signature=synthetic", until.Add(-1500 * time.Millisecond), nil
 }
 
 // retention is the period the tests record: hour's deadline is its end plus it.
@@ -79,6 +79,7 @@ func (w *world) urls(t *testing.T, now *time.Time, record bool) {
 	if err != nil || !ok {
 		t.Fatalf("TakeLease = %v, %v", ok, err)
 	}
+	w.lease = l
 	if _, err := w.c.RecordRetention(t.Context(), l, retention, time.Hour, time.Now().UnixNano()); err != nil {
 		t.Fatal(err)
 	}
@@ -195,7 +196,7 @@ func TestPackURLRefusals(t *testing.T) {
 	}
 }
 
-// Where the store presigns and presigning is on, the URL is presigned for its remaining lifetime in whole seconds.
+// Where the store presigns and presigning is on, the URL is presigned never to outlive its expiry, which the store reports.
 func TestPackURLPresigned(t *testing.T) {
 	t.Parallel()
 	w := newWorld(t, catalogtest.Open(t, catalog.EngineSQLite))
@@ -208,11 +209,12 @@ func TestPackURLPresigned(t *testing.T) {
 	if err != nil || !got.Presigned || !strings.Contains(got.Url, p.Key) {
 		t.Fatalf("PackURL = %v, %v; want a presigned URL of the pack's key", got, err)
 	}
-	if len(ps.lifetimes) != 1 || now.Add(ps.lifetimes[0]).After(got.Expires.AsTime()) || ps.lifetimes[0] > 15*time.Minute {
-		t.Errorf("presigned for %v from %s, the URL expiring %s; want no longer than its expiry", ps.lifetimes, now, got.Expires.AsTime())
+	// Presigned until the whole second within the lifetime, and reported with the expiry the store vouches for.
+	if want := now.Add(15 * time.Minute).Truncate(time.Second); len(ps.untils) != 1 || !ps.untils[0].Equal(want) {
+		t.Errorf("presigned until %v, want %s", ps.untils, want)
 	}
-	if got.Expires.Nanos != 0 {
-		t.Errorf("the expiry %s is not whole seconds", got.Expires.AsTime())
+	if len(ps.untils) == 1 && !got.Expires.AsTime().Equal(ps.untils[0].Add(-1500*time.Millisecond)) {
+		t.Errorf("the response's expiry %s is not the store's", got.Expires.AsTime())
 	}
 }
 
@@ -271,4 +273,30 @@ func scrape(t *testing.T, s *metrics.Server) string {
 	s.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", http.NoBody))
 
 	return rec.Body.String()
+}
+
+// A request that read its deadline, then stalled while the retention was shortened and its hold passed, issues nothing:
+// its URL would outlive the object the shortening lets retention evict.
+func TestPackURLStalledPastAShortening(t *testing.T) {
+	t.Parallel()
+	c := catalogtest.Open(t, catalog.EngineSQLite)
+	w := newWorld(t, c)
+	now := deadlineOf().Add(-24 * time.Hour)
+	w.urls(t, &now, true)
+	p := w.stage(t, w.admit(t))
+	l := w.lease
+	const hold = time.Hour
+	w.srv.afterRead = func() {
+		recorded := now.Add(time.Second)
+		if _, err := c.RecordRetention(context.Background(), l, time.Hour, hold, recorded.UnixNano()); err != nil {
+			t.Error(err)
+		}
+		now = recorded.Add(hold + time.Second)
+	}
+	if got, err := packURL(t, w, p.ID.String()); connect.CodeOf(err) != connect.CodeFailedPrecondition {
+		t.Errorf("PackURL stalled past a shortening and its hold = %v, %v; want pack-superseded", got, err)
+	}
+	if audit, _ := c.AuditEntries(t.Context(), p.Capture); len(audit) != 0 {
+		t.Errorf("a refused URL was audited: %+v", audit)
+	}
 }

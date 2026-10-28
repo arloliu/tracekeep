@@ -154,13 +154,21 @@ func (s *Store) Delete(ctx context.Context, key string) error {
 }
 
 // PresignGet implements store.Presigner.
-func (s *Store) PresignGet(ctx context.Context, key string, lifetime time.Duration) (string, error) {
+// The signature carries its signing time in whole seconds, sampled by the SDK at signing, and a lifetime in whole seconds:
+// a lifetime a second shorter than until leaves from the second before signing keeps the URL inside until
+// while signing takes less than a second, and the URL surely reads until that second plus the lifetime.
+func (s *Store) PresignGet(ctx context.Context, key string, until time.Time) (string, time.Time, error) {
+	from := time.Now().Truncate(time.Second)
+	lifetime := until.Sub(from).Truncate(time.Second) - time.Second
+	if lifetime < time.Second {
+		return "", time.Time{}, fmt.Errorf("s3store: presign %s: %s leaves no lifetime", key, until)
+	}
 	req, err := s.presign.PresignGetObject(ctx, &s3.GetObjectInput{Bucket: &s.bucket, Key: &key}, s3.WithPresignExpires(lifetime))
 	if err != nil {
-		return "", fmt.Errorf("s3store: presign %s: %w", key, err)
+		return "", time.Time{}, fmt.Errorf("s3store: presign %s: %w", key, err)
 	}
 
-	return req.URL, nil
+	return req.URL, from.Add(lifetime), nil
 }
 
 // get fills buf from key's bytes at from with one ranged GET.

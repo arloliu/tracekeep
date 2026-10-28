@@ -54,8 +54,11 @@ type Env struct {
 
 	// joined, when not nil, runs once Ingest's consumers joined and its readiness is registered; a test's barrier.
 	joined func()
-	// apiAddr is the api role's bound address.
-	apiAddr atomic.Value
+	// apiAddr is the api role's bound address; apiBound, when not nil, runs once it is bound, a test's barrier;
+	// apiShutdown, when not zero, replaces the api role's shutdown bound.
+	apiAddr     atomic.Value
+	apiBound    func()
+	apiShutdown time.Duration
 }
 
 // refreshInterval is how often ingest's metrics read the catalog and the bus.

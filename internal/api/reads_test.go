@@ -37,9 +37,11 @@ func newID(t *testing.T) tracepack.UUID {
 
 // world is a catalog with the machine API served over it.
 type world struct {
-	c   *catalog.Catalog
-	cl  tracekeepv1connect.MachineServiceClient
-	srv *Server
+	c *catalog.Catalog
+	// lease is the compactor lease urls took, to record retention under.
+	lease catalog.Lease
+	cl    tracekeepv1connect.MachineServiceClient
+	srv   *Server
 }
 
 func newWorld(t *testing.T, c *catalog.Catalog) *world {
