@@ -21,10 +21,27 @@ func race(t *testing.T, c *Catalog, first, second func()) {
 	<-b
 }
 
-// A merged input's deletion and a redelivered registration of its pack serialize on the capture row, in either order:
+// callers runs f for ingest's registration, with evidence, and for the reconciler's adoption under l (gate case 8).
+func callers(t *testing.T, f func(t *testing.T, reg func(l Lease) Registration)) {
+	t.Helper()
+	t.Run("ingest", func(t *testing.T) {
+		t.Parallel()
+		f(t, func(Lease) Registration { return Registration{Evidence: &Evidence{}} })
+	})
+	t.Run("adoption", func(t *testing.T) {
+		t.Parallel()
+		f(t, func(l Lease) Registration { return Registration{Lease: &l, Adopted: true} })
+	})
+}
+
+// A merged input's deletion and a redelivered registration or an adoption of its pack serialize on the capture row, in either order:
 // the registration finds the pack registered and writes nothing, and the deletion leaves the pack deleted with its tombstone.
 func TestRegistrationRacingADeletion(t *testing.T) {
 	t.Parallel()
+	callers(t, racesOfADeletion)
+}
+
+func racesOfADeletion(t *testing.T, reg func(Lease) Registration) {
 	for _, deleteFirst := range []bool{true, false} {
 		t.Run(map[bool]string{true: "deletion first", false: "registration first"}[deleteFirst], func(t *testing.T) {
 			t.Parallel()
@@ -35,7 +52,7 @@ func TestRegistrationRacingADeletion(t *testing.T) {
 				var out PackOutcome
 				var deleted bool
 				var errR, errD error
-				register := func() { out, errR = c.RegisterPack(t.Context(), in, Registration{Evidence: &Evidence{}}) }
+				register := func() { out, errR = c.RegisterPack(t.Context(), in, reg(l)) }
 				del := func() {
 					deleted, errD = c.DeletePack(t.Context(), l, Deletable{Pack: in.ID, Capture: capture, Key: in.Key}, deleteAt(t, c, archive), time.Hour)
 				}
@@ -101,11 +118,15 @@ func TestSharedKeyRegistrationRacingADeletion(t *testing.T) {
 	}
 }
 
-// An eviction and a registration into its hour by an ingest whose horizon is still older serialize on the capture row:
+// An eviction and a registration into its hour by an ingest or a reconciler whose horizon is still older serialize on the capture row:
 // a registration first is evicted with the hour; one after the eviction meets the hour's evicted ranges and is refused,
 // its key tombstoned and nothing registered, so the hour is not a candidate again.
 func TestRegistrationRacingAnEviction(t *testing.T) {
 	t.Parallel()
+	callers(t, racesOfAnEviction)
+}
+
+func racesOfAnEviction(t *testing.T, regOf func(Lease) Registration) {
 	for _, evictFirst := range []bool{true, false} {
 		t.Run(map[bool]string{true: "eviction first", false: "registration first"}[evictFirst], func(t *testing.T) {
 			t.Parallel()
@@ -118,7 +139,7 @@ func TestRegistrationRacingAnEviction(t *testing.T) {
 				var out PackOutcome
 				var ev Eviction
 				var errR, errE error
-				reg := func() { out, errR = c.RegisterPack(t.Context(), late, Registration{Evidence: &Evidence{}}) }
+				reg := func() { out, errR = c.RegisterPack(t.Context(), late, regOf(l)) }
 				evict := func() { ev, errE = c.EvictHour(t.Context(), l, Scope{capture, 1}, hourEvictedNow) }
 				if evictFirst {
 					race(t, c, evict, reg)
@@ -275,4 +296,114 @@ func TestLeaseTakeoverBeforeADeletionOrAnEviction(t *testing.T) {
 			}
 		})
 	}
+}
+
+// Gate case 18: an unknown capture's parking serializes on the capture row with its admission and with retention, in either order.
+// Parking first creates the pending row the admission then admits in place, the version still parking
+// (an admission first is TestParkingRacingAdmissionAndTermination's leg).
+// An eviction of the parked record's hour, before or after the parking, finds the capture not admitted and evicts nothing,
+// and once the capture is admitted the hour is a candidate whose eviction keeps the parked record's claim object as a survivor.
+func TestUnknownCaptureParkingRacingAdmissionAndRetention(t *testing.T) {
+	t.Parallel()
+	t.Run("parking then admission", func(t *testing.T) {
+		t.Parallel()
+		engines(t, func(t *testing.T, c *Catalog) {
+			gate(t, c)
+			capture := newID(t)
+			d := identity(capture, 3, 5)
+			var b Begun
+			var res Result
+			var errP, errA error
+			parkIt := func() { b, errP = c.BeginParking(t.Context(), d, "unknown-capture", "", d.Hour+1) }
+			admit := func() { res, errA = c.Admit(t.Context(), start(capture), descriptor(t, "d")) }
+			race(t, c, parkIt, admit)
+			if errP != nil || errA != nil || b.State != VersionParking || res.Outcome != Admitted {
+				t.Fatalf("BeginParking = %+v, %v; Admit = %+v, %v; want parking, then admitted", b, errP, res, errA)
+			}
+			if got, err := c.Capture(t.Context(), capture); err != nil || got.State != StateOpen {
+				t.Errorf("Capture = %+v, %v; want the pending row admitted in place", got, err)
+			}
+			if s, _ := versionState(t, c, d); s != "parking" {
+				t.Errorf("the version is %s, want parking: the horizon guard judges only a new row", s)
+			}
+		})
+	})
+	for _, evictFirst := range []bool{true, false} {
+		t.Run(map[bool]string{true: "eviction then parking", false: "parking then eviction"}[evictFirst], func(t *testing.T) {
+			t.Parallel()
+			engines(t, func(t *testing.T, c *Catalog) {
+				l := compactorLease(t, c, "w")
+				r := recordRetention(t, c, l, month, 0)
+				capture := newID(t)
+				claimRow(t, c, capture, 12, 1, "claims/12") // the listing's row of the unknown capture's object
+				d := identity(capture, 12, 9)
+				d.Hour = 1
+				var b Begun
+				var ev Eviction
+				var errP, errE error
+				// No horizon guard applies to a capture not admitted, even past the horizon.
+				parkIt := func() {
+					b, errP = c.BeginParking(t.Context(), d, "unknown-capture", "claims/12", r.HorizonHour(hourEvictedNow))
+				}
+				evictIt := func() { ev, errE = c.EvictHour(t.Context(), l, Scope{capture, 1}, hourEvictedNow) }
+				if evictFirst {
+					race(t, c, evictIt, parkIt)
+				} else {
+					race(t, c, parkIt, evictIt)
+				}
+				if errP != nil || errE != nil || b.State != VersionParking || ev.Evicted {
+					t.Fatalf("BeginParking = %+v, %v; EvictHour = %+v, %v; want parking and nothing evicted", b, errP, ev, errE)
+				}
+				if got := claimStates(t, c); got["claims/12"] != "live" {
+					t.Errorf("claim objects %v, want claims/12 live", got)
+				}
+				gate(t, c)
+				if res, err := c.Admit(t.Context(), start(capture), descriptor(t, "d")); err != nil || res.Outcome != Admitted {
+					t.Fatalf("Admit = %+v, %v", res, err)
+				}
+				if left := evictCandidates(t, c, hourEvictedNow); !slices.Equal(left, []Scope{{capture, 1}}) {
+					t.Fatalf("candidates %v, want the parked record's hour", left)
+				}
+				if ev := evict(t, c, l, Scope{capture, 1}, hourEvictedNow); !ev.Evicted || ev.Survivors != 1 || len(ev.Claims) != 0 {
+					t.Errorf("eviction after the admission = %+v; want the parked record's object kept as a survivor", ev)
+				}
+				if got := claimStates(t, c); got["claims/12"] == "" {
+					t.Errorf("claim objects %v, want claims/12 kept", got)
+				}
+			})
+		})
+	}
+}
+
+// Gate case 15: after a backward clock step a capture's later seqs fall in an earlier hour, which retention evicts through EvictHour
+// while the hour on either side of the step is kept: completeness reads the stepped seqs as evicted, never a gap,
+// and the seqs before and after them in the kept hour as retained.
+func TestEvictionAcrossABackwardClockStep(t *testing.T) {
+	t.Parallel()
+	engines(t, func(t *testing.T, c *Catalog) {
+		l := compactorLease(t, c, "w")
+		capture := admitted(t, c)
+		stepped := segment(t, capture, 1, 10, 19)
+		for _, p := range []*Pack{segment(t, capture, 3, 0, 9), stepped, segment(t, capture, 3, 20, 29)} {
+			register(t, c, p, Registration{Evidence: &Evidence{}})
+		}
+		recordRetention(t, c, l, month, 0)
+		if got := evictCandidates(t, c, hourEvictedNow); !slices.Equal(got, []Scope{{capture, 1}}) {
+			t.Fatalf("candidates %v, want only the stepped hour", got)
+		}
+		if ev := evict(t, c, l, Scope{capture, 1}, hourEvictedNow); !ev.Evicted || !slices.Equal(ev.Packs, []string{stepped.Key}) {
+			t.Fatalf("eviction %+v, want the stepped pack", ev)
+		}
+		got := completeness(t, c, capture)
+		retained := make([][2]uint64, 0, len(got.Retained))
+		for _, r := range got.Retained {
+			retained = append(retained, [2]uint64{r.SeqFrom, r.SeqTo})
+		}
+		if !slices.Equal(retained, [][2]uint64{{0, 9}, {20, 29}}) || !slices.Equal(evictedRuns(got.Evicted), [][2]uint64{{10, 19}}) {
+			t.Errorf("retained %v, evicted %v; want 0-9 and 20-29 retained, 10-19 evicted", retained, got.Evicted)
+		}
+		if len(got.Gaps) != 0 || got.Frontier != 29 {
+			t.Errorf("gaps %v, frontier %d; want no gap below the frontier 29", got.Gaps, got.Frontier)
+		}
+	})
 }

@@ -338,7 +338,7 @@ func TestTerminationRacingAnAdmission(t *testing.T) {
 
 // A registration and an order's application of one parked version, through a message above the cut-off and one the order covers:
 // the first to commit wins.
-// The application held under the row makes the registration abort and tombstone its key;
+// The application held under the row makes the registration abort and tombstone its key, which the reconciler then never adopts;
 // a registration held under the row stages the version, which the application then leaves staged.
 func TestTerminationRacingARegistration(t *testing.T) {
 	t.Parallel()
@@ -376,9 +376,13 @@ func TestTerminationRacingARegistration(t *testing.T) {
 				if errR != nil || errT != nil {
 					t.Fatalf("RegisterPack = %v, ApplyOrder = %v", errR, errT)
 				}
-				wantOut, wantR, wantState, packs := LostToTermination, ResolvedTerminated, "terminated", 0
+				wantOut, wantR, wantState, packs, tombs := LostToTermination, ResolvedTerminated, "terminated", 0, 1
 				if !termFirst {
-					wantOut, wantR, wantState, packs = Registered, ResolvedStaged, "staged", 1
+					wantOut, wantR, wantState, packs, tombs = Registered, ResolvedStaged, "staged", 1, 0
+				}
+				// The losing key is tombstoned with the abort, so the reconciler never adopts its object.
+				if n := count(t, c, `SELECT COUNT(*) FROM tombstones WHERE object_key = ?`, p.Key); n != tombs {
+					t.Errorf("%d tombstones of the pack's key, want %d", n, tombs)
 				}
 				if out != wantOut || r != wantR {
 					t.Errorf("registration = %v, application = %v; want %v, %v", out, r, wantOut, wantR)
