@@ -1,6 +1,6 @@
 # Roadmap
 
-Status: current (2026-10-27) — milestones from seed v21 §12
+Status: current (2026-10-28) — milestones from seed v21 §12
 
 Where tracekeep's work stands, and the single index of active plans (`.agents/rules/450-doc-lifecycle.md`).
 The milestones and their gates are seed v21 §12, moved unchanged;
@@ -49,17 +49,18 @@ eqp-hub reviews the SDK's API (`Bus`, `Preflight`, the six guarantees, the `secs
 
 ## Active plans
 
-- [Phase 2 — compact and machine API](plans/phase-2-compact-api.md)
+None.
 
 Phase 0 is done (#1, #3, #4, #7, #8).
 Phase 1 is done (#9, #11, #13, #14, #16, #17, #18, #19).
+Phase 2 is done (#22, #23, #24, #25, #26, #27, #28, #29).
 
 ## Open items
 
 - Whether timer-triggered FDC collection contexts count as interval polling (T-3) is with the FDC maintainers;
   thinning stays disabled until the poll channel exists.
-- connect-go's overhead against plain gRPC is measured before the API of phase 2 is implemented;
-  the result goes to the decision log.
+- Phase 4 measures connect-go's overhead on a long `QueryRecords` stream again, with real records, before it settles the stream's batching (T-7).
+- Configuration retirement waits for the first release that needs it.
 - The veq branch `docs/ve/log-service-decisions` (commit 7b8a019) carries the LS-row amendments and V-35;
   it is not merged yet.
 - The service's `go.mod` requires the SDK from its first tag (`producer/vX.Y.Z`) on;
