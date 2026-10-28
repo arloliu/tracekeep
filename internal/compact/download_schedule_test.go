@@ -213,6 +213,11 @@ func TestPackURLAroundAMergesDeletion(t *testing.T) {
 		if _, err := r.packURL(t, a); !superseded(err) {
 			t.Errorf("PackURL of a deleted input = %v, want pack-superseded", err)
 		}
+		// A replica whose clock lags the compactor's still refuses a deleted input, by its state.
+		now = deleteAt.Add(-10 * time.Minute)
+		if _, err := r.packURL(t, a); !superseded(err) {
+			t.Errorf("PackURL of a deleted input from a lagging clock = %v, want pack-superseded", err)
+		}
 		archive := f.archivePack(t)
 		if got, err := r.packURL(t, archive); err != nil || got.Url == "" {
 			t.Errorf("PackURL of the archive = %v, %v", got, err)

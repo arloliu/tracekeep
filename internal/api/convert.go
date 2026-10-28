@@ -30,11 +30,11 @@ func failed(err error) error {
 	return connect.NewError(connect.CodeUnavailable, err)
 }
 
-// selector parses sel, refusing a missing selector, tool or window bound and an id that does not parse;
-// the catalog refuses the rest (an empty window, too many devices or hours).
+// selector parses sel, refusing a missing selector or window bound and an id that does not parse;
+// the catalog refuses the rest (no tool, an empty window, too many devices or hours).
 func selector(sel *tkv1.Selector) (catalog.Selector, error) {
-	if sel == nil || sel.GetToolId() == "" {
-		return catalog.Selector{}, invalid("a selector needs a tool_id")
+	if sel == nil {
+		return catalog.Selector{}, invalid("no selector")
 	}
 	if !sel.GetFrom().IsValid() || !sel.GetTo().IsValid() {
 		return catalog.Selector{}, invalid("a selector needs a valid from and to")
