@@ -53,49 +53,50 @@ func waitBlocked(t *testing.T, c *Catalog, waitsBefore int64, stmt string, n int
 	t.Fatalf("the second transaction never waited in %q", stmt)
 }
 
-// waitBehindLeaseRow waits until the lapse of the compactor lease, `UPDATE leases`, waits on the lease row the held transaction keeps.
-// On MariaDB it proves the row locked, a locking read with NOWAIT refused in this test's own database,
-// and waits until the lapse is inside its statement there, which the lock then holds; on SQLite it is waitBlocked.
-// On a failure it closes release first, so the held transaction ends and the test's catalog can close.
-func waitBehindLeaseRow(t *testing.T, c *Catalog, waitsBefore int64, release chan struct{}) {
+// leaseRowHeld proves the held transaction holds the compactor's lease row before any other transaction asks for it:
+// on MariaDB a locking read with NOWAIT is refused in this test's own database, so only the held transaction can own the row;
+// SQLite serializes whole transactions, so there is nothing to prove.
+// Call it before starting the transaction that is to wait behind the row; on a failure it closes release first.
+func leaseRowHeld(t *testing.T, c *Catalog, release chan struct{}) {
 	t.Helper()
-	fail := func(format string, args ...any) {
-		t.Helper()
-		close(release)
-		t.Fatalf(format, args...)
-	}
 	if c.d.name == EngineSQLite {
-		deadline := time.Now().Add(10 * time.Second)
-		for c.write.Stats().WaitCount <= waitsBefore {
-			if time.Now().After(deadline) {
-				fail("the lapse never waited for the writer")
-			}
-			time.Sleep(time.Millisecond)
-		}
-
 		return
 	}
 	tx, err := c.write.BeginTxx(t.Context(), nil)
-	if err != nil {
-		fail("probe: %v", err)
+	if err == nil {
+		_, err = tx.ExecContext(t.Context(), `SELECT name FROM leases WHERE name = 'compactor' FOR UPDATE NOWAIT`)
+		_ = tx.Rollback()
 	}
-	_, err = tx.ExecContext(t.Context(), `SELECT name FROM leases WHERE name = 'compactor' FOR UPDATE NOWAIT`)
-	_ = tx.Rollback()
 	if err == nil || !strings.Contains(err.Error(), "1205") {
-		fail("a locking read of the lease row with NOWAIT = %v, want it refused: the held transaction does not hold the row", err)
+		close(release)
+		t.Fatalf("a locking read of the lease row with NOWAIT = %v, want it refused: the held transaction does not hold the row", err)
 	}
+}
+
+// waitBehindLeaseRow waits until the lapse of the compactor lease, `UPDATE leases`, waits on the lease row leaseRowHeld proved held:
+// on MariaDB until the lapse is inside its statement in this test's own database, which the held row then keeps waiting,
+// on SQLite until it waits for the one writer. On a failure it closes release first, so the held transaction ends.
+func waitBehindLeaseRow(t *testing.T, c *Catalog, waitsBefore int64, release chan struct{}) {
+	t.Helper()
 	deadline := time.Now().Add(10 * time.Second)
 	for {
-		var inside int
-		err := c.read.GetContext(t.Context(), &inside, `SELECT COUNT(*) FROM information_schema.PROCESSLIST
-			WHERE DB = DATABASE() AND INFO LIKE 'UPDATE leases%'`)
+		reached := c.write.Stats().WaitCount > waitsBefore
+		if c.d.name != EngineSQLite {
+			var inside int
+			err := c.read.GetContext(t.Context(), &inside, `SELECT COUNT(*) FROM information_schema.PROCESSLIST
+				WHERE DB = DATABASE() AND INFO LIKE 'UPDATE leases%'`)
+			if err != nil {
+				close(release)
+				t.Fatalf("process list: %v", err)
+			}
+			reached = inside > 0
+		}
 		switch {
-		case err != nil:
-			fail("process list: %v", err)
-		case inside > 0:
+		case reached:
 			return
 		case time.Now().After(deadline):
-			fail("the lapse never reached the lease row")
+			close(release)
+			t.Fatal("the lapse never reached the lease row")
 		default:
 			time.Sleep(time.Millisecond)
 		}
