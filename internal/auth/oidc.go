@@ -309,20 +309,22 @@ func (v *Verifier) fetch(ctx context.Context) ([]jose.JSONWebKey, error) {
 }
 
 // usable reports whether k can verify a service token: a valid public RSA or EC signing key with a kid,
-// naming no algorithm outside the allowlist.
+// naming, if any, an algorithm of the allowlist that its type and curve verify.
 func usable(k jose.JSONWebKey) bool {
 	if !k.Valid() || !k.IsPublic() || k.KeyID == "" || (k.Use != "" && k.Use != "sig") {
 		return false
 	}
-	if k.Algorithm != "" && !slices.Contains(signatureAlgs, jose.SignatureAlgorithm(k.Algorithm)) {
-		return false
-	}
-	switch k.Key.(type) {
-	case *rsa.PublicKey, *ecdsa.PublicKey:
-		return true
+	var algs []jose.SignatureAlgorithm
+	switch pub := k.Key.(type) {
+	case *rsa.PublicKey:
+		algs = []jose.SignatureAlgorithm{jose.RS256, jose.RS384, jose.RS512, jose.PS256, jose.PS384, jose.PS512}
+	case *ecdsa.PublicKey:
+		algs = []jose.SignatureAlgorithm{map[string]jose.SignatureAlgorithm{"P-256": jose.ES256, "P-384": jose.ES384, "P-521": jose.ES512}[pub.Curve.Params().Name]}
 	default:
 		return false
 	}
+
+	return k.Algorithm == "" || slices.Contains(algs, jose.SignatureAlgorithm(k.Algorithm))
 }
 
 func (v *Verifier) get(ctx context.Context, url string, dst any) error {
