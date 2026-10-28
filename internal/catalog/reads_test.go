@@ -3,6 +3,7 @@ package catalog
 import (
 	"database/sql"
 	"encoding/binary"
+	"errors"
 	"math"
 	"slices"
 	"testing"
@@ -444,13 +445,18 @@ func TestReadsRefuseAnEmptyWindow(t *testing.T) {
 	t.Parallel()
 	engines(t, func(t *testing.T, c *Catalog) {
 		described(t, c, spec{instance: newID(t), origin: 0})
-		for _, w := range []Selector{window(hourNS(2), hourNS(2)), window(hourNS(3), hourNS(1))} {
+		noTool := window(hourNS(1), hourNS(2))
+		noTool.ToolID = ""
+		for _, w := range []Selector{window(hourNS(2), hourNS(2)), window(hourNS(3), hourNS(1)), noTool} {
 			_, errP := c.ListPacks(t.Context(), w, readQ)
 			_, errC := c.ListCaptures(t.Context(), w, readQ)
 			_, errD := c.ListDevices(t.Context(), w, readQ)
-			if errP == nil || errC == nil || errD == nil {
-				t.Errorf("window [%d, %d): %v, %v, %v; want each refused", w.From, w.To, errP, errC, errD)
+			if !errors.Is(errP, ErrInvalidSelector) || !errors.Is(errC, ErrInvalidSelector) || !errors.Is(errD, ErrInvalidSelector) {
+				t.Errorf("selector %+v: %v, %v, %v; want each refused as invalid", w, errP, errC, errD)
 			}
+		}
+		if _, err := c.ListScopeChanges(t.Context(), Cursor{}, noTool, 10); !errors.Is(err, ErrInvalidSelector) {
+			t.Errorf("ListScopeChanges without a tool = %v, want refused as invalid", err)
 		}
 	})
 }
