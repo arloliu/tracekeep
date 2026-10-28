@@ -114,6 +114,9 @@ otherwise it is a URL on the API itself carrying a download token, and the API s
 - It is signed with the download-token key, a key purpose of its own (`masking-keys.md` §9),
   so any replica validates it without shared state;
   it carries the key id it was signed with, and rotation follows `masking-keys.md` §9's rule for session and download keys.
+  Its form is one URL-safe string holding a form version, the key id, the object key and the expiry in Unix seconds,
+  authenticated together by an HMAC-SHA-256 under the key id's material;
+  a validator checks the key id against the accepted ones before it resolves the key, and compares the MAC in constant time.
 - A request after the expiry is refused;
   the expiry is computed as for a presigned URL,
   so an object outlives every token issued for it as it outlives every presigned URL.
@@ -129,13 +132,41 @@ otherwise it is a URL on the API itself carrying a download token, and the API s
   roles map from IdP groups or claims in configuration.
 - **Services** (the VE generation service, the scorer): OAuth2 client credentials from the same IdP, validated against its JWKS;
   mTLS is the in-cluster alternative.
+  A request is authenticated by one credential:
+  a client certificate the TLS handshake verified, when mTLS is configured, and otherwise its `Authorization: Bearer` token.
+  - A **service token** is a compact JWS whose header names a `kid` and an `alg` among RS256, RS384, RS512, PS256, PS384, PS512, ES256, ES384 and ES512;
+    `none`, a symmetric `alg` and a missing `kid` are refused.
+    Its `iss` is the configured issuer, its `aud` holds the configured audience, and its `exp` is required;
+    `exp`, `nbf` and `iat` are checked with a leeway (default 1 min, the clock skew of T-33).
+    Its subject is `sub`; its roles are the values of a configured claim (default `roles`, a string or a list of strings),
+    each mapped to roles by configuration, an unmapped value granting none.
+  - An **mTLS principal** is the client certificate verified against the configured client CA:
+    its identity is the certificate's first URI name, else its first DNS name,
+    mapped to roles by configuration, an unmapped identity granting none.
 - **IdP outage**: discovery and JWKS are fetched lazily with retry and cached with a TTL;
   startup never blocks on the IdP;
   an unknown `kid` triggers one refresh, then rejection;
   existing sessions and cached keys keep working until expiry; new logins fail.
-  The **static-token provider** for a standalone host without an IdP is an explicit flag and is never activated by a failure.
+  Exactly:
+  discovery reads `<issuer>/.well-known/openid-configuration`, whose `issuer` must equal the configured one, for its `jwks_uri`;
+  the JWKS is cached with a TTL (default 1 h) and fetched by the first request that needs it, never at start;
+  one fetch is in flight at a time, and concurrent requests wait on it;
+  fetches start at least a minimum interval apart (default 10 s), so neither an outage nor a flood of unknown `kid`s drives the IdP harder;
+  an unknown `kid` refreshes once when the interval allows and is then rejected;
+  cached keys verify until their TTL ends, and with none the request is rejected as `idp-unavailable`.
+  The **static-token provider** for a standalone host without an IdP is an explicit flag and is never activated by a failure:
+  with the flag on, a bearer token is compared in constant time with each configured static token, read by reference, which names its subject and roles;
+  with it off, none is consulted, whatever the IdP's state.
 - **Roles**: `pack-reader` (ListPacks, PackURL), `pack-reader` or `viewer` (ListDevices, ListCaptures, ListScopeChanges, T-41), `scorer` (Digest), `viewer`, `exporter`, `restorer`, `admin`;
   separately granted.
+  Each operation names the roles any one of which admits it, `admin` alone admitting admin;
+  a principal holding none of them, and any operation the table does not name, is refused as `forbidden`.
+  A download served by the API checks its token, not a role (§10.1 *Downloads*).
+- **Failures** count in `auth_failures_total{reason}` (`operations.md` §10.4), one reason per refused request:
+  `missing` (no credential), `malformed`, `alg`, `unknown-kid`, `signature`, `issuer`, `audience`, `expired`, `not-yet-valid`,
+  `idp-unavailable`, `certificate` (an mTLS identity the configuration does not name), `static` (a bearer token that matches no static token while no IdP is configured),
+  `forbidden`, and `download` (a download token refused).
+  The reason is logged with the subject when one is known, never with the credential.
 
 ### 10.3 Frontend
 
