@@ -54,6 +54,7 @@ make test-s3        # the s3 store against MinIO and Ceph RGW in containers (nee
 make test-catalog   # the catalog's tests on MariaDB in a container (needs docker; with migrate-check, its own CI job)
 make migrate-diff NAME=<change>  # both engines' migration from schema.hcl (needs docker and atlas)
 make migrate-check  # validate the migrations and check schema.hcl for drift
+make proto          # regenerate proto/'s Go after a .proto change (needs protoc; the plugins are pinned and built under tmp/bin); commit the result
 make bench
 make ci             # check + docs-check + data-check + test + the service built with GOWORK=off
 ```

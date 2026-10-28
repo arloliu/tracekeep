@@ -3,6 +3,7 @@ module github.com/arloliu/tracekeep
 go 1.26.0
 
 require (
+	connectrpc.com/connect v1.21.1
 	github.com/arloliu/fuda v1.7.1
 	github.com/arloliu/go-secs/tracepack v0.9.0
 	github.com/arloliu/go-secs/v2 v2.8.0
@@ -17,6 +18,7 @@ require (
 	github.com/nats-io/nats.go v1.55.0
 	github.com/prometheus/client_golang v1.25.0
 	golang.org/x/sync v0.24.0
+	google.golang.org/protobuf v1.36.12
 	modernc.org/sqlite v1.61.0
 )
 
@@ -63,7 +65,6 @@ require (
 	golang.org/x/sys v0.49.0 // indirect
 	golang.org/x/text v0.42.0 // indirect
 	golang.org/x/time v0.16.0 // indirect
-	google.golang.org/protobuf v1.36.12 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 	modernc.org/libc v1.79.0 // indirect
 	modernc.org/mathutil v1.7.1 // indirect
