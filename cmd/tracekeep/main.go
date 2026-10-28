@@ -100,6 +100,13 @@ func dispatch(ctx context.Context, args []string, stdout, stderr io.Writer) erro
 		return err
 	}
 	log := slog.New(slog.NewJSONHandler(stderr, nil)).With("replica", cfg.Replica)
+	if command == "migrate" {
+		// The catalog first: the bus's part records the streams' incarnations in it.
+		if err := service.MigrateCatalog(ctx, &cfg.Catalog); err != nil {
+			return err
+		}
+		log.Info("tracekeep: the catalog is migrated")
+	}
 	e, err := service.Open(ctx, cfg, log)
 	if !isRole && errors.Is(err, catalog.ErrSecondWriter) {
 		// Admin through the owning process is the api role's, phase 2.

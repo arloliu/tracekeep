@@ -19,8 +19,7 @@ import (
 // setup writes a configuration over a migrated SQLite catalog, an embedded bus and an fs store, and returns its path.
 func setup(t *testing.T) string {
 	t.Helper()
-	dir := t.TempDir()
-	dsn := filepath.Join(dir, "catalog.db")
+	path, dsn := freshConfig(t)
 	db, err := sql.Open("sqlite", catalog.SQLiteURI(dsn))
 	if err != nil {
 		t.Fatal(err)
@@ -29,6 +28,16 @@ func setup(t *testing.T) string {
 		t.Fatal(err)
 	}
 	_ = db.Close()
+
+	return path
+}
+
+// freshConfig writes a configuration over a SQLite catalog not yet created, an embedded bus and an fs store,
+// and returns its path and the catalog's.
+func freshConfig(t *testing.T) (string, string) {
+	t.Helper()
+	dir := t.TempDir()
+	dsn := filepath.Join(dir, "catalog.db")
 	yaml := "catalog:\n  dsn: " + dsn + "\nbus:\n  url: " + testbus.Start(t) +
 		"\n  subject_prefix: tk\n  claim_bucket: claims\nstore:\n  kind: fs\n  dir: " + dir + "\nreplica: r1\n"
 	path := filepath.Join(dir, "tracekeep.yaml")
@@ -36,7 +45,30 @@ func setup(t *testing.T) string {
 		t.Fatal(err)
 	}
 
-	return path
+	return path, dsn
+}
+
+// tracekeep migrate creates and migrates a catalog that does not exist yet, then the bus, and a second run has nothing to do.
+func TestMigrateCreatesTheCatalog(t *testing.T) {
+	t.Parallel()
+	path, dsn := freshConfig(t)
+	for range 2 {
+		if code, _, stderr := tracekeep(t, "migrate", "--config", path); code != 0 {
+			t.Fatalf("migrate = %d, %s", code, stderr)
+		}
+	}
+	db, err := sql.Open("sqlite", catalog.SQLiteURI(dsn))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	var revs, incarnations int
+	if err := db.QueryRowContext(t.Context(), "SELECT COUNT(*) FROM "+migrations.Table+" WHERE applied = total").Scan(&revs); err != nil || revs == 0 {
+		t.Errorf("revisions = %d, %v; want the migrations recorded", revs, err)
+	}
+	if err := db.QueryRowContext(t.Context(), "SELECT COUNT(*) FROM bus_streams").Scan(&incarnations); err != nil || incarnations != 2 {
+		t.Errorf("incarnations = %d, %v; want both streams recorded after the catalog", incarnations, err)
+	}
 }
 
 func tracekeep(t *testing.T, args ...string) (code int, stdout, stderr string) {

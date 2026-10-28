@@ -208,8 +208,7 @@ func (e *Env) horizon() int64 {
 }
 
 // Migrate is the bus part of tracekeep migrate: the traffic and parking streams and the claim bucket ensured,
-// and each stream's incarnation recorded (parking.md *incarnations*).
-// The catalog's schema is applied with the Atlas CLI (T-12).
+// and each stream's incarnation recorded in the catalog (parking.md *incarnations*), which MigrateCatalog has migrated before.
 func Migrate(ctx context.Context, e *Env) error {
 	traffic, parked, err := bus.Ensure(ctx, e.JS, e.Bus())
 	if err != nil {
