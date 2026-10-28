@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"context"
 	"crypto/ecdsa"
+	"crypto/ed25519"
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/rsa"
@@ -398,7 +399,28 @@ func TestKeysOverHTTPSOnly(t *testing.T) {
 // A JWKS without a usable key is a failed fetch: a warm cache keeps verifying with its keys, and a cold one refuses as idp-unavailable.
 func TestMalformedJWKSKeepsTheCache(t *testing.T) {
 	t.Parallel()
-	for _, body := range []string{"{}", "null", `{"keys":null}`, `{"keys":[]}`, `{"keys":[{"kty":"oct","k":"c2VjcmV0"}]}`} {
+	ec, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ed, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	set := func(k jose.JSONWebKey) string {
+		b, err := json.Marshal(jose.JSONWebKeySet{Keys: []jose.JSONWebKey{k}})
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		return string(b)
+	}
+	for _, body := range []string{
+		"{}", "null", `{"keys":null}`, `{"keys":[]}`, `{"keys":[{"kty":"oct","k":"c2VjcmV0"}]}`,
+		set(jose.JSONWebKey{Key: &ec.PublicKey, Use: "sig"}),                                 // no kid
+		set(jose.JSONWebKey{Key: ed, KeyID: "k1", Use: "sig"}),                               // EdDSA, outside the allowlist
+		set(jose.JSONWebKey{Key: &ec.PublicKey, KeyID: "k1", Algorithm: string(jose.HS256)}), // an alg outside the allowlist
+	} {
 		p, c := newIDP(t), newClock()
 		s := p.newKey(t, "k1")
 		warm := p.verifier(c)

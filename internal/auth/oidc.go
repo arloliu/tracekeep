@@ -2,6 +2,8 @@ package auth
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/rsa"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -293,7 +295,7 @@ func (v *Verifier) fetch(ctx context.Context) ([]jose.JSONWebKey, error) {
 	var keys []jose.JSONWebKey
 	for _, raw := range set.Keys {
 		var k jose.JSONWebKey
-		if err := k.UnmarshalJSON(raw); err != nil || !k.Valid() || !k.IsPublic() || (k.Use != "" && k.Use != "sig") {
+		if err := k.UnmarshalJSON(raw); err != nil || !usable(k) {
 			continue
 		}
 		keys = append(keys, k)
@@ -304,6 +306,23 @@ func (v *Verifier) fetch(ctx context.Context) ([]jose.JSONWebKey, error) {
 	}
 
 	return keys, nil
+}
+
+// usable reports whether k can verify a service token: a valid public RSA or EC signing key with a kid,
+// naming no algorithm outside the allowlist.
+func usable(k jose.JSONWebKey) bool {
+	if !k.Valid() || !k.IsPublic() || k.KeyID == "" || (k.Use != "" && k.Use != "sig") {
+		return false
+	}
+	if k.Algorithm != "" && !slices.Contains(signatureAlgs, jose.SignatureAlgorithm(k.Algorithm)) {
+		return false
+	}
+	switch k.Key.(type) {
+	case *rsa.PublicKey, *ecdsa.PublicKey:
+		return true
+	default:
+		return false
+	}
 }
 
 func (v *Verifier) get(ctx context.Context, url string, dst any) error {
