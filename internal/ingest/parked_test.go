@@ -364,7 +364,9 @@ func TestParkingTurnedOff(t *testing.T) {
 
 // rejected → open with a parked copy, then staged (the gate's case): a capture whose descriptor this consumer refuses is rejected
 // and its records parked; a fixed release, which the test stands in for by widening the accepted descriptors,
-// accepts the parked start in a rejected → open transaction, and the copies are staged and acknowledged.
+// accepts the parked start in a rejected → open transaction, and the copies are staged and acknowledged, their copy rows acked.
+// Then the horizon (gate case 23): the hour is evicted, and a record of it delivered later, the capture now open, is terminated as
+// beyond retention, never parked.
 func TestRejectedCaptureOpensFromItsParkedCopy(t *testing.T) {
 	t.Parallel()
 	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
@@ -400,6 +402,23 @@ func TestRejectedCaptureOpensFromItsParkedCopy(t *testing.T) {
 		}
 		if n := msgs(t, r.parked(t)); n != 0 {
 			t.Errorf("the parking stream holds %d copies, want none", n)
+		}
+		if got := copyStates(vs, pg.Incarnation.ID); !slices.Equal(got, []string{"acked", "acked"}) {
+			t.Errorf("copy rows %v, want both acked", got)
+		}
+
+		evictNow(t, c, retention(t, c), capture)
+		r.g.Executor.Horizon = func() int64 { return (HourOf(now) + 1) * nsPerHour }
+		r.publish(t, inline(t, capture, dataRecord(2, now+2), nil), nil)
+		r.step(t)
+		if n := r.pending(t); n != 0 {
+			t.Errorf("the traffic stream holds %d messages, want the late record terminated", n)
+		}
+		if vs := versions(t, c, capture); len(vs) != 2 {
+			t.Errorf("versions %+v, want the late record never parked", vs)
+		}
+		if got, err := c.Capture(ctx, capture); err != nil || got.HighestSeq != 1 {
+			t.Errorf("Capture = %+v, %v; want the highest seq 1, the late record never registered", got, err)
 		}
 	})
 }
@@ -539,4 +558,69 @@ func shortenWindow(t *testing.T, r *replica, s jetstream.Stream, window time.Dur
 	if _, err := r.js.UpdateStream(t.Context(), cfg); err != nil {
 		t.Fatal(err)
 	}
+}
+
+// Gate case 10: an unknown capture's records, published and parked out of seq order, meet the parked consumer while their blocker holds:
+// each copy is nak'd with the parked consumer's redelivery delay, so the next fetch meets none and nothing is staged.
+// Once the capture's start is admitted, the redeliveries are staged in one pack whose records are in seq order.
+func TestParkedCopiesReplayInOrder(t *testing.T) {
+	t.Parallel()
+	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
+		ctx := t.Context()
+		r := newReplica(t, c)
+		capture := tracepack.UUID{50}
+		for _, seq := range []uint64{3, 1, 2} {
+			r.publish(t, inline(t, capture, dataRecord(seq, now+int64(seq)), nil), nil)
+			d, m := r.fetch(t)
+			if p, err := r.g.Coordinator.Park(ctx, Entry{D: d, Msg: m}, ReasonUnknownCapture, 0); err != nil || p.Confirmation != Confirmed {
+				t.Fatalf("Park of seq %d = %+v, %v", seq, p, err)
+			}
+		}
+		pg := r.parkedConsumer(t)
+		pg.RedeliveryDelay = 2 * pg.MaxWait // longer than a fetch waits, so the step after the naks meets no redelivery
+		for range 2 {
+			if err := pg.Step(ctx); err != nil {
+				t.Fatal(err)
+			}
+			r.clk.flushInterval()
+		}
+		vs := versions(t, c, capture)
+		if len(vs) != 3 || slices.ContainsFunc(vs, func(v catalog.ParkedVersion) bool { return v.State != catalog.VersionParked }) {
+			t.Fatalf("versions %+v, want three parked while the blocker holds", vs)
+		}
+		if got := copyStates(vs, pg.Incarnation.ID); len(got) != 3 || slices.ContainsFunc(got, func(s string) bool { return s != "waiting" }) {
+			t.Fatalf("the parked consumer's copy rows %v, want three waiting: each copy met while the blocker holds", got)
+		}
+		if n := msgs(t, r.parked(t)); n != 3 {
+			t.Fatalf("the parking stream holds %d copies, want 3 nak'd", n)
+		}
+
+		r.publish(t, inline(t, capture, startRecord(t, now), descriptorOf(t, "eqp")), nil)
+		r.step(t) // the start admits the capture
+		for i := 0; msgs(t, r.parked(t)) != 0; i++ {
+			if i == 20 {
+				t.Fatal("the redelivered copies were never staged")
+			}
+			if err := pg.Step(ctx); err != nil {
+				t.Fatal(err)
+			}
+			r.clk.flushInterval()
+		}
+		if vs := versions(t, c, capture); slices.ContainsFunc(vs, func(v catalog.ParkedVersion) bool { return v.State != catalog.VersionStaged }) {
+			t.Errorf("versions %+v, want every one staged", vs)
+		}
+		var staged [][]uint64
+		for _, k := range keys(t, r.st) {
+			var seqs []uint64
+			for _, rec := range records(t, r.st, k) {
+				seqs = append(seqs, rec.Seq)
+			}
+			if slices.Contains(seqs, 1) {
+				staged = append(staged, seqs)
+			}
+		}
+		if len(staged) != 1 || !slices.Equal(staged[0], []uint64{1, 2, 3}) {
+			t.Errorf("the staged packs' seqs %v, want one pack of 1, 2 and 3 in order", staged)
+		}
+	})
 }

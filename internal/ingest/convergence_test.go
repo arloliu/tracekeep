@@ -3,6 +3,7 @@ package ingest
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"slices"
 	"testing"
 	"time"
@@ -14,6 +15,7 @@ import (
 	"github.com/arloliu/tracekeep/internal/bus"
 	"github.com/arloliu/tracekeep/internal/catalog"
 	"github.com/arloliu/tracekeep/internal/catalog/catalogtest"
+	"github.com/arloliu/tracekeep/internal/compact"
 	"github.com/arloliu/tracekeep/producer/busconfig"
 )
 
@@ -238,8 +240,33 @@ func TestParkingCrashPoints(t *testing.T) {
 	})
 }
 
-// The crash point on the parked consumer's side: after the staging commit and before the copy's acknowledgement.
-// The redelivered copy is acknowledged from the staged row.
+// retention takes the compactor's lease and records a one-hour retention, for evictNow.
+func retention(t *testing.T, c *catalog.Catalog) catalog.Lease {
+	t.Helper()
+	lease, ok, err := c.TakeLease(t.Context(), "compactor", "retention", time.Hour)
+	if err != nil || !ok {
+		t.Fatalf("TakeLease = %v, %v", ok, err)
+	}
+	if _, err := c.RecordRetention(t.Context(), lease, time.Hour, 0, 0); err != nil {
+		t.Fatal(err)
+	}
+
+	return lease
+}
+
+// evictNow evicts capture's hour of now under lease, as retention does three hours later: its packs and receipts go.
+func evictNow(t *testing.T, c *catalog.Catalog, lease catalog.Lease, capture tracepack.UUID) {
+	t.Helper()
+	hour := HourOf(now)
+	ev, err := c.EvictHour(t.Context(), lease, catalog.Scope{Capture: capture, Hour: hour}, (hour+3)*nsPerHour)
+	if err != nil || !ev.Evicted || len(ev.Packs) == 0 {
+		t.Fatalf("EvictHour = %+v, %v; want the hour's packs evicted", ev, err)
+	}
+}
+
+// The crash point on the parked consumer's side: after the staging commit and before the copy's acknowledgement (gate case 19).
+// The copy reconciler, run then, marks nothing, the copy still on the stream; the hour and its receipts are evicted,
+// and the copy redelivered afterwards is acknowledged from the staged row alone.
 func TestParkedConsumerCrashAfterStaging(t *testing.T) {
 	t.Parallel()
 	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
@@ -269,11 +296,20 @@ func TestParkedConsumerCrashAfterStaging(t *testing.T) {
 		if vs := versions(t, c, capture); len(vs) != 1 || vs[0].State != catalog.VersionStaged {
 			t.Fatalf("versions %+v; want staged by the registration", vs)
 		}
+		lease := retention(t, c)
+		rc := &compact.Compactor{Catalog: c, Log: slog.New(slog.DiscardHandler)}
+		if n, err := rc.Copies(ctx, lease, catalog.RoleParking, r.parked(t)); err != nil || n != 0 {
+			t.Fatalf("Copies = %d, %v; want nothing marked while the copy is on the stream", n, err)
+		}
+		evictNow(t, c, lease, capture)
 		if err := pg.Step(ctx); err != nil {
 			t.Fatal(err)
 		}
 		if n := msgs(t, r.parked(t)); n != 0 {
 			t.Errorf("the parking stream holds %d copies, want the copy acknowledged from the staged row", n)
+		}
+		if vs := versions(t, c, capture); len(vs) != 1 || vs[0].State != catalog.VersionStaged {
+			t.Errorf("versions %+v; want the staged row kept through the eviction", vs)
 		}
 		if got := copyStates(versions(t, c, capture), pg.Incarnation.ID); !slices.Equal(got, []string{"acked"}) {
 			t.Errorf("copy rows %v, want acked", got)
@@ -282,9 +318,10 @@ func TestParkedConsumerCrashAfterStaging(t *testing.T) {
 }
 
 // A handler stalled past the ack wait (the gate's case): the original is redelivered to another handler, which parks it whole,
-// its copy stored and the original acknowledged, and the parked consumer stages the copy; the stalled handler, waking past the
-// duplicate window, publishes a second copy only once the first was acknowledged and its subject emptied, and that copy is
-// acknowledged from the staged row, its claim object gone; the stalled handler's late acknowledgement brings nothing back.
+// its copy stored and the original acknowledged, and the parked consumer stages the copy; the hour is evicted, its packs and receipts gone
+// (gate case 17); the stalled handler, waking past the duplicate window, publishes a second copy only once the first was acknowledged
+// and its subject emptied, and that copy is acknowledged from the staged row, its claim object gone, both copy rows acked;
+// the stalled handler's late acknowledgement brings nothing back.
 func TestLateSecondCopy(t *testing.T) {
 	t.Parallel()
 	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
@@ -333,6 +370,7 @@ func TestLateSecondCopy(t *testing.T) {
 		if vs := versions(t, c, capture); len(vs) != 1 || vs[0].State != catalog.VersionStaged || msgs(t, r.parked(t)) != 0 {
 			t.Fatalf("versions %+v, %d copies; want staged and the first copy acknowledged", vs, msgs(t, r.parked(t)))
 		}
+		evictNow(t, c, retention(t, c), capture)
 
 		// The stalled handler wakes past the window: its publish finds the subject empty and stores a second copy.
 		time.Sleep(4 * cfg.Duplicates) // the scenario's delay
@@ -347,6 +385,9 @@ func TestLateSecondCopy(t *testing.T) {
 		}
 		if n := msgs(t, r.parked(t)); n != 0 {
 			t.Errorf("the parking stream holds %d copies, want the late copy acknowledged as already staged", n)
+		}
+		if got := copyStates(versions(t, c, capture), pg.Incarnation.ID); !slices.Equal(got, []string{"acked", "acked"}) {
+			t.Errorf("copy rows %v, want both acked", got)
 		}
 		if err := stalledMsg.Ack(); err != nil {
 			t.Fatal(err)
