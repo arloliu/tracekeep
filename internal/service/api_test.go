@@ -6,6 +6,7 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
@@ -15,6 +16,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -224,4 +226,106 @@ func selfSigned(t *testing.T) (string, string) {
 	}
 
 	return cert, keyFile
+}
+
+// clientCA issues client certificates naming uri, and writes its own certificate to a file.
+type clientCA struct {
+	cert *x509.Certificate
+	key  *ecdsa.PrivateKey
+	file string
+}
+
+func newClientCA(t *testing.T) clientCA {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tmpl := &x509.Certificate{
+		SerialNumber: big.NewInt(7), Subject: pkix.Name{CommonName: "test client ca"}, IsCA: true, BasicConstraintsValid: true,
+		KeyUsage: x509.KeyUsageCertSign, NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(time.Hour),
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cert, err := x509.ParseCertificate(der)
+	if err != nil {
+		t.Fatal(err)
+	}
+	file := filepath.Join(t.TempDir(), "client-ca.pem")
+	if err := os.WriteFile(file, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	return clientCA{cert: cert, key: key, file: file}
+}
+
+func (c clientCA) issue(t *testing.T, uri string) tls.Certificate {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	u, err := url.Parse(uri)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tmpl := &x509.Certificate{
+		SerialNumber: big.NewInt(8), Subject: pkix.Name{CommonName: "client"}, URIs: []*url.URL{u},
+		ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}, KeyUsage: x509.KeyUsageDigitalSignature,
+		NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(time.Hour),
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, c.cert, &key.PublicKey, c.key)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	return tls.Certificate{Certificate: [][]byte{der}, PrivateKey: key}
+}
+
+// The api role over TLS: the generated client reads with a client certificate the configuration maps to pack-reader,
+// without a credential is refused, and a certificate of another authority fails the handshake.
+func TestAPIRoleOverTLSWithAClientCertificate(t *testing.T) {
+	t.Parallel()
+	e := devEnv(t)
+	const generator = "spiffe://cluster.example/ns/ve/sa/generator"
+	ca := newClientCA(t)
+	cert, key := selfSigned(t)
+	c := e.Config
+	c.API.Plaintext, c.API.Listen, c.API.TLSCertFile, c.API.TLSKeyFile = false, "127.0.0.1:0", cert, key
+	c.API.PublicURL = "https://127.0.0.1"
+	c.Auth.MTLS.ClientCAFile, c.Auth.MTLS.Subjects = ca.file, map[string][]string{generator: {"pack-reader"}}
+	run, stop := context.WithCancel(t.Context())
+	done := make(chan error, 1)
+	go func() { done <- API(run, e) }()
+	t.Cleanup(func() {
+		stop()
+		<-done //nolint:errcheck // the role's end, its error the cancellation's
+	})
+	waitFor(t, "the api to listen", func() bool { return e.APIAddr() != "" })
+	pemCert, err := os.ReadFile(cert)
+	if err != nil {
+		t.Fatal(err)
+	}
+	roots := x509.NewCertPool()
+	roots.AppendCertsFromPEM(pemCert)
+	client := func(certs ...tls.Certificate) tracekeepv1connect.MachineServiceClient {
+		tr := &http.Transport{TLSClientConfig: &tls.Config{RootCAs: roots, Certificates: certs, MinVersion: tls.VersionTLS12}, ForceAttemptHTTP2: true}
+		return tracekeepv1connect.NewMachineServiceClient(&http.Client{Transport: tr}, "https://"+e.APIAddr())
+	}
+	now := time.Now()
+	sel := &tkv1.Selector{ToolId: "SIM-TOOL", From: timestamppb.New(now.Add(-time.Hour)), To: timestamppb.New(now)}
+	withCert := client(ca.issue(t, generator))
+	if _, err := withCert.ListPacks(t.Context(), connectrpc.NewRequest(&tkv1.ListPacksRequest{Selector: sel})); err != nil {
+		t.Fatalf("ListPacks with the client certificate = %v", err)
+	}
+	bare := client()
+	if _, err := bare.ListPacks(t.Context(), connectrpc.NewRequest(&tkv1.ListPacksRequest{Selector: sel})); connectrpc.CodeOf(err) != connectrpc.CodeUnauthenticated {
+		t.Errorf("ListPacks with no credential = %v, want unauthenticated", err)
+	}
+	stranger := client(newClientCA(t).issue(t, generator))
+	if _, err := stranger.ListPacks(t.Context(), connectrpc.NewRequest(&tkv1.ListPacksRequest{Selector: sel})); err == nil {
+		t.Error("ListPacks with a certificate of another authority succeeded")
+	}
 }
