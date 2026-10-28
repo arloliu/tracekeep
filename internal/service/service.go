@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -59,6 +60,9 @@ type Env struct {
 	apiAddr     atomic.Value
 	apiBound    func()
 	apiShutdown time.Duration
+	// listening is closed once the api role's listener is bound.
+	listening     chan struct{}
+	listeningOnce sync.Once
 }
 
 // refreshInterval is how often ingest's metrics read the catalog and the bus.
@@ -116,7 +120,7 @@ func failing(err error) func(context.Context) error {
 
 // Open opens the catalog, the bus connection and the store cfg names.
 func Open(ctx context.Context, cfg *config.Config, log *slog.Logger) (*Env, error) {
-	e := &Env{Config: cfg, Log: log}
+	e := &Env{Config: cfg, Log: log, listening: make(chan struct{})}
 	var err error
 	if e.Catalog, err = catalog.Open(ctx, catalog.Config{Engine: cfg.Catalog.Engine, DSN: cfg.Catalog.DSN}); err != nil {
 		return nil, err

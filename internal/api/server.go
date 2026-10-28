@@ -14,6 +14,7 @@ import (
 	"connectrpc.com/connect"
 	"github.com/arloliu/go-secs/tracepack"
 
+	"github.com/arloliu/tracekeep/internal/admin"
 	"github.com/arloliu/tracekeep/internal/auth"
 	"github.com/arloliu/tracekeep/internal/catalog"
 	"github.com/arloliu/tracekeep/internal/metrics"
@@ -28,6 +29,8 @@ type Server struct {
 	Catalog Catalog
 	// QuietPeriod is Q, against which the reads report unregistered intervals (catalog.md §7.3).
 	QuietPeriod time.Duration
+	// Admin runs AdminService's commands, its Actor replaced by each request's principal; nil runs none.
+	Admin *admin.Admin
 	// Store serves the downloads the API serves itself; Downloads issues every download URL.
 	Store     store.ObjectStore
 	Downloads Downloads
@@ -74,6 +77,7 @@ func PrincipalFrom(ctx context.Context) (auth.Principal, bool) {
 // operations are the procedures the service serves; any other path under it is opUnknown, one label, and refused.
 var operations = map[string]bool{
 	auth.OpListDevices: true, auth.OpListCaptures: true, auth.OpListPacks: true, auth.OpListScopeChanges: true, auth.OpPackURL: true,
+	auth.OpAdmin: true,
 }
 
 const opUnknown = "unknown"
@@ -87,6 +91,9 @@ func (s *Server) routes(impl tracekeepv1connect.MachineServiceHandler) http.Hand
 	prefix, h := tracekeepv1connect.NewMachineServiceHandler(impl,
 		connect.WithCompression("gzip", nil, nil), connect.WithInterceptors(s.observe()))
 	mux.Handle(prefix, s.authenticate(prefix, h))
+	adminPrefix, ah := tracekeepv1connect.NewAdminServiceHandler(adminService{s: s},
+		connect.WithCompression("gzip", nil, nil), connect.WithInterceptors(s.observe()))
+	mux.Handle(adminPrefix, s.authenticate(adminPrefix, ah))
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch p := r.URL.Path; {

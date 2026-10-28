@@ -1,0 +1,23 @@
+// Admin over the API (api.md §10.1 *Admin over the API*): the transport of tracekeep admin's commands
+// to the process that holds a SQLite catalog, under the admin role, audited with the principal as actor.
+syntax = "proto3";
+
+package tracekeep.v1;
+
+option go_package = "github.com/arloliu/tracekeep/proto/tracekeep/v1;tracekeepv1";
+
+// AdminService runs an operator command in the api process.
+service AdminService {
+  // Admin runs the command its words name, as tracekeep admin would, and answers what that command prints.
+  rpc Admin(AdminRequest) returns (AdminResponse);
+}
+
+message AdminRequest {
+  // words are the command and its arguments, as tracekeep admin takes them: "parked", "list", ...
+  repeated string words = 1;
+}
+
+message AdminResponse {
+  // json is the command's result, the JSON tracekeep admin prints.
+  string json = 1;
+}
