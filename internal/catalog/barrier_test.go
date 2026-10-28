@@ -52,6 +52,33 @@ func waitBlocked(t *testing.T, c *Catalog, waitsBefore int64, stmt string, n int
 	t.Fatalf("the second transaction never waited in %q", stmt)
 }
 
+// waitLockWait is waitBlocked for a wait on a row lock the held transaction keeps until its release:
+// on MariaDB it waits until InnoDB reports stmt in a lock wait, which a statement that merely ran never shows,
+// and on SQLite, which serializes whole transactions, it is waitBlocked.
+// InnoDB refreshes INNODB_TRX only when it was not read for 0.1 s, so the poll is slower than that.
+func waitLockWait(t *testing.T, c *Catalog, waitsBefore int64, stmt string) {
+	t.Helper()
+	if c.d.name == EngineSQLite {
+		waitBlocked(t, c, waitsBefore, stmt, 1)
+
+		return
+	}
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		var waiting int
+		err := c.read.GetContext(t.Context(), &waiting, `SELECT COUNT(*) FROM information_schema.INNODB_TRX
+			WHERE trx_state = 'LOCK WAIT' AND trx_query LIKE ?`, stmt+"%")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if waiting > 0 {
+			return
+		}
+		time.Sleep(150 * time.Millisecond)
+	}
+	t.Fatalf("no transaction waited on a lock in %q", stmt)
+}
+
 // run runs f on its own goroutine and returns a channel closed when it returns.
 func run(f func()) <-chan struct{} {
 	done := make(chan struct{})

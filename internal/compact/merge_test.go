@@ -141,44 +141,67 @@ func TestMergeWaitsForTheQuietPeriod(t *testing.T) {
 	})
 }
 
-// A registration between the snapshot and the commit fails the commit; the archive is left to the reconciler,
-// and the next pass merges the scope with the late segment.
+// A registration between the snapshot and the commit fails the commit, in an open scope and in one a merge's later segment reopened
+// (gate case 2); the archive is left to the reconciler, and the next pass merges the scope with the late segment.
 func TestMergeIsStaleAfterARegistration(t *testing.T) {
 	t.Parallel()
-	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
-		f := newFixture(t, c)
-		f.merging(t)
-		capture := f.admit(t)
-		f.stage(t, segment(t, capture, []uint64{0, 1}, false))
-		late := segment(t, capture, []uint64{2, 3}, false)
-		f.r.hooks[hookMergePut] = func() {
-			f.r.hooks[hookMergePut] = nil
-			f.stage(t, late)
-		}
-		scope := catalog.Scope{Capture: capture, Hour: hour}
-		rep := f.merges(t)
-		if !slices.Equal(rep.Stale, []catalog.Scope{scope}) || len(rep.Merged) != 0 {
-			t.Fatalf("Merges = %+v, want the scope stale", rep)
-		}
-		left := f.archives(t)
-		if len(left) != 1 {
-			t.Fatalf("archives = %v, want the stale one left", left)
-		}
-		if got, _ := c.KeyStanding(t.Context(), left[0]); got != catalog.KeyUnknown {
-			t.Errorf("the stale archive's standing = %v, want unknown: the reconciler decides", got)
-		}
-		if rep := f.merges(t); !slices.Equal(rep.Merged, []catalog.Scope{scope}) {
-			t.Fatalf("the next Merges = %+v, want the scope merged", rep)
-		}
-		snap, err := c.MergeSnapshot(t.Context(), scope)
-		if err != nil || len(snap.Inputs) != 1 {
-			t.Fatalf("snapshot = %+v, %v", snap, err)
-		}
-		p, _, err := f.r.read(t.Context(), store.ObjectInfo{Key: snap.Inputs[0].Key, Size: snap.Inputs[0].Size})
-		if err != nil || len(p.Ranges) != 1 || p.Ranges[0].SeqTo != 3 {
-			t.Errorf("the archive's pack = %+v, %v; want seqs 0-3", p, err)
-		}
-	})
+	for _, reopened := range []bool{false, true} {
+		t.Run(map[bool]string{false: "open", true: "reopened"}[reopened], func(t *testing.T) {
+			t.Parallel()
+			catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
+				f := newFixture(t, c)
+				f.merging(t)
+				capture := f.admit(t)
+				scope := catalog.Scope{Capture: capture, Hour: hour}
+				f.stage(t, segment(t, capture, []uint64{0, 1}, false))
+				last := uint64(3)
+				if reopened {
+					if rep := f.merges(t); !slices.Equal(rep.Merged, []catalog.Scope{scope}) {
+						t.Fatalf("the first Merges = %+v", rep)
+					}
+					f.stage(t, segment(t, capture, []uint64{2, 3}, false))
+					if snap, err := c.MergeSnapshot(t.Context(), scope); err != nil || snap.State != "reopened" {
+						t.Fatalf("scope = %+v, %v; want reopened", snap, err)
+					}
+					last = 5
+				}
+				late := segment(t, capture, []uint64{last - 1, last}, false)
+				f.r.hooks[hookMergePut] = func() {
+					f.r.hooks[hookMergePut] = nil
+					f.stage(t, late)
+				}
+				before := len(f.archives(t))
+				rep := f.merges(t)
+				if !slices.Equal(rep.Stale, []catalog.Scope{scope}) || len(rep.Merged) != 0 {
+					t.Fatalf("Merges = %+v, want the scope stale", rep)
+				}
+				left := f.archives(t)
+				if len(left) != before+1 {
+					t.Fatalf("archives = %v, want the stale one left", left)
+				}
+				unknown := 0
+				for _, k := range left {
+					if got, _ := c.KeyStanding(t.Context(), k); got == catalog.KeyUnknown {
+						unknown++
+					}
+				}
+				if unknown != 1 {
+					t.Errorf("%d archives of unknown standing, want the stale one's: the reconciler decides", unknown)
+				}
+				if rep := f.merges(t); !slices.Equal(rep.Merged, []catalog.Scope{scope}) {
+					t.Fatalf("the next Merges = %+v, want the scope merged", rep)
+				}
+				snap, err := c.MergeSnapshot(t.Context(), scope)
+				if err != nil || len(snap.Inputs) != 1 {
+					t.Fatalf("snapshot = %+v, %v", snap, err)
+				}
+				p, _, err := f.r.read(t.Context(), store.ObjectInfo{Key: snap.Inputs[0].Key, Size: snap.Inputs[0].Size})
+				if err != nil || len(p.Ranges) != 1 || p.Ranges[0].SeqFrom != 0 || p.Ranges[0].SeqTo != last {
+					t.Errorf("the archive's pack = %+v, %v; want seqs 0-%d", p, err, last)
+				}
+			})
+		})
+	}
 }
 
 // A merge that fails leaves the scope as it was and puts no archive: a damaged input, and a store whose read fails.

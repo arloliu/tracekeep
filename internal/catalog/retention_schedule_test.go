@@ -261,6 +261,55 @@ func TestSurvivorOfTwoVersions(t *testing.T) {
 	})
 }
 
+// Gate case 3's other leg: a lease takeover blocked behind the lease row a deletion or an eviction holds lands after it,
+// which committed under the lease it held; the takeover then fences past it.
+func TestLeaseTakeoverBehindADeletionOrAnEviction(t *testing.T) {
+	t.Parallel()
+	for _, evicting := range []bool{false, true} {
+		t.Run(map[bool]string{false: "deletion", true: "eviction"}[evicting], func(t *testing.T) {
+			t.Parallel()
+			engines(t, func(t *testing.T, c *Catalog) {
+				l := compactorLease(t, c, "old")
+				capture, inputs, archive := mergedScope(t, c, l, 0)
+				recordRetention(t, c, l, month, 0)
+				at := deleteAt(t, c, archive)
+				held, release := holdAt(c, hookBeforeCommit)
+				var done bool
+				var err error
+				ran := run(func() {
+					if evicting {
+						var ev Eviction
+						ev, err = c.EvictHour(t.Context(), l, Scope{capture, 1}, hourEvictedNow)
+						done = ev.Evicted
+
+						return
+					}
+					done, err = c.DeletePack(t.Context(), l, Deletable{Pack: inputs[0].ID, Capture: capture, Key: inputs[0].Key}, at, time.Hour)
+				})
+				<-held
+				waits := c.write.Stats().WaitCount
+				var lerr error
+				lapsed := run(func() {
+					_, lerr = c.write.ExecContext(t.Context(), `UPDATE leases SET until_ns = 0 WHERE name = 'compactor'`)
+				})
+				waitLockWait(t, c, waits, "UPDATE leases")
+				close(release)
+				<-ran
+				<-lapsed
+				if err != nil || lerr != nil || !done {
+					t.Fatalf("evicting %v: done %v, %v; lapse %v; want committed under the lease it held", evicting, done, err, lerr)
+				}
+				if nl := compactorLease(t, c, "new"); nl.Fence != l.Fence+1 {
+					t.Errorf("the takeover's fence %d, want %d", nl.Fence, l.Fence+1)
+				}
+				if count(t, c, `SELECT COUNT(*) FROM tombstones`) == 0 {
+					t.Error("the committed transaction's tombstones are missing")
+				}
+			})
+		})
+	}
+}
+
 // A lease taken over while a deletion or an eviction holds the capture row, before its lease check: nothing is written.
 func TestLeaseTakeoverBeforeADeletionOrAnEviction(t *testing.T) {
 	t.Parallel()
