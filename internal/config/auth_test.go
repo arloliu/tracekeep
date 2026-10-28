@@ -1,6 +1,7 @@
 package config
 
 import (
+	"crypto/rand"
 	"os"
 	"path/filepath"
 	"slices"
@@ -68,14 +69,26 @@ func TestStaticTokenByReference(t *testing.T) {
 
 func TestAuthAndKeysValidation(t *testing.T) {
 	t.Parallel()
+	dir := t.TempDir()
+	ref := func(token string) string {
+		path := filepath.Join(dir, rand.Text())
+		if err := os.WriteFile(path, []byte(token), 0o600); err != nil {
+			t.Fatal(err)
+		}
+
+		return "file://" + path
+	}
+	long := strings.Repeat("x", 32)
 	for name, tc := range map[string]struct{ extra, want string }{
+		"an inline static token":  {"auth:\n  static:\n    enabled: true\n    tokens:\n      - {subject: s, token: " + long + ", roles: [viewer]}\n", "token_ref"},
+		"a long key ref":          {"keys:\n  declared:\n    dl-1: {provider: file, ref: /" + strings.Repeat("k", 250) + "}\n", "255"},
 		"issuer, no audience":     {"auth:\n  oidc:\n    issuer: https://idp.example.invalid\n", "auth.oidc.audience"},
 		"plain-text issuer":       {"auth:\n  oidc:\n    issuer: http://idp.example.invalid\n    audience: tk\n", "auth.oidc.issuer"},
 		"an unknown role":         {"auth:\n  oidc:\n    issuer: https://idp.example.invalid\n    audience: tk\n    roles:\n      x: [reader]\n", `"reader"`},
 		"subjects, no CA":         {"auth:\n  mtls:\n    subjects:\n      spiffe://c.example/x: [viewer]\n", "auth.mtls.client_ca_file"},
 		"static on, no token":     {"auth:\n  static:\n    enabled: true\n", "auth.static.tokens"},
-		"a short static token":    {"auth:\n  static:\n    enabled: true\n    tokens:\n      - {subject: s, token: short, roles: [viewer]}\n", "32"},
-		"a static token, no role": {"auth:\n  static:\n    enabled: true\n    tokens:\n      - {subject: s, token: " + strings.Repeat("x", 32) + "}\n", "roles"},
+		"a short static token":    {"auth:\n  static:\n    enabled: true\n    tokens:\n      - {subject: s, token_ref: \"" + ref("short") + "\", roles: [viewer]}\n", "32"},
+		"a static token, no role": {"auth:\n  static:\n    enabled: true\n    tokens:\n      - {subject: s, token_ref: \"" + ref(long) + "\"}\n", "roles"},
 		"env outside dev":         {"keys:\n  declared:\n    dl-1: {provider: env, ref: TK_DL}\n", "development"},
 		"an unknown provider":     {"keys:\n  declared:\n    dl-1: {provider: vault, ref: kv/dl}\n", "provider"},
 		"issuing not accepted":    {"keys:\n  declared:\n    dl-1: {provider: file, ref: /k}\n  download:\n    issuing: dl-1\n    accepted: [dl-0]\n", "keys.download.issuing"},

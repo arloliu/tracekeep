@@ -6,6 +6,7 @@ import (
 	"net/url"
 	"slices"
 	"time"
+	"unicode/utf8"
 
 	"github.com/arloliu/tracekeep/internal/auth"
 )
@@ -107,8 +108,10 @@ func (a *Auth) check() []error {
 			if s.Subject == "" || len(s.Roles) == 0 {
 				errs = append(errs, fmt.Errorf("%s needs a subject and roles", key))
 			}
-			if len(s.Token) < minStaticToken {
-				errs = append(errs, fmt.Errorf("%s: a token holds at least %d characters", key, minStaticToken))
+			if s.TokenRef == "" {
+				errs = append(errs, fmt.Errorf("%s needs a token_ref: a token is read by reference, never written in the file", key))
+			} else if len(s.Token) < minStaticToken {
+				errs = append(errs, fmt.Errorf("%s: the token its reference names holds at least %d bytes", key, minStaticToken))
 			}
 			roles(key+".roles", s.Roles)
 		}
@@ -129,6 +132,9 @@ func (k *Keys) check(dev bool) []error {
 			errs = append(errs, fmt.Errorf("keys.declared.%s: unknown provider %q", id, d.Provider))
 		case d.Ref == "":
 			errs = append(errs, fmt.Errorf("keys.declared.%s: no ref", id))
+		case utf8.RuneCountInString(id) > 128 || utf8.RuneCountInString(d.Provider+":"+d.Ref) > 255 || utf8.RuneCountInString(d.Version) > 64:
+			// A binding records them whole (masking-keys.md §9), in columns of these lengths.
+			errs = append(errs, fmt.Errorf("keys.declared.%s: a key id above 128 characters, a provider and ref above 255 or a version above 64", id))
 		default:
 		}
 	}
