@@ -67,6 +67,31 @@ func TestStaticTokenByReference(t *testing.T) {
 	}
 }
 
+// The file cannot hold a static token: one written beside its reference is ignored, the reference's token read,
+// and a reference that does not resolve fails the load.
+func TestInlineStaticTokenIgnored(t *testing.T) {
+	t.Parallel()
+	secret := filepath.Join(t.TempDir(), "token")
+	if err := os.WriteFile(secret, []byte("the-token-the-reference-names-0123456789"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	inline := "the-inline-token-in-the-file-0123456789"
+	entry := func(ref string) string {
+		return minimal + "auth:\n  static:\n    enabled: true\n    tokens:\n      - subject: reader\n        token: " + inline +
+			"\n        token_ref: " + ref + "\n        roles: [pack-reader]\n"
+	}
+	c, err := Load(write(t, entry("file://"+secret)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tok := c.Auth.Static.Tokens[0].Token; tok != "the-token-the-reference-names-0123456789" {
+		t.Errorf("token %q, want the reference's", tok)
+	}
+	if _, err := Load(write(t, entry("file://"+filepath.Join(t.TempDir(), "absent")))); err == nil {
+		t.Error("Load with an inline token and a reference that does not resolve succeeded")
+	}
+}
+
 func TestAuthAndKeysValidation(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
