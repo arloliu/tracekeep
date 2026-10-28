@@ -253,14 +253,14 @@ func (f *Flusher) register(ctx context.Context, b *Batch, capture *catalog.Captu
 		SeqStart: first, FormatMinor: int(w.minor), Ranges: ranges(seg.entries), Stop: hasStop(seg.entries), Conflicts: seg.others,
 	}
 	started = time.Now()
-	outcome, err := f.Catalog.RegisterPack(ctx, p, catalog.Registration{Evidence: evidence(seg.copies), HorizonHour: horizon})
+	outcome, gaps, err := f.Catalog.RegisterPackGaps(ctx, p, catalog.Registration{Evidence: evidence(seg.copies), HorizonHour: horizon})
 	if err != nil {
 		return 0, err
 	}
 	switch outcome {
 	case catalog.Registered:
 		f.Metrics.Registered(time.Since(started), capture.ToolID, w.size, seg.role == catalog.RoleConflict)
-		f.Metrics.GapsObserved(capture.ToolID, p.Gaps)
+		f.Metrics.GapsObserved(capture.ToolID, gaps)
 
 		return outcome, nil
 	case catalog.BeyondHorizon, catalog.LostToTermination:

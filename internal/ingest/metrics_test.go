@@ -17,6 +17,7 @@ import (
 	"github.com/arloliu/tracekeep/internal/catalog"
 	"github.com/arloliu/tracekeep/internal/catalog/catalogtest"
 	"github.com/arloliu/tracekeep/internal/metrics"
+	"github.com/arloliu/tracekeep/internal/store"
 )
 
 func scrape(t *testing.T, s *metrics.Server) string {
@@ -195,6 +196,46 @@ func TestGapObservationsNotCountedForACopy(t *testing.T) {
 		p.flushAll(t)
 		if body := scrape(t, s); !strings.Contains(body, `tracekeep_ingest_gap_observations_total{tool_id="T1"} 1`) {
 			t.Errorf("gap_observations_total after a hole and a copy:\n%s", body)
+		}
+	})
+}
+
+// cancelling is a store that cancels the flush's context once a put succeeded, so the registration that follows fails.
+type cancelling struct {
+	store.ObjectStore
+	cancel context.CancelFunc
+}
+
+func (s *cancelling) Put(ctx context.Context, key string, r io.ReadSeeker, size int64) error {
+	err := s.ObjectStore.Put(ctx, key, r, size)
+	s.cancel()
+
+	return err
+}
+
+// A registration that fails counts no gap, though its pack would open one.
+func TestGapObservationsNotCountedForAFailedRegistration(t *testing.T) {
+	t.Parallel()
+	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
+		p := newPipeline(t, c)
+		s := metrics.NewServer()
+		m, err := metrics.NewIngest(s, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		p.f.Metrics = m
+		capture := tracepack.UUID{82}
+		p.feed(t, inline(t, capture, startRecord(t, now), descriptorOf(t, "eqp")))
+		p.feed(t, inline(t, capture, dataRecord(2, now+2), nil)) // seq 1 never arrives
+		ctx, cancel := context.WithCancel(t.Context())
+		p.f.Store = &cancelling{ObjectStore: p.st, cancel: cancel}
+		for _, b := range p.b.All() {
+			if _, err := p.f.Flush(ctx, b); err == nil {
+				t.Fatal("a flush whose registration was cancelled succeeded")
+			}
+		}
+		if body := scrape(t, s); strings.Contains(body, `tracekeep_ingest_gap_observations_total{tool_id="T1"} 1`) {
+			t.Errorf("a failed registration counted its gap:\n%s", body)
 		}
 	})
 }

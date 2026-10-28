@@ -421,8 +421,8 @@ func TestRegistrationCountsTheGapsItOpens(t *testing.T) {
 			p := segment(t, capture, 1, tc.ranges[0].SeqFrom, tc.ranges[0].SeqTo)
 			p.Ranges = tc.ranges
 			p.SeqStart = min(tc.ranges[0].SeqFrom, tc.ranges[len(tc.ranges)-1].SeqFrom)
-			if out := register(t, c, p, Registration{Evidence: &Evidence{}}); out != Registered || p.Gaps != tc.want {
-				t.Errorf("ranges %v: %v with %d gaps, want %d", tc.ranges, out, p.Gaps, tc.want)
+			if out, gaps, err := c.RegisterPackGaps(t.Context(), p, Registration{Evidence: &Evidence{}}); err != nil || out != Registered || gaps != tc.want {
+				t.Errorf("ranges %v: %v with %d gaps, %v; want %d", tc.ranges, out, gaps, err, tc.want)
 			}
 		}
 	})
@@ -434,17 +434,17 @@ func TestGapsOnlyOfACommittedRegistration(t *testing.T) {
 	engines(t, func(t *testing.T, c *Catalog) {
 		capture := admitted(t, c)
 		p := segment(t, capture, 1, 5, 6) // a missing prefix
-		if out := register(t, c, p, Registration{Evidence: &Evidence{}}); out != Registered || p.Gaps != 1 {
-			t.Fatalf("first registration = %v with %d gaps", out, p.Gaps)
+		if out, gaps, err := c.RegisterPackGaps(t.Context(), p, Registration{Evidence: &Evidence{}}); err != nil || out != Registered || gaps != 1 {
+			t.Fatalf("first registration = %v with %d gaps, %v", out, gaps, err)
 		}
-		if out := register(t, c, p, Registration{Evidence: &Evidence{}}); out != AlreadyRegistered || p.Gaps != 0 {
-			t.Errorf("a duplicate = %v with %d gaps, want none", out, p.Gaps)
+		if out, gaps, err := c.RegisterPackGaps(t.Context(), p, Registration{Evidence: &Evidence{}}); err != nil || out != AlreadyRegistered || gaps != 0 {
+			t.Errorf("a duplicate = %v with %d gaps, %v; want none", out, gaps, err)
 		}
 		ctx, cancel := context.WithCancel(t.Context())
 		c.hooks[hookBeforeCommit] = cancel
 		failing := segment(t, capture, 1, 20, 21) // would open a hole 7..19
-		if _, err := c.RegisterPack(ctx, failing, Registration{Evidence: &Evidence{}}); err == nil || failing.Gaps != 0 {
-			t.Errorf("a registration failing at its commit = %v with %d gaps, want an error and none", err, failing.Gaps)
+		if _, gaps, err := c.RegisterPackGaps(ctx, failing, Registration{Evidence: &Evidence{}}); err == nil || gaps != 0 {
+			t.Errorf("a registration failing at its commit = %v with %d gaps, want an error and none", err, gaps)
 		}
 	})
 }

@@ -105,9 +105,6 @@ type Pack struct {
 	Stop bool
 	// Conflicts are the other versions the batch put in other packs.
 	Conflicts []Version
-	// Gaps is set by a registration that committed, and zero after any other: the holes in the producer coverage the pack opened
-	// above the capture's highest seq before it, a missing prefix included (operations.md §10.4 gap_observations_total).
-	Gaps int
 }
 
 // Registration is how a pack is registered.
@@ -128,17 +125,25 @@ var ErrInvalidRegistration = errors.New("catalog: invalid registration")
 // RegisterPack registers p, idempotent on its pack_id, in the transaction ingest and the reconciler share (ingest.md §6.3).
 // An outcome other than Registered writes nothing, except the tombstones of BeyondHorizon and LostToTermination.
 func (c *Catalog) RegisterPack(ctx context.Context, p *Pack, r Registration) (PackOutcome, error) {
+	out, _, err := c.RegisterPackGaps(ctx, p, r)
+
+	return out, err
+}
+
+// RegisterPackGaps is RegisterPack, also returning the holes in the producer coverage p opened
+// above the capture's highest seq before it, a missing prefix included (operations.md §10.4 gap_observations_total):
+// zero for any outcome but Registered, and for a registration that did not commit.
+func (c *Catalog) RegisterPackGaps(ctx context.Context, p *Pack, r Registration) (PackOutcome, int, error) {
 	if err := p.check(r); err != nil {
-		return 0, err
+		return 0, 0, err
 	}
 	var out PackOutcome
-	p.Gaps = 0
-	gaps := 0
+	var gaps int
 	err := outcome(c.inTx(ctx, func(tx *sqlx.Tx) error {
 		var evs []event
 		var err error
-		out, evs, err = c.registerIn(ctx, tx, p, r)
-		gaps, p.Gaps = p.Gaps, 0
+		gaps = 0
+		out, evs, err = c.registerIn(ctx, tx, p, r, &gaps)
 		if err == nil && out != Registered && out != BeyondHorizon && out != LostToTermination {
 			err = errRollback
 		}
@@ -149,11 +154,10 @@ func (c *Catalog) RegisterPack(ctx context.Context, p *Pack, r Registration) (Pa
 		return c.emit(ctx, tx, evs)
 	}))
 	if err != nil {
-		return 0, fmt.Errorf("catalog: register pack %s: %w", p.ID, err)
+		return 0, 0, fmt.Errorf("catalog: register pack %s: %w", p.ID, err)
 	}
-	p.Gaps = gaps // set by updateCapture, which only a registration runs, and kept only once it committed
 
-	return out, nil
+	return out, gaps, nil // gaps is set only on the path that registers, and returned only once it committed
 }
 
 // check refuses a pack whose seqs do not fit the catalog, and a registration mode no caller has:
@@ -226,8 +230,9 @@ func (e *Evidence) seqs(p *Pack) ([]uint64, error) {
 	return seqs, nil
 }
 
-// registerIn runs the registration's statements and returns the events it emits, which the caller allocates last (§7.3).
-func (c *Catalog) registerIn(ctx context.Context, tx *sqlx.Tx, p *Pack, r Registration) (PackOutcome, []event, error) {
+// registerIn runs the registration's statements and returns the events it emits, which the caller allocates last (§7.3);
+// a registration sets *gaps, when gaps is not nil, to the holes its pack opens.
+func (c *Catalog) registerIn(ctx context.Context, tx *sqlx.Tx, p *Pack, r Registration, gaps *int) (PackOutcome, []event, error) {
 	row, err := c.lockCapture(ctx, tx, p.Capture)
 	if err != nil {
 		return 0, nil, err
@@ -260,6 +265,9 @@ func (c *Catalog) registerIn(ctx context.Context, tx *sqlx.Tx, p *Pack, r Regist
 		if err := c.stageParked(ctx, tx, r.Evidence); err != nil {
 			return 0, nil, err
 		}
+	}
+	if gaps != nil {
+		*gaps = openedGaps(row.HighestSeq, p.Ranges)
 	}
 	if err := c.updateCapture(ctx, tx, p, row); err != nil {
 		return 0, nil, err
@@ -566,7 +574,6 @@ func (c *Catalog) stageParked(ctx context.Context, tx *sqlx.Tx, e *Evidence) err
 // updateCapture records the registration on the capture: its time, its highest producer seq with that record's time,
 // and a stop, which moves an open capture to stopped (a closed one stays closed); a close, which holds no range, moves no seq.
 func (c *Catalog) updateCapture(ctx context.Context, tx *sqlx.Tx, p *Pack, row captureRow) error {
-	p.Gaps = openedGaps(row.HighestSeq, p.Ranges)
 	seq, ts := row.HighestSeq, row.HighestSeqTS
 	for _, rg := range p.Ranges {
 		if !seq.Valid || int64(rg.SeqTo) > seq.Int64 {
