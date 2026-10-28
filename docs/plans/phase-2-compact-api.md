@@ -70,6 +70,22 @@ The F8 measurement is a section of this plan, below the table.
 | 5 | admin through the API: `AdminService` in `proto/tracekeep/v1`, its procedure behind auth as `OpAdmin`, the CLI's fallback on `ErrSecondWriter` with the configured admin token, a non-admin principal refused, the audit row's actor the principal's, a command run through a dev loop | pending |
 | 6 | F8: ingest's metrics read (`readCatalog`) seeded with 1,500 tools' open captures and packs, benchmarked on both engines, recorded below; tuned only if it does not fit the 30-second refresh | pending |
 
+### F8 — ingest's metrics read at fleet size
+
+Measured 2026-10-28 with `BenchmarkReadCatalog` (`internal/metrics/fleet_test.go`):
+the catalog part of ingest's metrics refresh (`readCatalog`: the parked counts, the open captures, and each open capture's completeness),
+over 1,500 tools with one open capture each and a segment in each of a day's 24 hours, 36,000 packs.
+One process on a 32-thread x86-64 host, the MariaDB 11.8 server in a local container, five reads per run, three runs:
+
+| Engine | One read |
+|---|---|
+| SQLite | 115–116 ms |
+| MariaDB | 580–595 ms |
+
+Against the 30-second refresh interval the read takes 0.4 and 2 percent; nothing is tuned.
+The cost is one completeness read per open capture, so it grows with open captures and their packs;
+a fleet many times larger, or a slower catalog server, is where the refresh would first need a read of its own, such as one statement for every capture's gaps.
+
 ## Phase 2.6 — api
 
 Work on the branch `feat/api/machine-api`, one commit per step, test first;
