@@ -502,12 +502,23 @@ func TestConsumersProcessAtOnce(t *testing.T) {
 	})
 }
 
-// Checklist 5's claim-bearing case and gate case 20: a claim-check version parked, its hour evicted by retention (an evicted-hour version,
-// its object kept as a survivor), then terminated and its known copy acknowledged under the termination;
-// retention's survivor cleanup then releases the object, and a late message of the same version
-// is acknowledged under the termination without the object, with its own audit row.
+// Checklist 5's claim-bearing case and gate case 20: a claim-check version parked and its hour evicted by retention,
+// in either order with its termination: evicted first, it is an evicted-hour version whose object survives, then terminated;
+// terminated first, the eviction keeps it terminated and its object a survivor while its known copy waits.
+// The known copy is then acknowledged under the termination, retention's survivor cleanup releases the object,
+// and a late message of the same version is acknowledged under the termination without the object, with its own audit row.
 func TestLateClaimMessageAfterItsObjectIsGone(t *testing.T) {
 	t.Parallel()
+	for _, terminatedFirst := range []bool{false, true} {
+		t.Run(map[bool]string{false: "evicted, then terminated", true: "terminated, then evicted"}[terminatedFirst], func(t *testing.T) {
+			t.Parallel()
+			lateClaimMessage(t, terminatedFirst)
+		})
+	}
+}
+
+// lateClaimMessage runs TestLateClaimMessageAfterItsObjectIsGone's schedule, the termination before or after the eviction.
+func lateClaimMessage(t *testing.T, terminatedFirst bool) {
 	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
 		ctx := t.Context()
 		r := newReplica(t, c)
@@ -519,24 +530,40 @@ func TestLateClaimMessageAfterItsObjectIsGone(t *testing.T) {
 		r.publish(t, late, cl.objs[late.Env.MsgID])
 		sdkMetadata(t, r, late, now-int64(48*time.Hour))
 		r.step(t) // parked: expired, its capture unknown
+		pg := r.parkedConsumer(t)
+		pg.RedeliveryDelay = time.Millisecond // the copy returns for each later step
+		if err := pg.Step(ctx); err != nil {  // the copy met, its row recorded waiting, and nak'd: the capture is still unknown
+			t.Fatal(err)
+		}
+		if got := copyStates(versions(t, c, capture), pg.Incarnation.ID); !slices.Equal(got, []string{"waiting"}) {
+			t.Fatalf("copy rows %v, want the known copy waiting", got)
+		}
 		// The start by claim-check too: its acknowledgement is confirmed, so the stream reflects it once a step returns.
 		start := claimCheck(t, cl, capture, startRecord(t, now), descriptorOf(t, "eqp"))
 		r.publish(t, start, cl.objs[start.Env.MsgID])
 		r.step(t)
-		pg := r.parkedConsumer(t)
-		pg.RedeliveryDelay = time.Millisecond // the evicted-hour copy returns for the step that acknowledges it under the termination
-		if err := pg.Step(ctx); err != nil {
+		rc := r.retention(t)
+		terminate := func() {
+			t.Helper()
+			if n, err := c.TerminateParked(ctx, capture, nil, "op", "p5"); err != nil || n != 1 {
+				t.Fatalf("TerminateParked = %d, %v", n, err)
+			}
+		}
+		want := catalog.VersionEvictedHour
+		if terminatedFirst {
+			terminate()
+			want = catalog.VersionTerminated
+		} else if err := pg.Step(ctx); err != nil {
 			t.Fatal(err)
 		}
-		if vs := versions(t, c, capture); len(vs) != 1 || vs[0].State != catalog.VersionEvictedHour {
-			t.Fatalf("versions %+v, want the claim-check version evicted-hour", vs)
-		}
-		rc := r.retention(t)
 		if rep := rc.retain(t); rep.Evicted != 1 || rep.Survivors != 1 {
 			t.Fatalf("Retain = %+v, want the hour evicted and the object a survivor", rep)
 		}
-		if n, err := c.TerminateParked(ctx, capture, nil, "op", "p5"); err != nil || n != 1 {
-			t.Fatalf("TerminateParked = %d, %v", n, err)
+		if vs := versions(t, c, capture); len(vs) != 1 || vs[0].State != want {
+			t.Fatalf("versions %+v after the eviction, want %s", vs, want)
+		}
+		if !terminatedFirst {
+			terminate()
 		}
 		if rep := rc.retain(t); rep.Released != 0 {
 			t.Fatalf("Retain with the known copy waiting = %+v, want the survivor kept", rep)
@@ -554,25 +581,33 @@ func TestLateClaimMessageAfterItsObjectIsGone(t *testing.T) {
 			t.Fatalf("the released survivor's object: %v, want it deleted", err)
 		}
 
-		time.Sleep(2 * window) // the scenario's delay: the late message comes after the window
-		subject, err := tracepack.BusSubject(prefix, "T1", capture)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if ack := r.publishTo(t, subject, late); ack.Duplicate {
-			t.Fatal("the late message was taken for a duplicate")
-		}
-		r.step(t)
-		es, err := c.AuditEntries(ctx, capture)
-		if err != nil || !slices.ContainsFunc(es, func(e catalog.AuditEntry) bool { return e.Action == ReasonTerminated && e.ActionID == "p5" }) {
-			t.Errorf("audit %+v, %v; want the late message acknowledged under p5", es, err)
-		}
-		r.clk.flushInterval() // the admitted start's batch flushed and acknowledged
-		r.step(t)
-		if n := r.pending(t); n != 0 {
-			t.Errorf("the traffic stream holds %d messages, want the late message acknowledged without its object", n)
-		}
+		lateMessageUnderTermination(t, r, c, capture, late, window)
 	})
+}
+
+// lateMessageUnderTermination publishes late again past the duplicate window and checks it acknowledged under the termination p5,
+// its object gone, with its own audit row, the traffic stream then empty.
+func lateMessageUnderTermination(t *testing.T, r *replica, c *catalog.Catalog, capture tracepack.UUID, late Message, window time.Duration) {
+	t.Helper()
+	ctx := t.Context()
+	time.Sleep(2 * window) // the scenario's delay: the late message comes after the window
+	subject, err := tracepack.BusSubject(prefix, "T1", capture)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ack := r.publishTo(t, subject, late); ack.Duplicate {
+		t.Fatal("the late message was taken for a duplicate")
+	}
+	r.step(t)
+	es, err := c.AuditEntries(ctx, capture)
+	if err != nil || !slices.ContainsFunc(es, func(e catalog.AuditEntry) bool { return e.Action == ReasonTerminated && e.ActionID == "p5" }) {
+		t.Errorf("audit %+v, %v; want the late message acknowledged under p5", es, err)
+	}
+	r.clk.flushInterval() // the admitted start's batch flushed and acknowledged
+	r.step(t)
+	if n := r.pending(t); n != 0 {
+		t.Errorf("the traffic stream holds %d messages, want the late message acknowledged without its object", n)
+	}
 }
 
 // sdkMetadata puts m's claim object again with the SDK's metadata, its record header and time, which retention's listing attributes it by.
@@ -596,6 +631,7 @@ type retainer struct {
 	lease catalog.Lease
 }
 
+// retention takes the compactor lease for a retainer over r.
 func (r *replica) retention(t *testing.T) *retainer {
 	t.Helper()
 	lease, ok, err := r.cat.TakeLease(t.Context(), "compactor", "retention", time.Hour)
@@ -610,6 +646,7 @@ func (r *replica) retention(t *testing.T) *retainer {
 	return &retainer{r: c, lease: lease}
 }
 
+// retain runs one retention cycle under rt's lease and returns its report.
 func (rt *retainer) retain(t *testing.T) compact.RetentionReport {
 	t.Helper()
 	var rep compact.RetentionReport
