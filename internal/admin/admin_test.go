@@ -488,9 +488,32 @@ func TestStatusAndDeferredList(t *testing.T) {
 		if st.BacklogMessages != 3 || st.BacklogBytes == 0 {
 			t.Errorf("the stream's backlog = %d messages, %d bytes; want all three", st.BacklogMessages, st.BacklogBytes)
 		}
+	})
+}
+
+// deferred list groups what waits by capture and reason, and --capture names one capture.
+func TestDeferredListByCapture(t *testing.T) {
+	t.Parallel()
+	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
+		ctx := t.Context()
+		a, _, _ := setup(t, c)
+		pending := tracepack.UUID{8}
+		if _, err := c.BeginParking(ctx, identity(pending, 1, 1, 2), "unknown-capture", "", 0); err != nil {
+			t.Fatal(err)
+		}
+		other := tracepack.UUID{6}
+		if _, err := c.BeginParking(ctx, identity(other, 1, 1, 3), "unknown-capture", "", 0); err != nil {
+			t.Fatal(err)
+		}
 		groups, err := a.DeferredList(ctx, nil)
-		if err != nil || len(groups) != 1 || groups[0].Capture != pending.String() || groups[0].Reason != "unknown-capture" || groups[0].Count != 1 {
-			t.Errorf("DeferredList = %+v, %v", groups, err)
+		if err != nil || len(groups) != 2 {
+			t.Errorf("DeferredList = %+v, %v; want a group per pending capture", groups, err)
+		}
+		// The words tracekeep admin takes, --capture naming one capture.
+		out, err := admin.Run(ctx, a, []string{"deferred", "list", "--capture", pending.String()})
+		only, ok := out.([]admin.Deferred)
+		if err != nil || !ok || len(only) != 1 || only[0].Capture != pending.String() || only[0].Reason != "unknown-capture" || only[0].Count != 1 {
+			t.Errorf("deferred list --capture = %+v, %v", out, err)
 		}
 	})
 }

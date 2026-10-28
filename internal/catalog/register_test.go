@@ -415,6 +415,7 @@ func TestRegistrationCountsTheGapsItOpens(t *testing.T) {
 			{[]Range{{SeqFrom: 10, SeqTo: 12}}, 1},                           // a hole 7..9
 			{[]Range{{SeqFrom: 7, SeqTo: 9}}, 0},                             // filling it
 			{[]Range{{SeqFrom: 20, SeqTo: 21}, {SeqFrom: 15, SeqTo: 16}}, 2}, // two holes, ranges out of order
+			{[]Range{{SeqFrom: 3, SeqTo: 4}, {SeqFrom: 22, SeqTo: 23}}, 0},   // a repeat, then contiguous
 		} {
 			p := segment(t, capture, 1, tc.ranges[0].SeqFrom, tc.ranges[0].SeqTo)
 			p.Ranges = tc.ranges

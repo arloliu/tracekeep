@@ -201,3 +201,34 @@ func TestRefreshPublishesWhole(t *testing.T) {
 		want("the refresh done", 2, 2)
 	})
 }
+
+// fleet is a Catalog of open captures, each with the completeness it names.
+type fleet map[tracepack.UUID]catalog.Completeness
+
+func (fleet) ParkedCounts(context.Context) (map[string]int, error) { return map[string]int{}, nil }
+
+func (f fleet) OpenCaptures(context.Context) ([]catalog.OpenCapture, error) {
+	out := make([]catalog.OpenCapture, 0, len(f))
+	for id := range f {
+		out = append(out, catalog.OpenCapture{ID: id, ToolID: "T1"})
+	}
+
+	return out, nil
+}
+
+func (f fleet) Completeness(_ context.Context, id tracepack.UUID) (catalog.Completeness, error) {
+	return f[id], nil
+}
+
+// captures_with_unknown_tail counts the open captures whose seqs above the frontier are unknown, and no other.
+func TestCapturesWithUnknownTail(t *testing.T) {
+	t.Parallel()
+	got, err := readCatalog(t.Context(), fleet{
+		{1}: {HasFrontier: true, Frontier: 9, UnknownTailFrom: 10},
+		{2}: {HasFrontier: true, Frontier: 4, UnknownTailFrom: 5},
+		{3}: {},
+	})
+	if err != nil || got.unknownTail["T1"] != 2 || got.captures["T1"] != 3 {
+		t.Errorf("readCatalog = %+v, %v; want 2 of the 3 open captures with an unknown tail", got, err)
+	}
+}
