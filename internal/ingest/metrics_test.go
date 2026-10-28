@@ -151,3 +151,27 @@ func TestParkFallbackKeepsTheDeferralAge(t *testing.T) {
 		t.Errorf("deferred age %v after a park fallback, want the age from the first nak", age)
 	}
 }
+
+// A registration that opens a hole counts it in gap_observations_total, once.
+func TestGapObservationsCounted(t *testing.T) {
+	t.Parallel()
+	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
+		r := newReplica(t, c)
+		s := metrics.NewServer()
+		m, err := metrics.NewIngest(s, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		r.g.Metrics, r.g.Flusher.Metrics = m, m
+		capture := tracepack.UUID{80}
+		r.publish(t, inline(t, capture, startRecord(t, now), descriptorOf(t, "eqp")), nil)
+		r.publish(t, inline(t, capture, dataRecord(1, now+1), nil), nil)
+		r.publish(t, inline(t, capture, dataRecord(3, now+3), nil), nil) // seq 2 never arrives
+		r.step(t)
+		r.clk.flushInterval()
+		r.step(t)
+		if body := scrape(t, s); !strings.Contains(body, `tracekeep_ingest_gap_observations_total{tool_id="T1"} 1`) {
+			t.Errorf("gap_observations_total after a registration with one hole:\n%s", body)
+		}
+	})
+}

@@ -232,3 +232,48 @@ func TestCapturesWithUnknownTail(t *testing.T) {
 		t.Errorf("readCatalog = %+v, %v; want 2 of the 3 open captures with an unknown tail", got, err)
 	}
 }
+
+// A capture that stops being open drops out of captures_with_unknown_tail at the next refresh.
+func TestUnknownTailDropsAClosedCapture(t *testing.T) {
+	t.Parallel()
+	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
+		ctx := t.Context()
+		s := NewServer()
+		m, err := NewIngest(s, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := c.ActivateConfig(ctx, []byte("config")); err != nil {
+			t.Fatal(err)
+		}
+		capture := tracepack.UUID{0x61}
+		d := &catalog.Identity{Version: catalog.VersionKey{Capture: capture}, Incarnation: 1, StreamSeq: 1, Hour: 1}
+		if _, err := c.Admit(ctx, d, &catalog.Descriptor{Bytes: []byte("d"), ToolID: "T1", RecorderInstanceID: tracepack.UUID{2}, Device: "eqp", OriginNS: 1}); err != nil {
+			t.Fatal(err)
+		}
+		register := func(seq uint64, stop bool) {
+			p := &catalog.Pack{
+				ID: tracepack.UUID{byte(seq) + 1, 0x61}, Capture: capture, ToolID: "T1", Hour: 1, Role: catalog.RoleSegment,
+				Key: fmt.Sprintf("staging/t1/%d", seq), Size: 1, SeqStart: seq, FormatMinor: 2, Stop: stop,
+				Ranges: []catalog.Range{{SeqFrom: seq, SeqTo: seq, TSFrom: int64(seq), TSTo: int64(seq)}}, //nolint:gosec // a small seq
+			}
+			if _, err := c.RegisterPack(ctx, p, catalog.Registration{Evidence: &catalog.Evidence{}}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		register(0, false)
+		if err := m.Refresh(ctx, c, nil); err != nil {
+			t.Fatal(err)
+		}
+		if b := body(t, s); !strings.Contains(b, `tracekeep_ingest_captures_with_unknown_tail{tool_id="T1"} 1`) {
+			t.Errorf("an open capture's unknown tail not counted:\n%s", b)
+		}
+		register(1, true) // its stop: the capture is no longer open
+		if err := m.Refresh(ctx, c, nil); err != nil {
+			t.Fatal(err)
+		}
+		if b := body(t, s); strings.Contains(b, `tracekeep_ingest_captures_with_unknown_tail{tool_id="T1"} 1`) {
+			t.Errorf("a stopped capture still counted:\n%s", b)
+		}
+	})
+}
