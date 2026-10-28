@@ -50,10 +50,7 @@ func Run(ctx context.Context, a *Admin, words []string) (any, error) {
 // operate runs the operator command cmd, args being the whole command line.
 func operate(ctx context.Context, a *Admin, cmd string, args []string) (any, error) {
 	switch {
-	case cmd == "status" && len(args) == 1,
-		cmd == "deferred list" && (len(args) == 2 || len(args) == 4 && args[2] == "--capture"),
-		cmd == "parked list" && len(args) <= 3,
-		cmd == "object list" && (len(args) == 2 || len(args) == 3 && (args[2] == "--unattributed" || args[2] == "--survivors")):
+	case listing(cmd, args):
 		return onList(ctx, a, cmd, args)
 	case cmd == "parked terminate" && (len(args) == 3 || len(args) == 4),
 		slices.Contains([]string{"capture terminate", "capture show", "capture close"}, cmd) && len(args) == 3:
@@ -65,6 +62,22 @@ func operate(ctx context.Context, a *Admin, cmd string, args []string) (any, err
 		return onScope(ctx, a, cmd, args[2:])
 	default:
 		return nil, fmt.Errorf("%w: admin %v", ErrUsage, args)
+	}
+}
+
+// listing reports whether args are a command that only reads, with the arguments it takes.
+func listing(cmd string, args []string) bool {
+	switch cmd {
+	case "status":
+		return len(args) == 1
+	case "deferred list":
+		return len(args) == 2 || len(args) == 4 && args[2] == "--capture"
+	case "parked list":
+		return len(args) == 2 || len(args) == 3
+	case "object list":
+		return len(args) == 2 || len(args) == 3 && (args[2] == "--unattributed" || args[2] == "--survivors")
+	default:
+		return false
 	}
 }
 

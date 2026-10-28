@@ -544,12 +544,21 @@ func TestReadCommandsAudited(t *testing.T) {
 		if last := rows[4]; last.Action != "capture show" || last.Capture == nil || *last.Capture != capture || !strings.Contains(last.Detail, capture.String()) {
 			t.Errorf("capture show's row = %+v", last)
 		}
-		write, _ := c.Pools()
-		if err := write.Close(); err != nil {
-			t.Fatal(err)
+		// The audit row cannot be written while the read still works: on SQLite with the writer's pool closed,
+		// on MariaDB, whose pools are one, with an actor too long for its column.
+		if c.Engine() == catalog.EngineSQLite {
+			write, _ := c.Pools()
+			if err := write.Close(); err != nil {
+				t.Fatal(err)
+			}
+		} else {
+			a.Actor = strings.Repeat("x", 300)
 		}
-		if out, err := admin.Run(ctx, a, []string{"parked", "list"}); err == nil {
-			t.Errorf("parked list with its audit row refused = %v, want an error and no answer", out)
+		if out, err := admin.Run(ctx, a, []string{"parked", "list"}); err == nil || !strings.Contains(err.Error(), "audit") || out != nil {
+			t.Errorf("parked list with its audit row refused = %v, %v; want the audit's error and no answer", out, err)
+		}
+		if _, err := admin.Run(ctx, a, []string{"parked list"}); !errors.Is(err, admin.ErrUsage) {
+			t.Errorf("parked list as one word = %v, want a usage error", err)
 		}
 	})
 }
