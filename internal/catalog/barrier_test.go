@@ -75,7 +75,8 @@ func leaseRowHeld(t *testing.T, c *Catalog, release chan struct{}) {
 
 // waitBehindLeaseRow waits until the lapse of the compactor lease, `UPDATE leases`, waits on the lease row leaseRowHeld proved held:
 // on MariaDB until the lapse is inside its statement in this test's own database, which the held row then keeps waiting,
-// on SQLite until it waits for the one writer. On a failure it closes release first, so the held transaction ends.
+// on SQLite until it waits for the one writer.
+// On a failure it closes release first, so the held transaction ends.
 func waitBehindLeaseRow(t *testing.T, c *Catalog, waitsBefore int64, release chan struct{}) {
 	t.Helper()
 	deadline := time.Now().Add(10 * time.Second)
