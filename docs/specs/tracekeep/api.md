@@ -148,7 +148,9 @@ otherwise it is a URL on the API itself carrying a download token, and the API s
   an unknown `kid` triggers one refresh, then rejection;
   existing sessions and cached keys keep working until expiry; new logins fail.
   Exactly:
-  discovery reads `<issuer>/.well-known/openid-configuration`, whose `issuer` must equal the configured one, for its `jwks_uri`;
+  discovery reads `<issuer>/.well-known/openid-configuration`, whose `issuer` must equal the configured one, for its `jwks_uri`,
+  both fetched over https only, every redirect included;
+  a JWKS holding no usable public signing key is a failed fetch, which leaves the keys cached before it;
   the JWKS is cached with a TTL (default 1 h) and fetched by the first request that needs it, never at start;
   one fetch is in flight at a time, and concurrent requests wait on it;
   fetches start at least a minimum interval apart (default 10 s), so neither an outage nor a flood of unknown `kid`s drives the IdP harder;
