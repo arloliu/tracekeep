@@ -2,14 +2,17 @@ package metrics
 
 import (
 	"fmt"
+	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 )
 
-// API is the api role's metrics (operations.md §10.4 api), for the code that exists: auth's refusals.
+// API is the api role's metrics (operations.md §10.4 api), for the code that exists:
+// requests by operation and code with their durations, and auth's refusals.
 // Every method records nothing on a nil *API.
 type API struct {
-	authFailures *prometheus.CounterVec
+	authFailures, requests *prometheus.CounterVec
+	duration               *prometheus.HistogramVec
 }
 
 // NewAPI registers the api role's collectors on s.
@@ -17,9 +20,15 @@ func NewAPI(s *Server) (*API, error) {
 	m := &API{
 		authFailures: prometheus.NewCounterVec(prometheus.CounterOpts{Namespace: "tracekeep", Subsystem: "api", Name: "auth_failures_total",
 			Help: "Requests auth refused, by reason (api.md §10.2)."}, []string{"reason"}),
+		requests: prometheus.NewCounterVec(prometheus.CounterOpts{Namespace: "tracekeep", Subsystem: "api", Name: "requests_total",
+			Help: "Requests by operation and Connect code, ok for success; refused ones included."}, []string{"operation", "code"}),
+		duration: prometheus.NewHistogramVec(prometheus.HistogramOpts{Namespace: "tracekeep", Subsystem: "api", Name: "request_seconds",
+			Help: "A request's duration by operation.", Buckets: prometheus.ExponentialBuckets(0.0005, 2, 16)}, []string{"operation"}),
 	}
-	if err := s.Registry().Register(m.authFailures); err != nil {
-		return nil, fmt.Errorf("metrics: api: %w", err)
+	for _, c := range []prometheus.Collector{m.authFailures, m.requests, m.duration} {
+		if err := s.Registry().Register(c); err != nil {
+			return nil, fmt.Errorf("metrics: api: %w", err)
+		}
 	}
 
 	return m, nil
@@ -31,4 +40,13 @@ func (m *API) AuthFailure(reason string) {
 		return
 	}
 	m.authFailures.WithLabelValues(reason).Inc()
+}
+
+// Request records one request of operation answered with code, which took d.
+func (m *API) Request(operation, code string, d time.Duration) {
+	if m == nil {
+		return
+	}
+	m.requests.WithLabelValues(operation, code).Inc()
+	m.duration.WithLabelValues(operation).Observe(d.Seconds())
 }
