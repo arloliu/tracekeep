@@ -43,8 +43,8 @@ func h2c() *http.Client {
 	return &http.Client{Transport: tr, Timeout: 10 * time.Second}
 }
 
-// waitFor calls f until it returns true or the deadline passes: the state of roles running on their own
-// (ingest's registrations, the compactor's first retention record), which no barrier reaches from a dev loop.
+// waitFor calls f until it returns true or the deadline passes: the compactor's first retention record,
+// which its role makes on its own at start and no barrier reaches from the dev loop's outside.
 func waitFor(t *testing.T, what string, f func() bool) {
 	t.Helper()
 	deadline := time.Now().Add(30 * time.Second)
@@ -69,6 +69,8 @@ func TestDevServesTheMachineAPI(t *testing.T) {
 	t.Cleanup(func() { _ = d.Close() })
 	bound := make(chan struct{})
 	d.Env.apiBound = func() { close(bound) }
+	put := &putting{ObjectStore: d.Env.Store, put: make(chan string, 16)}
+	d.Env.Store = put
 	run, stop := context.WithCancel(ctx)
 	done := make(chan error, 1)
 	go func() { done <- d.Run(run) }()
@@ -91,24 +93,28 @@ func TestDevServesTheMachineAPI(t *testing.T) {
 	}
 	now := time.Now()
 	sel := &tkv1.Selector{ToolId: "SIM-TOOL", From: timestamppb.New(now.Add(-2 * time.Hour)), To: timestamppb.New(now.Add(time.Hour))}
+	// Flushes run one after another, put, registration, acknowledgements, and a flush holds one segment per hour,
+	// so of three puts the last comes from a later flush than the first, whose segment is then registered (TestDevLoopbackCapture).
+	for range 3 {
+		<-put.put
+	}
+	req := connectrpc.NewRequest(&tkv1.ListPacksRequest{Selector: sel})
+	authed(req)
+	listed, err := cl.ListPacks(ctx, req)
+	if err != nil {
+		t.Fatalf("ListPacks = %v", err)
+	}
 	var pack string
-	waitFor(t, "a staged pack", func() bool {
-		req := connectrpc.NewRequest(&tkv1.ListPacksRequest{Selector: sel})
-		authed(req)
-		resp, err := cl.ListPacks(ctx, req)
-		if err != nil {
-			t.Fatalf("ListPacks = %v", err)
-		}
-		for _, h := range resp.Msg.Hours {
-			for _, s := range h.Scopes {
-				for _, p := range s.Packs {
-					pack = p.PackId
-				}
+	for _, h := range listed.Msg.Hours {
+		for _, s := range h.Scopes {
+			for _, p := range s.Packs {
+				pack = p.PackId
 			}
 		}
-
-		return pack != ""
-	})
+	}
+	if pack == "" {
+		t.Fatalf("ListPacks after three segments = %v, want the first registered", listed.Msg)
+	}
 	var u *tkv1.PackURLResponse
 	waitFor(t, "a pack URL, once retention is recorded", func() bool {
 		req := connectrpc.NewRequest(&tkv1.PackURLRequest{PackId: pack})
@@ -191,6 +197,15 @@ func TestPresignCheck(t *testing.T) {
 	defer redirecting.Close()
 	if err := checkPresign(t.Context(), presigning{redirecting.URL}); err == nil || strings.Contains(err.Error(), signature) {
 		t.Errorf("a store redirecting to a 404: check = %v, want the start failed without the signed URL", err)
+	}
+	// A Location that does not parse fails inside the client, its error quoting the header: the check says only that it failed.
+	malformed := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Location", "/%?"+r.URL.RawQuery)
+		w.WriteHeader(http.StatusFound)
+	}))
+	defer malformed.Close()
+	if err := checkPresign(t.Context(), presigning{malformed.URL}); err == nil || strings.Contains(err.Error(), "Signature") {
+		t.Errorf("a store redirecting to a malformed location: check = %v, want the start failed without the signed URL", err)
 	}
 }
 
@@ -397,8 +412,11 @@ func (o *blockingObject) ReadAt(p []byte, off int64) (int, error) {
 	return 0, o.ctx.Err()
 }
 
+// Close takes a while, as releasing a store's connection may: a role that did not wait for its handlers returns first.
 func (o *blockingObject) Close() error {
+	time.Sleep(200 * time.Millisecond)
 	o.b.closed.Store(true)
+
 	return o.Object.Close()
 }
 
