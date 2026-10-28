@@ -58,13 +58,22 @@ which made the hour a candidate again (`TestRegistrationRacingAnEviction`), agai
 The registration's guards now refuse a pack into an hour holding evicted ranges, under the capture row eviction also takes, as beyond the horizon.
 The takeover between a transaction's statements runs on MariaDB alone, SQLite serializing whole transactions; that test's decision stands.
 
+What the steps found besides the audit:
+an hour evicted while it held no pack keeps no range, so a parking whose horizon was read before that eviction still parks;
+the parked consumer, its horizon read afresh, then moves the version to `evicted-hour`, which `parking.md` now states.
+A takeover's wait behind a held lease row read from the process list showed only that the statement ran, never that it waited,
+so the merge commit's takeover leg passed with a lease check that locks nothing;
+both takeover legs now wait for InnoDB to report the lock wait, and that mutation fails them.
+Case 23's late record is terminated by the age check of its disposition and, behind it, by the registration's horizon guard,
+so dropping either alone leaves the test passing; the age check's own tests hold it.
+
 | Step | Scope | State |
 |---|---|---|
-| 1 | spec: a pack into an hour whose packs retention evicted is refused and its key tombstoned, for ingest, the reconciler and a close alike (`ingest.md` §6.3, `compactor.md` §8.3) | pending |
-| 2 | catalog: the evicted-hour guard, the race's eviction-first leg refused; case 18's missing legs (parking before admission, unknown-capture parking against an eviction and a claim listing of its hour, both orders); case 8's adoption racing `DeletePack` and `EvictHour`, both orders; case 15 as a real clock step through `EvictHour`; checklist 7c's tombstone in the race's termination-first leg | pending |
-| 3 | ingest: case 9's flush held after its put across `EvictHour`; cases 17, 19 and 23 with a real eviction between the copies and the copy rows `acked`; case 10's parked copies nak'd while the blocker holds and staged in seq order after it clears | pending |
-| 4 | compact, the claim-object family: case 21 (i) and (ii), both orders, crashes before and after the bucket delete and a fresh compactor between cycles; case 22's two halves through `bus adopt-stream` then retention; case 20's release through survivor cleanup; case 5's late claim copy after a merge, a deletion and a retention pass short of its hour; case 7's conflicting version kept until eviction | pending |
-| 5 | the rest: case 2's `reopened` variant merged by the next cycle; case 3's deletion and eviction blocked behind the lease row; case 1 through the API | pending |
+| 1 | spec: a pack or a parking into an hour whose eviction left ranges is refused, the pack's key tombstoned, for ingest, the reconciler and a close alike (`ingest.md` §6.3, `parking.md`, `compactor.md` §8.3) | done (6128f1f) |
+| 2 | catalog: the evicted-hour guard, the race's eviction-first leg refused; case 18's missing legs (parking before admission, unknown-capture parking against an eviction and a claim listing of its hour, both orders); case 8's adoption racing `DeletePack` and `EvictHour`, both orders; case 15 as a real clock step through `EvictHour`; checklist 7c's tombstone in the race's termination-first leg | done (d38fd85, 01bf278) |
+| 3 | ingest: case 9's flush held after its put across `EvictHour`; cases 17, 19 and 23 with a real eviction between the copies and the copy rows `acked`; case 10's parked copies nak'd while the blocker holds and staged in seq order after it clears | done (4975530) |
+| 4 | compact, the claim-object family: case 21 (i) and (ii), both orders, crashes before and after the bucket delete and a fresh compactor between cycles; case 22's two halves through `bus adopt-stream` then retention; case 20's release through survivor cleanup; case 5's late claim copy after a merge, a deletion and a retention pass short of its hour; case 7's conflicting version kept until eviction | done (0568e96) |
+| 5 | the rest: case 2's `reopened` variant merged by the next cycle; case 3's deletion and eviction blocked behind the lease row; case 1 through the API | done (8e16fb2) |
 
 ### The audit
 
