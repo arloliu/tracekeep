@@ -33,7 +33,7 @@ func Engines(t *testing.T, f func(t *testing.T, c *catalog.Catalog)) {
 }
 
 // Open returns a fresh, migrated catalog on engine, closed when the test ends; MariaDB skips the test without a server.
-func Open(t *testing.T, engine string) *catalog.Catalog {
+func Open(t testing.TB, engine string) *catalog.Catalog {
 	t.Helper()
 	cfg := catalog.Config{Engine: engine}
 	switch engine {
@@ -55,7 +55,7 @@ func Open(t *testing.T, engine string) *catalog.Catalog {
 }
 
 // mariadbDatabase creates a database of the test's own on the configured server, migrates it and returns its DSN.
-func mariadbDatabase(t *testing.T) string {
+func mariadbDatabase(t testing.TB) string {
 	t.Helper()
 	dsn := os.Getenv(EnvMariaDB)
 	if dsn == "" {
@@ -76,7 +76,7 @@ func mariadbDatabase(t *testing.T) string {
 	return mc.FormatDSN()
 }
 
-func exec(t *testing.T, dsn, stmt string) {
+func exec(t testing.TB, dsn, stmt string) {
 	t.Helper()
 	db, err := sql.Open("mysql", dsn)
 	if err != nil {
@@ -88,7 +88,7 @@ func exec(t *testing.T, dsn, stmt string) {
 	}
 }
 
-func apply(t *testing.T, driver, dsn, engine string) {
+func apply(t testing.TB, driver, dsn, engine string) {
 	t.Helper()
 	db, err := sql.Open(driver, dsn)
 	if err != nil {
