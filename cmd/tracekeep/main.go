@@ -191,9 +191,14 @@ func remoteAdmin(ctx context.Context, cfg *config.Config, words []string, stdout
 		}
 		roots.AppendCertsFromPEM(pem)
 	}
-	client := &http.Client{Timeout: 30 * time.Second, Transport: &http.Transport{
-		TLSClientConfig: &tls.Config{RootCAs: roots, MinVersion: tls.VersionTLS12}, ForceAttemptHTTP2: true,
-	}}
+	// No redirect is followed: one could carry the token elsewhere, or to plain text.
+	client := &http.Client{
+		Timeout: 30 * time.Second,
+		Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{RootCAs: roots, MinVersion: tls.VersionTLS12}, ForceAttemptHTTP2: true,
+		},
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+	}
 	req := connect.NewRequest(&tkv1.AdminRequest{Words: words})
 	req.Header().Set("Authorization", "Bearer "+token)
 	resp, err := tracekeepv1connect.NewAdminServiceClient(client, cfg.API.PublicURL).Admin(ctx, req)
