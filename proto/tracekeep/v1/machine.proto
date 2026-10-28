@@ -1,0 +1,261 @@
+// The machine API (api.md §10.1): the catalog's reads and PackURL, for the VE service and other readers.
+// Times are Timestamps, an hour its start; ids are a UUID's canonical text;
+// a time or a seq the catalog may lack is a field with presence.
+syntax = "proto3";
+
+package tracekeep.v1;
+
+import "google/protobuf/timestamp.proto";
+
+option go_package = "github.com/arloliu/tracekeep/proto/tracekeep/v1;tracekeepv1";
+
+// MachineService serves the catalog's reads (catalog.md §7.3) and download URLs.
+service MachineService {
+  // ListDevices answers, per device of the tool, its latest endpoint, open captures, overlap, last record and whether the window holds a gap.
+  rpc ListDevices(ListDevicesRequest) returns (ListDevicesResponse);
+  // ListCaptures answers the captures the selector selects, each with its unregistered intervals and overlap.
+  rpc ListCaptures(ListCapturesRequest) returns (ListCapturesResponse);
+  // ListPacks answers every hour of the window and every selected capture's completeness, after the change cursor's watermark.
+  rpc ListPacks(ListPacksRequest) returns (ListPacksResponse);
+  // ListScopeChanges answers the scope events after a cursor, one page at a time.
+  rpc ListScopeChanges(ListScopeChangesRequest) returns (ListScopeChangesResponse);
+  // PackURL answers a download URL that expires before the pack can be deleted, or refuses with PackSuperseded.
+  rpc PackURL(PackURLRequest) returns (PackURLResponse);
+}
+
+// Selector names the connections a read wants (api.md §10.1 *Selector*).
+message Selector {
+  // tool_id is required.
+  string tool_id = 1;
+  // devices are the eqp-hsms device names; none selects every device of the tool.
+  repeated string devices = 2;
+  // capture_id, when set, selects that one capture.
+  optional string capture_id = 3;
+  // The window [from, to), nonempty.
+  google.protobuf.Timestamp from = 4;
+  google.protobuf.Timestamp to = 5;
+}
+
+message ListDevicesRequest {
+  Selector selector = 1;
+}
+
+message ListDevicesResponse {
+  repeated Device devices = 1;
+}
+
+// Device is one device of the tool.
+message Device {
+  string name = 1;
+  // equipment_endpoint and device_id are the latest selected capture's.
+  optional string equipment_endpoint = 2;
+  optional uint64 device_id = 3;
+  int64 open_captures = 4;
+  bool overlap = 5;
+  optional google.protobuf.Timestamp last_record = 6;
+  // gap is set when the window holds a gap of a selected capture.
+  bool gap = 7;
+}
+
+message ListCapturesRequest {
+  Selector selector = 1;
+}
+
+message ListCapturesResponse {
+  repeated Capture captures = 1;
+}
+
+// Capture is a selected capture.
+message Capture {
+  string capture_id = 1;
+  string state = 2;
+  string device = 3;
+  string recorder_instance_id = 4;
+  optional string previous_capture_id = 5;
+  google.protobuf.Timestamp origin = 6;
+  optional google.protobuf.Timestamp last_record = 7;
+  optional int64 config_id = 8;
+  repeated Thinning thinning = 9;
+  optional string equipment_endpoint = 10;
+  optional uint64 device_id = 11;
+  bool overlap = 12;
+  repeated UnregisteredInterval unregistered = 13;
+}
+
+// Thinning is one thinned stream and function of the start descriptor.
+message Thinning {
+  uint64 stream = 1;
+  uint64 function = 2;
+  string source = 3;
+}
+
+// UnregisteredInterval is a time no registered capture of the recorder covers; an open start is a never-admitted predecessor's.
+message UnregisteredInterval {
+  optional google.protobuf.Timestamp start = 1;
+  google.protobuf.Timestamp end = 2;
+}
+
+message ListPacksRequest {
+  Selector selector = 1;
+}
+
+message ListPacksResponse {
+  // cursor is the watermark read before the listing, which ListScopeChanges continues from.
+  Cursor cursor = 1;
+  repeated Hour hours = 2;
+  repeated CaptureCompleteness captures = 3;
+}
+
+// Cursor is a position in the change cursor.
+message Cursor {
+  int64 epoch = 1;
+  int64 seq = 2;
+}
+
+// Hour is one hour of the window: its scopes, or, with none, what it holds instead.
+message Hour {
+  google.protobuf.Timestamp hour = 1;
+  repeated Scope scopes = 2;
+  // evicted names the captures whose ranges in the hour retention evicted.
+  repeated string evicted = 3;
+  repeated Deferred deferred = 4;
+  repeated DeclaredLoss losses = 5;
+  // no_data is set for an hour that holds nothing; spanned then tells whether a selected capture's span meets it.
+  bool no_data = 6;
+  bool spanned = 7;
+}
+
+// Scope is one capture's scope of an hour.
+message Scope {
+  string capture_id = 1;
+  string state = 2;
+  int64 revision = 3;
+  repeated Pack packs = 4;
+}
+
+// Pack is a pack of a scope, with its ranges.
+message Pack {
+  string pack_id = 1;
+  string role = 2;
+  string state = 3;
+  int64 size = 4;
+  uint32 format_minor = 5;
+  repeated Range ranges = 6;
+}
+
+// Range is a seq run a pack holds, with the times of its endpoint records.
+message Range {
+  uint64 seq_from = 1;
+  uint64 seq_to = 2;
+  google.protobuf.Timestamp from = 3;
+  google.protobuf.Timestamp to = 4;
+}
+
+// CaptureCompleteness is a selected capture with its completeness (catalog.md §7.3).
+message CaptureCompleteness {
+  Capture capture = 1;
+  Completeness completeness = 2;
+}
+
+// Completeness classifies a capture's seqs.
+message Completeness {
+  // frontier is the higher of the highest producer seq and the highest parked seq, absent when neither exists.
+  optional uint64 frontier = 1;
+  repeated Range retained = 2;
+  repeated Run evicted = 3;
+  repeated Deferred deferred = 4;
+  repeated Gap gaps = 5;
+  // unknown_tail_from is the first seq above the frontier, absent when there is none.
+  optional uint64 unknown_tail_from = 6;
+  repeated DeclaredLoss losses = 7;
+  repeated CrashGap crash_gaps = 8;
+  repeated Conflict conflicts = 9;
+}
+
+// Run is a seq run with the times of its endpoint records where they are known.
+message Run {
+  uint64 seq_from = 1;
+  uint64 seq_to = 2;
+  optional google.protobuf.Timestamp from = 3;
+  optional google.protobuf.Timestamp to = 4;
+}
+
+// Deferred is a seq an unresolved parked version holds.
+message Deferred {
+  uint64 seq = 1;
+  google.protobuf.Timestamp time = 2;
+  string state = 3;
+}
+
+// Gap is a hole in the producer coverage; start is the record before it, or the origin with open_start set.
+message Gap {
+  uint64 seq_from = 1;
+  uint64 seq_to = 2;
+  optional google.protobuf.Timestamp start = 3;
+  optional google.protobuf.Timestamp end = 4;
+  bool open_start = 5;
+}
+
+// DeclaredLoss is a pack's coverage entry, or a terminated version with its action id.
+message DeclaredLoss {
+  optional uint64 seq_from = 1;
+  optional uint64 seq_to = 2;
+  optional google.protobuf.Timestamp from = 3;
+  optional google.protobuf.Timestamp to = 4;
+  string action_id = 5;
+}
+
+// CrashGap is a crash gap a close recorded.
+message CrashGap {
+  optional google.protobuf.Timestamp start = 1;
+  optional google.protobuf.Timestamp end = 2;
+}
+
+// Conflict is a recorded conflict over a seq run.
+message Conflict {
+  uint64 seq_from = 1;
+  uint64 seq_to = 2;
+  string state = 3;
+}
+
+message ListScopeChangesRequest {
+  Cursor after = 1;
+  Selector selector = 2;
+  // limit bounds the page; 0 takes the server's default.
+  uint32 limit = 3;
+}
+
+message ListScopeChangesResponse {
+  repeated ScopeEvent events = 1;
+  // next is the cursor to continue from.
+  Cursor next = 2;
+  // stale is set when events after the cursor were pruned or the epoch changed: the client re-lists and continues from the listing's cursor.
+  bool stale = 3;
+}
+
+// ScopeEvent is one change of a scope.
+message ScopeEvent {
+  int64 seq = 1;
+  string capture_id = 2;
+  google.protobuf.Timestamp hour = 3;
+  string event = 4;
+  int64 revision = 5;
+  google.protobuf.Timestamp at = 6;
+}
+
+message PackURLRequest {
+  string pack_id = 1;
+}
+
+message PackURLResponse {
+  string url = 1;
+  google.protobuf.Timestamp expires = 2;
+  // presigned is set for a URL the store signed, unset for one the API serves.
+  bool presigned = 3;
+}
+
+// PackSuperseded is the detail of a PackURL refused as failed_precondition:
+// the pack's deadline is too near, or it is deleted; the client re-lists, and a merged input's archive is listed in its place.
+message PackSuperseded {
+  string pack_id = 1;
+}

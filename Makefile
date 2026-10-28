@@ -81,9 +81,23 @@ migrate-diff: ## Generate both engines' migration from schema.hcl: make migrate-
 migrate-check: ## Validate both engines' migrations and check schema.hcl for drift (needs docker and atlas)
 	@scripts/catalog.sh check
 
+##@ API
+
+# The plugins are pinned to the modules the service builds against: protobuf's and connect's in go.mod.
+PROTOC_GEN_GO_VERSION         := v1.36.12
+PROTOC_GEN_CONNECT_GO_VERSION := v1.21.1
+
+proto: ## Regenerate proto/'s Go (needs protoc; builds the pinned plugins under tmp/bin)
+	@GOBIN=$(CURDIR)/tmp/bin go install google.golang.org/protobuf/cmd/protoc-gen-go@$(PROTOC_GEN_GO_VERSION)
+	@GOBIN=$(CURDIR)/tmp/bin go install connectrpc.com/connect/cmd/protoc-gen-connect-go@$(PROTOC_GEN_CONNECT_GO_VERSION)
+	@PATH="$(CURDIR)/tmp/bin:$$PATH" protoc -I proto \
+		--go_out=proto --go_opt=paths=source_relative \
+		--connect-go_out=proto --connect-go_opt=paths=source_relative \
+		proto/tracekeep/v1/*.proto
+
 ##@ CI
 
 ci: check docs-check data-check test ## Every gate, plus the service built without the workspace
 	@GOWORK=off go build ./...
 
-.PHONY: help lint fmt vet check docs-check data-check work hooks test test-latest test-s3 test-catalog migrate-diff migrate-check bench ci
+.PHONY: help lint fmt vet check docs-check data-check work hooks test test-latest test-s3 test-catalog migrate-diff migrate-check proto bench ci
