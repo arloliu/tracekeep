@@ -84,8 +84,13 @@ Contract changes go through proposals, which the subject [README.md](README.md) 
     Such a key id is retired when no credential issued under it can still be valid, which says nothing about captures.
 - `KeyProvider` implementations:
   `vault` (KV v2 with the version pinned in the binding; Kubernetes auth in the cluster, AppRole on a host; material held in memory only, never on disk, and cached by the `keys` module),
-  `file` (files a Vault Agent or an operator places, mode 0600, for standalone), `env` (development only, refused in production mode).
+  `file` (files a Vault Agent or an operator places, mode 0600, for standalone; a file any other user may read is refused), `env` (development only, refused in production mode: every command but `tracekeep dev` refuses it at load).
   Vault Transit does not fit: the derivation and AES-SIV need the raw master key in process.
+  A provider returns the material as base64 text in standard encoding, surrounding white space ignored;
+  a `download` key's material holds at least 32 bytes.
+  `file` and `env` return an empty version, which the binding records.
+  A key id's declaration names its provider and reference;
+  the issuing key id of a purpose is one of its accepted key ids, and every accepted key id is declared.
 - Where the data lives:
   clear text on the traffic stream and in the claim bucket (TLS, encryption at rest, G5-213) and in a consumer's memory before masking;
   in storage only masked packs with the originals as AES-SIV ciphertext in place;
