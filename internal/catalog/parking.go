@@ -64,13 +64,20 @@ func (c *Catalog) BeginParking(ctx context.Context, d *Identity, reason, objectK
 			return nil
 		}
 		state, err := readVersionState(ctx, tx, &d.Version)
+		beyond := d.Hour < horizonHour
+		if errors.Is(err, ErrUnknownVersion) && isAdmitted(row.State) && !beyond {
+			var e error
+			if beyond, e = hourEvicted(ctx, tx, d.Version.Capture, d.Hour); e != nil {
+				return e
+			}
+		}
 		switch {
 		case errors.Is(err, ErrUnknownVersion) && r == ResolvedStaged:
 			// Covered by an order but held by a registered pack: staged with no parked row, so nothing is written.
 			b = Begun{State: VersionStaged}
 			return errRollback
-		case errors.Is(err, ErrUnknownVersion) && isAdmitted(row.State) && d.Hour < horizonHour:
-			// Retention may already have evicted the hour (§8.4), so the version is never parked.
+		case errors.Is(err, ErrUnknownVersion) && isAdmitted(row.State) && beyond:
+			// Retention may already have evicted the hour (§8.4), or did, so the version is never parked.
 			b = Begun{BeyondRetention: true}
 			return errRollback
 		case errors.Is(err, ErrUnknownVersion):
