@@ -39,7 +39,7 @@ Contract changes go through proposals, which the subject [README.md](README.md) 
 | `capture show <id>` | the capture's versions, copies, survivors and termination orders with their states |
 | `object list --unattributed` / `object list --survivors` | the objects the reconciler leaves to the operator: those without the SDK's metadata, and survivors with their evicted hour and bytes |
 | `config list --blocking-retirement` | the captures that keep a configuration alive (§6.4) |
-| `deferred list [--capture]` | what is waiting, since when, why |
+| `deferred list [--capture]` | what is waiting, since when, why: the unresolved parked versions (`parking`, `parked`, `evicted-hour`) by capture and reason, each group's count and oldest parking time; an indefinite deferral is parked (`ingest.md` §6.1), and a short delay that never parks lives only in ingest's metrics |
 
 **Runbook**: one section per named incident
 (`capture-rejected`, `descriptor-conflict`, `claim-conflict`, `write-failure`, `incompatible-configuration`, `seq-conflict`, `beyond-retention`, `capture_fault`, `key-binding-mismatch`, `cannot-screen`, `damaged-input`, `parked`, `bus-incarnation-changed`),
@@ -71,6 +71,9 @@ everything per capture is served by `tracekeep status` and the admin commands, n
 Health: `/healthz` (process) and `/readyz` (catalog reachable, lease state for `compact`, consumer bound for `ingest`);
 `tracekeep status` lists `pending` captures by capture id first, outside any per-tool grouping
 (they have no tool yet), then prints per tool the last record time, open captures, deferred messages and backlog.
+Deferred messages are the tool's unresolved parked versions, as `deferred list` counts them;
+backlog is the traffic stream's messages on the tool's subjects, whose token after the prefix is the tool's (tracepack's `BusSubject`),
+and the stream's bytes, which no subject divides, once for all tools.
 The Helm chart ships alert rules:
 deferred age above an hour, backlog bytes above a threshold, a tool with a connected gateway and no records for ten minutes, producer drop rate, lease lost, no successful merge for two hours, `open_gaps` or `declared_losses_total` increasing on a tool, `preflight_ok` false.
 Logs are structured, one line per state change with `capture_id`, `tool_id` and `seq` where they apply, never one line per record.
