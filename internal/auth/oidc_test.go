@@ -403,6 +403,10 @@ func TestMalformedJWKSKeepsTheCache(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	rsaKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
 	ed, _, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatal(err)
@@ -420,6 +424,9 @@ func TestMalformedJWKSKeepsTheCache(t *testing.T) {
 		set(jose.JSONWebKey{Key: &ec.PublicKey, Use: "sig"}),                                 // no kid
 		set(jose.JSONWebKey{Key: ed, KeyID: "k1", Use: "sig"}),                               // EdDSA, outside the allowlist
 		set(jose.JSONWebKey{Key: &ec.PublicKey, KeyID: "k1", Algorithm: string(jose.HS256)}), // an alg outside the allowlist
+		set(jose.JSONWebKey{Key: &ec.PublicKey, KeyID: "k1", Algorithm: string(jose.RS256)}), // an allowed alg the key's type cannot verify
+		set(jose.JSONWebKey{Key: &ec.PublicKey, KeyID: "k1", Algorithm: string(jose.ES384)}), // an EC alg of another curve
+		set(jose.JSONWebKey{Key: &rsaKey.PublicKey, KeyID: "k1", Algorithm: string(jose.ES256)}),
 	} {
 		p, c := newIDP(t), newClock()
 		s := p.newKey(t, "k1")
@@ -434,6 +441,11 @@ func TestMalformedJWKSKeepsTheCache(t *testing.T) {
 		}
 		if _, err := warm.Verify(t.Context(), sign(t, s, p.claims(c.Now()))); err != nil {
 			t.Errorf("%s: the cached kid after a malformed refresh = %v", body, err)
+		}
+		// The failed refresh left the cache's TTL as the first fetch set it: an hour after that fetch, not after the refresh.
+		c.advance(59*time.Minute + 30*time.Second)
+		if _, err := warm.Verify(t.Context(), sign(t, s, p.claims(c.Now()))); reason(err) != ReasonIDPUnavailable {
+			t.Errorf("%s: the cached kid past the first fetch's TTL = %v, want idp-unavailable", body, err)
 		}
 		if _, err := p.verifier(c).Verify(t.Context(), sign(t, s, p.claims(c.Now()))); reason(err) != ReasonIDPUnavailable {
 			t.Errorf("%s: a cold verifier = %v, want idp-unavailable", body, err)
