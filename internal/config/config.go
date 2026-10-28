@@ -22,6 +22,8 @@ type Config struct {
 	Parking Parking `yaml:"parking"`
 	Compact Compact `yaml:"compact"`
 	Metrics Metrics `yaml:"metrics"`
+	Auth    Auth    `yaml:"auth"`
+	Keys    Keys    `yaml:"keys"`
 	// Retention is how long whole hours are kept; a record older than the retention horizon is beyond retention.
 	Retention time.Duration `yaml:"retention" default:"720h" env:"TRACEKEEP_RETENTION" validate:"gt=0"`
 	// Replica names this process in the membership and the compactor lease; empty takes the host name.
@@ -155,7 +157,7 @@ func Load(path string) (*Config, error) {
 	if err := loader.Load(&c); err != nil {
 		return nil, fmt.Errorf("config: %w", err)
 	}
-	if err := c.check(); err != nil {
+	if err := c.check(false); err != nil {
 		return nil, err
 	}
 	if c.Replica == "" {
@@ -172,9 +174,10 @@ func Load(path string) (*Config, error) {
 // once between those that record a deletion time and act on it.
 const clockSkew = 2 * time.Minute
 
-// check holds the rules that span fields.
-func (c *Config) check() error {
-	var errs []error
+// check holds the rules that span fields; dev admits what only tracekeep dev may use.
+func (c *Config) check(dev bool) error {
+	errs := c.Auth.check()
+	errs = append(errs, c.Keys.check(dev)...)
 	if c.Ingest.AckWait <= c.Ingest.FlushInterval {
 		errs = append(errs, fmt.Errorf("ingest.ack_wait %s must exceed ingest.flush_interval %s (T-25)", c.Ingest.AckWait, c.Ingest.FlushInterval))
 	}
@@ -233,7 +236,7 @@ func Dev(dir, url string, flush time.Duration) (*Config, error) {
 	if err := fuda.Validate(&c); err != nil {
 		return nil, fmt.Errorf("config: %w", err)
 	}
-	if err := c.check(); err != nil {
+	if err := c.check(true); err != nil {
 		return nil, err
 	}
 
