@@ -79,7 +79,7 @@ func TestFileProvider(t *testing.T) {
 	if err != nil || !bytes.Equal(got, m) || version != "" {
 		t.Errorf("Material of a 0600 file = %x, %q, %v", got, version, err)
 	}
-	for _, perm := range []os.FileMode{0o640, 0o604, 0o644} {
+	for _, perm := range []os.FileMode{0o640, 0o604, 0o644, 0o400, 0o700} {
 		if _, _, err := (File{}).Material(t.Context(), keyFile(t, m, perm), ""); err == nil {
 			t.Errorf("Material of a %o file succeeded", perm)
 		}
@@ -96,6 +96,27 @@ func TestFileProvider(t *testing.T) {
 	}
 	if _, _, err := (File{}).Material(t.Context(), keyFile(t, m, 0o600), "3"); err == nil {
 		t.Error("Material at a version of a provider without versions succeeded")
+	}
+}
+
+// A key file above 64 KiB is refused whole, never read as its prefix, and binds nothing.
+func TestOversizedKeyFileRefused(t *testing.T) {
+	t.Parallel()
+	cat := catalogtest.Open(t, catalog.EngineSQLite)
+	path := filepath.Join(t.TempDir(), "key")
+	// Valid base64 whole, and its first 64 KiB plus one byte would be too: so only the size refuses it.
+	text := append(append(bytes.Repeat([]byte("A"), 65536), '\n'), "AAAA"...)
+	if err := os.WriteFile(path, text, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := (File{}).Material(t.Context(), path, ""); err == nil {
+		t.Error("Material of a 65,541-byte file succeeded")
+	}
+	if _, _, err := newKeys(t, downloadOnly(path), cat).Issuing(t.Context(), catalog.KindDownload); err == nil {
+		t.Error("Issuing from an oversized file succeeded")
+	}
+	if _, ok, _ := cat.KeyBinding(t.Context(), "dl-1"); ok {
+		t.Error("an oversized file was bound")
 	}
 }
 

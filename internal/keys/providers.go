@@ -13,8 +13,8 @@ import (
 // maxFile bounds a key file's read.
 const maxFile = 64 << 10
 
-// File is the file provider (masking-keys.md §9): a file an operator or a Vault Agent places, mode 0600, holding base64 text.
-// A file any other user may read is refused; it has no versions.
+// File is the file provider (masking-keys.md §9): a regular file an operator or a Vault Agent places, mode 0600 exactly,
+// holding base64 text of at most 64 KiB; any other file is refused. It has no versions.
 type File struct{}
 
 // Material implements Provider; ref is the file's path.
@@ -31,12 +31,15 @@ func (File) Material(_ context.Context, ref, version string) ([]byte, string, er
 	if err != nil {
 		return nil, "", fmt.Errorf("file provider: %w", err)
 	}
-	if !info.Mode().IsRegular() || info.Mode().Perm()&0o077 != 0 {
+	if !info.Mode().IsRegular() || info.Mode().Perm() != 0o600 {
 		return nil, "", fmt.Errorf("file provider: %s is mode %s, not a regular file of mode 0600", ref, info.Mode())
 	}
-	text, err := io.ReadAll(io.LimitReader(f, maxFile))
+	text, err := io.ReadAll(io.LimitReader(f, maxFile+1))
 	if err != nil {
 		return nil, "", fmt.Errorf("file provider: %w", err)
+	}
+	if len(text) > maxFile {
+		return nil, "", fmt.Errorf("file provider: %s holds more than %d bytes", ref, maxFile)
 	}
 	m, err := decode(string(text))
 	if err != nil {
