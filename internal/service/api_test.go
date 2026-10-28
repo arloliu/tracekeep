@@ -1,6 +1,7 @@
 package service
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"crypto/ecdsa"
@@ -43,19 +44,6 @@ func h2c() *http.Client {
 	return &http.Client{Transport: tr, Timeout: 10 * time.Second}
 }
 
-// waitFor calls f until it returns true or the deadline passes: the compactor's first retention record,
-// which its role makes on its own at start and no barrier reaches from the dev loop's outside.
-func waitFor(t *testing.T, what string, f func() bool) {
-	t.Helper()
-	deadline := time.Now().Add(30 * time.Second)
-	for !f() {
-		if time.Now().After(deadline) {
-			t.Fatalf("timed out waiting for %s", what)
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
-}
-
 // tracekeep dev serves the machine API behind its generated token: a client lists the simulator's packs, gets a pack's URL,
 // downloads it through the API and reads it with tracepack's reader.
 func TestDevServesTheMachineAPI(t *testing.T) {
@@ -71,6 +59,7 @@ func TestDevServesTheMachineAPI(t *testing.T) {
 	d.Env.apiBound = func() { close(bound) }
 	put := &putting{ObjectStore: d.Env.Store, put: make(chan string, 16)}
 	d.Env.Store = put
+	seedRetention(t, d.Env)
 	run, stop := context.WithCancel(ctx)
 	done := make(chan error, 1)
 	go func() { done <- d.Run(run) }()
@@ -104,32 +93,17 @@ func TestDevServesTheMachineAPI(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListPacks = %v", err)
 	}
-	var pack string
-	for _, h := range listed.Msg.Hours {
-		for _, s := range h.Scopes {
-			for _, p := range s.Packs {
-				pack = p.PackId
-			}
-		}
-	}
+	pack := anyPack(listed.Msg)
 	if pack == "" {
 		t.Fatalf("ListPacks after three segments = %v, want the first registered", listed.Msg)
 	}
-	var u *tkv1.PackURLResponse
-	waitFor(t, "a pack URL, once retention is recorded", func() bool {
-		req := connectrpc.NewRequest(&tkv1.PackURLRequest{PackId: pack})
-		authed(req)
-		resp, err := cl.PackURL(ctx, req)
-		if connectrpc.CodeOf(err) == connectrpc.CodeUnavailable {
-			return false
-		}
-		if err != nil {
-			t.Fatalf("PackURL = %v", err)
-		}
-		u = resp.Msg
-
-		return true
-	})
+	ureq := connectrpc.NewRequest(&tkv1.PackURLRequest{PackId: pack})
+	authed(ureq)
+	uresp, err := cl.PackURL(ctx, ureq)
+	if err != nil {
+		t.Fatalf("PackURL = %v", err)
+	}
+	u := uresp.Msg
 	if u.Presigned || !strings.HasPrefix(u.Url, base+"/download/") {
 		t.Fatalf("PackURL = %v, want a URL on the API", u)
 	}
@@ -156,6 +130,32 @@ func TestDevServesTheMachineAPI(t *testing.T) {
 	if _, err := cl.ListPacks(ctx, unauthed); connectrpc.CodeOf(err) != connectrpc.CodeUnauthenticated {
 		t.Errorf("ListPacks without the token = %v, want unauthenticated", err)
 	}
+}
+
+// seedRetention records e's retention, as its compactor's first cycle would, so a pack has a deadline before the loop's compactor runs:
+// under a lease of the test's own that lapses at once, which that compactor then takes.
+func seedRetention(t *testing.T, e *Env) {
+	t.Helper()
+	seed, ok, err := e.Catalog.TakeLease(t.Context(), "compactor", "test-seed", 50*time.Millisecond)
+	if err != nil || !ok {
+		t.Fatalf("TakeLease = %v, %v", ok, err)
+	}
+	if _, err := e.Catalog.RecordRetention(t.Context(), seed, e.Config.Retention, e.Config.Compact.DeleteDelay, time.Now().UnixNano()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// anyPack is the id of a pack l lists, empty for none.
+func anyPack(l *tkv1.ListPacksResponse) string {
+	for _, h := range l.Hours {
+		for _, s := range h.Scopes {
+			for _, p := range s.Packs {
+				return p.PackId
+			}
+		}
+	}
+
+	return ""
 }
 
 // presigning is a store whose presigned GETs reach url, each signed with a synthetic signature.
@@ -206,6 +206,25 @@ func TestPresignCheck(t *testing.T) {
 	defer malformed.Close()
 	if err := checkPresign(t.Context(), presigning{malformed.URL}); err == nil || strings.Contains(err.Error(), "Signature") {
 		t.Errorf("a store redirecting to a malformed location: check = %v, want the start failed without the signed URL", err)
+	}
+	// A reason phrase quoting the request's target is the store's text: the check reports the status code alone.
+	ln2, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln2.Close()
+	go func() {
+		conn, err := ln2.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		line, _ := bufio.NewReader(conn).ReadString('\n')
+		target := strings.Fields(line)[1]
+		_, _ = io.WriteString(conn, "HTTP/1.1 403 "+target+"\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+	}()
+	if err := checkPresign(t.Context(), presigning{"http://" + ln2.Addr().String()}); err == nil || strings.Contains(err.Error(), "Signature") {
+		t.Errorf("a store reflecting the signed target in its reason: check = %v, want the start failed without the signed URL", err)
 	}
 }
 
