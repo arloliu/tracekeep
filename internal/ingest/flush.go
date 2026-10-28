@@ -260,6 +260,8 @@ func (f *Flusher) register(ctx context.Context, b *Batch, capture *catalog.Captu
 	switch outcome {
 	case catalog.Registered:
 		f.Metrics.Registered(time.Since(started), capture.ToolID, w.size, seg.role == catalog.RoleConflict)
+		f.Metrics.GapsObserved(capture.ToolID, p.Gaps)
+
 		return outcome, nil
 	case catalog.BeyondHorizon, catalog.LostToTermination:
 		// The key is tombstoned; the object goes, and so would a put delayed across eviction.

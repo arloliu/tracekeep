@@ -399,3 +399,29 @@ func TestReleaseLease(t *testing.T) {
 		}
 	})
 }
+
+// A registration reports the holes it opened above the capture's highest seq, a missing prefix included;
+// one that fills or repeats known seqs opens none.
+func TestRegistrationCountsTheGapsItOpens(t *testing.T) {
+	t.Parallel()
+	engines(t, func(t *testing.T, c *Catalog) {
+		capture := admitted(t, c)
+		for _, tc := range []struct {
+			ranges []Range
+			want   int
+		}{
+			{[]Range{{SeqFrom: 3, SeqTo: 4}}, 1},                             // a missing prefix
+			{[]Range{{SeqFrom: 5, SeqTo: 6}}, 0},                             // contiguous
+			{[]Range{{SeqFrom: 10, SeqTo: 12}}, 1},                           // a hole 7..9
+			{[]Range{{SeqFrom: 7, SeqTo: 9}}, 0},                             // filling it
+			{[]Range{{SeqFrom: 20, SeqTo: 21}, {SeqFrom: 15, SeqTo: 16}}, 2}, // two holes, ranges out of order
+		} {
+			p := segment(t, capture, 1, tc.ranges[0].SeqFrom, tc.ranges[0].SeqTo)
+			p.Ranges = tc.ranges
+			p.SeqStart = min(tc.ranges[0].SeqFrom, tc.ranges[len(tc.ranges)-1].SeqFrom)
+			if out := register(t, c, p, Registration{Evidence: &Evidence{}}); out != Registered || p.Gaps != tc.want {
+				t.Errorf("ranges %v: %v with %d gaps, want %d", tc.ranges, out, p.Gaps, tc.want)
+			}
+		}
+	})
+}
