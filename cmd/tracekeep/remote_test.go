@@ -13,6 +13,8 @@ import (
 	"log/slog"
 	"math/big"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -21,6 +23,7 @@ import (
 
 	"github.com/arloliu/go-secs/tracepack"
 
+	"github.com/arloliu/tracekeep/internal/catalog"
 	"github.com/arloliu/tracekeep/internal/config"
 	"github.com/arloliu/tracekeep/internal/service"
 )
@@ -127,5 +130,46 @@ func TestAdminThroughTheRunningService(t *testing.T) {
 	}
 	if code, _, _ := tracekeep(t, "admin", "--config", cli, "no", "such"); code != 2 {
 		t.Errorf("an unknown command through the service = %d, want usage", code)
+	}
+}
+
+// The CLI follows no redirect from the service it reaches: a redirect to plain text never receives the admin token.
+func TestRemoteAdminFollowsNoRedirect(t *testing.T) {
+	t.Parallel()
+	path := setup(t)
+	dir := filepath.Dir(path)
+	got := make(chan string, 1)
+	plain := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		got <- r.Header.Get("Authorization")
+	}))
+	defer plain.Close()
+	redirecting := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, plain.URL+r.URL.Path, http.StatusTemporaryRedirect)
+	}))
+	defer redirecting.Close()
+	cert := secret(t, dir, "redirecting.crt", string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: redirecting.Certificate().Raw})))
+	token := secret(t, dir, "admin-token", "a-static-token-of-an-operator-000001")
+	base, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cli := secret(t, dir, "cli.yaml", string(base)+"api:\n  tls_cert_file: "+cert+"\n  tls_key_file: "+cert+"\n  public_url: "+redirecting.URL+
+		"\nauth:\n  static:\n    enabled: true\n    tokens:\n      - {subject: operator, token_ref: \"file://"+token+"\", roles: [admin]}\n")
+	cfg, err := config.Load(cli)
+	if err != nil {
+		t.Fatal(err)
+	}
+	held, err := catalog.Open(t.Context(), catalog.Config{Engine: catalog.EngineSQLite, DSN: cfg.Catalog.DSN})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer held.Close()
+	if code, _, _ := tracekeep(t, "admin", "--config", cli, "parked", "list"); code == 0 {
+		t.Error("admin through a redirecting service succeeded")
+	}
+	select {
+	case auth := <-got:
+		t.Errorf("the redirect's destination was reached, with %q", auth)
+	default:
 	}
 }
