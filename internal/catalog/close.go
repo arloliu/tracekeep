@@ -265,7 +265,7 @@ func (c *Catalog) PublishClose(ctx context.Context, l Lease, p *Pack, horizonHou
 	}
 	var state string
 	err := outcome(c.inTx(ctx, func(tx *sqlx.Tx) error {
-		out, evs, err := c.registerIn(ctx, tx, p, Registration{Lease: &l, HorizonHour: horizonHour})
+		out, evs, err := c.registerIn(ctx, tx, p, Registration{Lease: &l, HorizonHour: horizonHour}, nil)
 		if err != nil {
 			return err
 		}
