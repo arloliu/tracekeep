@@ -16,8 +16,9 @@ trap cleanup EXIT
 # start_mariadb starts a server with the databases dev (Atlas's scratch database) and catalog (the tests'), and sets port.
 start_mariadb() {
 	# Byte-exact strings, as on SQLite: the generated tables carry the server's default collation.
+	# Every test package runs at once, each test with catalogs of its own, beyond the default 151 connections.
 	container=$(docker run -d -p 127.0.0.1::3306 -e MARIADB_ROOT_PASSWORD=$PASSWORD -e MARIADB_DATABASE=dev "$MARIADB_IMAGE" \
-		--character-set-server=utf8mb4 --collation-server=utf8mb4_nopad_bin)
+		--character-set-server=utf8mb4 --collation-server=utf8mb4_nopad_bin --max-connections=1000)
 	port=$(docker port "$container" 3306 | head -1 | cut -d: -f2)
 	for _ in $(seq 120); do
 		# The image's first start runs a temporary server; healthcheck.sh answers only for the real one.
