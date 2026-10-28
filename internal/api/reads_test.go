@@ -236,3 +236,23 @@ func TestSelectorRefused(t *testing.T) {
 		t.Errorf("ListPacks of a valid window = %v", err)
 	}
 }
+
+// A page above 10,000 events is refused, and a read the catalog fails is unavailable, which a client retries.
+func TestReadRefusals(t *testing.T) {
+	t.Parallel()
+	c := catalogtest.Open(t, catalog.EngineSQLite)
+	w := newWorld(t, c)
+	window := sel(hour*nsPerHour, (hour+1)*nsPerHour)
+	for limit, want := range map[uint32]connect.Code{0: 0, maxPage: 0, maxPage + 1: connect.CodeInvalidArgument} {
+		_, err := w.cl.ListScopeChanges(t.Context(), reader(&tkv1.ListScopeChangesRequest{Selector: window, Limit: limit}))
+		if got := connect.CodeOf(err); err != nil && got != want || err == nil && want != 0 {
+			t.Errorf("ListScopeChanges limit %d = %v, want %v", limit, err, want)
+		}
+	}
+	if err := c.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.cl.ListPacks(t.Context(), reader(&tkv1.ListPacksRequest{Selector: window})); connect.CodeOf(err) != connect.CodeUnavailable {
+		t.Errorf("ListPacks over a closed catalog = %v, want unavailable", err)
+	}
+}

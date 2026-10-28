@@ -125,6 +125,9 @@ func TestDevServesTheMachineAPI(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer resp.Body.Close()
+	if resp.ProtoMajor != 2 {
+		t.Errorf("dev answered over %s, want HTTP/2 without TLS", resp.Proto)
+	}
 	b, err := io.ReadAll(resp.Body)
 	if err != nil || resp.StatusCode != http.StatusOK {
 		t.Fatalf("download = %d, %v", resp.StatusCode, err)
@@ -319,6 +322,16 @@ func TestAPIRoleOverTLSWithAClientCertificate(t *testing.T) {
 	withCert := client(ca.issue(t, generator))
 	if _, err := withCert.ListPacks(t.Context(), connectrpc.NewRequest(&tkv1.ListPacksRequest{Selector: sel})); err != nil {
 		t.Fatalf("ListPacks with the client certificate = %v", err)
+	}
+	// The listener speaks HTTP/2 over TLS: a raw request through the same kind of transport says so.
+	tr := &http.Transport{TLSClientConfig: &tls.Config{RootCAs: roots, MinVersion: tls.VersionTLS12}, ForceAttemptHTTP2: true}
+	raw, err := (&http.Client{Transport: tr}).Get("https://" + e.APIAddr() + "/download/x") //nolint:noctx // a test's probe
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = raw.Body.Close()
+	if raw.ProtoMajor != 2 {
+		t.Errorf("the API answered over %s, want HTTP/2", raw.Proto)
 	}
 	bare := client()
 	if _, err := bare.ListPacks(t.Context(), connectrpc.NewRequest(&tkv1.ListPacksRequest{Selector: sel})); connectrpc.CodeOf(err) != connectrpc.CodeUnauthenticated {

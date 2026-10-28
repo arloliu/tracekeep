@@ -103,7 +103,7 @@ func (s *Server) observe() connect.UnaryInterceptorFunc {
 			resp, err := next(ctx, req)
 			op := req.Spec().Procedure[strings.LastIndex(req.Spec().Procedure, "/")+1:]
 			s.Metrics.Request(op, code(err), time.Since(start))
-			if err != nil && connect.CodeOf(err) == connect.CodeInternal && s.Log != nil {
+			if c := connect.CodeOf(err); err != nil && (c == connect.CodeInternal || c == connect.CodeUnavailable) && s.Log != nil {
 				s.Log.Error("api: request failed", "operation", op, "error", err)
 			}
 

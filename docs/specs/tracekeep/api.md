@@ -78,16 +78,17 @@ the device being the gateway's configured `eqp-hsms` device name (`producer.md` 
 The service is `tracekeep.v1.MachineService` in `proto/tracekeep/v1`, its messages the catalog's read results field for field (§7.3):
 times are `google.protobuf.Timestamp` (RFC 3339 in JSON, as the selector above), hours their start, ids the canonical text of a UUID, seqs `uint64`, and a time or a seq the catalog may lack is a field with presence.
 Every handler has response compression off: connect's default gzip costs a pack listing and a record stream several times their transfer (T-7).
+`ListScopeChanges` answers at most its request's limit, 1,000 when the limit is 0; a limit above 10,000 is refused.
 A refused request carries a Connect code:
 
 | Code | When |
 |---|---|
 | `unauthenticated` | no credential, or one auth refuses (§10.2 *Failures*, every reason but `forbidden`) |
 | `permission_denied` | `forbidden`: no role of the principal admits the operation |
-| `invalid_argument` | a selector, a cursor or a pack id that does not parse or breaks the bounds above |
-| `not_found` | a `PackURL` of a pack the catalog does not know |
+| `invalid_argument` | a selector, a cursor or a pack id that does not parse or breaks the bounds above, or a `ListScopeChanges` limit above 10,000 |
+| `not_found` | a `PackURL` of a pack the catalog does not know, an evicted one included: eviction deletes its hour's rows (`compactor.md` §8.3) |
 | `failed_precondition` | `pack-superseded`, with the error detail `tracekeep.v1.PackSuperseded` naming the pack |
-| `unavailable` | a `PackURL` before the compactor's first retention record, when no deadline exists (`compactor.md` §8.3), or a catalog that does not answer |
+| `unavailable` | a `PackURL` before the compactor's first retention record, when no deadline exists (`compactor.md` §8.3), or any read the catalog fails, which the client retries |
 
 Every issued `PackURL` appends an `audit_log` row naming the principal's subject, the capture, the pack and the URL's expiry, never the URL:
 the VE service reads packs that hold ciphertext in place (T-5), one row per URL issued.

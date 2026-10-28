@@ -9,7 +9,7 @@ import (
 	tkv1 "github.com/arloliu/tracekeep/proto/tracekeep/v1"
 )
 
-// Page bounds of ListScopeChanges: a request's limit 0 takes defaultPage, and a larger one than maxPage is cut to it.
+// Page bounds of ListScopeChanges (api.md §10.1 *Wire*): a request's limit 0 takes defaultPage, and one above maxPage is refused.
 const (
 	defaultPage = 1000
 	maxPage     = 10000
@@ -85,7 +85,9 @@ func (s *Server) ListScopeChanges(ctx context.Context, req *connect.Request[tkv1
 	if limit == 0 {
 		limit = defaultPage
 	}
-	limit = min(limit, maxPage)
+	if limit > maxPage {
+		return nil, invalid("limit %d, at most %d", limit, maxPage)
+	}
 	after := catalog.Cursor{Epoch: req.Msg.GetAfter().GetEpoch(), Seq: req.Msg.GetAfter().GetSeq()}
 	ch, err := s.Catalog.ListScopeChanges(ctx, after, sel, limit)
 	if err != nil {

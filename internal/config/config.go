@@ -27,7 +27,8 @@ type Config struct {
 	Auth    Auth    `yaml:"auth"`
 	Keys    Keys    `yaml:"keys"`
 	// Retention is how long whole hours are kept; a record older than the retention horizon is beyond retention.
-	Retention time.Duration `yaml:"retention" default:"720h" env:"TRACEKEEP_RETENTION" validate:"gt=0"`
+	// At most a century, so an hour's deadline stays inside int64 nanoseconds.
+	Retention time.Duration `yaml:"retention" default:"720h" env:"TRACEKEEP_RETENTION" validate:"gt=0,lte=876000h"`
 	// Replica names this process in the membership and the compactor lease; empty takes the host name.
 	Replica string `yaml:"replica" env:"TRACEKEEP_REPLICA"`
 }
@@ -135,7 +136,7 @@ type Compact struct {
 	Inactivity time.Duration `yaml:"inactivity" default:"2h" env:"TRACEKEEP_COMPACT_INACTIVITY" validate:"gt=0"`
 	// DeleteDelay is D: a merged input is deleted D after its merge, and a shortened retention evicts nothing early for D;
 	// it exceeds store.download_lifetime by more than twice two minutes of clock skew (compactor.md §8.3).
-	DeleteDelay time.Duration `yaml:"delete_delay" default:"1h" env:"TRACEKEEP_COMPACT_DELETE_DELAY" validate:"gt=0"`
+	DeleteDelay time.Duration `yaml:"delete_delay" default:"1h" env:"TRACEKEEP_COMPACT_DELETE_DELAY" validate:"gt=0,lte=876000h"`
 }
 
 // API is the api role's listener and download URLs (api.md §10.1).

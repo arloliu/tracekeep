@@ -15,7 +15,7 @@ The tunables of later phases (the masking keys' other purposes) join this file w
 
 | Key | Default | Environment | Meaning and cost of moving it |
 |---|---|---|---|
-| `retention` | `720h` | `TRACEKEEP_RETENTION` | whole hours older than this are evicted, and a record older than the horizon is beyond retention; a shortening takes effect for eviction only `compact.delete_delay` after the compactor records it, so no issued download URL outlives its object (`compactor.md` §8.3); 30 days, a default the specs leave open (`compactor.md` §8.4 sizes the claim bucket for a month) |
+| `retention` | `720h` | `TRACEKEEP_RETENTION` | whole hours older than this are evicted, and a record older than the horizon is beyond retention; a shortening takes effect for eviction only `compact.delete_delay` after the compactor records it, so no issued download URL outlives its object (`compactor.md` §8.3); 30 days, a default the specs leave open (`compactor.md` §8.4 sizes the claim bucket for a month); at most a century |
 | `replica` | the host name | `TRACEKEEP_REPLICA` | names this process in the membership and the compactor lease; unique per process |
 | `catalog.engine` | `sqlite` | `TRACEKEEP_CATALOG_ENGINE` | `sqlite` for a single host with every writing role in one process, else `mariadb` (`catalog.md` §7.4); with `sqlite`, `tracekeep admin` runs only while the service is stopped, the running process holding the catalog |
 | `catalog.dsn`, `catalog.dsn_ref` | — | `TRACEKEEP_CATALOG_DSN`, `…_DSN_REF` | the SQLite file or the MariaDB DSN; with credentials, by reference |
@@ -46,7 +46,7 @@ The tunables of later phases (the masking keys' other purposes) join this file w
 | `compact.quiet_period` | `15m` | `TRACEKEEP_COMPACT_QUIET_PERIOD` | Q (T-12): a scope becomes a merge candidate once its hour ended Q ago; must exceed F + `ack_wait` + the redelivery slack; shorter settles sooner and reopens more often after a late flush |
 | `compact.inactivity` | `2h` | `TRACEKEEP_COMPACT_INACTIVITY` | I (T-12): an open capture without a registration for I is closed; shorter closes a quiet capture sooner, and a record arriving after its close is still staged |
 | `compact.redelivery_slack` | `2m` | `TRACEKEEP_COMPACT_REDELIVERY_SLACK` | the time Q leaves after F and `ack_wait` for a redelivered message to be flushed (T-41) |
-| `compact.delete_delay` | `1h` | `TRACEKEEP_COMPACT_DELETE_DELAY` | D (`compactor.md` §8.3): a merged input is deleted D after its merge (a change applies to later merges), and a shortened `retention` evicts nothing early for D; must exceed `store.download_lifetime` by more than 4 minutes: twice the 2 minutes two hosts' clocks may disagree |
+| `compact.delete_delay` | `1h` | `TRACEKEEP_COMPACT_DELETE_DELAY` | D (`compactor.md` §8.3): a merged input is deleted D after its merge (a change applies to later merges), and a shortened `retention` evicts nothing early for D; must exceed `store.download_lifetime` by more than 4 minutes: twice the 2 minutes two hosts' clocks may disagree; at most a century |
 | `metrics.listen` | `:9090` | `TRACEKEEP_METRICS_LISTEN` | where `/metrics`, `/healthz` and `/readyz` are served (`operations.md` §10.4); empty serves none |
 | `api.listen` | `:8443` | `TRACEKEEP_API_LISTEN` | where the `api` role (and `all`) serves the machine API and its downloads, over TLS |
 | `api.tls_cert_file`, `api.tls_key_file` | — | `TRACEKEEP_API_TLS_…` | the API's certificate and key, given together and required to serve; client certificates are verified against `auth.mtls.client_ca_file` when given |
