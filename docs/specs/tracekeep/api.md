@@ -51,7 +51,7 @@ gRPC for Go clients, JSON over HTTP for the browser, one definition.
 | `Admin(words)` | the `tracekeep admin` command those words name, run by the `api` process, its JSON result returned: the transport of §10.4's commands while that process holds a SQLite catalog |
 
 **Admin over the API.**
-A running service holds its SQLite catalog alone (§7.4), so `tracekeep admin` finding it held sends the command's words to that service's `AdminService.Admin`,
+A running service holds its SQLite catalog alone (§7.4), so `tracekeep admin` or `tracekeep status` finding it held sends the command's words to that service's `AdminService.Admin`,
 which runs the same command there and returns the JSON the command prints.
 It checks the `admin` role and audits the command as every admin command is audited, the actor being the principal's subject;
 the CLI's `--actor` names the actor of the direct path only.

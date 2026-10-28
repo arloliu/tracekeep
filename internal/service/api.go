@@ -15,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/arloliu/tracekeep/internal/admin"
 	"github.com/arloliu/tracekeep/internal/api"
 	"github.com/arloliu/tracekeep/internal/auth"
 	"github.com/arloliu/tracekeep/internal/catalog"
@@ -44,7 +45,8 @@ func API(ctx context.Context, e *Env) error {
 	log := e.Log.With("role", "api")
 	s := &api.Server{
 		Catalog: e.Catalog, QuietPeriod: c.Compact.QuietPeriod, Store: e.Store, Metrics: m, Log: log,
-		Auth: authenticator(&c.Auth, m, log),
+		Admin: &admin.Admin{Catalog: e.Catalog, Bus: e.JS, Config: e.Bus()},
+		Auth:  authenticator(&c.Auth, m, log),
 		Downloads: api.Downloads{
 			PublicURL: c.API.PublicURL, Lifetime: c.Store.DownloadLifetime, Margin: c.API.DownloadMargin, Floor: c.API.DownloadFloor,
 			DeleteDelay: c.Compact.DeleteDelay, Now: e.Now,
@@ -80,6 +82,9 @@ func API(ctx context.Context, e *Env) error {
 	e.apiAddr.Store(ln.Addr().String())
 	if e.apiBound != nil {
 		e.apiBound()
+	}
+	if e.listening != nil {
+		e.listeningOnce.Do(func() { close(e.listening) })
 	}
 	if c.API.Plaintext && s.Downloads.PublicURL == "" {
 		// tracekeep dev's downloads are served where it listens.
@@ -241,6 +246,9 @@ func serverTLS(a *config.API, m *config.MTLS) (*tls.Config, error) {
 
 	return cfg, nil
 }
+
+// APIListening returns a channel closed once the api role's listener is bound, which an Env made by Open has.
+func (e *Env) APIListening() <-chan struct{} { return e.listening }
 
 // APIAddr is the address the api role listens on, empty before it is bound.
 func (e *Env) APIAddr() string {

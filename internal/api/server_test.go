@@ -24,6 +24,7 @@ const (
 	readerToken = "a-static-token-of-a-pack-reader-0001"
 	viewerToken = "a-static-token-of-a-viewer-000000001"
 	scorerToken = "a-static-token-of-a-scorer-000000001"
+	adminToken  = "a-static-token-of-an-operator-000001"
 )
 
 func testAuthenticator(f auth.Failures) *auth.Authenticator {
@@ -31,6 +32,7 @@ func testAuthenticator(f auth.Failures) *auth.Authenticator {
 		{Token: readerToken, Subject: "reader", Roles: []string{auth.RolePackReader}},
 		{Token: viewerToken, Subject: "viewer", Roles: []string{auth.RoleViewer}},
 		{Token: scorerToken, Subject: "scorer", Roles: []string{auth.RoleScorer}},
+		{Token: adminToken, Subject: "operator", Roles: []string{auth.RoleAdmin}},
 	}})
 }
 
