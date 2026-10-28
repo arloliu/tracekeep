@@ -1,6 +1,6 @@
 # Phase 2 — compact and machine API
 
-Status: active (2026-10-28) — phase 2.7 in progress
+Status: active (2026-10-28) — phase 2.8 in progress
 
 Milestone 2 of the [roadmap](../ROADMAP.md):
 the compactor's state machines, the catalog reads they make answerable, and the machine API the VE service reads them through.
@@ -33,8 +33,8 @@ This plan only orders the work.
 | 2.4 — reads and cursor | `ListDevices`, `ListCaptures`, `ListPacks` and `ListScopeChanges` as catalog reads (§7.3): `no-data` hours, unregistered intervals, overlap, the watermark read first, `low_water` and `epoch`, pruning by seq prefix | done (#25) |
 | 2.5 — service auth | client credentials against the IdP's JWKS with lazy discovery and one refresh on an unknown `kid`, mTLS, the static-token flag never enabled by a failure, the role each operation checks, `auth_failures_total`; and the `download` key purpose of `masking-keys.md` §9 brought forward whole (T-41): the binding's insert-or-compare, the `file` and `env` providers, issuing and accepted key ids, purpose separation | done (#26) |
 | 2.6 — api | `proto/`, connect-go behind 2.5's checks from its first served request, the `api` role in `all` and `dev` with its readiness and metrics, the four reads, `PackURL` with 2.3's deadline, a 15-minute lifetime, its margin and floor and `pack-superseded`, presigned where the store presigns and `storage.presign` is on, otherwise served by the API with a download token (`HEAD` and ranged `GET`), presigning checked at start, `audit_log` for API actions | done (#27) |
-| 2.7 — admin and status | `tracekeep status`, `deferred list`, admin through the `api` process on SQLite, `tracekeep migrate` applying the catalog's migrations through Atlas's Go library with its own revision table (T-41), tested on a fresh catalog, an upgrade and a failed application, `gap_observations_total` and `captures_with_unknown_tail`, the cost of ingest's metrics read measured at fleet size | in-progress |
-| 2.8 — gate | the roadmap row's cases and the checklist the phases before left open, audited against the tests as 1.7 did | pending |
+| 2.7 — admin and status | `tracekeep status`, `deferred list`, admin through the `api` process on SQLite, `tracekeep migrate` applying the catalog's migrations through Atlas's Go library with its own revision table (T-41), tested on a fresh catalog, an upgrade and a failed application, `gap_observations_total` and `captures_with_unknown_tail`, the cost of ingest's metrics read measured at fleet size | done (#28) |
+| 2.8 — gate | the roadmap row's cases and the checklist the phases before left open, audited against the tests as 1.7 did | in-progress |
 
 Only the phase under way is detailed; the others are detailed when they start.
 Every compactor transaction starts with the capture-row helper and checks the lease after it (T-32, `.agents/rules/600-invariants.md`);
@@ -45,6 +45,34 @@ the survivor, shared-object and unknown-capture races in 2.3, the cursor's commi
 2.8 audits them all, the membership and old-version cases phase 1 built included.
 The roadmap's gate case "a parked message replays in order after its blocker clears" is the parked consumer's own retry after `parking.redelivery_delay`,
 staged through a flush sorted by seq (T-40 withdrew an early replay to proposal P1).
+
+## Phase 2.8 — gate
+
+Work on the branch `test/gate/phase-2`, one commit per step, test first;
+the branch merges by pull request once the whole phase passes an external post-implementation review, and closes phase 2's gate;
+the phase's close (the roadmap row done, this plan closed) is a pull request of its own after it.
+The audit below read every gate case of the roadmap's phase 2 row and the implementation checklist against the tests;
+the steps add what it found missing or partial, each catalog schedule on both engines and each concurrent one barrier-controlled.
+One case is a defect, not a missing test: a registration under an ingest's horizon read before its put could register into an hour retention had just evicted,
+which made the hour a candidate again (`TestRegistrationRacingAnEviction`), against `ingest.md` §6.3's "a put delayed across eviction never registers".
+The registration's guards now refuse a pack into an hour holding evicted ranges, under the capture row eviction also takes, as beyond the horizon.
+The takeover between a transaction's statements runs on MariaDB alone, SQLite serializing whole transactions; that test's decision stands.
+
+| Step | Scope | State |
+|---|---|---|
+| 1 | spec: a pack into an hour whose packs retention evicted is refused and its key tombstoned, for ingest, the reconciler and a close alike (`ingest.md` §6.3, `compactor.md` §8.3) | pending |
+| 2 | catalog: the evicted-hour guard, the race's eviction-first leg refused; case 18's missing legs (parking before admission, unknown-capture parking against an eviction and a claim listing of its hour, both orders); case 8's adoption racing `DeletePack` and `EvictHour`, both orders; case 15 as a real clock step through `EvictHour`; checklist 7c's tombstone in the race's termination-first leg | pending |
+| 3 | ingest: case 9's flush held after its put across `EvictHour`; cases 17, 19 and 23 with a real eviction between the copies and the copy rows `acked`; case 10's parked copies nak'd while the blocker holds and staged in seq order after it clears | pending |
+| 4 | compact, the claim-object family: case 21 (i) and (ii), both orders, crashes before and after the bucket delete and a fresh compactor between cycles; case 22's two halves through `bus adopt-stream` then retention; case 20's release through survivor cleanup; case 5's late claim copy after a merge, a deletion and a retention pass short of its hour; case 7's conflicting version kept until eviction | pending |
+| 5 | the rest: case 2's `reopened` variant merged by the next cycle; case 3's deletion and eviction blocked behind the lease row; case 1 through the API | pending |
+
+### The audit
+
+Read 2026-10-28 at 1371281, from the test bodies.
+Covered: 4 (close versus a late stop), 6 (an hour's eviction removes packs, receipts and claim objects), 11 (a rejected capture's claim object survives), 12 (a lapsed member cannot fetch), 13 (an old-version replica is refused), 14 (the cursor's commit order and pruning), 16 (a close keeps `highest_seq`).
+Missing: 5 (a late claim reference inside retention finds its object).
+Partial, each with what the steps add: 1 (no API leg), 2 (`reopened` only at the catalog), 3 (no blocked-behind leg for deletion and eviction), 7 (no pass over the retained hour), 8 (no race of the reconciler's adoption), 9 (the defect above, and no flush held across an eviction), 10 (no copy met while its blocker holds), 15 (an evicted range inserted by hand), 17, 19 and 20 (no eviction between the copies), 18 (one leg of four), 21 (no two-version schedule through retention), 22 (only the predicate's rows), 23 (no `acked` copy rows, no horizon step).
+The checklist's items 1 to 6 are covered by phase 1's tests, and 7 but for 7c's tombstone assertion.
 
 ## Phase 2.7 — admin and status
 
