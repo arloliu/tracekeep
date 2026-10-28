@@ -1,6 +1,7 @@
 package catalog
 
 import (
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -52,31 +53,53 @@ func waitBlocked(t *testing.T, c *Catalog, waitsBefore int64, stmt string, n int
 	t.Fatalf("the second transaction never waited in %q", stmt)
 }
 
-// waitLockWait is waitBlocked for a wait on a row lock the held transaction keeps until its release:
-// on MariaDB it waits until InnoDB reports stmt in a lock wait, which a statement that merely ran never shows,
-// and on SQLite, which serializes whole transactions, it is waitBlocked.
-// InnoDB refreshes INNODB_TRX only when it was not read for 0.1 s, so the poll is slower than that.
-func waitLockWait(t *testing.T, c *Catalog, waitsBefore int64, stmt string) {
+// waitBehindLeaseRow waits until the lapse of the compactor lease, `UPDATE leases`, waits on the lease row the held transaction keeps.
+// On MariaDB it proves the row locked, a locking read with NOWAIT refused in this test's own database,
+// and waits until the lapse is inside its statement there, which the lock then holds; on SQLite it is waitBlocked.
+// On a failure it closes release first, so the held transaction ends and the test's catalog can close.
+func waitBehindLeaseRow(t *testing.T, c *Catalog, waitsBefore int64, release chan struct{}) {
 	t.Helper()
+	fail := func(format string, args ...any) {
+		t.Helper()
+		close(release)
+		t.Fatalf(format, args...)
+	}
 	if c.d.name == EngineSQLite {
-		waitBlocked(t, c, waitsBefore, stmt, 1)
+		deadline := time.Now().Add(10 * time.Second)
+		for c.write.Stats().WaitCount <= waitsBefore {
+			if time.Now().After(deadline) {
+				fail("the lapse never waited for the writer")
+			}
+			time.Sleep(time.Millisecond)
+		}
 
 		return
 	}
-	deadline := time.Now().Add(10 * time.Second)
-	for time.Now().Before(deadline) {
-		var waiting int
-		err := c.read.GetContext(t.Context(), &waiting, `SELECT COUNT(*) FROM information_schema.INNODB_TRX
-			WHERE trx_state = 'LOCK WAIT' AND trx_query LIKE ?`, stmt+"%")
-		if err != nil {
-			t.Fatal(err)
-		}
-		if waiting > 0 {
-			return
-		}
-		time.Sleep(150 * time.Millisecond)
+	tx, err := c.write.BeginTxx(t.Context(), nil)
+	if err != nil {
+		fail("probe: %v", err)
 	}
-	t.Fatalf("no transaction waited on a lock in %q", stmt)
+	_, err = tx.ExecContext(t.Context(), `SELECT name FROM leases WHERE name = 'compactor' FOR UPDATE NOWAIT`)
+	_ = tx.Rollback()
+	if err == nil || !strings.Contains(err.Error(), "1205") {
+		fail("a locking read of the lease row with NOWAIT = %v, want it refused: the held transaction does not hold the row", err)
+	}
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		var inside int
+		err := c.read.GetContext(t.Context(), &inside, `SELECT COUNT(*) FROM information_schema.PROCESSLIST
+			WHERE DB = DATABASE() AND INFO LIKE 'UPDATE leases%'`)
+		switch {
+		case err != nil:
+			fail("process list: %v", err)
+		case inside > 0:
+			return
+		case time.Now().After(deadline):
+			fail("the lapse never reached the lease row")
+		default:
+			time.Sleep(time.Millisecond)
+		}
+	}
 }
 
 // run runs f on its own goroutine and returns a channel closed when it returns.

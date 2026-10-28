@@ -610,7 +610,7 @@ func TestLeaseTakeoverAgainstAClose(t *testing.T) {
 					<-lapsed
 					compactorLease(t, c, "new")
 				} else {
-					waitBlocked(t, c, waits, "UPDATE leases", 1)
+					waitBehindLeaseRow(t, c, waits, release)
 				}
 				close(release)
 				<-done

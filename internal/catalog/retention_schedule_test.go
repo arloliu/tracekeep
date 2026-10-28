@@ -34,14 +34,10 @@ func callers(t *testing.T, f func(t *testing.T, reg func(l Lease) Registration))
 	})
 }
 
-// A merged input's deletion and a redelivered registration or an adoption of its pack serialize on the capture row, in either order:
+// A merged input's deletion and a redelivered registration of its pack serialize on the capture row, in either order:
 // the registration finds the pack registered and writes nothing, and the deletion leaves the pack deleted with its tombstone.
 func TestRegistrationRacingADeletion(t *testing.T) {
 	t.Parallel()
-	callers(t, racesOfADeletion)
-}
-
-func racesOfADeletion(t *testing.T, reg func(Lease) Registration) {
 	for _, deleteFirst := range []bool{true, false} {
 		t.Run(map[bool]string{true: "deletion first", false: "registration first"}[deleteFirst], func(t *testing.T) {
 			t.Parallel()
@@ -52,7 +48,7 @@ func racesOfADeletion(t *testing.T, reg func(Lease) Registration) {
 				var out PackOutcome
 				var deleted bool
 				var errR, errD error
-				register := func() { out, errR = c.RegisterPack(t.Context(), in, reg(l)) }
+				register := func() { out, errR = c.RegisterPack(t.Context(), in, Registration{Evidence: &Evidence{}}) }
 				del := func() {
 					deleted, errD = c.DeletePack(t.Context(), l, Deletable{Pack: in.ID, Capture: capture, Key: in.Key}, deleteAt(t, c, archive), time.Hour)
 				}
@@ -72,11 +68,16 @@ func racesOfADeletion(t *testing.T, reg func(Lease) Registration) {
 	}
 }
 
-// A deletion and a registration of another pack naming the input's key serialize on the capture row, their outcomes exclusive:
-// the deletion first tombstones the key and the registration is refused for it; the registration first makes the deletion find
-// another row naming the key and refuse, the input left merged.
+// A deletion and a registration or an adoption of another pack naming the input's key serialize on the capture row,
+// their outcomes exclusive (gate case 8): the deletion first tombstones the key and the registration is refused for it;
+// the registration first makes the deletion find another row naming the key and refuse, the input left merged.
 func TestSharedKeyRegistrationRacingADeletion(t *testing.T) {
 	t.Parallel()
+	callers(t, racesOfASharedKeyDeletion)
+}
+
+// racesOfASharedKeyDeletion runs TestSharedKeyRegistrationRacingADeletion's two orders for the registration reg makes.
+func racesOfASharedKeyDeletion(t *testing.T, reg func(Lease) Registration) {
 	for _, deleteFirst := range []bool{true, false} {
 		t.Run(map[bool]string{true: "deletion first", false: "registration first"}[deleteFirst], func(t *testing.T) {
 			t.Parallel()
@@ -89,7 +90,7 @@ func TestSharedKeyRegistrationRacingADeletion(t *testing.T) {
 				var out PackOutcome
 				var deleted bool
 				var errR, errD error
-				register := func() { out, errR = c.RegisterPack(t.Context(), twin, Registration{Evidence: &Evidence{}}) }
+				register := func() { out, errR = c.RegisterPack(t.Context(), twin, reg(l)) }
 				del := func() {
 					deleted, errD = c.DeletePack(t.Context(), l, Deletable{Pack: in.ID, Capture: capture, Key: in.Key}, deleteAt(t, c, archive), time.Hour)
 				}
@@ -126,6 +127,7 @@ func TestRegistrationRacingAnEviction(t *testing.T) {
 	callers(t, racesOfAnEviction)
 }
 
+// racesOfAnEviction runs TestRegistrationRacingAnEviction's two orders for the registration regOf makes.
 func racesOfAnEviction(t *testing.T, regOf func(Lease) Registration) {
 	for _, evictFirst := range []bool{true, false} {
 		t.Run(map[bool]string{true: "eviction first", false: "registration first"}[evictFirst], func(t *testing.T) {
@@ -292,7 +294,7 @@ func TestLeaseTakeoverBehindADeletionOrAnEviction(t *testing.T) {
 				lapsed := run(func() {
 					_, lerr = c.write.ExecContext(t.Context(), `UPDATE leases SET until_ns = 0 WHERE name = 'compactor'`)
 				})
-				waitLockWait(t, c, waits, "UPDATE leases")
+				waitBehindLeaseRow(t, c, waits, release)
 				close(release)
 				<-ran
 				<-lapsed

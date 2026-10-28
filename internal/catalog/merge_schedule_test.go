@@ -166,7 +166,7 @@ func TestLeaseTakeoverAgainstAMergeCommit(t *testing.T) {
 				<-lapsed
 				compactorLease(t, c, "new")
 			} else {
-				waitLockWait(t, c, waits, "UPDATE leases")
+				waitBehindLeaseRow(t, c, waits, release)
 			}
 			close(release)
 			<-merged
