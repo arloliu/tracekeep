@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"errors"
 	"io"
 	"net/http"
 	neturl "net/url"
@@ -118,7 +119,7 @@ func TestMissingBucketIsNotAMissingKey(t *testing.T) {
 	}
 }
 
-// A presigned URL never outlives until and surely reads until the expiry PresignGet returns: its signed date plus its lifetime lie between them.
+// A presigned URL never outlives until, and the expiry PresignGet returns is when it stops reading: its signed date plus its lifetime.
 // Presigning needs no store, so this runs without one.
 func TestPresignStaysInsideUntil(t *testing.T) {
 	t.Parallel()
@@ -145,11 +146,11 @@ func TestPresignStaysInsideUntil(t *testing.T) {
 			t.Fatal(err)
 		}
 		end := signed.Add(time.Duration(secs) * time.Second)
-		if end.After(until) || end.Before(expires) {
-			t.Errorf("lifetime %s: the URL ends %s, outside [%s, %s]", life, end, expires, until)
+		if end.After(until) || !end.Equal(expires) {
+			t.Errorf("lifetime %s: the URL ends %s, reported %s; want it inside %s, reported as signed", life, end, expires, until)
 		}
 	}
-	if _, _, err := s.PresignGet(t.Context(), "archive/c1/p1", time.Now().Add(time.Second)); err == nil {
-		t.Error("PresignGet with no whole second left succeeded")
+	if _, _, err := s.PresignGet(t.Context(), "archive/c1/p1", time.Now().Add(-time.Second)); !errors.Is(err, store.ErrNoLifetime) {
+		t.Errorf("PresignGet until a past time = %v, want ErrNoLifetime", err)
 	}
 }
