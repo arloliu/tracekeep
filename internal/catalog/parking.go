@@ -65,7 +65,7 @@ func (c *Catalog) BeginParking(ctx context.Context, d *Identity, reason, objectK
 		}
 		state, err := readVersionState(ctx, tx, &d.Version)
 		beyond := d.Hour < horizonHour
-		if errors.Is(err, ErrUnknownVersion) && isAdmitted(row.State) && !beyond {
+		if errors.Is(err, ErrUnknownVersion) && r != ResolvedStaged && isAdmitted(row.State) && !beyond {
 			var e error
 			if beyond, e = hourEvicted(ctx, tx, d.Version.Capture, d.Hour); e != nil {
 				return e
