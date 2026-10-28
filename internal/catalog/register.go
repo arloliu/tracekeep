@@ -295,16 +295,8 @@ func (c *Catalog) guards(ctx context.Context, tx *sqlx.Tx, p *Pack, r Registrati
 	if n > 0 {
 		return Tombstoned, true, nil
 	}
-	if p.Hour < r.HorizonHour {
-		// The tombstone commits under the capture row, before the caller deletes the object,
-		// so a put delayed across eviction never registers and no registration of the key slips in between.
-		_, err := tx.ExecContext(ctx, c.d.insertIgnore+` INTO tombstones (object_key, reason, at) VALUES (?, 'beyond-retention', ?)`, p.Key, c.now())
-		if err == nil && row.DataRevision == 1 {
-			// Revision 1 under the lock means this transaction inserted the placeholder: a stray leaves none.
-			_, err = tx.ExecContext(ctx, `DELETE FROM captures WHERE capture_id = ? AND state = 'pending' AND data_revision = 1`, p.Capture[:])
-		}
-
-		return BeyondHorizon, true, err
+	if out, done, err := c.horizonGuard(ctx, tx, p, r, row); done || err != nil {
+		return out, done, err
 	}
 	if r.Evidence != nil {
 		if out, done, err := c.evidenceGuard(ctx, tx, p, r.Evidence); done || err != nil {
@@ -321,6 +313,36 @@ func (c *Catalog) guards(ctx context.Context, tx *sqlx.Tx, p *Pack, r Registrati
 	}
 
 	return 0, false, nil
+}
+
+// horizonGuard refuses a pack of an hour older than the horizon, or of one retention evicted ranges of, as BeyondHorizon,
+// and tombstones its key in this transaction.
+func (c *Catalog) horizonGuard(ctx context.Context, tx *sqlx.Tx, p *Pack, r Registration, row captureRow) (PackOutcome, bool, error) {
+	beyond := p.Hour < r.HorizonHour
+	if !beyond {
+		var err error
+		if beyond, err = hourEvicted(ctx, tx, p.Capture, p.Hour); err != nil || !beyond {
+			return 0, err != nil, err
+		}
+	}
+	// The tombstone commits under the capture row, before the caller deletes the object,
+	// so a put delayed across eviction never registers and no registration of the key slips in between.
+	_, err := tx.ExecContext(ctx, c.d.insertIgnore+` INTO tombstones (object_key, reason, at) VALUES (?, 'beyond-retention', ?)`, p.Key, c.now())
+	if err == nil && row.DataRevision == 1 {
+		// Revision 1 under the lock means this transaction inserted the placeholder: a stray leaves none.
+		_, err = tx.ExecContext(ctx, `DELETE FROM captures WHERE capture_id = ? AND state = 'pending' AND data_revision = 1`, p.Capture[:])
+	}
+
+	return BeyondHorizon, true, err
+}
+
+// hourEvicted reports whether retention evicted ranges of capture's hour, which a caller's horizon read before that eviction still keeps:
+// read under the capture row eviction takes, it refuses the hour whatever horizon the caller read (ingest.md §6.3).
+func hourEvicted(ctx context.Context, tx *sqlx.Tx, capture tracepack.UUID, hour int64) (bool, error) {
+	var n int
+	err := tx.GetContext(ctx, &n, `SELECT COUNT(*) FROM evicted_ranges WHERE capture_id = ? AND hour = ?`, capture[:], hour)
+
+	return n > 0, err
 }
 
 // adoptionGuard refuses the reconciler's orphan holding a seq with a terminated parked row, or of a capture with a termination order in any state,

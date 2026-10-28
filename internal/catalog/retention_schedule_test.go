@@ -102,7 +102,8 @@ func TestSharedKeyRegistrationRacingADeletion(t *testing.T) {
 }
 
 // An eviction and a registration into its hour by an ingest whose horizon is still older serialize on the capture row:
-// a registration first is evicted with the hour; one after the eviction makes the hour a candidate again.
+// a registration first is evicted with the hour; one after the eviction meets the hour's evicted ranges and is refused,
+// its key tombstoned and nothing registered, so the hour is not a candidate again.
 func TestRegistrationRacingAnEviction(t *testing.T) {
 	t.Parallel()
 	for _, evictFirst := range []bool{true, false} {
@@ -124,21 +125,28 @@ func TestRegistrationRacingAnEviction(t *testing.T) {
 				} else {
 					race(t, c, reg, evict)
 				}
-				if errR != nil || errE != nil || out != Registered || !ev.Evicted {
-					t.Fatalf("RegisterPack = %v, %v; EvictHour = %+v, %v", out, errR, ev, errE)
+				want := map[bool]PackOutcome{true: BeyondHorizon, false: Registered}[evictFirst]
+				if errR != nil || errE != nil || out != want || !ev.Evicted {
+					t.Fatalf("RegisterPack = %v, %v; EvictHour = %+v, %v; want %v", out, errR, ev, errE, want)
 				}
 				left := evictCandidates(t, c, hourEvictedNow)
 				if evictFirst {
-					if !slices.Equal(ev.Packs, []string{old.Key}) || !slices.Equal(left, []Scope{{capture, 1}}) {
-						t.Errorf("evicted %v, candidates %v; want the old pack evicted and the hour a candidate again", ev.Packs, left)
+					if !slices.Equal(ev.Packs, []string{old.Key}) || len(left) != 0 {
+						t.Errorf("evicted %v, candidates %v; want the old pack evicted and no candidate", ev.Packs, left)
+					}
+					if n := count(t, c, `SELECT COUNT(*) FROM tombstones WHERE object_key = ?`, late.Key); n != 1 {
+						t.Errorf("%d tombstones of the refused key, want 1", n)
+					}
+					if n := count(t, c, `SELECT COUNT(*) FROM packs`); n != 0 {
+						t.Errorf("%d packs after the refused registration, want none", n)
 					}
 
 					return
 				}
 				slices.Sort(ev.Packs)
-				want := []string{old.Key, late.Key}
-				slices.Sort(want)
-				if !slices.Equal(ev.Packs, want) || len(left) != 0 {
+				keys := []string{old.Key, late.Key}
+				slices.Sort(keys)
+				if !slices.Equal(ev.Packs, keys) || len(left) != 0 {
 					t.Errorf("evicted %v, candidates %v; want both packs evicted and no candidate", ev.Packs, left)
 				}
 			})
@@ -146,10 +154,9 @@ func TestRegistrationRacingAnEviction(t *testing.T) {
 	}
 }
 
-// Parking and an eviction of its hour serialize on the capture row, the parking judged by the horizon of its moment:
-// parking first, while its horizon still keeps the hour, leaves an unresolved version, which the eviction keeps the object for
-// (a version still parking is not moved); an eviction first, which the horizon reached, releases the object,
-// and the parking under that horizon finds the hour beyond retention and parks nothing.
+// Parking and an eviction of its hour, which holds a registered pack, serialize on the capture row, the parking's horizon read before either and still keeping the hour:
+// parking first leaves an unresolved version, which the eviction keeps the object for (a version still parking is not moved);
+// an eviction first releases the object, and the parking meets the hour's evicted ranges, finds it beyond retention and parks nothing.
 func TestParkingRacingAnEviction(t *testing.T) {
 	t.Parallel()
 	for _, evictFirst := range []bool{true, false} {
@@ -159,17 +166,16 @@ func TestParkingRacingAnEviction(t *testing.T) {
 				l := compactorLease(t, c, "w")
 				capture := admitted(t, c)
 				claimRow(t, c, capture, 12, 1, "claims/12")
-				r := recordRetention(t, c, l, month, 0)
+				old := segment(t, capture, 1, 0, 9)
+				register(t, c, old, Registration{Evidence: &Evidence{}})
+				recordRetention(t, c, l, month, 0)
 				d := identity(capture, 12, 9)
 				d.Hour = 1
 				var b Begun
 				var ev Eviction
 				var errP, errE error
-				horizon := r.HorizonHour(hourEvictedNow)
-				if !evictFirst {
-					horizon = d.Hour // the moment before the horizon passed the hour
-				}
-				parkIt := func() { b, errP = c.BeginParking(t.Context(), d, "claim-conflict", "claims/12", horizon) }
+				// The moment before the horizon passed the hour.
+				parkIt := func() { b, errP = c.BeginParking(t.Context(), d, "claim-conflict", "claims/12", d.Hour) }
 				evict := func() { ev, errE = c.EvictHour(t.Context(), l, Scope{capture, 1}, hourEvictedNow) }
 				if evictFirst {
 					race(t, c, evict, parkIt)
@@ -178,6 +184,9 @@ func TestParkingRacingAnEviction(t *testing.T) {
 				}
 				if errP != nil || errE != nil || !ev.Evicted {
 					t.Fatalf("BeginParking = %+v, %v; EvictHour = %+v, %v", b, errP, ev, errE)
+				}
+				if !slices.Equal(ev.Packs, []string{old.Key}) {
+					t.Errorf("evicted %v, want the hour's pack", ev.Packs)
 				}
 				if evictFirst {
 					if !b.BeyondRetention || !slices.Equal(ev.Claims, []string{"claims/12"}) || count(t, c, `SELECT COUNT(*) FROM parked`) != 0 {
