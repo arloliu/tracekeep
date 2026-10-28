@@ -11,7 +11,6 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
-	"net/url"
 	"os"
 	"sync"
 	"time"
@@ -189,12 +188,7 @@ func checkPresign(ctx context.Context, p store.Presigner) error {
 	client := &http.Client{Timeout: 10 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 	resp, err := client.Do(req)
 	if err != nil {
-		var ue *url.Error
-		if errors.As(err, &ue) {
-			err = ue.Err // the URL carries the signature
-		}
-
-		return fmt.Errorf("service: api: the presign check's GET failed: %w; turn store.presign off if readers cannot use the store's presigned URLs", err)
+		return fmt.Errorf("service: api: the presign check's GET %s; turn store.presign off if readers cannot use the store's presigned URLs", failure(err))
 	}
 	_ = resp.Body.Close()
 	if resp.StatusCode != http.StatusNotFound {
@@ -202,6 +196,24 @@ func checkPresign(ctx context.Context, p store.Presigner) error {
 	}
 
 	return nil
+}
+
+// failure classifies a failed request in words of its own, since the error's text can quote the signed URL,
+// a redirect's Location included.
+func failure(err error) string {
+	var nerr net.Error
+	var terr *tls.CertificateVerificationError
+	var oerr *net.OpError
+	switch {
+	case errors.As(err, &nerr) && nerr.Timeout():
+		return "timed out"
+	case errors.As(err, &terr):
+		return "failed: the store's certificate does not verify"
+	case errors.As(err, &oerr) && oerr.Op == "dial":
+		return "failed: the store does not answer"
+	default:
+		return "failed"
+	}
 }
 
 // serverTLS is the listener's TLS: a's certificate, and client certificates verified against m's CA when given.
