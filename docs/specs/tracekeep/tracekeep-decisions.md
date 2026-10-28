@@ -85,6 +85,27 @@ that dials the bus itself by default (`WithConn`/`WithBus` as the escape hatch).
 **before the API is implemented (phase 2), measure connect-go's overhead against plain gRPC** for `ListPacks` and streamed `QueryRecords`
 and record the result as a phase 2 gate.
 
+**Measured (2026-10-28):** connect-go v1.21.1 against grpc-go v1.85.0 on Go 1.26,
+one process over a loopback TCP listener (h2c for connect, insecure credentials for gRPC), no TLS, both stacks untuned,
+`wrapperspb.BytesValue` messages of random bytes with hand-written handlers, medians of five `testing.B` runs on a 32-thread x86-64 host.
+
+| shape | gRPC | connect (Connect protocol) | connect (gRPC protocol) |
+|---|---|---|---|
+| unary, 64 KiB response (a `ListPacks` answer) | 65 µs | 82 µs (+26%) | 90 µs (+38%) |
+| unary, 4 KiB response | 21 µs | 42 µs (+104%) | 53 µs (+154%) |
+| unary, 64 KiB, 32 callers in parallel | 17 µs | 42 µs (+156%) | 49 µs (+195%) |
+| server stream, 1,000 × 1 KiB (a `QueryRecords` shape) | 0.96 ms | 4.05 ms (+322%) | 3.82 ms (+298%) |
+
+These rows have compression off.
+With connect's default gzip on, which compresses every response that the client accepts, incompressible bytes cost 8.7 times gRPC's time for the 64 KiB call and 36 times for the stream.
+So the api role turns response compression off, or raises its threshold above a pack's ranges.
+Without gzip the added cost is 17 to 36 µs per unary call and about 3 µs per streamed message.
+The Connect, gRPC and gRPC-Web protocols land within 6 to 16 percent of one another, except at 4 KiB, where the two gRPC-framed protocols run 25 to 34 percent slower.
+The cost likely sits in `net/http`'s HTTP/2 layer, but no profile was taken.
+Behind store reads and network round trips the difference is small for `ListPacks`.
+For a long `QueryRecords` stream it is about 3 ms per thousand records, which phase 4 should measure again with real records before it settles the stream's batching.
+Runs varied by up to ±16 percent per row.
+
 ### T-8 — repository name
 
 Repository name (V-29 is provisional).

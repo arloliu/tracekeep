@@ -14,6 +14,7 @@ This plan only orders the work.
 - T-7's gate: connect-go's overhead against plain gRPC, measured for `ListPacks` and a streamed `QueryRecords` shape before phase 2.6 starts,
   the result recorded in the decision log.
   It runs beside phases 2.1–2.5, which serve no API.
+  Done in phase 2.5: recorded under T-7, with response compression off for the api role.
 - tracepack v0.9.0 is already the service's (T-36), so every close is written uncompressed (G5-272):
   phase 2.2 drops `capture_closes.codec` and the codec from `compactor.md` §8.2 and `catalog.md` §7.1,
   which closes the roadmap's open item on it.
