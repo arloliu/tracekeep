@@ -48,10 +48,11 @@ type Static struct {
 
 // StaticToken is one static token, read by reference, with the principal it authenticates.
 type StaticToken struct {
-	Subject  string   `yaml:"subject"`
-	TokenRef string   `yaml:"token_ref"`
-	Token    string   `yaml:"token" refFrom:"TokenRef"`
-	Roles    []string `yaml:"roles"`
+	Subject  string `yaml:"subject"`
+	TokenRef string `yaml:"token_ref"`
+	// Token is read from TokenRef only: the file cannot hold it.
+	Token string   `yaml:"-" refFrom:"TokenRef"`
+	Roles []string `yaml:"roles"`
 }
 
 // Keys is the keys the service declares and the purposes they serve (masking-keys.md §9).
