@@ -36,8 +36,14 @@ type Server struct {
 	Metrics *metrics.API
 	Log     *slog.Logger
 
-	// afterRead, set only by the package's tests, runs once PackURL has read its pack's deadline.
-	afterRead func()
+	// stall, set only by the package's tests, runs at each stage of a PackURL: read, signed, audited.
+	stall func(stage string)
+}
+
+func (s *Server) stalled(stage string) {
+	if s.stall != nil {
+		s.stall(stage)
+	}
 }
 
 var _ tracekeepv1connect.MachineServiceHandler = (*Server)(nil)

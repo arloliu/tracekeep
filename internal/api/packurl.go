@@ -41,8 +41,9 @@ const (
 // a URL expiring at the earlier of now plus the lifetime and the pack's deadline less the margin,
 // refused as pack-superseded when that leaves less than the floor or the pack is deleted; each issued URL is audited.
 // Now is read before the deadline: a retention shortened after the read holds the old period for D from its record,
-// later than now, so no URL of a lifetime below D outlives its object however long the request then takes;
-// a request that takes so long its URL would live less than the floor is refused.
+// later than now, so no URL of a lifetime below D outlives its object however long the request then takes.
+// The URL's remaining life is checked against the floor again before signing, so no row is audited for a URL already too short,
+// and once its audit row is written, so a request that stalls anywhere issues nothing that would live less than the floor.
 func (s *Server) PackURL(ctx context.Context, req *connect.Request[tkv1.PackURLRequest]) (*connect.Response[tkv1.PackURLResponse], error) {
 	id, err := tracepack.ParseUUID(req.Msg.GetPackId())
 	if err != nil {
@@ -59,22 +60,21 @@ func (s *Server) PackURL(ctx context.Context, req *connect.Request[tkv1.PackURLR
 	case !d.Known:
 		return nil, connect.NewError(connect.CodeUnavailable, errors.New("no retention recorded yet: a pack has no deadline before the compactor's first retention pass"))
 	}
-	if s.afterRead != nil {
-		s.afterRead()
-	}
+	s.stalled("read")
 	// Whole seconds, as a token carries its expiry.
 	until := time.Unix(min(now.Add(dl.Lifetime).UnixNano(), d.Deadline-int64(dl.Margin))/int64(time.Second), 0)
-	if d.State == "deleted" || until.Sub(now) < dl.Floor {
+	if d.State == "deleted" || until.Sub(dl.now()) < dl.Floor {
 		s.Metrics.DownloadRefused()
 		return nil, superseded(id)
 	}
 	u, err := dl.url(ctx, d.Key, until)
-	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, err)
-	}
-	if u.expires.Sub(dl.now()) < dl.Floor {
+	s.stalled("signed")
+	if errors.Is(err, store.ErrNoLifetime) {
 		s.Metrics.DownloadRefused()
 		return nil, superseded(id)
+	}
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
 	}
 	p, _ := PrincipalFrom(ctx)
 	entry := catalog.AuditEntry{
@@ -83,6 +83,12 @@ func (s *Server) PackURL(ctx context.Context, req *connect.Request[tkv1.PackURLR
 	}
 	if err := s.Catalog.Audit(ctx, entry); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit: %w", err))
+	}
+	s.stalled("audited")
+	// A row naming a URL withheld here is a URL issued and never delivered, which nobody can use.
+	if u.expires.Sub(dl.now()) < dl.Floor {
+		s.Metrics.DownloadRefused()
+		return nil, superseded(id)
 	}
 	s.Metrics.DownloadURL(u.kind)
 
