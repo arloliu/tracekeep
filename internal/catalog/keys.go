@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"unicode/utf8"
 
 	"github.com/jmoiron/sqlx"
 )
@@ -51,6 +52,19 @@ func (c *Catalog) KeyBinding(ctx context.Context, keyID string) (KeyBinding, boo
 // It takes no lease and no capture row; two first bindings of one key id serialize on the key,
 // so they agree or one of them fails.
 func (c *Catalog) BindKey(ctx context.Context, b KeyBinding) (KeyBinding, error) {
+	// A binding is the reference actually resolved, so a field its column would truncate is refused, not bound
+	// (MariaDB's INSERT IGNORE would truncate it with a warning).
+	for name, f := range map[string]struct {
+		v   string
+		max int
+	}{
+		"key_id": {b.KeyID, 128}, "kind": {b.Kind, 16}, "provider_ref": {b.ProviderRef, 255},
+		"provider_version": {b.ProviderVersion, 64}, "fingerprint": {b.Fingerprint, 64},
+	} {
+		if n := utf8.RuneCountInString(f.v); n > f.max {
+			return KeyBinding{}, fmt.Errorf("catalog: bind key: %s of %d characters, above its column's %d", name, n, f.max)
+		}
+	}
 	var stored KeyBinding
 	err := c.inTx(ctx, func(tx *sqlx.Tx) error {
 		_, err := tx.ExecContext(ctx, c.d.insertIgnore+` INTO key_bindings (key_id, kind, provider_ref, provider_version, fingerprint, bound_at)
