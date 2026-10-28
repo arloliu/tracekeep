@@ -260,9 +260,23 @@ func TestRequestMetrics(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	c := served(t, m).c
+	x := served(t, m)
+	c := x.c
 	calls(c, readerToken)
 	calls(c, "")
+	// Unknown procedures share one label, so a client cannot mint series.
+	for _, p := range []string{"Export", "a-1", "a-2"} {
+		req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, x.srv.URL+"/tracekeep.v1.MachineService/"+p, strings.NewReader("{}"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := x.srv.Client().Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = resp.Body.Close()
+	}
 	srv := httptest.NewServer(s.Handler())
 	t.Cleanup(srv.Close)
 	resp, err := http.Get(srv.URL + "/metrics") //nolint:noctx // a test's local scrape
@@ -271,7 +285,11 @@ func TestRequestMetrics(t *testing.T) {
 	}
 	defer resp.Body.Close()
 	b, _ := io.ReadAll(resp.Body)
+	if strings.Contains(string(b), `operation="a-1"`) || strings.Contains(string(b), `operation="Export"`) {
+		t.Error("an unknown procedure has a series of its own")
+	}
 	for _, want := range []string{
+		`tracekeep_api_requests_total{code="unauthenticated",operation="unknown"} 3`,
 		`tracekeep_api_requests_total{code="ok",operation="ListPacks"} 1`,
 		`tracekeep_api_requests_total{code="unauthenticated",operation="ListPacks"} 1`,
 		`tracekeep_api_request_seconds_count{operation="PackURL"} 2`,

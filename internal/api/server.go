@@ -7,6 +7,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"path"
 	"strings"
 	"time"
 
@@ -34,6 +35,9 @@ type Server struct {
 	Auth    *auth.Authenticator
 	Metrics *metrics.API
 	Log     *slog.Logger
+
+	// afterRead, set only by the package's tests, runs once PackURL has read its pack's deadline.
+	afterRead func()
 }
 
 var _ tracekeepv1connect.MachineServiceHandler = (*Server)(nil)
@@ -61,15 +65,33 @@ func PrincipalFrom(ctx context.Context) (auth.Principal, bool) {
 	return p, ok
 }
 
-// routes is the HTTP handler serving impl behind the auth middleware, with response compression off (T-7).
+// operations are the procedures the service serves; any other path under it is opUnknown, one label, and refused.
+var operations = map[string]bool{
+	auth.OpListDevices: true, auth.OpListCaptures: true, auth.OpListPacks: true, auth.OpListScopeChanges: true, auth.OpPackURL: true,
+}
+
+const opUnknown = "unknown"
+
+// routes is the HTTP handler serving impl behind the auth middleware, with response compression off (T-7),
+// and the downloads the API serves when it has download tokens.
+// Downloads and unclean paths are answered before the mux, which would redirect an unclean path to its clean form,
+// a download's token in the redirect.
 func (s *Server) routes(impl tracekeepv1connect.MachineServiceHandler) http.Handler {
 	mux := http.NewServeMux()
-	path, h := tracekeepv1connect.NewMachineServiceHandler(impl,
+	prefix, h := tracekeepv1connect.NewMachineServiceHandler(impl,
 		connect.WithCompression("gzip", nil, nil), connect.WithInterceptors(s.observe()))
-	mux.Handle(path, s.authenticate(path, h))
-	mux.HandleFunc("/download/", s.download)
+	mux.Handle(prefix, s.authenticate(prefix, h))
 
-	return mux
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch p := r.URL.Path; {
+		case strings.HasPrefix(p, "/download/") && s.Downloads.Tokens != nil:
+			s.download(&downloadWriter{ResponseWriter: w}, r)
+		case strings.HasPrefix(p, "/download/") || path.Clean(p) != p:
+			http.NotFound(&downloadWriter{ResponseWriter: w}, r)
+		default:
+			mux.ServeHTTP(w, r)
+		}
+	})
 }
 
 // authenticate refuses, as a Connect error, every request auth.Check refuses for the procedure's operation,
@@ -80,6 +102,9 @@ func (s *Server) authenticate(prefix string, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
 		op := strings.TrimPrefix(r.URL.Path, prefix)
+		if !operations[op] {
+			op = opUnknown
+		}
 		p, err := s.Auth.Check(r, op)
 		if err != nil {
 			err = refusal(err)

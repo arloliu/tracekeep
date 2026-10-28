@@ -94,12 +94,15 @@ presigning is therefore an optional capability of a store:
 
 ```go
 type Presigner interface {
-    PresignGet(ctx context.Context, key string, lifetime time.Duration) (string, error)
+    PresignGet(ctx context.Context, key string, until time.Time) (url string, expires time.Time, err error)
 }
 ```
 
 - `s3` implements it with a presigned GET;
   `fs` and `mem` do not, so a standalone pilot has no presigned URLs.
+  A signature carries its signing time and lifetime in whole seconds, and the SDK samples the signing time itself,
+  so `PresignGet` signs for a second less than `until` leaves and returns the time the URL surely reads until,
+  which the API reports as the URL's expiry.
 - The `api` role finds the capability once at start, by type assertion on its store;
   without it, the API serves downloads itself (§10.1 *Downloads*).
 - `storage.presign` (default on) is the one configuration that chooses between the two (T-33):

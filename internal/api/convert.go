@@ -3,6 +3,7 @@ package api
 import (
 	"errors"
 	"fmt"
+	"math"
 	"time"
 
 	"connectrpc.com/connect"
@@ -12,9 +13,6 @@ import (
 	"github.com/arloliu/tracekeep/internal/catalog"
 	tkv1 "github.com/arloliu/tracekeep/proto/tracekeep/v1"
 )
-
-// nsPerHour is one hour in nanoseconds, the unit of a catalog hour.
-const nsPerHour = int64(time.Hour)
 
 // invalid is the Connect error of a request the handler refuses as invalid.
 func invalid(format string, args ...any) error {
@@ -51,20 +49,25 @@ func selector(sel *tkv1.Selector) (catalog.Selector, error) {
 	return out, nil
 }
 
-// nanos is t in Unix nanoseconds, clamped to int64's range.
+// nanos is t in Unix nanoseconds, clamped to int64's range: exact inside it, the nearer bound outside.
 func nanos(t *timestamppb.Timestamp) int64 {
-	const maxSec = int64(1<<63-1) / int64(time.Second)
-	switch s := t.GetSeconds(); {
-	case s >= maxSec:
-		return 1<<63 - 1
-	case s <= -maxSec:
-		return -1 << 63
+	at := t.AsTime()
+	switch {
+	case at.Before(time.Unix(0, math.MinInt64)):
+		return math.MinInt64
+	case at.After(time.Unix(0, math.MaxInt64)):
+		return math.MaxInt64
 	default:
-		return s*int64(time.Second) + int64(t.GetNanos())
+		return at.UnixNano()
 	}
 }
 
 func ts(ns int64) *timestamppb.Timestamp { return timestamppb.New(time.Unix(0, ns)) }
+
+// hourTS is the start of hour, in seconds, which no hour's start overflows.
+func hourTS(hour int64) *timestamppb.Timestamp {
+	return &timestamppb.Timestamp{Seconds: hour * int64(time.Hour/time.Second)}
+}
 
 func optTS(ns *int64) *timestamppb.Timestamp {
 	if ns == nil {
@@ -146,7 +149,7 @@ func lossesOf(in []catalog.DeclaredLoss) []*tkv1.DeclaredLoss {
 
 func hourOf(h *catalog.HourListing) *tkv1.Hour {
 	out := &tkv1.Hour{
-		Hour: ts(h.Hour * nsPerHour), Evicted: ids(h.Evicted), Deferred: deferredOf(h.Deferred), Losses: lossesOf(h.Losses),
+		Hour: hourTS(h.Hour), Evicted: ids(h.Evicted), Deferred: deferredOf(h.Deferred), Losses: lossesOf(h.Losses),
 		NoData: h.NoData, Spanned: h.Spanned,
 	}
 	for _, s := range h.Scopes {
@@ -191,6 +194,6 @@ func completenessOf(c *catalog.Completeness) *tkv1.Completeness {
 
 func eventOf(e *catalog.ScopeEvent) *tkv1.ScopeEvent {
 	return &tkv1.ScopeEvent{
-		Seq: e.Seq, CaptureId: e.Capture.String(), Hour: ts(e.Hour * nsPerHour), Event: e.Event, Revision: e.Revision, At: ts(e.At),
+		Seq: e.Seq, CaptureId: e.Capture.String(), Hour: hourTS(e.Hour), Event: e.Event, Revision: e.Revision, At: ts(e.At),
 	}
 }

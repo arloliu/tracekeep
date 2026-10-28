@@ -1,6 +1,7 @@
 package service
 
 import (
+	"cmp"
 	"context"
 	"crypto/rand"
 	"crypto/tls"
@@ -10,7 +11,9 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
+	"sync"
 	"time"
 
 	"github.com/arloliu/tracekeep/internal/api"
@@ -22,7 +25,7 @@ import (
 	"github.com/arloliu/tracekeep/internal/store"
 )
 
-// apiShutdown bounds the requests in flight when the api role stops.
+// apiShutdown bounds how long the requests in flight may finish when the api role stops, before their connections are closed.
 const apiShutdown = 10 * time.Second
 
 // API runs the api role until ctx ends (architecture.md §3.1): the machine API and its downloads on api.listen,
@@ -48,8 +51,16 @@ func API(ctx context.Context, e *Env) error {
 			DeleteDelay: c.Compact.DeleteDelay, Now: e.Now,
 		},
 	}
+	// Every handler is counted, so the role returns only once none runs: the catalog and the store outlive them all.
+	var inFlight sync.WaitGroup
+	handler := s.Handler()
 	srv := &http.Server{
-		Handler: s.Handler(), ReadHeaderTimeout: 10 * time.Second, Protocols: new(http.Protocols),
+		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			inFlight.Add(1)
+			defer inFlight.Done()
+			handler.ServeHTTP(w, r)
+		}),
+		ReadHeaderTimeout: 10 * time.Second, Protocols: new(http.Protocols),
 		ErrorLog: slog.NewLogLogger(log.Handler(), slog.LevelWarn),
 	}
 	srv.Protocols.SetHTTP1(true)
@@ -68,6 +79,9 @@ func API(ctx context.Context, e *Env) error {
 	}
 	defer ln.Close()
 	e.apiAddr.Store(ln.Addr().String())
+	if e.apiBound != nil {
+		e.apiBound()
+	}
 	if c.API.Plaintext && s.Downloads.PublicURL == "" {
 		// tracekeep dev's downloads are served where it listens.
 		s.Downloads.PublicURL = "http://" + ln.Addr().String()
@@ -90,10 +104,16 @@ func API(ctx context.Context, e *Env) error {
 		return fmt.Errorf("service: api: %w", err)
 	case <-ctx.Done():
 	}
-	sctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), apiShutdown)
+	sctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), cmp.Or(e.apiShutdown, apiShutdown))
 	defer cancel()
-	if err := srv.Shutdown(sctx); err != nil {
-		return fmt.Errorf("service: api: %w", err)
+	err = srv.Shutdown(sctx)
+	if err != nil {
+		// Past the bound, the connections close, which cancels their requests' contexts, and the handlers end.
+		err = errors.Join(fmt.Errorf("service: api: shutdown: %w", err), srv.Close())
+	}
+	inFlight.Wait()
+	if err != nil {
+		return err
 	}
 
 	return ctx.Err()
@@ -155,19 +175,26 @@ func (e *Env) downloads(ctx context.Context, dl *api.Downloads, m *metrics.API) 
 }
 
 // checkPresign presigns a GET of a key that does not exist and fetches it (storage.md §5.2 *Downloads*):
-// not-found shows the store accepts the signature, and anything else fails the start.
+// not-found shows the store accepts the signature, and anything else, a redirect included, fails the start.
+// Its errors never carry the signed URL.
 func checkPresign(ctx context.Context, p store.Presigner) error {
-	u, err := p.PresignGet(ctx, "tracekeep-presign-check/"+rand.Text(), time.Minute)
+	u, _, err := p.PresignGet(ctx, "tracekeep-presign-check/"+rand.Text(), time.Now().Add(time.Minute))
 	if err != nil {
 		return fmt.Errorf("service: api: presign: %w", err)
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, http.NoBody)
 	if err != nil {
-		return fmt.Errorf("service: api: presign: %w", err)
+		return errors.New("service: api: presign: the store's presigned URL does not parse")
 	}
-	resp, err := (&http.Client{Timeout: 10 * time.Second}).Do(req)
+	client := &http.Client{Timeout: 10 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	resp, err := client.Do(req)
 	if err != nil {
-		return fmt.Errorf("service: api: presign check: %w; turn store.presign off if readers cannot use the store's presigned URLs", err)
+		var ue *url.Error
+		if errors.As(err, &ue) {
+			err = ue.Err // the URL carries the signature
+		}
+
+		return fmt.Errorf("service: api: the presign check's GET failed: %w; turn store.presign off if readers cannot use the store's presigned URLs", err)
 	}
 	_ = resp.Body.Close()
 	if resp.StatusCode != http.StatusNotFound {

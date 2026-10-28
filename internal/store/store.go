@@ -53,6 +53,7 @@ type ObjectInfo struct {
 
 // Presigner is the optional capability of a store that hands readers a URL (storage.md §5.2 *Downloads*).
 type Presigner interface {
-	// PresignGet returns a URL that reads the object under key until lifetime has passed.
-	PresignGet(ctx context.Context, key string, lifetime time.Duration) (string, error)
+	// PresignGet returns a URL that reads the object under key and never outlives until,
+	// and expires, the time the URL surely reads until: the expiry its holder is told.
+	PresignGet(ctx context.Context, key string, until time.Time) (url string, expires time.Time, err error)
 }

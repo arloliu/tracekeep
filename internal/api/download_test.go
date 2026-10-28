@@ -128,3 +128,55 @@ func TestDownloadRefusals(t *testing.T) {
 		t.Errorf("the log holds a token:\n%s", logs.String())
 	}
 }
+
+// Every download response is uncached and sent with no referrer, a refused range included,
+// and an unclean download path is refused or not found, never redirected with its token.
+func TestDownloadEdges(t *testing.T) {
+	t.Parallel()
+	now := time.Now()
+	var logs bytes.Buffer
+	srv, tokens, _ := downloads(t, &now, &logs)
+	tok, err := tokens.Sign(t.Context(), objectKey, now.Add(time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	noRedirect := &http.Client{Transport: srv.Client().Transport, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	for name, tc := range map[string]struct {
+		path, rng string
+		want      int
+	}{
+		"a range past the end": {"/download/" + tok, "bytes=100-", http.StatusRequestedRangeNotSatisfiable},
+		"a doubled slash":      {"/download//" + tok, "", http.StatusForbidden},
+		"a dot segment":        {"/download/./" + tok, "", http.StatusForbidden},
+		"a leading double":     {"//download/" + tok, "", http.StatusNotFound},
+		"a nested path":        {"/download/" + tok + "/x", "", http.StatusForbidden},
+	} {
+		req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, srv.URL+tc.path, http.NoBody)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if tc.rng != "" {
+			req.Header.Set("Range", tc.rng)
+		}
+		resp, err := noRedirect.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = resp.Body.Close()
+		if resp.StatusCode != tc.want || resp.Header.Get("Cache-Control") != "no-store" || resp.Header.Get("Referrer-Policy") != "no-referrer" ||
+			resp.Header.Get("Location") != "" {
+			t.Errorf("%s: %d, headers %v; want %d, uncached, no referrer, no redirect", name, resp.StatusCode, resp.Header, tc.want)
+		}
+	}
+}
+
+// Without download tokens (presigned downloads) the API serves no download path, refusing it without a panic.
+func TestNoDownloadsWithoutTokens(t *testing.T) {
+	t.Parallel()
+	s := &Server{Catalog: catalogtest.Open(t, catalog.EngineSQLite), Auth: testAuthenticator(nil), Store: store.NewMem()}
+	srv := httptest.NewServer(s.Handler())
+	t.Cleanup(srv.Close)
+	if resp, _ := get(t, srv, http.MethodGet, "/download/x.y", nil); resp.StatusCode != http.StatusNotFound || resp.Header.Get("Cache-Control") != "no-store" {
+		t.Errorf("a download without tokens = %d, %v; want not found", resp.StatusCode, resp.Header)
+	}
+}

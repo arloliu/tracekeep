@@ -40,12 +40,16 @@ const (
 // PackURL implements tracekeepv1connect.MachineServiceHandler (api.md §10.1 *Downloads*):
 // a URL expiring at the earlier of now plus the lifetime and the pack's deadline less the margin,
 // refused as pack-superseded when that leaves less than the floor or the pack is deleted; each issued URL is audited.
+// Now is read before the deadline: a retention shortened after the read holds the old period for D from its record,
+// later than now, so no URL of a lifetime below D outlives its object however long the request then takes;
+// a request that takes so long its URL would live less than the floor is refused.
 func (s *Server) PackURL(ctx context.Context, req *connect.Request[tkv1.PackURLRequest]) (*connect.Response[tkv1.PackURLResponse], error) {
 	id, err := tracepack.ParseUUID(req.Msg.GetPackId())
 	if err != nil {
 		return nil, invalid("pack_id %q: %v", req.Msg.GetPackId(), err)
 	}
 	dl := &s.Downloads
+	now := dl.now()
 	d, err := s.Catalog.PackDownload(ctx, id, dl.DeleteDelay)
 	switch {
 	case errors.Is(err, catalog.ErrUnknownPack):
@@ -55,46 +59,65 @@ func (s *Server) PackURL(ctx context.Context, req *connect.Request[tkv1.PackURLR
 	case !d.Known:
 		return nil, connect.NewError(connect.CodeUnavailable, errors.New("no retention recorded yet: a pack has no deadline before the compactor's first retention pass"))
 	}
-	now := time.Now()
-	if dl.Now != nil {
-		now = dl.Now()
+	if s.afterRead != nil {
+		s.afterRead()
 	}
-	// Whole seconds: a token carries its expiry in seconds and a presigned URL its lifetime, so neither outlives the expiry.
-	expiry := time.Unix(min(now.Add(dl.Lifetime).UnixNano(), d.Deadline-int64(dl.Margin))/int64(time.Second), 0)
-	if d.State == "deleted" || expiry.Sub(now) < dl.Floor {
+	// Whole seconds, as a token carries its expiry.
+	until := time.Unix(min(now.Add(dl.Lifetime).UnixNano(), d.Deadline-int64(dl.Margin))/int64(time.Second), 0)
+	if d.State == "deleted" || until.Sub(now) < dl.Floor {
 		s.Metrics.DownloadRefused()
 		return nil, superseded(id)
 	}
-	u, kind, err := dl.url(ctx, d.Key, now, expiry)
+	u, err := dl.url(ctx, d.Key, until)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	if u.expires.Sub(dl.now()) < dl.Floor {
+		s.Metrics.DownloadRefused()
+		return nil, superseded(id)
 	}
 	p, _ := PrincipalFrom(ctx)
 	entry := catalog.AuditEntry{
 		Actor: p.Subject, Action: "pack-url", Capture: &d.Capture,
-		Detail: fmt.Sprintf("pack %s, %s URL expiring %s", id, kind, expiry.UTC().Format(time.RFC3339)),
+		Detail: fmt.Sprintf("pack %s, %s URL expiring %s", id, u.kind, u.expires.UTC().Format(time.RFC3339)),
 	}
 	if err := s.Catalog.Audit(ctx, entry); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit: %w", err))
 	}
-	s.Metrics.DownloadURL(kind)
+	s.Metrics.DownloadURL(u.kind)
 
-	return connect.NewResponse(&tkv1.PackURLResponse{Url: u, Expires: ts(expiry.UnixNano()), Presigned: kind == kindPresigned}), nil
+	return connect.NewResponse(&tkv1.PackURLResponse{Url: u.url, Expires: ts(u.expires.UnixNano()), Presigned: u.kind == kindPresigned}), nil
 }
 
-// url is key's download URL expiring at expiry: presigned for its remaining lifetime, or the API's with a download token.
-func (dl *Downloads) url(ctx context.Context, key string, now, expiry time.Time) (string, string, error) {
-	if dl.Presigner != nil {
-		u, err := dl.Presigner.PresignGet(ctx, key, expiry.Sub(now))
-		return u, kindPresigned, err
+func (dl *Downloads) now() time.Time {
+	if dl.Now != nil {
+		return dl.Now()
 	}
-	tok, err := dl.Tokens.Sign(ctx, key, expiry)
+
+	return time.Now()
+}
+
+// issued is a download URL, the expiry it is reported with and its kind.
+type issued struct {
+	url     string
+	expires time.Time
+	kind    string
+}
+
+// url is key's download URL, never outliving until:
+// presigned, expiring when the store says it surely still reads, or the API's with a download token expiring at until.
+func (dl *Downloads) url(ctx context.Context, key string, until time.Time) (issued, error) {
+	if dl.Presigner != nil {
+		u, expires, err := dl.Presigner.PresignGet(ctx, key, until)
+		return issued{u, expires, kindPresigned}, err
+	}
+	tok, err := dl.Tokens.Sign(ctx, key, until)
 	if err != nil {
-		return "", "", err
+		return issued{}, err
 	}
 	u, err := url.JoinPath(dl.PublicURL, "download", tok)
 
-	return u, kindAPI, err
+	return issued{u, until, kindAPI}, err
 }
 
 // superseded is the refusal of a URL for pack: failed precondition with the PackSuperseded detail (api.md §10.1 *Wire*).
