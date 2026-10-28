@@ -13,6 +13,10 @@ func waiting(t *testing.T, c *Catalog) (open, pending tracepack.UUID) {
 	ctx := t.Context()
 	open = admitted(t, c)
 	register(t, c, segment(t, open, 1, 0, 9), Registration{Evidence: &Evidence{}})
+	stopped := admitted(t, c) // a capture of T1 that is no longer open
+	last := segment(t, stopped, 1, 0, 3)
+	last.Stop = true
+	register(t, c, last, Registration{Evidence: &Evidence{}})
 	pending = newID(t)
 	begin(t, c, identity(pending, 1, 1), 0)
 	begin(t, c, identity(pending, 2, 2), 0)
