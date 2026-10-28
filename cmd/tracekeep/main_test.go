@@ -113,11 +113,32 @@ func TestMigrateAndAdmin(t *testing.T) {
 		{"bus", "adopt-stream", "parking"},
 		{"scope", "merge", "01234567-89ab-cdef-0123-456789abcdef", "2026-10-27T08:00:00Z"},
 		{"capture", "close", "01234567-89ab-cdef-0123-456789abcdef"},
+		{"deferred", "list"}, {"deferred", "list", "--capture", "01234567-89ab-cdef-0123-456789abcdef"},
 	} {
 		code, stdout, stderr := tracekeep(t, append([]string{"admin", "--config", path, "--actor", "op"}, args...)...)
 		if code != 0 || !json.Valid([]byte(stdout)) {
 			t.Errorf("admin %v = %d, %q, %s; want JSON", args, code, stdout, stderr)
 		}
+	}
+}
+
+// tracekeep status prints the pending captures and the tools as JSON, and takes no arguments.
+func TestStatusCommand(t *testing.T) {
+	t.Parallel()
+	path := setup(t)
+	if code, _, stderr := tracekeep(t, "migrate", "--config", path); code != 0 {
+		t.Fatalf("migrate = %d, %s", code, stderr)
+	}
+	code, stdout, stderr := tracekeep(t, "status", "--config", path)
+	var st struct {
+		Pending []any `json:"pending"`
+		Tools   []any `json:"tools"`
+	}
+	if code != 0 || json.Unmarshal([]byte(stdout), &st) != nil || st.Pending == nil || st.Tools == nil {
+		t.Errorf("status = %d, %q, %s; want its JSON", code, stdout, stderr)
+	}
+	if code, _, _ := tracekeep(t, "status", "--config", path, "extra"); code != 2 {
+		t.Errorf("status with an argument = %d, want usage", code)
 	}
 }
 

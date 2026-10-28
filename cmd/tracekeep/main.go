@@ -35,10 +35,12 @@ commands:
   compact    run the compact role
   api        run the api role: the machine API and its downloads
   all        run every role in one process
+  status     print the pending captures, then per tool its last record, open captures, deferred messages and backlog
   dev        run a single-process development loop
   admin      run an operator command:
                parked list [capture] | parked terminate <capture> [seq]
                capture terminate <capture> | capture show <capture> | capture close <capture>
+               deferred list [--capture <capture>]
                bus adopt-stream <traffic|parking> | object list [--unattributed|--survivors]
                conflict acknowledge <capture> <seq> | scope exclude-input <pack>
                scope merge <capture> <hour, RFC 3339>`
@@ -89,10 +91,10 @@ func dispatch(ctx context.Context, args []string, stdout, stderr io.Writer) erro
 	// The roles each command runs, not ready until each has started.
 	readiness := map[string][]string{"ingest": {"ingest"}, "compact": {"compact"}, "api": {"api"}, "all": {"ingest", "compact", "api"}}
 	role, isRole := roles[command]
-	if !isRole && command != "admin" {
+	if !isRole && command != "admin" && command != "status" {
 		return fmt.Errorf("%w: unknown command %q", errUsage, command)
 	}
-	if isRole && fs.NArg() != 0 {
+	if (isRole || command == "status") && fs.NArg() != 0 {
 		return fmt.Errorf("%w: %s takes no arguments", errUsage, command)
 	}
 	cfg, err := config.Load(*path)
@@ -133,16 +135,24 @@ func dispatch(ctx context.Context, args []string, stdout, stderr io.Writer) erro
 		return err
 	}
 	a := &admin.Admin{Catalog: e.Catalog, Bus: e.JS, Config: e.Bus(), Actor: *actor}
+	words := fs.Args()
+	if command == "status" {
+		words = []string{"status"}
+	}
 
-	return runAdmin(ctx, a, fs.Args(), stdout)
+	return runAdmin(ctx, a, words, stdout)
 }
 
 // runAdmin runs one operator command and writes its result to stdout as JSON.
 func runAdmin(ctx context.Context, a *admin.Admin, args []string, stdout io.Writer) error {
-	if len(args) < 2 {
+	if len(args) == 0 {
 		return fmt.Errorf("%w: admin needs a command", errUsage)
 	}
-	out, err := operate(ctx, a, args[0]+" "+args[1], args)
+	cmd := args[0]
+	if len(args) > 1 {
+		cmd += " " + args[1]
+	}
+	out, err := operate(ctx, a, cmd, args)
 	if err != nil {
 		return err
 	}
@@ -155,17 +165,11 @@ func runAdmin(ctx context.Context, a *admin.Admin, args []string, stdout io.Writ
 // operate runs the operator command cmd, args being the whole command line.
 func operate(ctx context.Context, a *admin.Admin, cmd string, args []string) (any, error) {
 	switch {
-	case cmd == "parked list" && len(args) <= 3:
-		var capture *tracepack.UUID
-		if len(args) == 3 {
-			id, err := parseCapture(args[2])
-			if err != nil {
-				return nil, err
-			}
-			capture = &id
-		}
-
-		return a.ParkedList(ctx, capture)
+	case cmd == "status" && len(args) == 1,
+		cmd == "deferred list" && (len(args) == 2 || len(args) == 4 && args[2] == "--capture"),
+		cmd == "parked list" && len(args) <= 3,
+		cmd == "object list" && (len(args) == 2 || len(args) == 3 && (args[2] == "--unattributed" || args[2] == "--survivors")):
+		return onList(ctx, a, cmd, args)
 	case cmd == "parked terminate" && (len(args) == 3 || len(args) == 4),
 		slices.Contains([]string{"capture terminate", "capture show", "capture close"}, cmd) && len(args) == 3:
 		return onCapture(ctx, a, cmd, args[2:])
@@ -174,15 +178,35 @@ func operate(ctx context.Context, a *admin.Admin, cmd string, args []string) (an
 	case (cmd == "conflict acknowledge" || cmd == "scope merge") && len(args) == 4,
 		cmd == "scope exclude-input" && len(args) == 3:
 		return onScope(ctx, a, cmd, args[2:])
-	case cmd == "object list" && (len(args) == 2 || len(args) == 3 && (args[2] == "--unattributed" || args[2] == "--survivors")):
+	default:
+		return nil, fmt.Errorf("%w: admin %v", errUsage, args)
+	}
+}
+
+// onList runs a command that only reads: status, deferred list, parked list, object list; operate checked its arguments.
+func onList(ctx context.Context, a *admin.Admin, cmd string, args []string) (any, error) {
+	var capture *tracepack.UUID
+	if (cmd == "deferred list" && len(args) == 4) || (cmd == "parked list" && len(args) == 3) {
+		id, err := parseCapture(args[len(args)-1])
+		if err != nil {
+			return nil, err
+		}
+		capture = &id
+	}
+	switch cmd {
+	case "status":
+		return a.Status(ctx)
+	case "deferred list":
+		return a.DeferredList(ctx, capture)
+	case "parked list":
+		return a.ParkedList(ctx, capture)
+	default: // object list
 		only := ""
 		if len(args) == 3 {
 			only = args[2]
 		}
 
 		return a.ObjectList(ctx, only == "--survivors", only == "--unattributed")
-	default:
-		return nil, fmt.Errorf("%w: admin %v", errUsage, args)
 	}
 }
 
