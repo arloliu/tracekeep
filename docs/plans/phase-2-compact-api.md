@@ -1,6 +1,6 @@
 # Phase 2 — compact and machine API
 
-Status: active (2026-10-27) — phase 2.4 in progress
+Status: active (2026-10-28) — phase 2.5 in progress
 
 Milestone 2 of the [roadmap](../ROADMAP.md):
 the compactor's state machines, the catalog reads they make answerable, and the machine API the VE service reads them through.
@@ -29,8 +29,8 @@ This plan only orders the work.
 | 2.1 — merge and conflicts | the merge of §8.1 with `CommitMerge`, `RecordConflict` confirming or clearing suspects, `scope merge`, `conflict acknowledge`, `scope exclude-input`, and their metrics | done (#22) |
 | 2.2 — close | `CloseIntent` and `PublishClose` of §8.2 with both triggers, `abandoned` intents (checklist 7's close), `capture close`, crash gaps in completeness, `closes_total{trigger}`; the reconciler adopting a close's orphan, which phase 1 reports and keeps (`internal/compact/orphans.go`), as a pack holding no producer range that moves neither coverage nor `highest_seq`, racing the publication in both orders | done (#23) |
 | 2.3 — deletion and retention | each object's deletion deadline as one function (hour end + retention, `merged_at` + D for a merged input), D above the download URL's lifetime, and a shortened retention kept from evicting an hour before an issued URL's promise across restarts and processes (specified in `compactor.md` §8.3 first, then built); `DeletePack` after D; `EvictHour` with `evicted_ranges` and the `parked → evicted-hour` move; the claim bucket listed and its receipt-less objects attributed by the SDK's metadata (hour, capture, seq, the bare object name against the bucket-qualified `Tpk-Payload-Ref`), with their `claim_objects` rows, and hours that hold claim objects but no scope, before eviction reads them; §8.4's predicate as one function; survivors deleted by the reconciler; `object list --survivors` and `--unattributed`; and their metrics | done (#24) |
-| 2.4 — reads and cursor | `ListDevices`, `ListCaptures`, `ListPacks` and `ListScopeChanges` as catalog reads (§7.3): `no-data` hours, unregistered intervals, overlap, the watermark read first, `low_water` and `epoch`, pruning by seq prefix | in-progress |
-| 2.5 — service auth | client credentials against the IdP's JWKS with lazy discovery and one refresh on an unknown `kid`, mTLS, the static-token flag never enabled by a failure, the role each operation checks, `auth_failures_total`; and the `download` key purpose of `masking-keys.md` §9 brought forward whole (T-41): the binding's insert-or-compare, the `file` and `env` providers, issuing and accepted key ids, purpose separation | pending |
+| 2.4 — reads and cursor | `ListDevices`, `ListCaptures`, `ListPacks` and `ListScopeChanges` as catalog reads (§7.3): `no-data` hours, unregistered intervals, overlap, the watermark read first, `low_water` and `epoch`, pruning by seq prefix | done (#25) |
+| 2.5 — service auth | client credentials against the IdP's JWKS with lazy discovery and one refresh on an unknown `kid`, mTLS, the static-token flag never enabled by a failure, the role each operation checks, `auth_failures_total`; and the `download` key purpose of `masking-keys.md` §9 brought forward whole (T-41): the binding's insert-or-compare, the `file` and `env` providers, issuing and accepted key ids, purpose separation | in-progress |
 | 2.6 — api | `proto/`, connect-go behind 2.5's checks from its first served request, the `api` role in `all` and `dev` with its readiness and metrics, the four reads, `PackURL` with 2.3's deadline, a 15-minute lifetime, its margin and floor and `pack-superseded`, presigned where the store presigns and `storage.presign` is on, otherwise served by the API with a download token (`HEAD` and ranged `GET`), presigning checked at start, `audit_log` for API actions | pending |
 | 2.7 — admin and status | `tracekeep status`, `deferred list`, admin through the `api` process on SQLite, `tracekeep migrate` applying the catalog's migrations through Atlas's Go library with its own revision table (T-41), tested on a fresh catalog, an upgrade and a failed application, `gap_observations_total` and `captures_with_unknown_tail`, the cost of ingest's metrics read measured at fleet size | pending |
 | 2.8 — gate | the roadmap row's cases and the checklist the phases before left open, audited against the tests as 1.7 did | pending |
@@ -44,6 +44,32 @@ the survivor, shared-object and unknown-capture races in 2.3, the cursor's commi
 2.8 audits them all, the membership and old-version cases phase 1 built included.
 The roadmap's gate case "a parked message replays in order after its blocker clears" is the parked consumer's own retry after `parking.redelivery_delay`,
 staged through a flush sorted by seq (T-40 withdrew an early replay to proposal P1).
+
+## Phase 2.5 — service auth
+
+Work on the branch `feat/service/auth`, one commit per step, test first;
+the branch merges by pull request once the whole phase passes an external post-implementation review.
+It builds the checks phase 2.6 puts in front of the API's first served request, and serves nothing itself:
+no listener, no interceptor and no download endpoint come with it.
+`internal/auth` authenticates a request to a principal and authorizes an operation by the role table;
+`internal/keys` resolves the `download` purpose's keys, checked against their bindings, from the `file` and `env` providers.
+The `vault` provider and the `digest`, `master` and `session` purposes are phase 3's and 4's; people's OIDC is phase 4's.
+The download token's sign and verify come here, since rotation is testable only on a credential that carries its key id;
+the API serving a download by it is phase 2.6's.
+JWS and JWK parsing is `github.com/go-jose/go-jose/v4`, which phase 4's `coreos/go-oidc` builds on;
+the discovery and JWKS fetcher is the service's own, since the spec caches keys with a TTL.
+Issuers, audiences and certificate subjects in tests and docs are synthetic.
+
+| Step | Scope | State |
+|---|---|---|
+| 1 | spec: `api.md` §10.2 made exact where it is silent: a service token is a JWS with an asymmetric `alg` from a fixed list, a `kid`, the configured issuer and audience, `exp` and `nbf` within a leeway, and roles mapped from a configured claim; discovery from the issuer, JWKS cached with a TTL, fetched lazily, at most one fetch in flight and a minimum interval between fetches, one refresh on an unknown `kid` and then rejection, cached keys verifying through an outage until their TTL; an mTLS principal from the verified chain's URI or DNS names mapped to roles; static tokens by reference, compared in constant time, consulted only under the explicit flag; the role of each operation phase 2 serves; `auth_failures_total{reason}`'s reasons; §10.1 *Downloads*' token form; `masking-keys.md` §9: `env` refused outside `tracekeep dev`, material as base64 text, an empty provider version for `file` and `env`, the issuing key id one of the accepted | pending |
+| 2 | catalog: `BindKey`, the insert-or-compare of a binding on both engines, no lease and no capture row: a first binding, a matching one, a fingerprint mismatch and a kind mismatch failing closed, and two first bindings of one key id racing, barrier-controlled, with equal material agreeing and with different material one of them failing | pending |
+| 3 | keys: the `file` provider (mode 0600, else refused) and the `env` provider (refused outside development), the fingerprint, §9's order of a resolution (binding, material at the binding's version, fingerprint, insert-or-compare, then the cache), a failed check caching nothing, a key id under another kind failing closed, and the issuing and accepted key ids; no material in an error or a log | pending |
+| 4 | auth: the service-token verifier against an IdP served by `httptest`: no fetch at construction, discovery and JWKS on first use, a TTL, one fetch in flight for concurrent requests, an unknown `kid` refreshing once then rejected, a refused `alg`, issuer, audience, expiry and not-before with the leeway, a warm cache verifying through an outage and a cold one rejecting with `idp-unavailable` | pending |
+| 5 | auth: the mTLS principal from a verified client certificate, the static-token provider behind its flag, the role table and `Authorize`, `auth_failures_total`; the IdP down with the flag off rejecting, never falling back to a static token | pending |
+| 6 | auth: the download token signed under the issuing key id and verified under the accepted ones, naming one object key and an expiry; a token of another object, an expired one, an unknown key id and a key id of another purpose refused; rotation's three steps, the old token refused once its id is dropped | pending |
+| 7 | config: the `auth` and `keys` keys, validated at load (the static flag explicit, the issuing key id accepted and declared, `env` refused outside development) and described in `docs/guides/configuration.md` | pending |
+| 8 | T-7's gate: connect-go's overhead against plain gRPC for a `ListPacks`-sized unary response and a streamed `QueryRecords` shape, measured in a scratch module outside the repository, the method and numbers recorded under T-7 | pending |
 
 ## Phase 2.4 — reads and cursor
 
