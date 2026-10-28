@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
+	"github.com/arloliu/go-secs/tracepack"
 
 	"github.com/arloliu/tracekeep/internal/auth"
 	"github.com/arloliu/tracekeep/internal/catalog"
@@ -23,7 +24,7 @@ import (
 type Server struct {
 	tracekeepv1connect.UnimplementedMachineServiceHandler
 
-	Catalog *catalog.Catalog
+	Catalog Catalog
 	// QuietPeriod is Q, against which the reads report unregistered intervals (catalog.md §7.3).
 	QuietPeriod time.Duration
 	// Store serves the downloads the API serves itself; Downloads issues every download URL.
@@ -36,6 +37,16 @@ type Server struct {
 }
 
 var _ tracekeepv1connect.MachineServiceHandler = (*Server)(nil)
+
+// Catalog is what the machine API reads and writes of the catalog; a *catalog.Catalog is one.
+type Catalog interface {
+	ListDevices(ctx context.Context, sel catalog.Selector, q time.Duration) ([]catalog.DeviceInfo, error)
+	ListCaptures(ctx context.Context, sel catalog.Selector, q time.Duration) ([]catalog.CaptureInfo, error)
+	ListPacks(ctx context.Context, sel catalog.Selector, q time.Duration) (catalog.Listing, error)
+	ListScopeChanges(ctx context.Context, after catalog.Cursor, sel catalog.Selector, limit int) (catalog.Changes, error)
+	PackDownload(ctx context.Context, pack tracepack.UUID, delay time.Duration) (catalog.Download, error)
+	Audit(ctx context.Context, e catalog.AuditEntry) error
+}
 
 // Handler is the HTTP handler serving the machine API.
 func (s *Server) Handler() http.Handler { return s.routes(s) }

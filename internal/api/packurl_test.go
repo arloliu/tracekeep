@@ -211,6 +211,57 @@ func TestPackURLPresigned(t *testing.T) {
 	if len(ps.lifetimes) != 1 || now.Add(ps.lifetimes[0]).After(got.Expires.AsTime()) || ps.lifetimes[0] > 15*time.Minute {
 		t.Errorf("presigned for %v from %s, the URL expiring %s; want no longer than its expiry", ps.lifetimes, now, got.Expires.AsTime())
 	}
+	if got.Expires.Nanos != 0 {
+		t.Errorf("the expiry %s is not whole seconds", got.Expires.AsTime())
+	}
+}
+
+// From a clock between seconds the expiry is still whole seconds, the token's own, so the token is valid until the expiry the response names.
+func TestPackURLExpiryInWholeSeconds(t *testing.T) {
+	t.Parallel()
+	w := newWorld(t, catalogtest.Open(t, catalog.EngineSQLite))
+	now := deadlineOf().Add(-24*time.Hour + 700*time.Millisecond)
+	w.urls(t, &now, true)
+	p := w.stage(t, w.admit(t))
+	got, err := packURL(t, w, p.ID.String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	expiry := got.Expires.AsTime()
+	if got.Expires.Nanos != 0 || expiry.After(now.Add(15*time.Minute)) {
+		t.Fatalf("expiry %s from %s, want whole seconds within the lifetime", expiry, now)
+	}
+	u, _ := url.Parse(got.Url)
+	token := strings.TrimPrefix(u.Path, "/download/")
+	now = expiry.Add(-time.Nanosecond)
+	if err := w.srv.Downloads.Tokens.Verify(t.Context(), token, p.Key); err != nil {
+		t.Errorf("the token just before the expiry = %v", err)
+	}
+	now = expiry
+	if err := w.srv.Downloads.Tokens.Verify(t.Context(), token, p.Key); err == nil {
+		t.Error("the token at the expiry is valid")
+	}
+}
+
+// failingAudit is a catalog whose audit appends fail.
+type failingAudit struct{ *catalog.Catalog }
+
+func (failingAudit) Audit(context.Context, catalog.AuditEntry) error {
+	return errors.New("audit refused")
+}
+
+// A URL whose audit row cannot be written is not issued.
+func TestPackURLNeedsItsAuditRow(t *testing.T) {
+	t.Parallel()
+	c := catalogtest.Open(t, catalog.EngineSQLite)
+	w := newWorld(t, c)
+	now := deadlineOf().Add(-24 * time.Hour)
+	w.urls(t, &now, true)
+	p := w.stage(t, w.admit(t))
+	w.srv.Catalog = failingAudit{c}
+	if got, err := packURL(t, w, p.ID.String()); connect.CodeOf(err) != connect.CodeInternal || got != nil {
+		t.Errorf("PackURL with a failing audit = %v, %v; want no URL", got, err)
+	}
 }
 
 // scrape returns s's metrics as exposed.
