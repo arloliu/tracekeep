@@ -2,7 +2,9 @@ package auth
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
+	"errors"
 	"os"
 	"path/filepath"
 	"slices"
@@ -145,4 +147,89 @@ func TestDownloadKeyRotation(t *testing.T) {
 	if err := dropped.Verify(t.Context(), cur, packKey); err != nil {
 		t.Errorf("step 3: Verify of the new token = %v", err)
 	}
+}
+
+// hostile is a token of payload under an arbitrary MAC.
+func hostile(payload ...byte) string {
+	return base64.RawURLEncoding.EncodeToString(payload) + "." + base64.RawURLEncoding.EncodeToString(make([]byte, 32))
+}
+
+// hostileTokens are payloads whose lengths lie: no length, a truncated or overflowing uvarint, a key id longer than the payload,
+// a truncated expiry.
+var hostileTokens = map[string]string{
+	"no length":           hostile(1),
+	"truncated uvarint":   hostile(1, 0x80),
+	"overflowing uvarint": hostile(1, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x01),
+	"a huge key id":       hostile(1, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x7f, 'd'),
+	"a key id too long":   hostile(1, 5, 'd', 'l'),
+	"a truncated expiry":  hostile(1, 4, 'd', 'l', '-', '1', 0, 0, 0),
+	"another version":     hostile(2, 4, 'd', 'l', '-', '1', 0, 0, 0, 0, 0, 0, 0, 0),
+}
+
+func TestDownloadTokenHostileLengths(t *testing.T) {
+	t.Parallel()
+	cat := catalogtest.Open(t, catalog.EngineSQLite)
+	d, _ := downloads(t, cat, keyDir(t), "dl-1", "dl-1")
+	for name, tok := range hostileTokens {
+		if err := d.Verify(t.Context(), tok, packKey); reason(err) != ReasonDownload {
+			t.Errorf("Verify of %s = %v, want refused", name, err)
+		}
+	}
+}
+
+// The key id is under the MAC: a token's key id changed to another accepted one, even one holding the same material, is refused.
+func TestDownloadTokenKeyIDAuthenticated(t *testing.T) {
+	t.Parallel()
+	cat := catalogtest.Open(t, catalog.EngineSQLite)
+	declared := keyDir(t)
+	declared["dl-0"] = declared["dl-1"] // one material under two key ids
+	d, _ := downloads(t, cat, declared, "dl-1", "dl-0", "dl-1")
+	tok, err := d.Sign(t.Context(), packKey, d.Now().Add(time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, m, _ := strings.Cut(tok, ".")
+	payload, err := base64.RawURLEncoding.DecodeString(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	swapped := bytes.Replace(payload, []byte("dl-1"), []byte("dl-0"), 1)
+	if err := d.Verify(t.Context(), base64.RawURLEncoding.EncodeToString(swapped)+"."+m, packKey); reason(err) != ReasonDownload {
+		t.Errorf("Verify with the key id swapped = %v, want refused", err)
+	}
+}
+
+// fixedKeys is a download purpose of one key id, dl-1, for the fuzz target, which runs without a catalog.
+type fixedKeys struct{}
+
+var fixedMaterial = bytes.Repeat([]byte{7}, 32)
+
+func (fixedKeys) Issuing(context.Context, string) (string, []byte, error) {
+	return "dl-1", fixedMaterial, nil
+}
+
+func (fixedKeys) Accepted(_ context.Context, _, keyID string) ([]byte, error) {
+	if keyID != "dl-1" {
+		return nil, errors.New("not accepted")
+	}
+
+	return fixedMaterial, nil
+}
+
+// FuzzDownloadToken: no input panics the parser, and the only token admitted is the one issued.
+func FuzzDownloadToken(f *testing.F) {
+	d := &Downloads{Keys: fixedKeys{}, Now: newClock().Now}
+	valid, err := d.Sign(context.Background(), packKey, d.Now().Add(time.Minute))
+	if err != nil {
+		f.Fatal(err)
+	}
+	f.Add(valid)
+	for _, tok := range hostileTokens {
+		f.Add(tok)
+	}
+	f.Fuzz(func(t *testing.T, tok string) {
+		if err := d.Verify(context.Background(), tok, packKey); err == nil && tok != valid {
+			t.Errorf("Verify admitted %q, not the token issued", tok)
+		}
+	})
 }

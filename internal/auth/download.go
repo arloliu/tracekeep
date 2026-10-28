@@ -22,7 +22,8 @@ const (
 	maxDownloadToken = 4096
 )
 
-var b64 = base64.RawURLEncoding
+// b64 is strict, so a token has one encoding and an accepted token is exactly the one issued.
+var b64 = base64.RawURLEncoding.Strict()
 
 // DownloadKeys is the download purpose's keys; a *keys.Keys is one.
 type DownloadKeys interface {
@@ -74,6 +75,10 @@ func (d *Downloads) check(ctx context.Context, token, objectKey string) error {
 	if len(token) > maxDownloadToken {
 		return errors.New("a token too long")
 	}
+	// The decoder skips line breaks even when strict, so every byte outside the alphabet is refused first.
+	if strings.ContainsFunc(token, func(r rune) bool { return !tokenRune(r) }) {
+		return errors.New("not a download token")
+	}
 	p, m, ok := strings.Cut(token, ".")
 	payload, err1 := b64.DecodeString(p)
 	sum, err2 := b64.DecodeString(m)
@@ -109,6 +114,11 @@ func (d *Downloads) check(ctx context.Context, token, objectKey string) error {
 	}
 
 	return nil
+}
+
+// tokenRune reports whether r is a byte of a token: base64url's alphabet, or the dot between payload and MAC.
+func tokenRune(r rune) bool {
+	return r >= 'A' && r <= 'Z' || r >= 'a' && r <= 'z' || r >= '0' && r <= '9' || r == '-' || r == '_' || r == '.'
 }
 
 // mac is the token's HMAC-SHA-256 under key over the domain and the payload.

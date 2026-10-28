@@ -1,12 +1,15 @@
 package auth
 
 import (
+	"cmp"
+	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/rsa"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -42,35 +45,40 @@ func (c *clock) advance(d time.Duration) {
 	c.mu.Unlock()
 }
 
-// idp is a synthetic IdP serving discovery and a JWKS of the keys it holds.
+// idp is a synthetic IdP serving discovery and a JWKS of the keys it holds, over TLS.
 type idp struct {
-	srv                *httptest.Server
-	mu                 sync.Mutex
-	keys               []jose.JSONWebKey
-	issuer             string // the issuer its discovery document names; the server's URL unless set
-	discovery, jwks    atomic.Int32
-	down               atomic.Bool
+	srv  *httptest.Server
+	mu   sync.Mutex
+	keys []jose.JSONWebKey
+	// issuer and jwksURI are what its discovery document names, the server's own unless set;
+	// jwksBody, when set, is served in place of the key set.
+	issuer, jwksURI, jwksBody string
+	// redirectTo is where /redirect sends its client.
+	redirectTo      string
+	discovery, jwks atomic.Int32
+	// down refuses every request; failJWKS refuses the JWKS once a blocked fetch is released.
+	down, failJWKS     atomic.Bool
 	block, jwksEntered chan struct{}
 }
 
 func newIDP(t *testing.T) *idp {
 	t.Helper()
 	p := &idp{}
-	p.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	p.srv = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if p.down.Load() {
 			http.Error(w, "down", http.StatusServiceUnavailable)
 			return
 		}
+		p.mu.Lock()
+		iss, uri, body, to := cmp.Or(p.issuer, p.srv.URL), cmp.Or(p.jwksURI, p.srv.URL+"/jwks"), p.jwksBody, p.redirectTo
+		set := jose.JSONWebKeySet{Keys: slices.Clone(p.keys)}
+		p.mu.Unlock()
 		switch r.URL.Path {
 		case "/.well-known/openid-configuration":
 			p.discovery.Add(1)
-			p.mu.Lock()
-			iss := p.issuer
-			p.mu.Unlock()
-			if iss == "" {
-				iss = p.srv.URL
-			}
-			_ = json.NewEncoder(w).Encode(map[string]string{"issuer": iss, "jwks_uri": p.srv.URL + "/jwks"})
+			_ = json.NewEncoder(w).Encode(map[string]string{"issuer": iss, "jwks_uri": uri})
+		case "/redirect":
+			http.Redirect(w, r, to, http.StatusFound)
 		case "/jwks":
 			p.jwks.Add(1)
 			if p.jwksEntered != nil {
@@ -79,9 +87,14 @@ func newIDP(t *testing.T) *idp {
 			if p.block != nil {
 				<-p.block
 			}
-			p.mu.Lock()
-			set := jose.JSONWebKeySet{Keys: slices.Clone(p.keys)}
-			p.mu.Unlock()
+			if p.failJWKS.Load() {
+				http.Error(w, "failing", http.StatusInternalServerError)
+				return
+			}
+			if body != "" {
+				_, _ = io.WriteString(w, body)
+				return
+			}
 			_ = json.NewEncoder(w).Encode(set)
 		default:
 			http.NotFound(w, r)
@@ -90,6 +103,12 @@ func newIDP(t *testing.T) *idp {
 	t.Cleanup(p.srv.Close)
 
 	return p
+}
+
+func (p *idp) set(f func()) {
+	p.mu.Lock()
+	f()
+	p.mu.Unlock()
 }
 
 // signer is a private key the IdP publishes under kid.
@@ -142,9 +161,11 @@ func sign(t *testing.T, s signer, claims map[string]any) string {
 	return tok
 }
 
-func (p *idp) verifier(c *clock) *Verifier {
+func (p *idp) verifier(c *clock) *Verifier { return p.verifierWith(c, p.srv.Client()) }
+
+func (p *idp) verifierWith(c *clock, client *http.Client) *Verifier {
 	return NewVerifier(OIDCConfig{
-		Issuer: p.srv.URL, Audience: audience,
+		Issuer: p.srv.URL, Audience: audience, Client: client,
 		Roles: map[string][]string{"ve-generation": {RolePackReader}, "scoring": {RoleScorer}},
 		TTL:   time.Hour, MinInterval: 10 * time.Second, Leeway: time.Minute, Now: c.Now,
 	})
@@ -342,8 +363,187 @@ func TestDiscoveryOfAnotherIssuer(t *testing.T) {
 	t.Parallel()
 	p, c := newIDP(t), newClock()
 	s := p.newKey(t, "k1")
-	p.issuer = "https://idp.example.invalid"
+	p.set(func() { p.issuer = "https://idp.example.invalid" })
 	if _, err := p.verifier(c).Verify(t.Context(), sign(t, s, p.claims(c.Now()))); reason(err) != ReasonIDPUnavailable || p.jwks.Load() != 0 {
 		t.Errorf("Verify against a discovery naming another issuer = %v after %d JWKS fetches; want idp-unavailable and none", err, p.jwks.Load())
+	}
+}
+
+// Keys come over https only: a discovery naming a plain-text JWKS, or a redirect to one, is a failed fetch,
+// though the plain-text server would serve the keys.
+func TestKeysOverHTTPSOnly(t *testing.T) {
+	t.Parallel()
+	for _, redirect := range []bool{false, true} {
+		p, c := newIDP(t), newClock()
+		s := p.newKey(t, "k1")
+		plain := httptest.NewServer(p.srv.Config.Handler)
+		t.Cleanup(plain.Close)
+		p.set(func() {
+			p.jwksURI, p.redirectTo = plain.URL+"/jwks", plain.URL+"/jwks"
+			if redirect {
+				p.jwksURI = p.srv.URL + "/redirect"
+			}
+		})
+		if _, err := p.verifier(c).Verify(t.Context(), sign(t, s, p.claims(c.Now()))); reason(err) != ReasonIDPUnavailable || p.jwks.Load() != 0 {
+			t.Errorf("redirect %v: Verify = %v after %d JWKS fetches; want idp-unavailable and none", redirect, err, p.jwks.Load())
+		}
+	}
+	plain := NewVerifier(OIDCConfig{Issuer: "http://idp.example.invalid", Audience: audience, TTL: time.Hour, MinInterval: time.Second})
+	p, c := newIDP(t), newClock()
+	if _, err := plain.Verify(t.Context(), sign(t, p.newKey(t, "k1"), p.claims(c.Now()))); reason(err) != ReasonIDPUnavailable {
+		t.Errorf("Verify against a plain-text issuer = %v, want idp-unavailable", err)
+	}
+}
+
+// A JWKS without a usable key is a failed fetch: a warm cache keeps verifying with its keys, and a cold one refuses as idp-unavailable.
+func TestMalformedJWKSKeepsTheCache(t *testing.T) {
+	t.Parallel()
+	for _, body := range []string{"{}", "null", `{"keys":null}`, `{"keys":[]}`, `{"keys":[{"kty":"oct","k":"c2VjcmV0"}]}`} {
+		p, c := newIDP(t), newClock()
+		s := p.newKey(t, "k1")
+		warm := p.verifier(c)
+		if _, err := warm.Verify(t.Context(), sign(t, s, p.claims(c.Now()))); err != nil {
+			t.Fatal(err)
+		}
+		p.set(func() { p.jwksBody = body })
+		c.advance(time.Minute)
+		if _, err := warm.Verify(t.Context(), sign(t, signer{s.key, s.alg, "k9"}, p.claims(c.Now()))); reason(err) != ReasonUnknownKid || p.jwks.Load() != 2 {
+			t.Errorf("%s: an unknown kid = %v after %d fetches; want unknown-kid after its refresh", body, err, p.jwks.Load())
+		}
+		if _, err := warm.Verify(t.Context(), sign(t, s, p.claims(c.Now()))); err != nil {
+			t.Errorf("%s: the cached kid after a malformed refresh = %v", body, err)
+		}
+		if _, err := p.verifier(c).Verify(t.Context(), sign(t, s, p.claims(c.Now()))); reason(err) != ReasonIDPUnavailable {
+			t.Errorf("%s: a cold verifier = %v, want idp-unavailable", body, err)
+		}
+	}
+}
+
+// Waiters on a fetch that fails are refused as idp-unavailable once it ends, none starting a fetch of its own.
+func TestWaitersOfAFailedFetch(t *testing.T) {
+	t.Parallel()
+	p, c := newIDP(t), newClock()
+	s := p.newKey(t, "k1")
+	p.block, p.jwksEntered = make(chan struct{}), make(chan struct{}, 8)
+	p.failJWKS.Store(true)
+	v := p.verifier(c)
+	waiting := make(chan struct{}, 8)
+	v.onWait = func() { waiting <- struct{}{} }
+	tok := sign(t, s, p.claims(c.Now()))
+	const n = 4
+	errs := make(chan error, n)
+	for range n {
+		go func() {
+			_, err := v.Verify(t.Context(), tok)
+			errs <- err
+		}()
+	}
+	<-p.jwksEntered
+	for range n - 1 {
+		<-waiting
+	}
+	close(p.block)
+	for range n {
+		if err := <-errs; reason(err) != ReasonIDPUnavailable {
+			t.Errorf("Verify = %v, want idp-unavailable", err)
+		}
+	}
+	if j := p.jwks.Load(); j != 1 {
+		t.Errorf("%d JWKS fetches, want 1", j)
+	}
+}
+
+// A cancelled waiter returns at once without ending the fetch, and a cancelled requester's fetch still serves the others.
+func TestCancelledRequestsLeaveTheFetch(t *testing.T) {
+	t.Parallel()
+	p, c := newIDP(t), newClock()
+	s := p.newKey(t, "k1")
+	p.block, p.jwksEntered = make(chan struct{}), make(chan struct{}, 8)
+	v := p.verifier(c)
+	waiting := make(chan struct{}, 8)
+	v.onWait = func() { waiting <- struct{}{} }
+	tok := sign(t, s, p.claims(c.Now()))
+	starter, cancelStarter := context.WithCancel(t.Context())
+	starterErr := make(chan error, 1)
+	go func() {
+		_, err := v.Verify(starter, tok)
+		starterErr <- err
+	}()
+	<-p.jwksEntered
+	cancelStarter()
+	live := make(chan error, 1)
+	go func() {
+		_, err := v.Verify(t.Context(), tok)
+		live <- err
+	}()
+	<-waiting
+	gone, cancelGone := context.WithCancel(t.Context())
+	goneErr := make(chan error, 1)
+	go func() {
+		_, err := v.Verify(gone, tok)
+		goneErr <- err
+	}()
+	<-waiting
+	cancelGone()
+	if err := <-goneErr; reason(err) != ReasonIDPUnavailable {
+		t.Errorf("a cancelled waiter = %v, want idp-unavailable before the fetch ends", err)
+	}
+	close(p.block)
+	if err := <-live; err != nil {
+		t.Errorf("a waiter on a cancelled requester's fetch = %v", err)
+	}
+	if err := <-starterErr; err != nil {
+		t.Errorf("the cancelled requester = %v, its fetch completing", err)
+	}
+	if j := p.jwks.Load(); j != 1 {
+		t.Errorf("%d JWKS fetches, want 1", j)
+	}
+}
+
+// panicky is a transport that panics while armed.
+type panicky struct {
+	rt    http.RoundTripper
+	armed atomic.Bool
+}
+
+func (p *panicky) RoundTrip(r *http.Request) (*http.Response, error) {
+	if p.armed.Load() {
+		panic("transport")
+	}
+
+	return p.rt.RoundTrip(r)
+}
+
+// A fetch that panics still ends: a later request, past the minimum interval, fetches again rather than waiting forever.
+func TestPanickingFetchEnds(t *testing.T) {
+	t.Parallel()
+	p, c := newIDP(t), newClock()
+	s := p.newKey(t, "k1")
+	tr := &panicky{rt: p.srv.Client().Transport}
+	tr.armed.Store(true)
+	v := p.verifierWith(c, &http.Client{Transport: tr})
+	tok := sign(t, s, p.claims(c.Now()))
+	func() {
+		defer func() {
+			if recover() == nil {
+				t.Error("the armed transport did not panic")
+			}
+		}()
+		_, _ = v.Verify(t.Context(), tok)
+	}()
+	tr.armed.Store(false)
+	c.advance(10 * time.Second)
+	done := make(chan error, 1)
+	go func() {
+		_, err := v.Verify(t.Context(), tok)
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Errorf("Verify after the panicking fetch = %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Verify after the panicking fetch waits forever on it")
 	}
 }
