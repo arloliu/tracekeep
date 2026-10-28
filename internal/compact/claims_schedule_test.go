@@ -73,6 +73,7 @@ func (f *fixture) restart() {
 	}
 }
 
+// claimRows is the state of each claim object row, by key.
 func claimRows(t *testing.T, c *catalog.Catalog) map[string]string {
 	t.Helper()
 	objs, err := c.ClaimObjects(t.Context())
@@ -292,8 +293,9 @@ func passesInsideRetention(t *testing.T, f *fixture, input *catalog.Pack) {
 	}
 }
 
-// Gate case 7: a conflicting claim version stays available until eviction: merges, deletions and a retention pass short of the hour's
-// deadline keep its object in the bucket and the version parked; once the deadline passes, the eviction keeps the object a survivor.
+// Gate case 7: a conflicting claim version stays available until eviction:
+// merges, deletions and a retention pass short of the hour's deadline keep its object in the bucket and the version parked;
+// once the deadline passes, the eviction keeps the object a survivor.
 func TestConflictingClaimVersionKeptUntilEviction(t *testing.T) {
 	t.Parallel()
 	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {

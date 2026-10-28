@@ -371,8 +371,8 @@ func TestParkingTurnedOff(t *testing.T) {
 // rejected → open with a parked copy, then staged (the gate's case): a capture whose descriptor this consumer refuses is rejected
 // and its records parked; a fixed release, which the test stands in for by widening the accepted descriptors,
 // accepts the parked start in a rejected → open transaction, and the copies are staged and acknowledged, their copy rows acked.
-// Then the horizon (gate case 23): the hour is evicted, and a record of it delivered later, the capture now open, is terminated as
-// beyond retention, never parked.
+// Then the horizon (gate case 23): the hour is evicted,
+// and a record of it delivered later, the capture now open, is terminated as beyond retention, never parked.
 func TestRejectedCaptureOpensFromItsParkedCopy(t *testing.T) {
 	t.Parallel()
 	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
@@ -631,8 +631,9 @@ func shortenWindow(t *testing.T, r *replica, s jetstream.Stream, window time.Dur
 }
 
 // Gate case 10: an unknown capture's records, published and parked out of seq order, meet the parked consumer while their blocker holds:
-// each copy is nak'd with the parked consumer's redelivery delay, so the next fetch meets none and nothing is staged.
-// Once the capture's start is admitted, the redeliveries are staged in one pack whose records are in seq order.
+// each copy is nak'd and nothing is staged (the delay of those naks is TestParkedConsumerDelays's).
+// Once the capture's start is admitted, the redeliveries are batched, the flush held until all three are in,
+// and staged in one pack whose records are in seq order.
 func TestParkedCopiesReplayInOrder(t *testing.T) {
 	t.Parallel()
 	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
@@ -647,34 +648,40 @@ func TestParkedCopiesReplayInOrder(t *testing.T) {
 			}
 		}
 		pg := r.parkedConsumer(t)
-		pg.RedeliveryDelay = 2 * pg.MaxWait // longer than a fetch waits, so the step after the naks meets no redelivery
-		for range 2 {
-			if err := pg.Step(ctx); err != nil {
-				t.Fatal(err)
+		pg.RedeliveryDelay = time.Millisecond
+		step := func(until func() bool, what string) {
+			t.Helper()
+			for i := 0; !until(); i++ {
+				if i == 50 {
+					t.Fatalf("%s never happened", what)
+				}
+				if err := pg.Step(ctx); err != nil {
+					t.Fatal(err)
+				}
 			}
-			r.clk.flushInterval()
 		}
+		// The flush clock stands still throughout, so nothing the consumer batches is due.
+		step(func() bool { return len(copyStates(versions(t, c, capture), pg.Incarnation.ID)) == 3 }, "meeting every copy while blocked")
 		vs := versions(t, c, capture)
-		if len(vs) != 3 || slices.ContainsFunc(vs, func(v catalog.ParkedVersion) bool { return v.State != catalog.VersionParked }) {
+		if slices.ContainsFunc(vs, func(v catalog.ParkedVersion) bool { return v.State != catalog.VersionParked }) {
 			t.Fatalf("versions %+v, want three parked while the blocker holds", vs)
 		}
-		if got := copyStates(vs, pg.Incarnation.ID); len(got) != 3 || slices.ContainsFunc(got, func(s string) bool { return s != "waiting" }) {
-			t.Fatalf("the parked consumer's copy rows %v, want three waiting: each copy met while the blocker holds", got)
+		if got := copyStates(vs, pg.Incarnation.ID); slices.ContainsFunc(got, func(s string) bool { return s != "waiting" }) {
+			t.Fatalf("the parked consumer's copy rows %v, want three waiting: each copy nak'd", got)
 		}
-		if n := msgs(t, r.parked(t)); n != 3 {
-			t.Fatalf("the parking stream holds %d copies, want 3 nak'd", n)
+		if n := pg.batched(); n != 0 {
+			t.Fatalf("%d records batched while the blocker holds, want none", n)
 		}
 
 		r.publish(t, inline(t, capture, startRecord(t, now), descriptorOf(t, "eqp")), nil)
 		r.step(t) // the start admits the capture
-		for i := 0; msgs(t, r.parked(t)) != 0; i++ {
-			if i == 20 {
-				t.Fatal("the redelivered copies were never staged")
-			}
-			if err := pg.Step(ctx); err != nil {
-				t.Fatal(err)
-			}
-			r.clk.flushInterval()
+		step(func() bool { return pg.batched() == 3 }, "batching the three redeliveries")
+		r.clk.flushInterval()
+		if err := pg.Step(ctx); err != nil {
+			t.Fatal(err)
+		}
+		if n := msgs(t, r.parked(t)); n != 0 {
+			t.Errorf("the parking stream holds %d copies, want every one acknowledged", n)
 		}
 		if vs := versions(t, c, capture); slices.ContainsFunc(vs, func(v catalog.ParkedVersion) bool { return v.State != catalog.VersionStaged }) {
 			t.Errorf("versions %+v, want every one staged", vs)
@@ -693,4 +700,16 @@ func TestParkedCopiesReplayInOrder(t *testing.T) {
 			t.Errorf("the staged packs' seqs %v, want one pack of 1, 2 and 3 in order", staged)
 		}
 	})
+}
+
+// batched is the number of records g's open batches hold.
+func (g *Ingester) batched() int {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	n := 0
+	for _, b := range g.Batcher.batches {
+		n += len(b.Entries)
+	}
+
+	return n
 }
