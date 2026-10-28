@@ -1,10 +1,12 @@
 package catalog
 
 import (
+	"cmp"
 	"context"
 	"database/sql"
 	"errors"
 	"fmt"
+	"slices"
 
 	"github.com/jmoiron/sqlx"
 
@@ -103,6 +105,9 @@ type Pack struct {
 	Stop bool
 	// Conflicts are the other versions the batch put in other packs.
 	Conflicts []Version
+	// Gaps is set by a registration that committed: the holes in the producer coverage the pack opened
+	// above the capture's highest seq before it, a missing prefix included (operations.md §10.4 gap_observations_total).
+	Gaps int
 }
 
 // Registration is how a pack is registered.
@@ -557,6 +562,7 @@ func (c *Catalog) stageParked(ctx context.Context, tx *sqlx.Tx, e *Evidence) err
 // updateCapture records the registration on the capture: its time, its highest producer seq with that record's time,
 // and a stop, which moves an open capture to stopped (a closed one stays closed); a close, which holds no range, moves no seq.
 func (c *Catalog) updateCapture(ctx context.Context, tx *sqlx.Tx, p *Pack, row captureRow) error {
+	p.Gaps = openedGaps(row.HighestSeq, p.Ranges)
 	seq, ts := row.HighestSeq, row.HighestSeqTS
 	for _, rg := range p.Ranges {
 		if !seq.Valid || int64(rg.SeqTo) > seq.Int64 {
@@ -572,6 +578,28 @@ func (c *Catalog) updateCapture(ctx context.Context, tx *sqlx.Tx, p *Pack, row c
 		WHERE capture_id = ?`, c.now(), seq, ts, stop, state, p.Capture[:])
 
 	return err
+}
+
+// openedGaps counts the holes ranges open above highest, the capture's highest seq before them (none: below seq 0):
+// a range starting past the next seq expected opens one, and ranges at or below it fill or repeat what is known.
+func openedGaps(highest sql.NullInt64, ranges []Range) int {
+	next := uint64(0)
+	if highest.Valid {
+		next = uint64(highest.Int64) + 1 //nolint:gosec // a stored seq is below 2^63
+	}
+	sorted := slices.SortedFunc(slices.Values(ranges), func(a, b Range) int { return cmp.Compare(a.SeqFrom, b.SeqFrom) })
+	n := 0
+	for _, r := range sorted {
+		if r.SeqTo < next {
+			continue
+		}
+		if r.SeqFrom > next {
+			n++
+		}
+		next = r.SeqTo + 1
+	}
+
+	return n
 }
 
 // signed is a checked seq as its column stores it, nil when absent.

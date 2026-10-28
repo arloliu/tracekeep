@@ -98,6 +98,9 @@ func TestIngestMetrics(t *testing.T) {
 			`tracekeep_ingest_deferred_messages{reason="unknown-capture"} 1`,
 			`tracekeep_ingest_captures_open{tool_id="T1"} 2`, // the expired start's capture is admitted too
 			`tracekeep_ingest_open_gaps{tool_id="T1"} 0`,
+			`tracekeep_ingest_gap_observations_total{tool_id="T1"} 0`,
+			// One of the two open captures, the one with records, has seqs above its frontier unknown.
+			`tracekeep_ingest_captures_with_unknown_tail{tool_id="T1"} 1`,
 			`tracekeep_ingest_stream_backlog_messages 1`,
 		} {
 			if !strings.Contains(body, want) {
@@ -118,6 +121,7 @@ func TestNilMetricsRecordNothing(t *testing.T) {
 	m.Deferred("x", "y", time.Minute)
 	m.Settled("x")
 	m.InProgress(3)
+	m.GapsObserved("x", 1)
 	m.Lost("T1")
 	if err := m.Refresh(t.Context(), nil, nil); err != nil {
 		t.Errorf("Refresh on nil = %v", err)
