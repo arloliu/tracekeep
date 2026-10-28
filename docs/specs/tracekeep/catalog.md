@@ -259,8 +259,12 @@ and the caller acts on it: the merge and the close at the next cycle (§8.1, §8
   CI runs `atlas migrate validate` and checks that `atlas migrate diff` finds nothing to add, on both engines
   (`atlas migrate lint` is available only to Atlas Pro users since Atlas v0.38).
   `tracekeep migrate` applies them with Atlas's Go library (`ariga.io/atlas/sql/migrate` and its `mysql` and `sqlite` drivers, which build without cgo, T-41),
-  checking each directory's `atlas.sum` and recording every applied revision in a table of its own,
+  checking each directory's `atlas.sum` and recording every applied revision in a table of its own, `tracekeep_revisions`,
   so a deployment needs no Atlas binary; the Atlas CLI stays the development tool for `diff` and `validate`,
-  and a catalog is migrated by one of the two, never both.
+  and a catalog is migrated by one of the two, never both:
+  a catalog that holds tables but no revision in `tracekeep_revisions` was migrated by another tool and is refused.
+  A migration runs statement by statement, as Atlas runs it; one that fails is recorded with the statements it applied,
+  and the next `tracekeep migrate`, once the failure's cause is gone, resumes from the statement that failed.
+  `tracekeep migrate` applies the catalog first, then ensures the bus, whose incarnations it records in the catalog.
   Schema changes are expand-then-contract across two releases,
   so an old and a new consumer run against one schema during a rollout.

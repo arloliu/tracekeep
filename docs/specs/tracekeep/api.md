@@ -48,6 +48,17 @@ gRPC for Go clients, JSON over HTTP for the browser, one definition.
 | `Export(filter, kind)` | an asynchronous job producing a **bundle** (tar) under `exports/`, fetched by a download URL (*Downloads* below): one JSONL file **per source pack**, `tracepack-jsonl/1`, `/2` or `/3` by that pack's `format_minor` 0, 1 or 2 (G5-233, G5-270), plus `manifest.json` naming packs, captures, hours, each pack's incompleteness from its read, conflicts, and the filter. `kind=canonical` uses the canonical exporter unfiltered; `kind=filtered` writes the same record schema with the filter applied and is declared non-canonical in the manifest. A filtered `.tpk` is an extract, a v1.0 non-goal, and is not offered. A cancelled or failed job deletes its partial objects; a completed bundle is kept for its retention (default 24 h) and then deleted by the compactor (T-33) |
 | `Restore`, `Digest` | §9 |
 | admin | policies, processing configurations, key ids (no material), retention, thinning status, holds if LS-13 (a) is chosen |
+| `Admin(words)` | the `tracekeep admin` command those words name, run by the `api` process, its JSON result returned: the transport of §10.4's commands while that process holds a SQLite catalog |
+
+**Admin over the API.**
+A running service holds its SQLite catalog alone (§7.4), so `tracekeep admin` finding it held sends the command's words to that service's `AdminService.Admin`,
+which runs the same command there and returns the JSON the command prints.
+It checks the `admin` role and audits the command as every admin command is audited, the actor being the principal's subject;
+the CLI's `--actor` names the actor of the direct path only.
+The CLI authenticates with the configuration's static token that holds `admin` (`auth.static`, its flag on),
+reaching the service at `api.public_url` and trusting its certificate (`api.tls_cert_file`) beside the system's roots;
+without such a token it refuses and says so.
+The typed admin operations of the table above stay phases 3 and 4's.
 
 **Selector.**
 A reader names the connection it wants by (`tool_id`, device),
