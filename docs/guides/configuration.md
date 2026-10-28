@@ -1,6 +1,6 @@
 # Configuration guide
 
-Status: current (2026-10-27) — the keys phase 1 reads
+Status: current (2026-10-28) — the keys phases 1 and 2 read
 
 Every key the service reads, its default, its environment override, and what moving it costs.
 Read when deploying a role, tuning one, or adding a key.
@@ -9,7 +9,7 @@ The configuration is one YAML file, given to every role with `--config`, loaded 
 a key's default applies when the file omits it, an environment variable overrides the file,
 and a secret is read from a reference (`file:///run/secrets/x` or `env://NAME`) named by its `*_ref` key, never written in the file.
 It is read once at start; a change takes a restart.
-The tunables of later phases (Q, I, L, D, the masking keys) join this file with the code that reads them.
+The tunables of later phases (the masking keys' other purposes) join this file with the code that reads them.
 
 ## Keys
 
@@ -48,3 +48,10 @@ The tunables of later phases (Q, I, L, D, the masking keys) join this file with 
 | `compact.redelivery_slack` | `2m` | `TRACEKEEP_COMPACT_REDELIVERY_SLACK` | the time Q leaves after F and `ack_wait` for a redelivered message to be flushed (T-41) |
 | `compact.delete_delay` | `1h` | `TRACEKEEP_COMPACT_DELETE_DELAY` | D (`compactor.md` §8.3): a merged input is deleted D after its merge (a change applies to later merges), and a shortened `retention` evicts nothing early for D; must exceed `store.download_lifetime` by more than 4 minutes: twice the 2 minutes two hosts' clocks may disagree |
 | `metrics.listen` | `:9090` | `TRACEKEEP_METRICS_LISTEN` | where `/metrics`, `/healthz` and `/readyz` are served (`operations.md` §10.4); empty serves none |
+| `auth.oidc.issuer`, `auth.oidc.audience` | — | `TRACEKEEP_AUTH_OIDC_…` | the IdP service tokens are validated against (`api.md` §10.2), an https URL, and the audience a token must name; empty configures no IdP |
+| `auth.oidc.roles_claim`, `auth.oidc.roles` | `roles`, — | `TRACEKEEP_AUTH_OIDC_ROLES_CLAIM` | the claim holding a token's role values, and the roles each value grants; a value it does not name grants none |
+| `auth.oidc.jwks_ttl`, `.fetch_interval`, `.leeway` | `1h`, `10s`, `1m` | `TRACEKEEP_AUTH_OIDC_…` | how long cached keys verify, an outage longer than it refusing every token; the least time between two fetches of the JWKS, which bounds the IdP's load from unknown `kid`s and how soon its return is noticed; the clock tolerance of `exp`, `nbf` and `iat` |
+| `auth.mtls.client_ca_file`, `auth.mtls.subjects` | — | `TRACEKEEP_AUTH_MTLS_CLIENT_CA_FILE` | the CA client certificates are verified against, and each verified identity's roles (its first URI name, else its first DNS name); given together |
+| `auth.static.enabled`, `auth.static.tokens` | `false`, — | `TRACEKEEP_AUTH_STATIC_ENABLED` | the static-token provider of a standalone host without an IdP; only the flag admits the tokens, each a `subject`, a `token_ref` of at least 32 characters and its `roles`; never turned on by a failure |
+| `keys.declared.<key id>` | — | — | a key id's `provider` (`file`, mode 0600; `env` only under `tracekeep dev`), `ref` and optional `version` (`masking-keys.md` §9); a bound key id is read at its binding's reference whatever its declaration says later |
+| `keys.download.issuing`, `keys.download.accepted` | — | — | the download tokens' issuing key id, one of the accepted ones, each declared; rotation adds the new id to `accepted` on every replica, then switches `issuing`, then drops the old id once the longest download lifetime plus the clock skew has passed |

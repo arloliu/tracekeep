@@ -4,7 +4,10 @@
 // It serves nothing itself: the API puts it in front of every request.
 package auth
 
-import "fmt"
+import (
+	"fmt"
+	"slices"
+)
 
 // Roles (api.md §10.2), granted separately.
 const (
@@ -15,6 +18,11 @@ const (
 	RoleRestorer   = "restorer"
 	RoleAdmin      = "admin"
 )
+
+// KnownRole reports whether r names a role.
+func KnownRole(r string) bool {
+	return slices.Contains([]string{RolePackReader, RoleScorer, RoleViewer, RoleExporter, RoleRestorer, RoleAdmin}, r)
+}
 
 // How a principal was authenticated.
 const (
