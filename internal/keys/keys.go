@@ -16,8 +16,10 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/arloliu/go-secs/tracepack"
+	"github.com/arloliu/go-secs/tracepack/redact"
 
 	"github.com/arloliu/tracekeep/internal/catalog"
 )
@@ -87,15 +89,31 @@ type Keys struct {
 	providers map[string]Provider
 
 	mu sync.Mutex
-	// cache holds the material of every key id whose check passed, by kind and key id.
+	// cache holds the material of every key id whose check passed, by kind and key id; an entry never expires,
+	// since a binding, and so the material it pins, never changes.
 	cache map[[2]string][]byte
+	// flights are the resolutions in flight, one per kind and key id, which concurrent uses wait on.
+	flights map[[2]string]*flight
+	// joined, when set by a test, runs as a use joins a resolution already in flight.
+	joined func()
 }
+
+// flight is one resolution that every use asking for its key id meanwhile shares, its failure included.
+type flight struct {
+	done chan struct{}
+	m    []byte
+	err  error
+}
+
+// maxResolve bounds a shared resolution, which runs under no single use's context: the binding read, the provider's calls
+// (each under the provider's own deadline) and the insert-or-compare.
+const maxResolve = time.Minute
 
 // New checks cfg and returns its keys over binder; it resolves nothing.
 func New(cfg Config, binder Binder) (*Keys, error) {
 	k := &Keys{
 		binder: binder, declared: cfg.Declared, purposes: map[string]Purpose{},
-		providers: map[string]Provider{ProviderFile: File{}}, cache: map[[2]string][]byte{},
+		providers: map[string]Provider{ProviderFile: File{}}, cache: map[[2]string][]byte{}, flights: map[[2]string]*flight{},
 	}
 	// A role that issues no download URL declares no download purpose.
 	if cfg.Download.Issuing != "" || len(cfg.Download.Accepted) > 0 {
@@ -200,15 +218,50 @@ func (k *Keys) declaredAs(ctx context.Context, kind, keyID string) ([]byte, erro
 	return k.resolve(ctx, kind, keyID)
 }
 
-// resolve runs §9's order for keyID under kind: the binding read, the material resolved at the binding's reference and version
-// (the declaration's while unbound), its fingerprint inserted or compared, and only then the cache published.
+// resolve returns keyID's checked material under kind: from the cache, or by §9's order (check), the cache published only after it passed.
+// Concurrent uses of one key id share one resolution; a use whose context ends stops waiting and gets nothing,
+// while the resolution goes on for the others.
 func (k *Keys) resolve(ctx context.Context, kind, keyID string) ([]byte, error) {
+	key := [2]string{kind, keyID}
 	k.mu.Lock()
-	m, ok := k.cache[[2]string{kind, keyID}]
-	k.mu.Unlock()
-	if ok {
+	if m, ok := k.cache[key]; ok {
+		k.mu.Unlock()
 		return m, nil
 	}
+	f, ok := k.flights[key]
+	if !ok {
+		f = &flight{done: make(chan struct{})}
+		k.flights[key] = f
+		go k.fly(context.WithoutCancel(ctx), key, f)
+	} else if k.joined != nil {
+		k.joined()
+	}
+	k.mu.Unlock()
+	select {
+	case <-f.done:
+		return f.m, f.err
+	case <-ctx.Done():
+		return nil, fmt.Errorf("keys: %s key id %s: %w", kind, keyID, ctx.Err())
+	}
+}
+
+// fly runs f's resolution, publishes its material in the cache only when it succeeded, and ends the flight.
+func (k *Keys) fly(ctx context.Context, key [2]string, f *flight) {
+	ctx, cancel := context.WithTimeout(ctx, maxResolve)
+	defer cancel()
+	f.m, f.err = k.check(ctx, key[0], key[1])
+	k.mu.Lock()
+	if f.err == nil {
+		k.cache[key] = f.m
+	}
+	delete(k.flights, key)
+	k.mu.Unlock()
+	close(f.done)
+}
+
+// check is §9's order without the cache: the binding read, the material resolved at the binding's reference and version
+// (the declaration's while unbound), and its fingerprint inserted or compared.
+func (k *Keys) check(ctx context.Context, kind, keyID string) ([]byte, error) {
 	b, bound, err := k.binder.KeyBinding(ctx, keyID)
 	if err != nil {
 		return nil, err
@@ -228,6 +281,7 @@ func (k *Keys) resolve(ctx context.Context, kind, keyID string) ([]byte, error) 
 		return nil, fmt.Errorf("keys: key id %s: unknown provider %q", keyID, provider)
 	}
 	asked := version
+	var m []byte
 	m, version, err = p.Material(ctx, at, version)
 	if err != nil {
 		return nil, fmt.Errorf("keys: %s key id %s at %s version %q: %w", kind, keyID, ref, asked, err)
@@ -239,9 +293,6 @@ func (k *Keys) resolve(ctx context.Context, kind, keyID string) ([]byte, error) 
 	if _, err := k.binder.BindKey(ctx, bind); err != nil {
 		return nil, err
 	}
-	k.mu.Lock()
-	k.cache[[2]string{kind, keyID}] = m
-	k.mu.Unlock()
 
 	return m, nil
 }
@@ -252,4 +303,23 @@ func Fingerprint(material []byte) string {
 	h.Write([]byte(fingerprintMessage))
 
 	return hex.EncodeToString(h.Sum(nil))
+}
+
+// ForUse returns the redact.Keys of one use, a batch's masking or one API request, over that use's context;
+// redact.Keys takes no context, so the adapter is built for the use and never kept beyond it (masking-keys.md §9).
+func (k *Keys) ForUse(ctx context.Context) redact.Keys {
+	return useKeys{k: k, ctx: ctx}
+}
+
+var _ redact.Keys = useKeys{}
+
+type useKeys struct {
+	k   *Keys
+	ctx context.Context //nolint:containedctx // the adapter lives for one use, the context's own
+}
+
+func (u useKeys) DigestKey(keyID string) ([]byte, error) { return u.k.Digest(u.ctx, keyID) }
+
+func (u useKeys) EncryptionKey(capture tracepack.UUID, keyID string) ([]byte, error) {
+	return u.k.Encryption(u.ctx, capture, keyID)
 }
