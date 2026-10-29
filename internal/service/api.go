@@ -158,13 +158,11 @@ func (e *Env) downloads(ctx context.Context, dl *api.Downloads, m *metrics.API) 
 		return errors.New("service: api: downloads go through the API (the store does not presign, or store.presign is off), " +
 			"which needs api.public_url and a keys.download issuing key id")
 	}
-	declared := map[string]keys.Declaration{}
-	for id, d := range c.Keys.Declared {
-		declared[id] = keys.Declaration{Provider: d.Provider, Ref: d.Ref, Version: d.Version, Kind: d.Kind}
+	kc, err := keysConfig(c.Keys, e.Dev)
+	if err != nil {
+		return err
 	}
-	k, err := keys.New(keys.Config{
-		Dev: e.Dev, Declared: declared, Download: keys.Purpose{Issuing: c.Keys.Download.Issuing, Accepted: c.Keys.Download.Accepted},
-	}, e.Catalog)
+	k, err := keys.New(kc, e.Catalog)
 	if err != nil {
 		return err
 	}
@@ -255,4 +253,32 @@ func (e *Env) APIAddr() string {
 	a, _ := e.apiAddr.Load().(string)
 
 	return a
+}
+
+// keysConfig is the keys module's configuration from the service's: the declarations, the download purpose
+// and, when a key id is declared with vault, the vault provider, which calls nothing until a key is first used.
+func keysConfig(c config.Keys, dev bool) (keys.Config, error) {
+	kc := keys.Config{
+		Dev: dev, Declared: map[string]keys.Declaration{},
+		Download: keys.Purpose{Issuing: c.Download.Issuing, Accepted: c.Download.Accepted},
+	}
+	vault := false
+	for id, d := range c.Declared {
+		kc.Declared[id] = keys.Declaration{Provider: d.Provider, Ref: d.Ref, Version: d.Version, Kind: d.Kind}
+		vault = vault || d.Provider == keys.ProviderVault
+	}
+	if vault {
+		v := c.Vault
+		p, err := keys.NewVault(keys.VaultConfig{
+			Address: v.Address, CAFile: v.CAFile, Mount: v.Mount, Timeout: v.Timeout,
+			Method: v.Auth.Method, AuthMount: v.Auth.Mount, Role: v.Auth.Role, TokenFile: v.Auth.TokenFile,
+			RoleID: v.Auth.RoleID, SecretID: v.Auth.SecretID,
+		})
+		if err != nil {
+			return keys.Config{}, err
+		}
+		kc.Providers = map[string]keys.Provider{keys.ProviderVault: p}
+	}
+
+	return kc, nil
 }

@@ -227,9 +227,10 @@ func (k *Keys) resolve(ctx context.Context, kind, keyID string) ([]byte, error) 
 	if !ok {
 		return nil, fmt.Errorf("keys: key id %s: unknown provider %q", keyID, provider)
 	}
+	asked := version
 	m, version, err = p.Material(ctx, at, version)
 	if err != nil {
-		return nil, fmt.Errorf("keys: key id %s: %w", keyID, err)
+		return nil, fmt.Errorf("keys: %s key id %s at %s version %q: %w", kind, keyID, ref, asked, err)
 	}
 	if len(m) < minMaterial {
 		return nil, fmt.Errorf("keys: key id %s: material of %d bytes, below %d", keyID, len(m), minMaterial)

@@ -59,6 +59,33 @@ type StaticToken struct {
 type Keys struct {
 	Declared map[string]KeyDeclaration `yaml:"declared"`
 	Download KeyPurpose                `yaml:"download"`
+	Vault    Vault                     `yaml:"vault"`
+}
+
+// Vault is the vault key provider's server and login (masking-keys.md §9); read only when a key id is declared with vault.
+type Vault struct {
+	// Address is the server's https URL; CAFile verifies it beside the system's roots.
+	Address string `yaml:"address" env:"TRACEKEEP_KEYS_VAULT_ADDRESS"`
+	CAFile  string `yaml:"ca_file" env:"TRACEKEEP_KEYS_VAULT_CA_FILE"`
+	// Mount is the KV v2 mount the references are under.
+	Mount string `yaml:"mount" default:"secret" env:"TRACEKEEP_KEYS_VAULT_MOUNT"`
+	// Timeout bounds every call to the server.
+	Timeout time.Duration `yaml:"timeout" default:"10s" env:"TRACEKEEP_KEYS_VAULT_TIMEOUT" validate:"gt=0"`
+	Auth    VaultAuth     `yaml:"auth"`
+}
+
+// VaultAuth is how the service logs in to Vault: kubernetes with its service account token, or approle.
+type VaultAuth struct {
+	Method string `yaml:"method" env:"TRACEKEEP_KEYS_VAULT_AUTH_METHOD"`
+	// Mount is the auth mount; empty takes the method's name.
+	Mount string `yaml:"mount" env:"TRACEKEEP_KEYS_VAULT_AUTH_MOUNT"`
+	Role  string `yaml:"role" env:"TRACEKEEP_KEYS_VAULT_AUTH_ROLE"`
+	// TokenFile is the service account token kubernetes logs in with, read at each login.
+	TokenFile string `yaml:"token_file" default:"/var/run/secrets/kubernetes.io/serviceaccount/token" env:"TRACEKEEP_KEYS_VAULT_AUTH_TOKEN_FILE"`
+	RoleID    string `yaml:"role_id" env:"TRACEKEEP_KEYS_VAULT_AUTH_ROLE_ID"`
+	// SecretIDRef names where approle's secret id is read from; the secret id is never written in the file.
+	SecretIDRef string `yaml:"secret_id_ref" env:"TRACEKEEP_KEYS_VAULT_AUTH_SECRET_ID_REF"`
+	SecretID    string `yaml:"-" refFrom:"SecretIDRef"`
 }
 
 // KeyDeclaration names a key id's provider, its reference there and, optionally, its version,
@@ -128,17 +155,8 @@ func (a *Auth) check() []error {
 func (k *Keys) check(dev bool) []error {
 	var errs []error
 	for id, d := range k.Declared {
-		switch {
-		case d.Provider == "env" && !dev:
-			errs = append(errs, fmt.Errorf("keys.declared.%s: the env provider is for development only", id))
-		case d.Provider != "file" && d.Provider != "env":
-			errs = append(errs, fmt.Errorf("keys.declared.%s: unknown provider %q", id, d.Provider))
-		case d.Ref == "":
-			errs = append(errs, fmt.Errorf("keys.declared.%s: no ref", id))
-		case utf8.RuneCountInString(id) > 128 || utf8.RuneCountInString(d.Provider+":"+d.Ref) > 255 || utf8.RuneCountInString(d.Version) > 64:
-			// A binding records them whole (masking-keys.md §9), in columns of these lengths.
-			errs = append(errs, fmt.Errorf("keys.declared.%s: a key id above 128 characters, a provider and ref above 255 or a version above 64", id))
-		default:
+		if err := k.checkDeclaration(id, d, dev); err != nil {
+			errs = append(errs, err)
 		}
 	}
 	if p := k.Download; p.Issuing != "" || len(p.Accepted) > 0 {
@@ -153,4 +171,26 @@ func (k *Keys) check(dev bool) []error {
 	}
 
 	return errs
+}
+
+// checkDeclaration checks one key id's declaration.
+func (k *Keys) checkDeclaration(id string, d KeyDeclaration, dev bool) error {
+	switch {
+	case d.Provider == "env" && !dev:
+		return fmt.Errorf("keys.declared.%s: the env provider is for development only", id)
+	case d.Provider != "file" && d.Provider != "env" && d.Provider != "vault":
+		return fmt.Errorf("keys.declared.%s: unknown provider %q", id, d.Provider)
+	case d.Provider == "vault" && k.Vault.Address == "":
+		return fmt.Errorf("keys.declared.%s: the vault provider needs keys.vault.address", id)
+	case d.Kind != "" && d.Kind != "digest" && d.Kind != "master" && d.Kind != "download":
+		return fmt.Errorf("keys.declared.%s: unknown kind %q", id, d.Kind)
+	case d.Ref == "":
+		return fmt.Errorf("keys.declared.%s: no ref", id)
+	case utf8.RuneCountInString(id) > 128 || utf8.RuneCountInString(d.Provider+":"+d.Ref) > 255 || utf8.RuneCountInString(d.Version) > 64:
+		// A binding records them whole (masking-keys.md §9), in columns of these lengths.
+		return fmt.Errorf("keys.declared.%s: a key id above 128 characters, a provider and ref above 255 or a version above 64", id)
+	default:
+	}
+
+	return nil
 }
