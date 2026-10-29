@@ -51,6 +51,7 @@ make hooks          # enable scripts/hooks
 make test           # every module, -short, -race
 make test-latest    # the SDK and bustest on a copy with the latest nats.go (needs the module proxy; its own CI job)
 make test-s3        # the s3 store against MinIO and Ceph RGW in containers (needs docker; its own CI job)
+make test-vault     # the vault key provider against a dev-mode Vault server in a container (needs docker; its own CI job)
 make test-catalog   # the catalog's tests on MariaDB in a container (needs docker; with migrate-check, its own CI job)
 make migrate-diff NAME=<change>  # both engines' migration from schema.hcl (needs docker and atlas)
 make migrate-check  # validate the migrations and check schema.hcl for drift

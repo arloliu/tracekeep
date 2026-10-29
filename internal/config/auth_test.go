@@ -115,12 +115,36 @@ func TestAuthAndKeysValidation(t *testing.T) {
 		"a short static token":    {"auth:\n  static:\n    enabled: true\n    tokens:\n      - {subject: s, token_ref: \"" + ref("short") + "\", roles: [viewer]}\n", "32"},
 		"a static token, no role": {"auth:\n  static:\n    enabled: true\n    tokens:\n      - {subject: s, token_ref: \"" + ref(long) + "\"}\n", "roles"},
 		"env outside dev":         {"keys:\n  declared:\n    dl-1: {provider: env, ref: TK_DL}\n", "development"},
-		"an unknown provider":     {"keys:\n  declared:\n    dl-1: {provider: vault, ref: kv/dl}\n", "provider"},
+		"an unknown provider":     {"keys:\n  declared:\n    dl-1: {provider: transit, ref: kv/dl}\n", "provider"},
+		"vault, no address":       {"keys:\n  declared:\n    d-1: {provider: vault, ref: tk/d-1, kind: digest}\n", "keys.vault.address"},
+		"an unknown kind":         {"keys:\n  declared:\n    d-1: {provider: file, ref: /k, kind: cookie}\n", "kind"},
 		"issuing not accepted":    {"keys:\n  declared:\n    dl-1: {provider: file, ref: /k}\n  download:\n    issuing: dl-1\n    accepted: [dl-0]\n", "keys.download.issuing"},
 		"accepted not declared":   {"keys:\n  declared:\n    dl-1: {provider: file, ref: /k}\n  download:\n    issuing: dl-1\n    accepted: [dl-1, dl-0]\n", "dl-0"},
 	} {
 		if _, err := Load(write(t, minimal+tc.extra)); err == nil || !strings.Contains(err.Error(), tc.want) {
 			t.Errorf("%s: Load = %v, want an error naming %s", name, err, tc.want)
 		}
+	}
+}
+
+// The vault provider's keys, with their defaults, and a secret id read by reference.
+func TestVaultKeys(t *testing.T) {
+	t.Parallel()
+	secret := filepath.Join(t.TempDir(), "secret-id")
+	if err := os.WriteFile(secret, []byte("synthetic-secret-id"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	c, err := Load(write(t, minimal+"keys:\n  declared:\n    m-1: {provider: vault, ref: tk/m-1, version: \"3\", kind: master}\n"+
+		"  vault:\n    address: https://vault.example.invalid:8200\n    auth:\n      method: approle\n      role_id: r-1\n      secret_id_ref: file://"+secret+"\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	v := c.Keys.Vault
+	if v.Mount != "secret" || v.Timeout != 10*time.Second || v.Auth.TokenFile != "/var/run/secrets/kubernetes.io/serviceaccount/token" ||
+		v.Auth.RoleID != "r-1" || v.Auth.SecretID != "synthetic-secret-id" {
+		t.Errorf("keys.vault = %+v", v)
+	}
+	if d := c.Keys.Declared["m-1"]; d.Kind != "master" || d.Version != "3" {
+		t.Errorf("keys.declared.m-1 = %+v", d)
 	}
 }

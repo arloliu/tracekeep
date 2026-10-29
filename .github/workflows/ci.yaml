@@ -57,6 +57,19 @@ jobs:
     - name: make test-s3
       run: make test-s3
 
+  # The vault key provider against a dev-mode Vault server in a container, over TLS;
+  # make ci runs its tests against an httptest fake only.
+  vault:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v7
+    - name: Setup Go from mise.toml
+      uses: jdx/mise-action@v4
+      with:
+        install_args: go
+    - name: make test-vault
+      run: make test-vault
+
   # The catalog on MariaDB, and its migrations validated and checked against schema.hcl, each with a MariaDB container;
   # make ci runs the catalog's tests on SQLite only.
   catalog:
