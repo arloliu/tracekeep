@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"runtime/debug"
 )
 
 // Masks reports whether this release's ingest masks: until it does, no configuration naming a policy may be activated (rollouts.md §6.4).
@@ -13,6 +14,34 @@ const Masks = false
 
 // MaskingFormatMinor is the format_minor a masking configuration's captures need.
 const MaskingFormatMinor = 1
+
+// NewestFormatMinor is the newest format_minor this release writes, tracepack v0.9.0's;
+// a configuration needing a newer one is not executable here (rollouts.md §6.4).
+const NewestFormatMinor = 2
+
+// tracepackModule is the module whose version names the masker.
+const tracepackModule = "github.com/arloliu/go-secs/tracepack"
+
+// Masker is the masker this binary links, recorded by a masking configuration (rollouts.md §6.4):
+// tracepack-redact of format major 1, at the tracepack module version the build reports, or unknown when it reports none.
+// The record is informational: any conforming masker writes the same bytes.
+var Masker = masker()
+
+func masker() string {
+	version := "unknown"
+	if bi, ok := debug.ReadBuildInfo(); ok {
+		for _, d := range bi.Deps {
+			if d.Path == tracepackModule && d.Version != "" && d.Version != "(devel)" {
+				version = d.Version
+				if d.Replace != nil && d.Replace.Version != "" {
+					version = d.Replace.Version
+				}
+			}
+		}
+	}
+
+	return "tracepack-redact/1@" + version
+}
 
 // KeyRef names a key id and its material's fingerprint, as a configuration records them.
 type KeyRef struct {
@@ -36,6 +65,8 @@ type Content struct {
 	DigestKey     *KeyRef    `json:"digest_key,omitempty"`
 	EncryptionKey *KeyRef    `json:"encryption_key,omitempty"`
 	FormatMinor   int        `json:"format_minor,omitempty"`
+	// Masker records the masker a masking configuration was staged with; it does not decide which masker executes it.
+	Masker string `json:"masker,omitempty"`
 }
 
 // Encode returns c's stored bytes.

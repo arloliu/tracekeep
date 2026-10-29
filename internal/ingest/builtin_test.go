@@ -221,7 +221,7 @@ func TestRebuildMasking(t *testing.T) {
 	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
 		m := masking(t, c, new(policy.Baseline()))
 		id := stageMasking(t, c, &m)
-		if _, err := c.ActivateStaged(t.Context(), id, nil); err != nil {
+		if _, err := c.ActivateStaged(t.Context(), id, nil, nil); err != nil {
 			t.Fatal(err)
 		}
 		b, err := namedConfig("go-secs/v2.8.0", 1, false)
@@ -278,7 +278,7 @@ func TestRebuildRefuses(t *testing.T) {
 			if byID, err := Executable(t.Context(), c, &b, tc.keys, tc.dev); err != nil || len(byID) != 0 {
 				t.Errorf("%s, staged: %d executed, %v; want it skipped", name, len(byID), err)
 			}
-			if _, err := c.ActivateStaged(t.Context(), id, nil); err != nil {
+			if _, err := c.ActivateStaged(t.Context(), id, nil, nil); err != nil {
 				t.Fatal(err)
 			}
 			if _, err := Executable(t.Context(), c, &b, tc.keys, tc.dev); !errors.Is(err, ErrCannotExecute) {
@@ -290,7 +290,7 @@ func TestRebuildRefuses(t *testing.T) {
 	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
 		m := masking(t, c, &partial)
 		id := stageMasking(t, c, &m)
-		if _, err := c.ActivateStaged(t.Context(), id, nil); err != nil {
+		if _, err := c.ActivateStaged(t.Context(), id, nil, nil); err != nil {
 			t.Fatal(err)
 		}
 		b, _ := namedConfig("go-secs/v2.8.0", 1, false)
@@ -312,6 +312,52 @@ func TestRebuildRefuses(t *testing.T) {
 		b, _ := namedConfig("go-secs/v2.8.0", 1, false)
 		if _, err := Executable(t.Context(), c, &b, ok, false); !errors.Is(err, ErrCannotExecute) {
 			t.Errorf("a configuration naming another hash = %v, want ErrCannotExecute", err)
+		}
+	})
+}
+
+// A configuration needing a format_minor newer than this release writes is not executable: skipped staged, refusing the start active.
+// An accepted format_minor and a masking configuration's masker survive the rebuild.
+func TestRebuildFormatMinorAndMasker(t *testing.T) {
+	t.Parallel()
+	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
+		ctx := t.Context()
+		b, err := namedConfig("go-secs/v2.8.0", 1, false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		newer := []byte(`{"classifier":"go-secs/v2.8.0","max_frame_len":1,"format_minor":3}`)
+		minor2 := []byte(`{"classifier":"go-secs/v2.8.0","max_frame_len":1,"format_minor":2}`)
+		policyLessMasker := []byte(`{"classifier":"go-secs/v2.8.0","max_frame_len":2,"masker":"x"}`)
+		for _, content := range [][]byte{newer, minor2, policyLessMasker} {
+			if _, err := c.StageConfig(ctx, catalog.Staging{Content: content}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		byID, err := Executable(ctx, c, &b, declared{}, false)
+		if err != nil || len(byID) != 1 {
+			t.Fatalf("Executable = %d, %v; want only format_minor 2 executed", len(byID), err)
+		}
+		for _, got := range byID {
+			if got.FormatMinor != 2 || string(got.Content()) != string(minor2) {
+				t.Errorf("rebuilt format_minor %d, content %s; want %s", got.FormatMinor, got.Content(), minor2)
+			}
+		}
+		if _, err := c.ActivateConfig(ctx, newer); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := Executable(ctx, c, &b, declared{}, false); !errors.Is(err, ErrCannotExecute) {
+			t.Errorf("an active configuration needing format_minor 3 = %v, want ErrCannotExecute", err)
+		}
+	})
+	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
+		m := masking(t, c, new(policy.Baseline()))
+		m.Masker = "tracepack-redact/1@v0.0.1"
+		id := stageMasking(t, c, &m)
+		b, _ := namedConfig("go-secs/v2.8.0", 1, false)
+		byID, err := Executable(t.Context(), c, &b, declared{"d-1": catalog.KindDigest, "m-1": catalog.KindMaster}, false)
+		if err != nil || byID[id].Masker != "tracepack-redact/1@v0.0.1" || byID[id].FormatMinor != 1 {
+			t.Errorf("rebuilt masking configuration = %+v, %v; want its recorded masker and format_minor 1", byID[id], err)
 		}
 	})
 }

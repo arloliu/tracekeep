@@ -133,23 +133,33 @@ func (c *Catalog) storeConfig(ctx context.Context, tx *sqlx.Tx, content []byte, 
 
 // ActivateStaged activates configuration id under the membership sentinel, as config activate does (rollouts.md §6.4),
 // and reports whether it changed anything: an active one is left as it is.
-// An unknown id is refused with ErrUnknownConfig and a retired one with ErrConfigRetired; audit, when set, is written in the same transaction.
-func (c *Catalog) ActivateStaged(ctx context.Context, id int64, audit *AuditEntry) (bool, error) {
+// An unknown id is refused with ErrUnknownConfig and a retired one with ErrConfigRetired;
+// check, when set, judges the configuration's content inside the transaction, and its error refuses the activation.
+// audit, when set, is written in the same transaction.
+func (c *Catalog) ActivateStaged(ctx context.Context, id int64, check func(content []byte) error, audit *AuditEntry) (bool, error) {
 	var changed bool
 	err := c.inTx(ctx, func(tx *sqlx.Tx) error {
 		if err := c.lockMembership(ctx, tx); err != nil {
 			return err
 		}
 		var row struct {
+			Content   []byte        `db:"content"`
 			Activated sql.NullInt64 `db:"activated_at"`
 			Retired   sql.NullInt64 `db:"retired_at"`
 		}
-		err := tx.GetContext(ctx, &row, `SELECT activated_at, retired_at FROM processing_configs WHERE config_id = ?`, id)
+		err := tx.GetContext(ctx, &row, `SELECT content, activated_at, retired_at FROM processing_configs WHERE config_id = ?`, id)
 		switch {
 		case errors.Is(err, sql.ErrNoRows):
 			return fmt.Errorf("%w: %d", ErrUnknownConfig, id)
 		case err != nil:
 			return err
+		case check != nil:
+			if err := check(row.Content); err != nil {
+				return err
+			}
+		default: // no check to run
+		}
+		switch {
 		case row.Retired.Valid:
 			return fmt.Errorf("%w: %d", ErrConfigRetired, id)
 		case !row.Activated.Valid:
