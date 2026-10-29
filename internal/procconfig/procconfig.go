@@ -7,6 +7,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"runtime/debug"
+
+	"github.com/arloliu/go-secs/tracepack"
 )
 
 // MaskingFormatMinor is the format_minor a masking configuration's captures need.
@@ -86,4 +88,22 @@ func Decode(b []byte) (Content, error) {
 	}
 
 	return c, nil
+}
+
+// RedactionPolicy is the redaction_policy a pack of a masking configuration names (ingest.md §6.2):
+// its policy's id and version, the digest key id under HMAC-SHA-256, and the encryption key id under AES-SIV-CMAC-512.
+func RedactionPolicy(policyID string, version uint64, digestKeyID, encryptionKeyID string) *tracepack.RedactionPolicy {
+	return &tracepack.RedactionPolicy{
+		PolicyID: policyID, PolicyVersion: version, KeyID: digestKeyID, DigestAlgorithm: tracepack.DigestAlgorithmHMACSHA256,
+		EncryptionAlgorithm: new(tracepack.EncryptionAlgorithmAESSIVCMAC512), EncryptionKeyID: &encryptionKeyID,
+	}
+}
+
+// RedactionPolicy is c's redaction_policy, nil for a policy-less configuration.
+func (c *Content) RedactionPolicy() *tracepack.RedactionPolicy {
+	if c.Policy == nil || c.DigestKey == nil || c.EncryptionKey == nil {
+		return nil
+	}
+
+	return RedactionPolicy(c.Policy.ID, uint64(c.Policy.Version), c.DigestKey.ID, c.EncryptionKey.ID) //nolint:gosec // a stored version is positive
 }

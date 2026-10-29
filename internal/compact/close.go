@@ -15,6 +15,7 @@ import (
 	"github.com/arloliu/go-secs/tracepack"
 
 	"github.com/arloliu/tracekeep/internal/catalog"
+	"github.com/arloliu/tracekeep/internal/procconfig"
 )
 
 // closeFilePattern names a close's working file under the working directory.
@@ -108,6 +109,16 @@ func (r *Compactor) intend(ctx context.Context, lease catalog.Lease, capture tra
 	if meta.ClockStepToleranceNs == nil || *meta.ClockStepToleranceNs > math.MaxInt64 {
 		return 0, fmt.Errorf("compact: the descriptor of %s has no clock step tolerance", capture)
 	}
+	// The close names the capture's bound configuration, as its segments do (compactor.md §8.2).
+	content, err := r.Catalog.ConfigContent(ctx, cp.ConfigID)
+	if err != nil {
+		return 0, err
+	}
+	cc, err := procconfig.Decode(content)
+	if err != nil {
+		return 0, fmt.Errorf("compact: the configuration of %s: %w", capture, err)
+	}
+	meta.Classifiers, meta.MaxFrameLens, meta.RedactionPolicy = []string{cc.Classifier}, []uint64{cc.MaxFrameLen}, cc.RedactionPolicy()
 	interval := uint64(r.FlushInterval.Nanoseconds()) //nolint:gosec // a positive duration
 	h := floorHour(at)
 	meta.Writer, meta.ScopeGeneration, meta.FlushIntervalNs = r.Writer, new(uint64), &interval

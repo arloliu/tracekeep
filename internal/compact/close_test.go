@@ -15,14 +15,25 @@ import (
 	"github.com/arloliu/tracekeep/internal/catalog"
 	"github.com/arloliu/tracekeep/internal/catalog/catalogtest"
 	"github.com/arloliu/tracekeep/internal/metrics"
+	"github.com/arloliu/tracekeep/internal/procconfig"
 	"github.com/arloliu/tracekeep/internal/store"
 )
+
+// plainConfig is a policy-less configuration's content.
+const plainConfig = `{"classifier":"go-secs/v2.8.0","max_frame_len":0}`
 
 // described admits a fresh capture of the recorder instance at origin with a real descriptor, as ingest's admission of its start would.
 func (f *fixture) described(t *testing.T, instance tracepack.UUID, origin int64) tracepack.UUID {
 	t.Helper()
+
+	return f.describedUnder(t, instance, origin, []byte(plainConfig))
+}
+
+// describedUnder is described with the capture bound to the configuration of content.
+func (f *fixture) describedUnder(t *testing.T, instance tracepack.UUID, origin int64, content []byte) tracepack.UUID {
+	t.Helper()
 	ctx := t.Context()
-	cfg, err := f.c.ActivateConfig(ctx, []byte("config"))
+	cfg, err := f.c.ActivateConfig(ctx, content)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -471,4 +482,82 @@ func TestCloseIntentFailureFailsTheTask(t *testing.T) {
 			t.Error("the capture whose intent failed was closed")
 		}
 	})
+}
+
+// The close of a masked capture names its bound configuration's classifier, frame limit and redaction policy (compactor.md §8.2).
+func TestCloseOfAMaskedCapture(t *testing.T) {
+	t.Parallel()
+	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
+		f := newFixture(t, c)
+		now := time.Now().Add(3 * time.Hour).Truncate(time.Millisecond)
+		f.closing(t, now)
+		content := procconfig.Content{
+			Classifier: "go-secs/v2.8.0", MaxFrameLen: 4096, FormatMinor: 1, Masker: procconfig.Masker,
+			Policy:    &procconfig.PolicyRef{ID: "baseline", Version: 1, SHA256: "ab"},
+			DigestKey: &procconfig.KeyRef{ID: "d-1", Fingerprint: "f"}, EncryptionKey: &procconfig.KeyRef{ID: "m-1", Fingerprint: "g"},
+		}
+		capture := f.describedUnder(t, newID(t), now.Add(-4*time.Hour).UnixNano(), content.Encode())
+		f.stage(t, segment(t, capture, []uint64{0, 1}, false))
+		if rep := f.closes(t); rep.Published != 1 {
+			t.Fatalf("Closes = %+v, want one published", rep)
+		}
+		data, _ := f.closeObject(t, capture)
+		m := closeMeta(t, data)
+		rp := m.RedactionPolicy
+		if !slices.Equal(m.Classifiers, []string{"go-secs/v2.8.0"}) || !slices.Equal(m.MaxFrameLens, []uint64{4096}) ||
+			rp == nil || rp.PolicyID != "baseline" || rp.PolicyVersion != 1 || rp.KeyID != "d-1" || rp.EncryptionKeyID == nil || *rp.EncryptionKeyID != "m-1" {
+			t.Errorf("the close's metadata: classifiers %v, frame limits %v, policy %+v", m.Classifiers, m.MaxFrameLens, rp)
+		}
+	})
+}
+
+// An intent persisted by an earlier release, whose metadata names no configuration, is written from the bytes it holds.
+func TestCloseIntentOfAnEarlierReleaseReplays(t *testing.T) {
+	t.Parallel()
+	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
+		f := newFixture(t, c)
+		now := time.Now().Add(3 * time.Hour).Truncate(time.Millisecond)
+		f.closing(t, now)
+		capture := f.described(t, newID(t), now.Add(-4*time.Hour).UnixNano())
+		f.stage(t, segment(t, capture, []uint64{0}, false))
+		f.r.Store = failingPut{Mem: f.s}
+		if rep := f.closes(t); rep.Published != 0 {
+			t.Fatalf("Closes with failing puts = %+v, want the intent left pending", rep)
+		}
+		f.r.Store = f.s
+		pending, err := c.PendingCloses(t.Context())
+		if err != nil || len(pending) != 1 {
+			t.Fatalf("pending = %+v, %v", pending, err)
+		}
+		earlier, err := tracepack.UnmarshalPackMeta(pending[0].Meta)
+		if err != nil {
+			t.Fatal(err)
+		}
+		earlier.Classifiers, earlier.MaxFrameLens = nil, nil
+		b, err := earlier.MarshalBinary()
+		if err != nil {
+			t.Fatal(err)
+		}
+		write, _ := c.Pools()
+		if _, err := write.ExecContext(t.Context(), `UPDATE capture_closes SET pack_meta = ? WHERE capture_id = ?`, b, capture[:]); err != nil {
+			t.Fatal(err)
+		}
+		if rep := f.closes(t); rep.Published != 1 {
+			t.Fatalf("Closes = %+v, want the earlier intent published", rep)
+		}
+		data, _ := f.closeObject(t, capture)
+		if m := closeMeta(t, data); len(m.Classifiers) != 0 {
+			t.Errorf("the replayed close names classifiers %v, want the intent's bytes as they were", m.Classifiers)
+		}
+	})
+}
+
+func closeMeta(t *testing.T, data []byte) *tracepack.PackMeta {
+	t.Helper()
+	rd, err := tracepack.Open(t.Context(), bytes.NewReader(data), int64(len(data)), tracepack.ReaderOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	return rd.Header().Meta
 }

@@ -304,7 +304,7 @@ func TestRetainKeepsAnUnknownCapturesObject(t *testing.T) {
 			t.Fatalf("Retain of a rejected capture's object = %+v", rep)
 		}
 		d := &catalog.Identity{Version: catalog.VersionKey{Capture: capture}, Incarnation: 1, StreamSeq: 2, Hour: hour}
-		if _, err := f.c.ActivateConfig(t.Context(), []byte("config")); err != nil {
+		if _, err := f.c.ActivateConfig(t.Context(), []byte(`{"classifier":"go-secs/v2.8.0","max_frame_len":0}`)); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := c.Admit(t.Context(), d, &catalog.Descriptor{Bytes: []byte("d"), ToolID: tool, RecorderInstanceID: newID(t), Device: "eqp", OriginNS: 1}); err != nil {

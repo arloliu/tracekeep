@@ -59,7 +59,7 @@ func newID(t *testing.T) tracepack.UUID {
 func (f *fixture) admit(t *testing.T) tracepack.UUID {
 	t.Helper()
 	ctx := t.Context()
-	cfg, err := f.c.ActivateConfig(ctx, []byte("config"))
+	cfg, err := f.c.ActivateConfig(ctx, []byte(`{"classifier":"go-secs/v2.8.0","max_frame_len":0}`))
 	if err != nil {
 		t.Fatal(err)
 	}

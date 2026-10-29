@@ -241,3 +241,17 @@ func (c *Catalog) Policies(ctx context.Context) ([]StoredPolicy, error) {
 
 	return ps, nil
 }
+
+// ConfigContent returns the stored content of configuration id, refused with ErrUnknownConfig when there is none.
+func (c *Catalog) ConfigContent(ctx context.Context, id int64) ([]byte, error) {
+	var content []byte
+	err := c.read.GetContext(ctx, &content, `SELECT content FROM processing_configs WHERE config_id = ?`, id)
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		return nil, fmt.Errorf("catalog: %w: %d", ErrUnknownConfig, id)
+	case err != nil:
+		return nil, fmt.Errorf("catalog: configuration %d: %w", id, err)
+	}
+
+	return content, nil
+}
