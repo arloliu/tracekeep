@@ -6,7 +6,7 @@ Milestone 3 of the [roadmap](../ROADMAP.md):
 the redaction policy bound to each capture and applied before anything is written,
 the keys it needs and their bindings, `Restore` and `Digest`, and thinning in the producer SDK.
 Its scope and gate are the roadmap's phase 3 row;
-the design is `docs/specs/tracekeep/masking-keys.md` §9, `ingest.md` §6.2, `rollouts.md` §6.4, `api.md` §10.1–§10.2 and `producer.md` §4.6.
+the design is `docs/specs/tracekeep/masking-keys.md` §9, `ingest.md` §6.2, `rollouts.md` §6.4, `compactor.md` §8.2, `api.md` §10.1–§10.2, `operations.md` §10.4, `producer.md` §4.6 and `producer-sdk.md`.
 This plan only orders the work.
 
 ## Before it starts
@@ -27,47 +27,86 @@ The owner's answers to the points below become one decision-log entry when the p
    and only the tool-facing session's traffic is the tool's.
    The eqp-hub side (the origin on `DCTask` and on the hub's message, the plugin protocol's field) is phase G's;
    until it ships, nothing is marked and nothing thins.
-   Activation amends §4.6, `producer-sdk.md`'s `Register`, `positioning.md`'s thinning row and the roadmap row,
-   marks T-3's channel clause superseded, and drops T-3's open item from the roadmap.
 2. **Exports are checked in phase 4** (answered 2026-10-29):
-   `Export` is phase 4's, so phase 3's gate checks storage, the working directories and the compactor's outputs,
-   and phase 4's gate adds "no clear recipe body in an export".
-3. **`Restore`'s request** (answered 2026-10-29), not specified in `api.md` before:
-   `Restore(capture, seq, hour)`, the addressing `FindTransaction` uses,
-   reading the record and its redaction entries through the pack that holds the seq, merged or not,
-   and returning each masked range's original.
-4. **The `session` key purpose** (answered 2026-10-29) signs a cookie that only phase 4's people's OIDC issues,
-   so it waits for phase 4; phase 3 adds `digest` and `master`.
-5. **Vault in tests** (answered 2026-10-29), which the CI matrix lacked:
+   `Export` is phase 4's, so phase 3's gate checks storage, the working directories, the compactor's outputs, logs, audit rows and error responses,
+   and phase 4's gate gains "no clear recipe body in an export".
+3. **`Restore` addresses a record by `(capture, seq, hour)`** (answered 2026-10-29), the addressing `FindTransaction` uses.
+4. **The `session` key purpose waits for phase 4** (answered 2026-10-29):
+   it signs a cookie only phase 4's people's OIDC issues; phase 3 adds `digest` and `master`.
+5. **Vault in tests** (answered 2026-10-29):
    a Vault dev-mode container in CI beside MinIO and Ceph RGW, through a make target like `make test-catalog`,
-   with an `httptest` fake for the error paths a real server will not produce.
-6. **The production-admission check of a tool type** (T-6, answered 2026-10-29), which had no specified form:
+   with an `httptest` fake for the failures a real server will not produce on demand.
+6. **The production-admission check of a tool type** (T-6, answered 2026-10-29):
    an operator procedure in `docs/guides/`, not code;
-   the service refuses to start in production mode with a policy that lacks any baseline row.
+   the service refuses to start outside `tracekeep dev` with a policy that lacks any baseline row.
 7. **The split below** into six sub-phases (answered 2026-10-29).
+8. **The cutover to masking** (answered 2026-10-29):
+   outside `tracekeep dev`, a capture is admitted only under a configuration whose policy holds every baseline row;
+   with none available it is not admitted, and its records wait as `incompatible-configuration` does.
+   A capture admitted before the cutover keeps its configuration without a policy, and its traffic is still processed under it
+   (phase 1 ran only on data that holds nothing sensitive).
+   A consumer that cannot mask cannot hold a membership outside `tracekeep dev` once a masking configuration is active.
+   An existing capture's binding never changes.
+9. **`Restore` and conflicting versions** (answered 2026-10-29):
+   the copies of a record at the address are restored only when they are equal;
+   differing versions are refused and reported as a conflict, and no version selector is offered.
+
+When the plan is activated, its commit also amends:
+`producer.md` §4.6, `positioning.md`'s thinning row and the roadmap row for points 1 and 2;
+T-3's channel clause marked superseded, and T-3's open item dropped from the roadmap;
+`api.md` §10.1 for points 3 and 9 and for the interim admin commands below;
+`api.md` §10.2 and the roadmap's phase 4 row for point 4;
+`rollouts.md` §6.4 for point 8.
+Each sub-phase's spec step then writes the detail its row names.
 
 Not in this phase:
-`Export`, `QueryRecords`, people's OIDC, the `session` purpose and the frontend are phase 4's;
-the typed admin operations for policies and key ids stay phase 4's, `Admin(words)` serving them meanwhile.
+`Export`, `QueryRecords`, `FindTransaction`, people's OIDC, the `session` purpose and the frontend are phase 4's;
+typed admin operations for policies and key ids stay phase 4's, the admin commands below serving through `Admin(words)` meanwhile.
 
 ## Phases
 
 | Phase | Scope | State |
 |---|---|---|
-| 3.1 — keys | the `digest` and `master` purposes in `internal/keys`; `EncryptionKey` by §9's HKDF recipe; a `redact.Keys` over the module; the `vault` provider (KV v2, the binding's pinned version, Kubernetes auth and AppRole, material in memory only); a wrong-purpose request and a fingerprint mismatch failing closed | pending |
-| 3.2 — policy | `policies` in the catalog with its migration; a policy in YAML, versioned by content hash, compiled once; the default policy as the [SEM §8] baseline table transcribed (every row and the `source-text` annotation rules), a test holding it to the table; the policy bound through the processing configuration at admission (`rollouts.md` §6.4) | pending |
-| 3.3 — masking at ingest | classify and `Mask` before the `Writer` is built, `PackMeta.Redaction` and the capture's `redaction_policy` set (`ingest.md` §6.2); a binding failure deferring every record that needs the key, with its alert; claim-check bodies masked like inline ones; no clear body in a working-directory file; merges and closes carrying ciphertext through | pending |
-| 3.4 — `Restore` and `Digest` | the `restorer` and `scorer` roles; `Restore` writing its `audit_log` row before it answers, the original only in the response; `Digest` over §9's three input forms, rate-limited and audited | pending |
-| 3.5 — thinning | the SDK's thin decision at registration in the pending table for a request marked interval-only and an `S1F3`, the N/T sampling rule (defaults 60 and 60 s, configurable per channel), the ambiguity set and its cap, the thinned record zero-filled with `quality.unobserved`, the descriptor's `thinning` declaration and rotation on a parameter change; `cmd/tracekeep-sim` driving it; its metrics | pending |
-| 3.6 — gate | the roadmap row's cases, audited against the tests as 2.8 did | pending |
+| 3.1 — keys | detailed below: Vault's configuration, credential lifecycle and outage behaviour specified, then the `digest` and `master` purposes, `EncryptionKey`, the `vault` provider, a context-bearing `redact.Keys`, `key verify` and the keys guide | pending |
+| 3.2 — policy and configuration | spec first (`rollouts.md` §6.4, `masking-keys.md` §9): the configuration's full identity (classifier, frame limit, policy id, version and content hash, both key ids with their fingerprints, format features) and its reconstruction from stored bytes; policy persistence in the existing `policies` table (an incremental migration only if one is needed); a policy in YAML, compiled once; the default policy as the [SEM §8] baseline transcribed (every row, both paths where a row has two, the `source-text` annotation rules), a test holding it to the table; the refusal to start outside `dev` without the baseline; `policy` admin commands; the production-admission guide. A masking configuration is stored and loadable, never yet activated | pending |
+| 3.3 — masking at ingest | spec first (`ingest.md` §6.2, `compactor.md` §8.2): the cutover of point 8 (activation of a masking configuration, admission refusing one without a policy, a non-masking consumer's membership refused); classify and `Mask` before the `Writer` is built, `PackMeta.Redaction` and the capture's `redaction_policy` set; claim-check bodies masked like inline ones; a key failure deferring every record that needs the key, with its alert; a close's metadata (policy, classifier, frame limit) taken from the capture's bound configuration before its intent is persisted, intents already persisted replaying their bytes; raw delivery identity (receipts, termination evidence) kept on the original bytes | pending |
+| 3.4 — `Restore` and `Digest` | spec first (`api.md` §10.1, `masking-keys.md` §9): the record locator of points 3 and 9 (equal copies once, differing versions refused, excluded packs ignored, a missing or evicted record, a pack merged or deleted during the lookup); the whole record authenticated before any original leaves; annotation masks, unobserved records and records without encryption answered as not restorable; the audit row written first, a failed audit returning nothing; `Digest` over §9's three input forms with `kind` checked by the service, its rate limit's scope and bounds; the proto operations wired to the existing `restorer` and `scorer` roles | pending |
+| 3.5 — thinning | spec first (`producer-sdk.md`, `producer.md` §4.6): `Register` taking the origin and the primary's stream and function beside the session and System Bytes, an old caller's registration unmarked, a supplied header that disagrees with the observed one never thinned, every registration in the ambiguity set whatever its mark; the sampling rule's key and parameters (defaults 60 and 60 s) owned by the SDK's configuration; the descriptor's `thinning` entries generated by the SDK from that configuration, never taken from the caller; then the thin decision, the ambiguity set and its cap, the thinned record zero-filled with `quality.unobserved`, rotation on a parameter change, `cmd/tracekeep-sim` driving it, its metrics | pending |
+| 3.6 — gate | the roadmap row's cases and the strengthened ones below, audited against the tests as 2.8 did; the thinned records' path through 3.3's masking and the merge | pending |
 
-Only the phase under way is detailed; the others are detailed when they start.
-3.5 is the producer module's and depends on nothing before it, so it may run beside 3.1–3.4.
+Only the phase under way and the next are detailed; the others are detailed when they start.
+3.5 is the producer module's and may run beside 3.1–3.4; its records meet the service's masking only in 3.6's integration test.
 Every catalog step runs on both engines, and every concurrent schedule is barrier-controlled.
 Each phase lands the metrics of `operations.md` §10.4 for the code it adds.
-The gate's cases each have an owner:
-"two first uses of one key id with different material" is 3.1's binding race on both engines;
-"a restore round-trips" is 3.4's;
-"rotation between two deliveries of one record" is 3.3's, phase 1's byte-identical redelivery with a digest-key rotation between the deliveries,
-the record masked under the key its capture bound;
-"no clear recipe body anywhere" is 3.6's scan of the store, the working directories and the compactor's outputs for every baseline carrier.
+
+**Gate cases and their owners:**
+
+- "two first uses of one key id with different material": 3.1, two real `Keys` instances resolving different material before either binds, on both engines;
+  the loser returns, caches and derives nothing.
+- "a restore round-trips": 3.4, restored ranges reassembling the original record, and `Digest` equal to the digest ingest wrote for each input form.
+- "rotation between two deliveries of one record": 3.3, widened beyond the digest key:
+  a digest-key rotation, a master-key rotation and a provider version advanced between the deliveries, each with fresh processes and caches;
+  a policy activated between them, the existing capture keeping its configuration while a new capture binds the new one;
+  through every crash point of `ingest.md` §6.3, inline and claim-check, a different batching on the retry, an orphan adopted before the redelivery and partial acknowledgements;
+  the serialized records and their complete redaction entries compared, then merged without a false conflict.
+- "no clear recipe body anywhere": each phase asserts its own boundary and 3.6 audits the coverage.
+  3.1: provider errors carrying synthetic secret sentinels never reach an error, a log line or a metric.
+  3.3: working-directory files inspected while held at the write and crash barriers, decoded pack payloads and metadata checked for every baseline carrier and the three `source-text` annotation kinds, malformed items' whole-text fallback, `ErrCannotScreen`, a failure after part of a batch was masked, a failed put, an interrupted merge.
+  3.4: audit rows hold only an allowlist of fields, never original bytes or credentials; error responses and logs of a failed restore hold no original.
+  The traffic and parking streams and the claim bucket stay the permitted clear-text locations (`masking-keys.md` §9).
+
+## Phase 3.1 — keys
+
+Work on the branch `feat/keys/vault`, one commit per step, test first;
+the branch merges by pull request once the whole phase passes an external post-implementation review.
+`internal/keys` already holds the binding's insert-or-compare, the order that checks before it caches, the `file` and `env` providers and the `download` purpose (2.5);
+this phase adds the purposes masking needs and the `vault` provider.
+
+| Step | Scope | State |
+|---|---|---|
+| 1 | spec, `masking-keys.md` §9 and the configuration guide: the `vault` provider's configuration (address, CA, KV v2 mount, auth method and role), its credential lifecycle (Kubernetes auth and AppRole login, renewal before expiry, a fresh login when renewal fails), a deadline on every provider call; a warm cache serving bound material through an outage and a cold cache failing closed; material requirements for `digest` and `master` keys; old provider versions kept while a binding or a capture needs them; errors that name the key id and reference but never the material or a token; `redact.Keys` given a context per use, since its methods take none | pending |
+| 2 | `digest` and `master` purposes: `DigestKey` and `EncryptionKey` by §9's HKDF recipe, checked against independent vectors (the raw UUID byte order, the key id's UTF-8, distinct captures); a request under another purpose failing closed across `download`, `digest` and `master`; a failed resolution caching nothing; the first-use race of two real `Keys` instances with different material on both engines | pending |
+| 3 | the `vault` provider: KV v2 read at the binding's pinned version, an unbound key id at the declared or current one; Kubernetes auth and AppRole; renewal and re-login; tests against the dev-mode container (a make target and its CI job) and an `httptest` fake for an expired or revoked credential, a deleted pinned version beside a newer one, a malformed or non-base64 response, a stalled server against the deadline, and secret sentinels kept out of errors and logs | pending |
+| 4 | the `redact.Keys` adapter: a context bounded by the call deadline, warm and cold caches through a provider outage, a cancelled context returning no material | pending |
+| 5 | `key verify <key_id>`: re-resolves bypassing the cache and compares the fingerprint with the binding, audited, direct and through `Admin(words)`; the keys guide (declaring a key, rotating `digest` and `master` keys by declaration, Vault incident recovery) and the runbook's `key-binding-mismatch` section | pending |
+| 6 | metrics: the key metrics `operations.md` §10.4 names for resolutions, binding mismatches and provider failures | pending |
