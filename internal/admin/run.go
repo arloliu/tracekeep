@@ -202,19 +202,15 @@ func onConfig(ctx context.Context, a *Admin, cmd string, args []string) (any, er
 	}
 }
 
-// onStage runs config stage <digest key id> [<encryption key id>] [--policy <file>].
+// onStage runs config stage <digest key id> <encryption key id> [--policy <file>].
 func onStage(ctx context.Context, a *Admin, args []string) (any, error) {
 	file := ""
 	if n := len(args); n >= 2 && args[n-2] == "--policy" {
 		file, args = args[n-1], args[:n-2]
 	}
-	if len(args) < 1 || len(args) > 2 || slices.Contains(args, "--policy") {
-		return nil, fmt.Errorf("%w: config stage <digest key id> [<encryption key id>] [--policy <file>]", ErrUsage)
-	}
-	encryption := ""
-	if len(args) == 2 {
-		encryption = args[1]
+	if len(args) != 2 || slices.Contains(args, "--policy") {
+		return nil, fmt.Errorf("%w: config stage <digest key id> <encryption key id> [--policy <file>]", ErrUsage)
 	}
 
-	return a.ConfigStage(ctx, args[0], encryption, file)
+	return a.ConfigStage(ctx, args[0], args[1], file)
 }

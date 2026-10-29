@@ -105,7 +105,9 @@ func TestConfigCommandsOverTheAPI(t *testing.T) {
 	if err := os.WriteFile(path, []byte(base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{0x84}, 32))), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	k, err := keys.New(keys.Config{Declared: map[string]keys.Declaration{"d-1": {Provider: keys.ProviderFile, Ref: path, Kind: catalog.KindDigest}}}, c)
+	k, err := keys.New(keys.Config{Declared: map[string]keys.Declaration{
+		"d-1": {Provider: keys.ProviderFile, Ref: path, Kind: catalog.KindDigest}, "m-1": {Provider: keys.ProviderFile, Ref: path, Kind: catalog.KindMaster},
+	}}, c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -138,7 +140,7 @@ func TestConfigCommandsOverTheAPI(t *testing.T) {
 
 		return string(j)
 	}
-	staged, err := remote("config", "stage", "d-1")
+	staged, err := remote("config", "stage", "d-1", "m-1")
 	if err != nil || !strings.Contains(staged, `"ConfigID": 1`) {
 		t.Fatalf("config stage over the API = %s, %v", staged, err)
 	}

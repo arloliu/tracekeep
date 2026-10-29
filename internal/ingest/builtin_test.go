@@ -264,6 +264,7 @@ func TestRebuildRefuses(t *testing.T) {
 		"another fingerprint":             {keys: ok, change: func(m *Config) { m.DigestKey.Fingerprint = "other" }},
 		"an unbound key":                  {keys: declared{"d-1": catalog.KindDigest, "m-9": catalog.KindMaster}, change: func(m *Config) { m.EncryptionKey.ID = "m-9" }},
 		"a policy lacking the baseline":   {keys: ok, change: func(m *Config) { m.Policy = &partial }},
+		"no encryption key":               {keys: ok, change: func(m *Config) { m.EncryptionKey = KeyRef{} }},
 	} {
 		catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
 			m := masking(t, c, new(policy.Baseline()))
