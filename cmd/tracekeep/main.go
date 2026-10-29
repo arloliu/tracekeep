@@ -48,7 +48,11 @@ commands:
                deferred list [--capture <capture>]
                bus adopt-stream <traffic|parking> | object list [--unattributed|--survivors]
                conflict acknowledge <capture> <seq> | scope exclude-input <pack>
-               scope merge <capture> <hour, RFC 3339>`
+               scope merge <capture> <hour, RFC 3339>
+               key verify <key id>
+               policy list | policy show <policy id> <version>
+               config stage <digest key id> [<encryption key id>] [--policy <file>]
+               config list | config activate <config id>`
 
 // errUsage marks a command line the binary cannot run; it exits 2.
 var errUsage = admin.ErrUsage
