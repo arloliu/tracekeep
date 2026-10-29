@@ -188,7 +188,7 @@ func TestIngesterEndToEnd(t *testing.T) {
 		if err != nil || got.State != catalog.StateOpen || got.HighestSeq != 4 {
 			t.Fatalf("capture %+v, %v; want open with highest seq 4", got, err)
 		}
-		ks := keys(t, r.st)
+		ks := storedKeys(t, r.st)
 		if len(ks) != 1 {
 			t.Fatalf("objects %v, want one segment", ks)
 		}
@@ -282,7 +282,7 @@ func TestIngesterStopsOnAnotherIncarnation(t *testing.T) {
 		if n := len(r.g.Batcher.batches); n != 0 {
 			t.Errorf("%d batches still held", n)
 		}
-		if ks := keys(t, r.st); len(ks) != 0 {
+		if ks := storedKeys(t, r.st); len(ks) != 0 {
 			t.Errorf("objects %v, want nothing flushed", ks)
 		}
 		if n := r.pending(t); n != 1 {

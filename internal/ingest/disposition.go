@@ -35,6 +35,8 @@ const (
 	StepCheckConfig
 	// StepDerive classifies the record with the bound configuration (DeriveBusRecord).
 	StepDerive
+	// StepMask masks the record under the bound configuration's policy (redact.Compiled.Mask).
+	StepMask
 )
 
 // Action is what a final disposition does with the message.
@@ -87,6 +89,9 @@ const (
 	ReasonInvalidRecord   = "invalid-record"
 	ReasonInvariant       = "invariant"
 	ReasonWriteFailure    = "write-failure"
+	ReasonCannotScreen    = "cannot-screen"
+	ReasonKeyRefused      = "key-refused"
+	ReasonKeyUnavailable  = "key-unavailable"
 )
 
 // Decision is Decide's answer: a step to run, or a final action with its reason.
@@ -182,6 +187,21 @@ const (
 	DerivedClassifierInvalid
 )
 
+// Masked is the masking's verdict.
+type Masked int
+
+const (
+	MaskedUnknown Masked = iota
+	// MaskedOK: masked under the policy, or under a policy-less configuration left as received.
+	MaskedOK
+	// MaskedCannotScreen is ErrCannotScreen, or a record masking refuses as it stands.
+	MaskedCannotScreen
+	// MaskedKeyRefused: a key the masking needs is refused, which only an operator clears (keys.Refused).
+	MaskedKeyRefused
+	// MaskedKeyUnavailable: a key the masking needs could not be resolved now.
+	MaskedKeyUnavailable
+)
+
 // Facts are what is known about one delivery.
 // The raw facts come from the message alone; every other field starts unknown and is set by the step that finds it.
 type Facts struct {
@@ -215,6 +235,7 @@ type Facts struct {
 	// Config: this replica executes the capture's processing configuration.
 	Config  Verdict
 	Derived Derived
+	Masked  Masked
 }
 
 // Decide returns the disposition of the delivery f describes, or the next step it needs (ingest.md §6.1).
@@ -373,6 +394,26 @@ func admitted(f *Facts) Decision {
 	case DerivedOK:
 	default:
 		panic("ingest: unknown derivation")
+	}
+
+	return maskDisposition(f)
+}
+
+// maskDisposition is the last check of an admitted capture's record, once classified: masked, it is batched (ingest.md §6.1).
+func maskDisposition(f *Facts) Decision {
+	switch f.Masked {
+	case MaskedUnknown:
+		return step(StepMask)
+	case MaskedCannotScreen:
+		return nak(ReasonCannotScreen, true)
+	case MaskedKeyRefused:
+		// Refused until an operator acts: an indefinite deferral.
+		return park(ReasonKeyRefused, true)
+	case MaskedKeyUnavailable:
+		return nak(ReasonKeyUnavailable, true)
+	case MaskedOK:
+	default:
+		panic("ingest: unknown masking")
 	}
 
 	return final(ActBatch, "")

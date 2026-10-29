@@ -128,7 +128,7 @@ func verify(t *testing.T, st store.ObjectStore, key string) {
 	}
 }
 
-func keys(t *testing.T, st store.ObjectStore) []string {
+func storedKeys(t *testing.T, st store.ObjectStore) []string {
 	t.Helper()
 	var ks []string
 	if err := st.List(t.Context(), "", func(i store.ObjectInfo) error { ks = append(ks, i.Key); return nil }); err != nil {
@@ -159,7 +159,7 @@ func TestFlushWritesRegistersThenAcks(t *testing.T) {
 		if len(fl) != 1 || len(fl[0].Packs) != 1 {
 			t.Fatalf("flushed %+v, want one segment", fl)
 		}
-		ks := keys(t, p.st)
+		ks := storedKeys(t, p.st)
 		if len(ks) != 1 {
 			t.Fatalf("objects %v, want one segment", ks)
 		}

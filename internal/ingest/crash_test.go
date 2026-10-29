@@ -106,14 +106,14 @@ func TestCrashBeforeThePut(t *testing.T) {
 			t.Fatalf("Flush = %v, want the crash", err)
 		}
 		untouched(t, hs)
-		if ks := keys(t, p.st); len(ks) != 0 {
+		if ks := storedKeys(t, p.st); len(ks) != 0 {
 			t.Fatalf("objects %v after a crash before the put", ks)
 		}
 		hs = p.deliver(t, traffic(t, capture))
 		if _, err := p.flushOne(t); err != nil {
 			t.Fatal(err)
 		}
-		ks := keys(t, p.st)
+		ks := storedKeys(t, p.st)
 		if len(ks) != 1 {
 			t.Fatalf("objects %v after the redelivery, want one segment", ks)
 		}
@@ -145,7 +145,7 @@ func TestCrashAfterThePut(t *testing.T) {
 			t.Fatalf("Flush = %v, want the crash", err)
 		}
 		untouched(t, hs)
-		orphan := keys(t, p.st)
+		orphan := storedKeys(t, p.st)
 		if len(orphan) != 1 {
 			t.Fatalf("objects %v, want the orphan", orphan)
 		}
@@ -159,7 +159,7 @@ func TestCrashAfterThePut(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		ks := keys(t, p.st)
+		ks := storedKeys(t, p.st)
 		if len(ks) != 2 || !strings.Contains(strings.Join(ks, " "), fl.Packs[0].String()) {
 			t.Fatalf("objects %v, want the orphan and the redelivery's segment %s", ks, fl.Packs[0])
 		}
@@ -340,7 +340,7 @@ func TestRefusedConflictSegmentRegistersNothing(t *testing.T) {
 			t.Fatalf("Flush = %v, want the refusal", err)
 		}
 		untouched(t, hs)
-		if ks := keys(t, p.st); len(ks) != 0 {
+		if ks := storedKeys(t, p.st); len(ks) != 0 {
 			t.Errorf("objects %v after a refusal", ks)
 		}
 		if got, _ := c.Capture(t.Context(), capture); got.HasHighestSeq {
@@ -403,7 +403,7 @@ func TestFlushBeyondTheHorizon(t *testing.T) {
 				t.Errorf("message %d: %v, want terminated", i, got)
 			}
 		}
-		if ks := keys(t, p.st); len(ks) != 0 {
+		if ks := storedKeys(t, p.st); len(ks) != 0 {
 			t.Errorf("objects %v, want the segment deleted", ks)
 		}
 		if got, _ := c.Capture(t.Context(), capture); got.HasHighestSeq {
@@ -459,7 +459,7 @@ func TestFlushLosesToATermination(t *testing.T) {
 				t.Errorf("message %d: %v, want returned with the short delay", i, got)
 			}
 		}
-		if ks := keys(t, p.st); len(ks) != 0 {
+		if ks := storedKeys(t, p.st); len(ks) != 0 {
 			t.Errorf("objects %v, want the segment deleted", ks)
 		}
 		if got, _ := c.Capture(t.Context(), capture); got.HasHighestSeq {
@@ -501,7 +501,7 @@ func TestAdoptionWinsAfterThePut(t *testing.T) {
 			t.Fatal("Flush of an adopted pack succeeded, want its batch left unacknowledged")
 		}
 		untouched(t, hs)
-		adopted := keys(t, p.st)
+		adopted := storedKeys(t, p.st)
 		if len(adopted) != 1 {
 			t.Fatalf("objects %v, want the adopted segment", adopted)
 		}
@@ -519,7 +519,7 @@ func TestAdoptionWinsAfterThePut(t *testing.T) {
 				t.Errorf("redelivered message %d: %v, want acknowledged", i, got)
 			}
 		}
-		if ks := keys(t, p.st); len(ks) != 2 {
+		if ks := storedKeys(t, p.st); len(ks) != 2 {
 			t.Errorf("objects %v, want the adopted segment and the redelivery's", ks)
 		}
 	})
@@ -540,7 +540,7 @@ func TestFlushPutAcrossAnEviction(t *testing.T) {
 		if err := g.flush(ctx, p.b.All()); err != nil {
 			t.Fatal(err)
 		}
-		first := keys(t, p.st)
+		first := storedKeys(t, p.st)
 		lease, ok, err := c.TakeLease(ctx, "compactor/2", "retention", time.Hour)
 		if err != nil || !ok {
 			t.Fatalf("TakeLease = %v, %v", ok, err)
@@ -567,7 +567,7 @@ func TestFlushPutAcrossAnEviction(t *testing.T) {
 				t.Errorf("message %d: %v, want terminated", i, got)
 			}
 		}
-		if ks := keys(t, p.st); !slices.Equal(ks, first) {
+		if ks := storedKeys(t, p.st); !slices.Equal(ks, first) {
 			t.Errorf("objects %v, want only the evicted batch's %v: the late put deleted", ks, first)
 		}
 		if got, err := c.Capture(ctx, capture); err != nil || got.HighestSeq != 3 {
