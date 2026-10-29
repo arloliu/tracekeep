@@ -335,3 +335,32 @@ func TestActivationCheckRunsInTheTransaction(t *testing.T) {
 		}
 	})
 }
+
+// AdmitWhere binds the newest configuration every member supports that its predicate admits; with none, it writes nothing.
+func TestAdmitWhere(t *testing.T) {
+	t.Parallel()
+	engines(t, func(t *testing.T, c *Catalog) {
+		ctx := t.Context()
+		plain := activate(t, c, "plain")
+		masking := activate(t, c, "masking")
+		newer := activate(t, c, "newer-plain")
+		if _, err := c.Register(ctx, "r", []int64{plain, masking, newer}, ttl); err != nil {
+			t.Fatal(err)
+		}
+		only := func(id int64) func(int64) bool { return func(x int64) bool { return x == id } }
+		capture := newID(t)
+		if _, err := c.AdmitWhere(ctx, start(capture), descriptor(t, "d"), only(999)); !errors.Is(err, ErrNoBindableConfig) {
+			t.Fatalf("AdmitWhere with nothing bindable = %v, want ErrNoBindableConfig", err)
+		}
+		if got, err := c.Capture(ctx, capture); err == nil {
+			t.Errorf("a refused admission wrote the capture: %+v", got)
+		}
+		res, err := c.AdmitWhere(ctx, start(capture), descriptor(t, "d"), only(masking))
+		if err != nil || res.Outcome != Admitted || res.ConfigID != masking {
+			t.Errorf("AdmitWhere = %+v, %v; want bound to %d, not the newer %d", res, err, masking, newer)
+		}
+		if res, err := c.Admit(ctx, start(newID(t)), descriptor(t, "e")); err != nil || res.ConfigID != newer {
+			t.Errorf("Admit = %+v, %v; want the newest", res, err)
+		}
+	})
+}

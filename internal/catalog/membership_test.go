@@ -230,7 +230,7 @@ func bindable(t *testing.T, c *Catalog) (int64, bool) {
 			return err
 		}
 		var err error
-		id, ok, err = c.bindableConfig(t.Context(), tx)
+		id, ok, err = c.bindableConfig(t.Context(), tx, nil)
 
 		return err
 	})

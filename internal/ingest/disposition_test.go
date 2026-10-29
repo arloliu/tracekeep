@@ -162,6 +162,8 @@ func TestDecide(t *testing.T) {
 			Decision{Action: ActNak, Reason: ReasonInvariant, Alert: true}, []Step{StepResolve, StepFrame, StepLookupCapture, StepCheckConfig, StepDerive}},
 		{"configuration this replica cannot execute", raw, with(normal, world{{StepCheckConfig, func(f *Facts) { f.Config = No }}}),
 			Decision{Action: ActNak, Reason: ReasonIncompatible, Alert: true}, []Step{StepResolve, StepFrame, StepLookupCapture, StepCheckConfig}},
+		{"start with no configuration it may bind: waits as incompatible", raw, with(normal, world{{StepFrame, framedStart}, {StepLookupCapture, unknown}, {StepValidateDescriptor, accepted}, {StepAdmit, func(f *Facts) { f.Admitted, f.Unbindable = true, true }}}),
+			Decision{Action: ActNak, Reason: ReasonIncompatible, Alert: true}, []Step{StepResolve, StepFrame, StepLookupCapture, StepValidateDescriptor, StepAdmit}},
 		{"record masking cannot screen", raw, with(normal, world{{StepMask, func(f *Facts) { f.Masked = MaskedCannotScreen }}}),
 			Decision{Action: ActNak, Reason: ReasonCannotScreen, Alert: true}, []Step{StepResolve, StepFrame, StepLookupCapture, StepCheckConfig, StepDerive, StepMask}},
 		{"record whose key is refused: parked", raw, with(normal, world{{StepMask, func(f *Facts) { f.Masked = MaskedKeyRefused }}}),

@@ -149,8 +149,11 @@ func TestConfigCommandsOverTheAPI(t *testing.T) {
 			t.Errorf("%q over the API = %s, %v; want the direct answer", words, got, err)
 		}
 	}
-	if _, err := remote("config", "activate", "1"); connect.CodeOf(err) != connect.CodeFailedPrecondition || !strings.Contains(err.Error(), "does not mask") {
-		t.Errorf("activating the masking configuration over the API = %v, want refused", err)
+	if got, err := remote("config", "activate", "1"); err != nil || !strings.Contains(got, `"Changed": true`) {
+		t.Errorf("activating the masking configuration over the API = %s, %v", got, err)
+	}
+	if _, err := remote("config", "activate", "9"); connect.CodeOf(err) != connect.CodeFailedPrecondition {
+		t.Errorf("activating an unknown configuration over the API = %v, want refused", err)
 	}
 	if _, err := remote("config", "stage"); connect.CodeOf(err) != connect.CodeInvalidArgument {
 		t.Errorf("config stage without a key id = %v, want invalid argument", err)

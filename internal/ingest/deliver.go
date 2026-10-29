@@ -96,6 +96,9 @@ type Executor struct {
 	Configs map[int64]Config
 	// Keys gives each delivery's masking the keys its configuration names (masking-keys.md §9).
 	Keys MaskKeys
+	// Bindable admits the configurations an admission may bind, by id; nil admits any, as tracekeep dev does.
+	// Outside dev it admits the masking configurations this replica executes (rollouts.md §6.4).
+	Bindable func(configID int64) bool
 	// Metrics records the masking's duration; nil records nothing.
 	Metrics *metrics.Ingest
 
@@ -280,7 +283,11 @@ func (x *Executor) admit(ctx context.Context, d *Delivery) error {
 		desc.OriginNS = *meta.CaptureOriginUTCNs
 	}
 	d.ToolID = meta.ToolID
-	res, err := x.Catalog.Admit(ctx, d.identity(), desc)
+	res, err := x.Catalog.AdmitWhere(ctx, d.identity(), desc, x.Bindable)
+	if errors.Is(err, catalog.ErrNoBindableConfig) {
+		d.Facts.Admitted, d.Facts.Unbindable = true, true
+		return nil
+	}
 	if err != nil {
 		return err
 	}

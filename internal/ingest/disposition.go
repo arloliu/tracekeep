@@ -236,6 +236,8 @@ type Facts struct {
 	Config  Verdict
 	Derived Derived
 	Masked  Masked
+	// Unbindable: the admission found no configuration it may bind; the capture stays unadmitted.
+	Unbindable bool
 }
 
 // Decide returns the disposition of the delivery f describes, or the next step it needs (ingest.md §6.1).
@@ -346,6 +348,9 @@ func admission(f *Facts) (Decision, bool) {
 		return park(ReasonCaptureRejected, true), true
 	case !f.Admitted:
 		return step(StepAdmit), true
+	case f.Unbindable:
+		// Outside dev only a masking configuration binds: the records wait for one (rollouts.md §6.4).
+		return nak(ReasonIncompatible, true), true
 	}
 
 	return Decision{}, false

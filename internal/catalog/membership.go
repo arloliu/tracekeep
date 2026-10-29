@@ -191,16 +191,25 @@ func (c *Catalog) lockMembership(ctx context.Context, tx *sqlx.Tx) error {
 	return err
 }
 
-// bindableConfig returns the newest activated, unretired configuration every leased member supports; ok is false when there is none.
-// The caller holds the membership sentinel.
-func (c *Catalog) bindableConfig(ctx context.Context, tx *sqlx.Tx) (int64, bool, error) {
-	var id sql.NullInt64
-	err := tx.GetContext(ctx, &id, `SELECT MAX(p.config_id) FROM processing_configs p
+// bindableConfig returns the newest activated, unretired configuration every leased member supports that bindable admits,
+// any when bindable is nil; ok is false when there is none. The caller holds the membership sentinel.
+func (c *Catalog) bindableConfig(ctx context.Context, tx *sqlx.Tx, bindable func(int64) bool) (int64, bool, error) {
+	var ids []int64
+	err := tx.SelectContext(ctx, &ids, `SELECT p.config_id FROM processing_configs p
 		WHERE p.activated_at IS NOT NULL AND p.retired_at IS NULL
 		AND NOT EXISTS (SELECT 1 FROM members m WHERE m.lease_until >= `+c.d.nowNS+`
-			AND NOT EXISTS (SELECT 1 FROM member_configs mc WHERE mc.replica_id = m.replica_id AND mc.config_id = p.config_id))`)
+			AND NOT EXISTS (SELECT 1 FROM member_configs mc WHERE mc.replica_id = m.replica_id AND mc.config_id = p.config_id))
+		ORDER BY p.config_id DESC`)
+	if err != nil {
+		return 0, false, err
+	}
+	for _, id := range ids {
+		if bindable == nil || bindable(id) {
+			return id, true, nil
+		}
+	}
 
-	return id.Int64, id.Valid, err
+	return 0, false, nil
 }
 
 // affected turns an update that changed no row into errNone.
