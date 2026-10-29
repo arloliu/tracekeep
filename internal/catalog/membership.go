@@ -2,7 +2,6 @@ package catalog
 
 import (
 	"context"
-	"crypto/sha256"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -16,7 +15,7 @@ import (
 
 var (
 	// ErrConfigNotExecuted refuses a membership whose replica does not execute every configuration not yet retired (rollouts.md §6.4).
-	ErrConfigNotExecuted = errors.New("catalog: the replica does not execute every unretired configuration")
+	ErrConfigNotExecuted = errors.New("catalog: the replica does not execute every active configuration")
 	// ErrNotQuiescent refuses the retirement of a configuration a capture the caller did not find quiescent is bound to.
 	ErrNotQuiescent = errors.New("catalog: a capture bound to the configuration is not quiescent")
 	// ErrMembershipLapsed reports a membership whose lease lapsed or whose generation is not the current one: register again.
@@ -30,25 +29,17 @@ type Membership struct {
 	Generation int64
 }
 
-// ActivateConfig records a processing configuration the binary executes and returns its id; the same content returns the same id.
-// A new capture binds the newest activated configuration every leased member supports.
+// ActivateConfig stores content as a configuration and activates it, under the membership sentinel, and returns its id:
+// what tracekeep dev does for its own configuration, and tests for theirs. Equal content is one configuration;
+// a staged one is activated and a retired one stays retired. Every other activation is config activate's (ActivateStaged).
 func (c *Catalog) ActivateConfig(ctx context.Context, content []byte) (int64, error) {
-	sum := sha256.Sum256(content)
 	var id int64
 	err := c.inTx(ctx, func(tx *sqlx.Tx) error {
 		if err := c.lockMembership(ctx, tx); err != nil {
 			return err
 		}
-		err := tx.GetContext(ctx, &id, `SELECT config_id FROM processing_configs WHERE content_sha256 = ?`, sum[:])
-		if !errors.Is(err, sql.ErrNoRows) {
-			return err
-		}
-		if err := tx.GetContext(ctx, &id, `SELECT COALESCE(MAX(config_id), 0) + 1 FROM processing_configs`); err != nil {
-			return err
-		}
-		now := c.now()
-		_, err = tx.ExecContext(ctx, `INSERT INTO processing_configs (config_id, content, content_sha256, created_at, activated_at)
-			VALUES (?, ?, ?, ?, ?)`, id, content, sum[:], now, now)
+		var err error
+		id, err = c.storeConfig(ctx, tx, content, true)
 
 		return err
 	})
@@ -66,12 +57,13 @@ type StoredConfig struct {
 }
 
 // RequiredConfigs lists, by id, the configurations a replica must execute:
-// every one not yet retired, which registration requires, and every one a capture the catalog holds is bound to,
-// since retiring a configuration never removes the ability to execute it (rollouts.md §6.4).
+// every active one, which registration requires, and every one a capture the catalog holds is bound to,
+// since retiring a configuration never removes the ability to execute it (rollouts.md §6.4); a staged one is neither.
 func (c *Catalog) RequiredConfigs(ctx context.Context) ([]StoredConfig, error) {
 	var cs []StoredConfig
 	err := c.read.SelectContext(ctx, &cs, `SELECT p.config_id, p.content FROM processing_configs p
-		WHERE p.retired_at IS NULL OR EXISTS (SELECT 1 FROM captures k WHERE k.config_id = p.config_id) ORDER BY p.config_id`)
+		WHERE (p.activated_at IS NOT NULL AND p.retired_at IS NULL) OR EXISTS (SELECT 1 FROM captures k WHERE k.config_id = p.config_id)
+		ORDER BY p.config_id`)
 	if err != nil {
 		return nil, fmt.Errorf("catalog: required configurations: %w", err)
 	}
@@ -108,8 +100,8 @@ func (c *Catalog) RetireConfig(ctx context.Context, id int64, quiescent []tracep
 	return nil
 }
 
-// Register makes replica a member executing configs, with a lease of ttl by the database's clock.
-// It is refused with ErrConfigNotExecuted unless configs holds every configuration not yet retired.
+// Register makes replica a member executing configs, staged ones included, with a lease of ttl by the database's clock.
+// It is refused with ErrConfigNotExecuted unless configs holds every active configuration; a staged one is never required.
 func (c *Catalog) Register(ctx context.Context, replica string, configs []int64, ttl time.Duration) (Membership, error) {
 	m := Membership{Replica: replica}
 	err := c.inTx(ctx, func(tx *sqlx.Tx) error {
@@ -117,7 +109,7 @@ func (c *Catalog) Register(ctx context.Context, replica string, configs []int64,
 			return err
 		}
 		var unretired []int64
-		if err := tx.SelectContext(ctx, &unretired, `SELECT config_id FROM processing_configs WHERE retired_at IS NULL`); err != nil {
+		if err := tx.SelectContext(ctx, &unretired, `SELECT config_id FROM processing_configs WHERE activated_at IS NOT NULL AND retired_at IS NULL`); err != nil {
 			return err
 		}
 		for _, id := range unretired {
