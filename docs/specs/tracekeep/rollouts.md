@@ -121,3 +121,13 @@ Deferred messages reach a compatible consumer by redelivery:
 the work-queue stream redelivers a naked message to any pull consumer,
 so with a compatible consumer present delivery is eventual, not immediate;
 `ingest` exports the age of its oldest deferred message, and the runbook adds compatible replicas when it grows.
+
+**The cutover to masking** (T-42):
+outside `tracekeep dev`, a capture is admitted only under a configuration whose policy holds every baseline row of [SEM §8];
+with none available it is not admitted, and its records wait as `incompatible-configuration` does.
+A capture admitted before the cutover keeps its configuration without a policy, since a binding never changes,
+and its traffic, a synthetic backlog included, is still processed under it.
+Once a masking configuration is active, a consumer that cannot mask cannot hold a membership outside `tracekeep dev`,
+and a compactor that cannot write a masked capture's close cannot hold the compactor lease.
+So before sensitive traffic starts, every producer whose capture predates the cutover is stopped or rotated, old leaders that may still publish included,
+and the new captures are confirmed bound to a masking configuration, a step of the production-admission guide.
