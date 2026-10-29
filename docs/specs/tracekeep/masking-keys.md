@@ -33,7 +33,17 @@ Contract changes go through proposals, which the subject [README.md](README.md) 
 
 ## 9. Masking, encryption and keys (requirement 7)
 
-- **Policy**: `redact.Policy`, configured in YAML, stored versioned with a content hash, compiled once, bound to each capture at registration (§6.4).
+- **Policy**: `redact.Policy`'s rules, written in YAML, stored versioned with a content hash, compiled once, bound to each capture at registration through its configuration (§6.4).
+  - **Form**: `policy_id`, `version` (a positive integer), `item_rules` (each `stream`, `function`, `path` and `domain`)
+    and `annotation_rules` (each `kind` and `domain`); any other field is refused.
+    The key ids are not in the policy: they are given when a configuration is staged (§6.4), so one policy serves under several key ids,
+    and the `redact.Policy` a configuration compiles is its policy's rules with its key ids.
+  - **Storage**: the policy's canonical bytes (the parsed policy as JSON, its rules in their written order) and their SHA-256, in `policies` by id and version;
+    storing an id and version again with the same hash changes nothing, and with another hash is refused, so a policy version never changes.
+  - **The embedded default** is the baseline below, `policy_id: baseline`, version 1, which staging uses when it names no file.
+  - **The baseline check**: a policy holds every baseline rule, by stream, function, path and domain, and may add rules;
+    outside `tracekeep dev`, staging a policy that lacks one is refused,
+    and a replica refuses to start with an active or bound configuration whose policy lacks one.
   The **default policy is every row of the baseline table of [SEM §8]** (process-program bodies in S7, data sets in S13, recipes in S15 and S16, S6F25, and the rest of that table), with the paths and domains it gives;
   the table is the normative list and is not repeated here;
   identifiers stay in clear (G5-207).

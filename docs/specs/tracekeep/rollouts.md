@@ -24,7 +24,7 @@ Contract changes go through proposals, which the subject [README.md](README.md) 
 - **Linking**: a release links every classifier, and every masker a masking-output change left in use,
   that a retained or open capture references.
 - **Activation gate**: a replica registers in `consumers` with the configurations it executes and renews a lease before every fetch;
-  registration is refused unless it executes every unretired configuration;
+  registration is refused unless it executes every active configuration;
   a new capture binds the newest configuration every leased member supports;
   capture binding and every membership change, renewals included, serialize on the sentinel row `counters('membership')` (T-32);
   every delivered message is checked against the member's lease and membership generation before processing.
@@ -39,6 +39,29 @@ that changes its result, `max_frame_len` included (G5-250);
 and the **format features** the capture needs (`format_minor` 1 for masking or thinning, 2 for a descriptor carrying `recorder_instance_name`, G5-270).
 A consumer advertises the configurations it can execute at start;
 a record of a capture bound to one it cannot execute is deferred (§6.1), never processed with a fallback.
+
+**Stored content and its reconstruction.**
+A configuration is stored as its content's bytes, a JSON object of the fields above in one fixed order with the empty ones omitted,
+so a policy-less configuration holds only `classifier` and `max_frame_len`, and keyed by their SHA-256: equal content is one configuration.
+The masker is recorded beside them (below).
+A replica rebuilds what it executes from those bytes with no provider call:
+the policy read from the catalog by id and version, its hash compared,
+and each key id declared, with the kind its use needs, and its fingerprint equal to its binding's (§9);
+any difference refuses the configuration.
+The material itself is resolved at the configuration's first use, and checked against the same binding there.
+
+**States**: a configuration is *staged* (stored and loadable, neither required of members nor bindable),
+*active* (bindable, and required of every member) or *retired* (below).
+A start stages its policy-less configuration, this binary's classifier under its frame limit;
+an operator stages a masking one with `config stage` (`operations.md` §10.4), which resolves its key ids and so binds them,
+since a start never waits on a key provider (§9).
+Only `config activate` activates, under the membership sentinel below; neither a start nor loading a configuration does,
+except that `tracekeep dev` activates its own policy-less one.
+At registration a consumer lists every configuration it executes, staged ones included, so an activation is checked against the members,
+and registration requires every active configuration, never a staged one.
+A replica loads every active configuration and every one a capture is bound to, and refuses to start on one of them it cannot execute;
+it loads every staged one it can execute and skips the others, so an older replica never stops on a newer one's staged configuration.
+A release whose ingest does not mask refuses to activate a configuration that names a policy.
 
 A release that changes the classifier, or that changes **masking output**
 (a change G5-268 requires the spec changelog and the module changelog to declare),
@@ -95,13 +118,14 @@ so the current binary runs against the current schema with the current keys and 
 - an `ingest` replica **registers** in `consumers` with the configurations it executes before its first pull and holds a **lease** it renews before every fetch;
   a replica whose lease lapsed stops fetching until it re-registers,
   so a paused or partitioned replica never pulls with stale knowledge;
-- registration is **refused** unless the replica executes **every configuration not yet retired**
+- registration is **refused** unless the replica executes **every active configuration**,
+  which is every configuration a capture can be bound to and not yet retired, a staged one being bound by none
   (§6.4's retirement needs quiescence and a drained subject,
   so a stopped or closed capture with pending or parked records still holds its configuration unretired),
   so an old-version replica cannot join while any record it cannot execute may still be delivered,
   and a rollback is a roll-forward to a compatible build, never a mix;
 - a new capture binds the **newest configuration every leased member supports**, in a transaction that reads the member set,
-  and activation of a newer configuration is the moment the last member lacking it has lapsed or left;
+  and an activated configuration becomes bindable the moment the last member lacking it has lapsed or left;
   capture binding and membership changes serialize on one sentinel row, `counters('membership')` (T-32):
   every binding path of `Admit` updates it after the capture row and before it reads `consumers` and configurations,
   and every member registration, renewal and leave, and every configuration activation and retirement, updates it first,
