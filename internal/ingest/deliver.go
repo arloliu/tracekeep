@@ -64,6 +64,10 @@ type Delivery struct {
 	ClaimSize int64
 	// Redaction is the masked record's redaction entries, nil when nothing was masked.
 	Redaction []tracepack.RedactionEntry
+	// MaskErr is why the masking failed, and Incident the incident it raises (ingest.md §6.1):
+	// cannot-screen, key-binding-mismatch, key-refused or key-unavailable. The error names keys and seqs, never material or content.
+	MaskErr  error
+	Incident string
 	// ToolID is the capture's tool once the capture is looked up and admitted, or its start admitted, for the metrics labelled by tool.
 	ToolID string
 }
@@ -374,11 +378,18 @@ func (x *Executor) mask(ctx context.Context, d *Delivery) error {
 	case ctx.Err() != nil:
 		return ctx.Err()
 	case errors.Is(err, redact.ErrCannotScreen), errors.Is(err, redact.ErrNotUnobserved), errors.Is(err, redact.ErrRedacted):
-		d.Facts.Masked = MaskedCannotScreen
+		d.Facts.Masked, d.Incident = MaskedCannotScreen, ReasonCannotScreen
+		x.Metrics.CannotScreen()
+	case errors.Is(err, catalog.ErrKeyBindingMismatch):
+		d.Facts.Masked, d.Incident = MaskedKeyRefused, IncidentKeyBindingMismatch
+		x.Metrics.KeyBindingMismatch()
 	case keys.Refused(err), errors.Is(err, redact.ErrKeySize):
-		d.Facts.Masked = MaskedKeyRefused
+		d.Facts.Masked, d.Incident = MaskedKeyRefused, ReasonKeyRefused
 	default:
-		d.Facts.Masked = MaskedKeyUnavailable
+		d.Facts.Masked, d.Incident = MaskedKeyUnavailable, ReasonKeyUnavailable
+	}
+	if err != nil {
+		d.MaskErr = err
 	}
 
 	return nil

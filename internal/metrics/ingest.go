@@ -19,7 +19,7 @@ type Ingest struct {
 	messages, segments, segmentBytes, conflicts, losses, gapObservations *prometheus.CounterVec
 	redelivered, inProgress                                              prometheus.Counter
 	put, registration, mask                                              prometheus.Histogram
-	refreshFailures                                                      prometheus.Counter
+	refreshFailures, cannotScreen, keyMismatches                         prometheus.Counter
 	snap                                                                 *snapshot
 	deferred                                                             *deferrals
 }
@@ -50,6 +50,10 @@ func NewIngest(s *Server, now func() time.Time) (*Ingest, error) {
 			Help: "The catalog registration of a segment.", Buckets: prometheus.ExponentialBuckets(0.001, 2, 12)}),
 		mask: prometheus.NewHistogram(prometheus.HistogramOpts{Namespace: "tracekeep", Subsystem: "ingest", Name: "mask_seconds",
 			Help: "The masking of one record, its keys' resolution included.", Buckets: prometheus.ExponentialBuckets(0.00001, 2, 16)}),
+		cannotScreen: prometheus.NewCounter(prometheus.CounterOpts{Namespace: "tracekeep", Subsystem: "ingest", Name: "cannot_screen_total",
+			Help: "Records masking could not screen, nak'd unwritten (runbook cannot-screen)."}),
+		keyMismatches: prometheus.NewCounter(prometheus.CounterOpts{Namespace: "tracekeep", Subsystem: "ingest", Name: "key_binding_mismatches_total",
+			Help: "Records whose masking key no longer matches its binding, parked (runbook key-binding-mismatch)."}),
 		refreshFailures: prometheus.NewCounter(prometheus.CounterOpts{Namespace: "tracekeep", Subsystem: "ingest", Name: "refresh_failures_total",
 			Help: "Refreshes of the catalog and bus gauges that failed, the gauges keeping their previous values."}),
 		snap:     &snapshot{now: now},
@@ -57,7 +61,7 @@ func NewIngest(s *Server, now func() time.Time) (*Ingest, error) {
 	}
 	for _, c := range []prometheus.Collector{
 		m.messages, m.segments, m.segmentBytes, m.conflicts, m.losses, m.gapObservations, m.redelivered, m.inProgress, m.put, m.registration, m.mask,
-		m.refreshFailures, m.snap, m.deferred,
+		m.refreshFailures, m.cannotScreen, m.keyMismatches, m.snap, m.deferred,
 	} {
 		if err := s.Registry().Register(c); err != nil {
 			return nil, fmt.Errorf("metrics: ingest: %w", err)
@@ -112,6 +116,22 @@ func (m *Ingest) InProgress(n int) {
 		return
 	}
 	m.inProgress.Add(float64(n))
+}
+
+// CannotScreen counts one record masking could not screen.
+func (m *Ingest) CannotScreen() {
+	if m == nil {
+		return
+	}
+	m.cannotScreen.Inc()
+}
+
+// KeyBindingMismatch counts one record whose masking key no longer matches its binding.
+func (m *Ingest) KeyBindingMismatch() {
+	if m == nil {
+		return
+	}
+	m.keyMismatches.Inc()
 }
 
 // Masked observes one record's masking.
