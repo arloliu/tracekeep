@@ -2,7 +2,6 @@ package ingest
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -88,30 +87,6 @@ type Ingester struct {
 	// leaseEnd is when this replica stops trusting its lease: the renewal's start plus the lease,
 	// before the database's own end, which the renewal set later.
 	leaseEnd time.Time
-}
-
-// ConfigContent is a processing configuration as the catalog stores it: the same configuration gives the same bytes on every replica.
-type ConfigContent struct {
-	Classifier  string `json:"classifier"`
-	MaxFrameLen uint64 `json:"max_frame_len"`
-}
-
-// Activate records the configurations this binary executes and returns them by id, for the executor and the flusher.
-func Activate(ctx context.Context, cat *catalog.Catalog, configs []Config) (map[int64]Config, error) {
-	byID := make(map[int64]Config, len(configs))
-	for _, c := range configs {
-		content, err := json.Marshal(ConfigContent{Classifier: c.Name, MaxFrameLen: c.MaxFrameLen})
-		if err != nil {
-			return nil, err
-		}
-		id, err := cat.ActivateConfig(ctx, content)
-		if err != nil {
-			return nil, err
-		}
-		byID[id] = c
-	}
-
-	return byID, nil
 }
 
 // Join registers the membership: refused unless this replica executes every configuration not yet retired.

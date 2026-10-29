@@ -399,13 +399,17 @@ func ingesters(ctx context.Context, e *Env) (_ []*ingest.Ingester, err error) {
 	if err != nil {
 		return nil, err
 	}
-	// Every unretired configuration of this classifier is executed, so a changed frame limit never locks the replica out;
-	// another classifier's refuses the start before anything is activated.
-	executable, err := ingest.Executable(ctx, e.Catalog, builtin)
+	// A start stages its own configuration and activates nothing; dev activates its own (rollouts.md §6.4).
+	if _, err := ingest.StageBuiltin(ctx, e.Catalog, &builtin, e.Dev); err != nil {
+		return nil, err
+	}
+	ks, err := e.Keys()
 	if err != nil {
 		return nil, err
 	}
-	configs, err := ingest.Activate(ctx, e.Catalog, executable)
+	// Every active or bound configuration of this classifier is executed, so a changed frame limit never locks the replica out;
+	// another classifier's, or one it cannot rebuild, refuses the start.
+	configs, err := ingest.Executable(ctx, e.Catalog, &builtin, ks, e.Dev)
 	if err != nil {
 		return nil, err
 	}

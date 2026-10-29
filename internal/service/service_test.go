@@ -59,7 +59,7 @@ func env(t *testing.T, c *catalog.Catalog) *Env {
 		t.Fatal(err)
 	}
 	// A test binary carries no dependency versions, so its classifier names none, as a dev build's.
-	e := &Env{Config: load(t, url), Log: slog.New(slog.DiscardHandler), Catalog: c, NC: nc, JS: js, Store: store.NewMem(), AllowUnversioned: true}
+	e := &Env{Config: load(t, url), Log: slog.New(slog.DiscardHandler), Catalog: c, NC: nc, JS: js, Store: store.NewMem(), AllowUnversioned: true, Dev: true}
 	if err := Migrate(t.Context(), e); err != nil {
 		t.Fatal(err)
 	}

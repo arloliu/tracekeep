@@ -11,7 +11,9 @@ import (
 	"github.com/nats-io/nats.go"
 
 	"github.com/arloliu/go-secs/tracepack"
+	"github.com/arloliu/go-secs/tracepack/redact"
 	"github.com/arloliu/tracekeep/internal/catalog"
+	"github.com/arloliu/tracekeep/internal/policy"
 )
 
 // maxSteps bounds one delivery's steps; Decide finishes far sooner.
@@ -61,14 +63,18 @@ type Delivery struct {
 }
 
 // Config is a processing configuration this replica executes (rollouts.md §6.4):
-// the classifier's name, which every pack of a capture bound to it records, its frame bound, and the classifier itself.
-// Phase 1 binds no redaction policy, so nothing is masked.
+// the classifier's name, which every pack of a capture bound to it records, its frame bound, and the classifier itself;
+// and, for a masking configuration, its policy, compiled under its key ids.
 type Config struct {
 	Classifier tracepack.Classifier
 	// Name names the classifier's implementation and its version: the configuration's identity is its content,
 	// so two classifier releases sharing a name would share a configuration and pass the activation gate together.
 	Name        string
 	MaxFrameLen uint64
+	// Policy is the masking policy, nil for a policy-less configuration; Masking is it compiled under DigestKey and EncryptionKey.
+	Policy                   *policy.Policy
+	DigestKey, EncryptionKey KeyRef
+	Masking                  *redact.Compiled
 }
 
 // Executor answers Decide's steps for a delivery: the reads, the claim fetch and the admission transactions.
