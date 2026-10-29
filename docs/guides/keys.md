@@ -70,8 +70,8 @@ For `vault`:
 ## Rotating
 
 - **`digest` and `master`** rotate by declaration, rarely.
-  Declare the new key id, write a policy version naming it,
-  and activate a processing configuration holding that policy with `config activate`;
+  Declare the new key id, stage a processing configuration naming it with `tracekeep admin config stage <digest key id> [<encryption key id>]`,
+  which binds it, and activate that configuration with `config activate`;
   new captures bind the new key id, and every existing capture keeps the one it was bound with.
   The old key id stays declared, and its versions stay in Vault, as long as a retained pack of a capture bound to it remains.
   Digests of two digest key ids are never compared: each pack names the key id and domain of its digests.
