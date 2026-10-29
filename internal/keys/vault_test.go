@@ -1,6 +1,7 @@
 package keys
 
 import (
+	"bytes"
 	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
@@ -36,19 +37,27 @@ type fakeVault struct {
 	logins    []map[string]string
 	renewals  int
 	reads     []string // the request URIs of reads
+	tokenless int      // reads sent without a token
 	tokens    map[string]bool
 	ttl       int64 // seconds a login grants
 	renewTTL  int64 // seconds a renewal grants; 0 grants ttl
 	renewable bool
 	renewFail bool
 	loginFail int // HTTP status of logins, 0 for success
-	forbid    map[string]bool
-	readFail  int // HTTP status of reads, 0 for success
-	stall     chan struct{}
-	secrets   map[string]map[uint64]any // path -> version -> material field (string, or another JSON value)
-	deleted   map[string]map[uint64]bool
-	current   map[string]uint64
-	raw       map[string]string // path -> a raw response body instead
+	// loginFailOnce, when not 0, is the HTTP status of the next login only.
+	loginFailOnce int
+	// renewBody, when set, is a renewal's response body instead.
+	renewBody string
+	// readHold, when set, holds every read until closed, after reporting it on readArrived.
+	readHold    chan struct{}
+	readArrived chan struct{}
+	forbid      map[string]bool
+	readFail    int // HTTP status of reads, 0 for success
+	stall       chan struct{}
+	secrets     map[string]map[uint64]any // path -> version -> material field (string, or another JSON value)
+	deleted     map[string]map[uint64]bool
+	current     map[string]uint64
+	raw         map[string]string // path -> a raw response body instead
 }
 
 func newFakeVault(t *testing.T) *fakeVault {
@@ -81,6 +90,10 @@ func (f *fakeVault) put(path string, m []byte) {
 func (f *fakeVault) serve(w http.ResponseWriter, r *http.Request) {
 	f.mu.Lock()
 	stall := f.stall
+	if r.Method == http.MethodGet && f.readHold != nil {
+		f.readArrived <- struct{}{}
+		stall = f.readHold
+	}
 	f.mu.Unlock()
 	if stall != nil {
 		select {
@@ -99,8 +112,9 @@ func (f *fakeVault) serve(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/login"):
 		f.logins = append(f.logins, body)
-		if f.loginFail != 0 {
-			http.Error(w, `{"errors":["`+sentinelBody+`"]}`, f.loginFail)
+		if status := f.loginFail + f.loginFailOnce; status != 0 {
+			f.loginFailOnce = 0
+			http.Error(w, `{"errors":["`+sentinelBody+`"]}`, status)
 			return
 		}
 		tok := fmt.Sprintf("hvs.TOKEN-SENTINEL-%d", len(f.logins))
@@ -110,6 +124,10 @@ func (f *fakeVault) serve(w http.ResponseWriter, r *http.Request) {
 		f.renewals++
 		if f.renewFail || !f.tokens[token] {
 			http.Error(w, `{"errors":["`+sentinelBody+`"]}`, http.StatusInternalServerError)
+			return
+		}
+		if f.renewBody != "" {
+			_, _ = w.Write([]byte(f.renewBody))
 			return
 		}
 		ttl := f.renewTTL
@@ -127,6 +145,9 @@ func (f *fakeVault) serve(w http.ResponseWriter, r *http.Request) {
 // serveRead answers a KV v2 read; f.mu is held.
 func (f *fakeVault) serveRead(w http.ResponseWriter, r *http.Request, token string) {
 	f.reads = append(f.reads, r.URL.RequestURI())
+	if token == "" {
+		f.tokenless++
+	}
 	if !f.tokens[token] || f.forbid[token] {
 		http.Error(w, `{"errors":["permission denied `+sentinelBody+`"]}`, http.StatusForbidden)
 		return
@@ -496,5 +517,53 @@ func TestVaultKeyBindsItsVersion(t *testing.T) {
 	if _, reads := f.history(); reads[len(reads)-1] != "/v1/secret/data/tk/d-1?version=1" {
 		last := reads[len(reads)-1]
 		t.Errorf("a fresh process read %s, want version 1", last)
+	}
+}
+
+// Two reads refused with one token: the first's fresh login fails, so the second logs in itself rather than taking the empty token,
+// and no read ever goes out without a token.
+func TestVaultConcurrentReloginAfterAFailedOne(t *testing.T) {
+	t.Parallel()
+	f := newFakeVault(t)
+	m := material(0x4c, 32)
+	f.put("tk/d-1", m)
+	v := mustVault(t, f.appRole())
+	if _, _, err := v.Material(t.Context(), "tk/d-1", ""); err != nil {
+		t.Fatal(err)
+	}
+	f.mu.Lock()
+	f.forbid["hvs.TOKEN-SENTINEL-1"] = true
+	f.readHold, f.readArrived = make(chan struct{}), make(chan struct{}, 2)
+	f.loginFailOnce = http.StatusInternalServerError
+	f.mu.Unlock()
+	type result struct {
+		m   []byte
+		err error
+	}
+	results := make(chan result, 2)
+	for range 2 {
+		go func() { got, _, err := v.Material(t.Context(), "tk/d-1", ""); results <- result{got, err} }()
+	}
+	// Both reads hold the first token at the server before either is refused.
+	<-f.readArrived
+	<-f.readArrived
+	f.mu.Lock()
+	hold := f.readHold
+	f.readHold = nil
+	f.mu.Unlock()
+	close(hold)
+	a, b := <-results, <-results
+	if (a.err == nil) == (b.err == nil) {
+		t.Fatalf("results %v and %v; want one failed login and one success", a.err, b.err)
+	}
+	if ok := map[bool]result{true: a, false: b}[a.err == nil]; !bytes.Equal(ok.m, m) {
+		t.Errorf("the successful read = %x, want the material", ok.m)
+	}
+	logins, _, _ := f.counts()
+	f.mu.Lock()
+	tokenless := f.tokenless
+	f.mu.Unlock()
+	if logins != 3 || tokenless != 0 {
+		t.Errorf("logins %d, tokenless reads %d; want 3 and none", logins, tokenless)
 	}
 }

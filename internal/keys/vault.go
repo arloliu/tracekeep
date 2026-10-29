@@ -44,14 +44,20 @@ type ProviderError struct {
 	Reason string
 	// Status is the HTTP status, 0 when no response came.
 	Status int
+	// Detail, when set, says more and holds nothing secret, such as a file's mode.
+	Detail string
 }
 
 func (e *ProviderError) Error() string {
+	msg := fmt.Sprintf("%s provider: %s: %s", e.Provider, e.Op, e.Reason)
 	if e.Status != 0 {
-		return fmt.Sprintf("%s provider: %s: %s (status %d)", e.Provider, e.Op, e.Reason, e.Status)
+		msg += fmt.Sprintf(" (status %d)", e.Status)
+	}
+	if e.Detail != "" {
+		msg += ": " + e.Detail
 	}
 
-	return fmt.Sprintf("%s provider: %s: %s", e.Provider, e.Op, e.Reason)
+	return msg
 }
 
 // Is makes an unreachable, deadline, auth or server failure ErrUnavailable; missing and malformed material are refusals.
@@ -188,22 +194,23 @@ func (v *Vault) currentToken(ctx context.Context) (string, error) {
 	case !v.renewable:
 		return v.loginLocked(ctx)
 	}
-	ttl, renewable, err := v.auth(ctx, "renew", "auth/token/renew-self", v.token, struct{}{}, nil)
+	g, err := v.auth(ctx, "renew", "auth/token/renew-self", v.token, struct{}{})
 	// A renewal that fails, or whose TTL has shrunk below a third of the login's because the maximum TTL is near, is replaced by a login.
-	if err != nil || ttl < v.loginTTL/3 {
+	if err != nil || g.ttl < v.loginTTL/3 {
 		return v.loginLocked(ctx)
 	}
-	v.renewable = renewable
-	v.setRenewAt(ttl)
+	v.renewable = g.renewable
+	v.setRenewAt(g.ttl)
 
 	return v.token, nil
 }
 
-// relogin replaces stale, the token a read was refused with, unless another caller has replaced it already.
+// relogin replaces stale, the token a read was refused with, unless another caller has replaced it already;
+// a replacement that failed left no token, so this caller logs in itself.
 func (v *Vault) relogin(ctx context.Context, stale string) (string, error) {
 	v.mu.Lock()
 	defer v.mu.Unlock()
-	if v.token != stale {
+	if v.token != stale && v.token != "" {
 		return v.token, nil
 	}
 
@@ -223,15 +230,14 @@ func (v *Vault) loginLocked(ctx context.Context) (string, error) {
 	default:
 		body = map[string]string{"role_id": v.cfg.RoleID, "secret_id": v.cfg.SecretID}
 	}
-	var token string
-	ttl, renewable, err := v.auth(ctx, "login", "auth/"+v.cfg.AuthMount+"/login", "", body, &token)
+	g, err := v.auth(ctx, "login", "auth/"+v.cfg.AuthMount+"/login", "", body)
 	if err != nil {
 		return "", err
 	}
-	v.token, v.loginTTL, v.renewable = token, ttl, renewable
-	v.setRenewAt(ttl)
+	v.token, v.loginTTL, v.renewable = g.token, g.ttl, g.renewable
+	v.setRenewAt(g.ttl)
 
-	return token, nil
+	return g.token, nil
 }
 
 // setRenewAt schedules the renewal at two thirds of ttl, and records the token's expiry; a token without a TTL is never renewed.
@@ -244,23 +250,49 @@ func (v *Vault) setRenewAt(ttl time.Duration) {
 	}
 }
 
-// auth runs a login or a renewal and returns the token's TTL and whether it renews, the new token into *token when asked.
-func (v *Vault) auth(ctx context.Context, op, path, token string, body any, newToken *string) (time.Duration, bool, error) {
-	var out authResponse
-	if err := v.do(ctx, op, http.MethodPost, path, token, body, &out); err != nil {
-		return 0, false, err
+// auth runs a login or a renewal and returns the token, its TTL and whether it renews;
+// the call is recorded once its response is validated, so a malformed answer counts as a failure.
+func (v *Vault) auth(ctx context.Context, op, path, token string, body any) (grant, error) {
+	start := time.Now()
+	data, err := v.call(ctx, op, http.MethodPost, path, token, body)
+	var g grant
+	if err == nil {
+		g, err = parseAuth(op, data)
 	}
-	if out.Auth == nil || out.Auth.ClientToken == "" || out.Auth.LeaseDuration < 0 {
-		return 0, false, &ProviderError{Provider: ProviderVault, Op: op, Reason: "malformed"}
+	reason := ""
+	var pe *ProviderError
+	if errors.As(err, &pe) {
+		reason = pe.Reason
 	}
-	if newToken != nil {
-		*newToken = out.Auth.ClientToken
-	}
+	v.cfg.Metrics.ProviderCall(ProviderVault, op, reason, time.Since(start))
 
-	return time.Duration(out.Auth.LeaseDuration) * time.Second, out.Auth.Renewable, nil
+	return g, err
 }
 
+// grant is a login's or a renewal's token, its TTL and whether it renews.
+type grant struct {
+	token     string
+	ttl       time.Duration
+	renewable bool
+}
+
+// parseAuth reads a login's or a renewal's response: its token, the token's TTL and whether it renews.
+// Its error holds the operation and a reason, never the response.
+func parseAuth(op string, data []byte) (grant, error) {
+	var out authResponse
+	if json.Unmarshal(data, &out) != nil || out.Auth == nil || out.Auth.ClientToken == "" ||
+		out.Auth.LeaseDuration < 0 || out.Auth.LeaseDuration > maxLease {
+		return grant{}, &ProviderError{Provider: ProviderVault, Op: op, Reason: "malformed"}
+	}
+
+	return grant{token: out.Auth.ClientToken, ttl: time.Duration(out.Auth.LeaseDuration) * time.Second, renewable: out.Auth.Renewable}, nil
+}
+
+// maxLease bounds a token's TTL, in seconds, so no lease overflows a time.Duration: a century.
+const maxLease = 100 * 366 * 24 * 3600
+
 // read returns the material at ref and version and the version read; a deleted or destroyed version is missing, never another one.
+// The keys module records the read.
 func (v *Vault) read(ctx context.Context, token, ref, version string) ([]byte, string, error) {
 	segs := strings.Split(strings.Trim(ref, "/"), "/")
 	for i, s := range segs {
@@ -270,13 +302,21 @@ func (v *Vault) read(ctx context.Context, token, ref, version string) ([]byte, s
 	if version != "" {
 		path += "?version=" + version
 	}
-	var out kvResponse
-	if err := v.do(ctx, "read", http.MethodGet, path, token, nil, &out); err != nil {
+	data, err := v.call(ctx, "read", http.MethodGet, path, token, nil)
+	if err != nil {
 		return nil, "", err
 	}
+
+	return parseKV(data, version)
+}
+
+// parseKV reads a KV v2 read's response: the material field's material and the version read, which must be version when one was asked for.
+// A deleted or destroyed version is missing; its error holds a reason, never the response.
+func parseKV(data []byte, version string) ([]byte, string, error) {
 	missing := &ProviderError{Provider: ProviderVault, Op: "read", Reason: "missing"}
 	malformed := &ProviderError{Provider: ProviderVault, Op: "read", Reason: "malformed"}
-	if out.Data == nil {
+	var out kvResponse
+	if json.Unmarshal(data, &out) != nil || out.Data == nil {
 		return nil, "", malformed
 	}
 	md := out.Data.Metadata
@@ -299,36 +339,22 @@ func (v *Vault) read(ctx context.Context, token, ref, version string) ([]byte, s
 	return m, got, nil
 }
 
-// do sends one request under the call deadline and decodes a 2xx response into out.
+// call sends one request under the call deadline and returns a 2xx response's body.
 // Its error holds the operation, a reason and the status, never the body.
-func (v *Vault) do(ctx context.Context, op, method, path, token string, body, out any) error {
-	start := time.Now()
-	err := v.call(ctx, op, method, path, token, body, out)
-	reason := ""
-	var pe *ProviderError
-	if errors.As(err, &pe) {
-		reason = pe.Reason
-	}
-	v.cfg.Metrics.ProviderCall(ProviderVault, op, reason, time.Since(start))
-
-	return err
-}
-
-// call is do without its metrics.
-func (v *Vault) call(ctx context.Context, op, method, path, token string, body, out any) error {
+func (v *Vault) call(ctx context.Context, op, method, path, token string, body any) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(ctx, v.cfg.Timeout)
 	defer cancel()
 	var rd io.Reader
 	if body != nil {
 		b, err := json.Marshal(body)
 		if err != nil {
-			return &ProviderError{Provider: ProviderVault, Op: op, Reason: "malformed"}
+			return nil, &ProviderError{Provider: ProviderVault, Op: op, Reason: "malformed"}
 		}
 		rd = bytes.NewReader(b)
 	}
 	req, err := http.NewRequestWithContext(ctx, method, strings.TrimSuffix(v.cfg.Address, "/")+"/v1/"+path, rd)
 	if err != nil {
-		return &ProviderError{Provider: ProviderVault, Op: op, Reason: "malformed"}
+		return nil, &ProviderError{Provider: ProviderVault, Op: op, Reason: "malformed"}
 	}
 	if token != "" {
 		req.Header.Set("X-Vault-Token", token)
@@ -338,37 +364,34 @@ func (v *Vault) call(ctx context.Context, op, method, path, token string, body, 
 	}
 	resp, err := v.client.Do(req)
 	if err != nil {
-		reason := "unreachable"
-		if ctx.Err() != nil {
-			reason = "deadline"
-		}
-
-		return &ProviderError{Provider: ProviderVault, Op: op, Reason: reason}
+		return nil, &ProviderError{Provider: ProviderVault, Op: op, Reason: transportReason(ctx)}
 	}
 	defer resp.Body.Close()
 	data, err := io.ReadAll(io.LimitReader(resp.Body, maxVaultBody+1))
 	if err != nil {
-		reason := "unreachable"
-		if ctx.Err() != nil {
-			reason = "deadline"
-		}
-
-		return &ProviderError{Provider: ProviderVault, Op: op, Reason: reason, Status: resp.StatusCode}
+		return nil, &ProviderError{Provider: ProviderVault, Op: op, Reason: transportReason(ctx), Status: resp.StatusCode}
 	}
 	switch s := resp.StatusCode; {
-	case s >= 200 && s < 300:
 	case s == http.StatusUnauthorized || s == http.StatusForbidden:
-		return &ProviderError{Provider: ProviderVault, Op: op, Reason: "auth", Status: s}
+		return nil, &ProviderError{Provider: ProviderVault, Op: op, Reason: "auth", Status: s}
 	case s == http.StatusNotFound:
-		return &ProviderError{Provider: ProviderVault, Op: op, Reason: "missing", Status: s}
-	default:
-		return &ProviderError{Provider: ProviderVault, Op: op, Reason: "server", Status: s}
-	}
-	if len(data) > maxVaultBody || json.Unmarshal(data, out) != nil {
-		return &ProviderError{Provider: ProviderVault, Op: op, Reason: "malformed", Status: resp.StatusCode}
+		return nil, &ProviderError{Provider: ProviderVault, Op: op, Reason: "missing", Status: s}
+	case s < 200 || s >= 300:
+		return nil, &ProviderError{Provider: ProviderVault, Op: op, Reason: "server", Status: s}
+	case len(data) > maxVaultBody:
+		return nil, &ProviderError{Provider: ProviderVault, Op: op, Reason: "malformed", Status: s}
 	}
 
-	return nil
+	return data, nil
+}
+
+// transportReason is a failed exchange's reason: deadline when the call's deadline passed, else unreachable.
+func transportReason(ctx context.Context) string {
+	if ctx.Err() != nil {
+		return "deadline"
+	}
+
+	return "unreachable"
 }
 
 // authResponse is a login's or a renewal's response.
