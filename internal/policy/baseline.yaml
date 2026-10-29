@@ -1,0 +1,37 @@
+# The baseline of the tracepack semantics specification §8: every row of its baseline table,
+# a row with two paths written as two rules, and its three annotation rules (masking-keys.md §9).
+policy_id: baseline
+version: 1
+item_rules:
+  # S7: process program bodies.
+  - {stream: 7, function: 3, path: "2", domain: ppbody}
+  - {stream: 7, function: 6, path: "2", domain: ppbody}
+  - {stream: 7, function: 36, path: "3", domain: ppbody}
+  - {stream: 7, function: 23, path: "4", domain: formatted-pp}
+  - {stream: 7, function: 26, path: "4", domain: formatted-pp}
+  - {stream: 7, function: 31, path: "4", domain: formatted-pp}
+  # S13: data sets.
+  - {stream: 13, function: 6, path: "4/*", domain: dataset}
+  # S15: recipes.
+  - {stream: 15, function: 13, path: "4/*/2", domain: rcpattr}
+  - {stream: 15, function: 13, path: "5", domain: rcpbody}
+  - {stream: 15, function: 27, path: "4/*/2", domain: rcpattr}
+  - {stream: 15, function: 27, path: "5", domain: rcpbody}
+  - {stream: 15, function: 32, path: "2/*/2", domain: rcpattr}
+  - {stream: 15, function: 32, path: "3", domain: rcpbody}
+  - {stream: 15, function: 15, path: "4", domain: rcp-sections}
+  - {stream: 15, function: 18, path: "1", domain: rcp-sections}
+  - {stream: 15, function: 28, path: "2/*/2", domain: rcpattr}
+  - {stream: 15, function: 30, path: "4/*/2", domain: rcpattr}
+  - {stream: 6, function: 25, path: "6/*/2", domain: rcpattr}
+  - {stream: 15, function: 25, path: "4/*/2", domain: rcpparval}
+  - {stream: 15, function: 33, path: "3/*/2/*/2", domain: rcpparval}
+  # S16: recipe parameters.
+  - {stream: 16, function: 3, path: "4/3/*/2", domain: rcpparval}
+  - {stream: 16, function: 11, path: "5/3/*/2", domain: rcpparval}
+  - {stream: 16, function: 15, path: "2/*/4/3/*/2", domain: rcpparval}
+  - {stream: 16, function: 23, path: "2/*/2", domain: rcpparval}
+annotation_rules:
+  - {kind: unparsed-entry, domain: source-text}
+  - {kind: skipped-bytes, domain: source-text}
+  - {kind: unrecognised-line, domain: source-text}
