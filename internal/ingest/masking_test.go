@@ -4,8 +4,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -16,13 +20,20 @@ import (
 	"github.com/arloliu/tracekeep/internal/catalog/catalogtest"
 	"github.com/arloliu/tracekeep/internal/keys"
 	"github.com/arloliu/tracekeep/internal/maskingtest"
+	"github.com/arloliu/tracekeep/internal/metrics"
 	"github.com/arloliu/tracekeep/internal/policy"
 )
 
-// maskingKeys declares d-1 and m-1 in files of synthetic material, through providers, when given, in place of the file provider.
-func maskingKeys(t *testing.T, c *catalog.Catalog, providers map[string]keys.Provider) *keys.Keys {
+// maskingKeys declares d-1 and m-1 in files of synthetic material.
+func maskingKeys(t *testing.T, c *catalog.Catalog) *keys.Keys {
 	t.Helper()
-	dir := t.TempDir()
+
+	return maskingKeysAt(t, c, t.TempDir(), nil)
+}
+
+// maskingKeysAt is maskingKeys with the key files under dir, d-1 at dir/d-1 and m-1 at dir/m-1, read through providers when given.
+func maskingKeysAt(t *testing.T, c *catalog.Catalog, dir string, providers map[string]keys.Provider) *keys.Keys {
+	t.Helper()
 	declared := map[string]keys.Declaration{}
 	for id, kind := range map[string]string{"d-1": catalog.KindDigest, "m-1": catalog.KindMaster} {
 		path := filepath.Join(dir, id)
@@ -87,7 +98,7 @@ func carrierRecord(c *maskingtest.Carrier, seq uint64) tracepack.Record {
 func TestMaskingAtIngest(t *testing.T) {
 	t.Parallel()
 	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
-		p := maskingPipeline(t, c, maskingKeys(t, c, nil))
+		p := maskingPipeline(t, c, maskingKeys(t, c))
 		capture := tracepack.UUID{0x51}
 		b := policy.Baseline()
 		carriers, err := maskingtest.Carriers(&b)
@@ -169,7 +180,9 @@ func (f failing) Material(context.Context, string, string) ([]byte, string, erro
 	return nil, "", f.err
 }
 
-// A record masking cannot screen is nak'd; one whose key is refused parks; one whose key is unavailable is nak'd; none is batched.
+// A record masking cannot screen is nak'd; one whose key no longer matches its binding parks as key-refused under the key-binding-mismatch incident;
+// one whose key is otherwise refused parks under key-refused; one whose key is unavailable is nak'd; none is batched.
+// Each keeps why it failed, which the alert logs and counts, and none of that names material or content.
 func TestMaskingFailures(t *testing.T) {
 	t.Parallel()
 	deep := maskingtest.TooDeep()
@@ -181,35 +194,83 @@ func TestMaskingFailures(t *testing.T) {
 	ppbody := carriers[0]
 	for name, tc := range map[string]struct {
 		providers map[string]keys.Provider
-		bind      bool // bind d-1 to other material first, so the provider's material mismatches it
+		setup     func(t *testing.T, c *catalog.Catalog, dir string)
 		carrier   *maskingtest.Carrier
 		want      Decision
+		incident  string
+		metric    string
 	}{
-		"cannot screen": {carrier: &deep, want: Decision{Action: ActNak, Reason: ReasonCannotScreen, Alert: true}},
-		"key refused":   {bind: true, carrier: &ppbody, want: Decision{Action: ActPark, Reason: ReasonKeyRefused, Alert: true}},
+		"cannot screen": {carrier: &deep, want: Decision{Action: ActNak, Reason: ReasonCannotScreen, Alert: true}, incident: ReasonCannotScreen,
+			metric: "tracekeep_ingest_cannot_screen_total 1"},
+		"binding mismatch": {
+			// d-1 bound at its own file with another material's fingerprint: the file's material no longer matches.
+			setup: func(t *testing.T, c *catalog.Catalog, dir string) {
+				t.Helper()
+				if _, err := c.BindKey(t.Context(), catalog.KeyBinding{KeyID: "d-1", Kind: catalog.KindDigest, ProviderRef: "file:" + filepath.Join(dir, "d-1"), Fingerprint: keys.Fingerprint([]byte("other material, 32 bytes long..."))}); err != nil {
+					t.Fatal(err)
+				}
+			},
+			carrier: &ppbody, want: Decision{Action: ActPark, Reason: ReasonKeyRefused, Alert: true}, incident: IncidentKeyBindingMismatch,
+			metric: "tracekeep_ingest_key_binding_mismatches_total 1",
+		},
+		"key missing": {
+			setup: func(t *testing.T, _ *catalog.Catalog, dir string) {
+				t.Helper()
+				_ = os.Remove(filepath.Join(dir, "d-1"))
+			},
+			carrier: &ppbody, want: Decision{Action: ActPark, Reason: ReasonKeyRefused, Alert: true}, incident: ReasonKeyRefused,
+		},
 		"key unavailable": {
 			providers: map[string]keys.Provider{"fake": failing{&keys.ProviderError{Provider: "fake", Op: "read", Reason: "unreachable"}}},
-			carrier:   &ppbody, want: Decision{Action: ActNak, Reason: ReasonKeyUnavailable, Alert: true},
+			carrier:   &ppbody, want: Decision{Action: ActNak, Reason: ReasonKeyUnavailable, Alert: true}, incident: ReasonKeyUnavailable,
 		},
 	} {
 		catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
-			if tc.bind {
-				if _, err := c.BindKey(t.Context(), catalog.KeyBinding{KeyID: "d-1", Kind: catalog.KindDigest, ProviderRef: "file:/elsewhere", Fingerprint: "other"}); err != nil {
-					t.Fatal(err)
-				}
+			dir := t.TempDir()
+			k := maskingKeysAt(t, c, dir, tc.providers)
+			if tc.setup != nil {
+				tc.setup(t, c, dir)
 			}
-			p := maskingPipeline(t, c, maskingKeys(t, c, tc.providers))
+			p := maskingPipeline(t, c, k)
+			srv := metrics.NewServer()
+			m, err := metrics.NewIngest(srv, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			p.x.Metrics = m
 			capture := tracepack.UUID{0x52}
 			p.feed(t, inline(t, capture, startRecord(t, now), descriptorOf(t, "eqp")))
 			d, dec := dispose(t, p.x, inline(t, capture, carrierRecord(tc.carrier, 1), nil))
-			if dec != tc.want {
-				t.Errorf("%s: disposed %+v, want %+v", name, dec, tc.want)
+			if dec != tc.want || d.Incident != tc.incident || d.MaskErr == nil {
+				t.Errorf("%s: disposed %+v, incident %q, error %v; want %+v under %q", name, dec, d.Incident, d.MaskErr, tc.want, tc.incident)
 			}
 			if d.Redaction != nil {
 				t.Errorf("%s: entries kept on a delivery that was not masked", name)
 			}
+			var log bytes.Buffer
+			(&Ingester{Log: slog.New(slog.NewTextHandler(&log, nil))}).alert(d, dec)
+			if !strings.Contains(log.String(), "incident="+tc.incident) || !strings.Contains(log.String(), "error=") {
+				t.Errorf("%s: the alert logged %q, want the incident and the error", name, log.String())
+			}
+			for _, secret := range append(tc.carrier.Secrets, bytes.Repeat([]byte("d"), 32), []byte(base64.StdEncoding.EncodeToString(bytes.Repeat([]byte("d"), 32)))) {
+				if bytes.Contains(log.Bytes(), secret) {
+					t.Errorf("%s: the alert logged %q", name, secret)
+				}
+			}
+			if tc.metric != "" && !strings.Contains(scrapeIngest(t, srv), tc.metric) {
+				t.Errorf("%s: no %s", name, tc.metric)
+			}
 		})
 	}
+}
+
+// scrapeIngest is srv's metrics in the text format.
+func scrapeIngest(t *testing.T, srv *metrics.Server) string {
+	t.Helper()
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+
+	return rec.Body.String()
 }
 
 // A policy-less configuration leaves a record as received and writes no redaction metadata.

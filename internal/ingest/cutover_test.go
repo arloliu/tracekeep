@@ -36,7 +36,7 @@ func TestCutoverToMasking(t *testing.T) {
 		p.feed(t, inline(t, old, startRecord(t, now), descriptorOf(t, "eqp")))
 		// This release, outside dev: only a masking configuration binds, and none is active yet.
 		mcfg := maskingConfig(t)
-		p.x.Keys = maskingKeys(t, c, nil)
+		p.x.Keys = maskingKeys(t, c)
 		p.x.Bindable = func(id int64) bool { cfg, ok := p.x.Configs[id]; return ok && cfg.Policy != nil }
 		successor := tracepack.UUID{0x62}
 		if _, dec := dispose(t, p.x, inline(t, successor, startRecord(t, now), descriptorOf(t, "eqp"))); dec.Action != ActNak || dec.Reason != ReasonIncompatible {

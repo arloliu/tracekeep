@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"slices"
 	"sync"
@@ -203,45 +204,92 @@ var rotations = map[string]func(t *testing.T, w *rotationWorld){
 	},
 }
 
-// crashes are the first process's flush ending at each crash point of ingest.md §6.3; adopted reports that the reconciler adopted its orphan.
-var crashes = map[string]func(t *testing.T, w *rotationWorld, p *pipeline) (adopted bool){
-	"before the put": func(t *testing.T, w *rotationWorld, p *pipeline) bool {
-		p.f.Store = &failingPut{ObjectStore: w.st, at: 1}
+// capturingPut fails every put, as a crash before the object exists would, after keeping the bytes it was given:
+// the first attempt's serialization, which its retry must reproduce.
+type capturingPut struct {
+	store.ObjectStore
+	got *[][]byte
+}
+
+func (c capturingPut) Put(_ context.Context, _ string, r io.ReadSeeker, _ int64) error {
+	b, err := io.ReadAll(r)
+	if err != nil {
+		return err
+	}
+	*c.got = append(*c.got, b)
+
+	return errCrash
+}
+
+// crashes are the first process's flush ending at each crash point of ingest.md §6.3, each asserting the state it leaves;
+// a crash before the put returns the bytes its put was given, which no object holds.
+var crashes = map[string]func(t *testing.T, w *rotationWorld, p *pipeline, hs []*msg) (attempted [][]byte){
+	"before the put": func(t *testing.T, w *rotationWorld, p *pipeline, hs []*msg) [][]byte {
+		var got [][]byte
+		p.f.Store = capturingPut{ObjectStore: w.st, got: &got}
 		if _, err := p.flushOne(t); !errors.Is(err, errCrash) {
 			t.Fatalf("Flush = %v, want the crash", err)
 		}
+		if len(got) != 1 || len(storedKeys(t, w.st)) != 0 {
+			t.Fatalf("%d attempted puts, objects %v; want one attempt and nothing stored", len(got), storedKeys(t, w.st))
+		}
+		untouched(t, hs)
 
-		return false
+		return got
 	},
-	"after the put, the orphan adopted": func(t *testing.T, w *rotationWorld, p *pipeline) bool {
+	"after the put, the orphan adopted": func(t *testing.T, w *rotationWorld, p *pipeline, hs []*msg) [][]byte {
 		p.f.hooks[hookAfterPut] = func() error { return errCrash }
 		if _, err := p.flushOne(t); !errors.Is(err, errCrash) {
 			t.Fatalf("Flush = %v, want the crash", err)
 		}
+		untouched(t, hs)
 		r := &compact.Compactor{Catalog: w.c, Store: w.st, HorizonHour: func() int64 { return HourOf(now) - 24 }, Log: slog.New(slog.DiscardHandler)}
 		lease := w.compactorLease(t)
+		adopted := make([]string, 0, 1)
 		for range 2 { // an orphan is adopted on the second pass that finds it
-			if _, err := r.Orphans(t.Context(), lease); err != nil {
+			rep, err := r.Orphans(t.Context(), lease)
+			if err != nil {
 				t.Fatal(err)
 			}
+			adopted = append(adopted, rep.Adopted...)
+		}
+		if len(adopted) != 1 {
+			t.Fatalf("adopted %v, want the orphan", adopted)
+		}
+		if cp, err := w.c.Capture(t.Context(), tracepack.UUID{0x71}); err != nil || !cp.HasHighestSeq {
+			t.Fatalf("the capture after the adoption = %+v, %v; want the orphan's records registered", cp, err)
 		}
 
-		return true
+		return nil
 	},
-	"during the acknowledgements": func(t *testing.T, _ *rotationWorld, p *pipeline) bool {
+	"during the acknowledgements": func(t *testing.T, _ *rotationWorld, p *pipeline, hs []*msg) [][]byte {
 		p.f.hooks[hookAfterAck] = func() error { return errCrash }
 		if _, err := p.flushOne(t); !errors.Is(err, errCrash) {
 			t.Fatalf("Flush = %v, want the crash", err)
 		}
+		acked := 0
+		for _, h := range hs {
+			if len(h.done()) > 0 {
+				acked++
+			}
+		}
+		if acked != 1 {
+			t.Fatalf("%d messages acknowledged before the crash, want the first only", acked)
+		}
 
-		return false
+		return nil
 	},
-	"after every acknowledgement": func(t *testing.T, _ *rotationWorld, p *pipeline) bool {
+	"after every acknowledgement": func(t *testing.T, _ *rotationWorld, p *pipeline, hs []*msg) [][]byte {
 		if _, err := p.flushOne(t); err != nil {
 			t.Fatal(err)
 		}
+		for i, h := range hs {
+			if len(h.done()) != 1 {
+				t.Fatalf("message %d: %v, want acknowledged", i, h.done())
+			}
+		}
 
-		return false
+		return nil
 	},
 }
 
@@ -279,7 +327,7 @@ func TestRotationBetweenDeliveries(t *testing.T) {
 	}
 }
 
-func rotationCase(t *testing.T, c *catalog.Catalog, rotate func(*testing.T, *rotationWorld), stop func(*testing.T, *rotationWorld, *pipeline) bool,
+func rotationCase(t *testing.T, c *catalog.Catalog, rotate func(*testing.T, *rotationWorld), stop func(*testing.T, *rotationWorld, *pipeline, []*msg) [][]byte,
 	claimCheckAll, newPolicy bool,
 ) {
 	ctx := t.Context()
@@ -288,8 +336,7 @@ func rotationCase(t *testing.T, c *catalog.Catalog, rotate func(*testing.T, *rot
 	capture := tracepack.UUID{0x71}
 	msgs := maskedTraffic(t, w, capture, claimCheckAll)
 	a := w.process(t)
-	a.deliver(t, msgs)
-	stop(t, w, a)
+	attempted := stop(t, w, a, a.deliver(t, msgs))
 	rotate(t, w)
 	b := w.process(t)
 	// The redelivery comes in other batches: the start and the first records, then the rest.
@@ -308,24 +355,50 @@ func rotationCase(t *testing.T, c *catalog.Catalog, rotate func(*testing.T, *rot
 			t.Errorf("a capture admitted after the policy's activation = %+v, %v; want the new configuration", cp, err)
 		}
 	}
-	sameCopies(t, w, capture)
+	sameCopies(t, w, capture, attempted)
 	mergeClean(t, w)
 }
 
-// sameCopies checks that every stored copy of each of capture's seqs is byte-identical, its redaction entries included.
-func sameCopies(t *testing.T, w *rotationWorld, capture tracepack.UUID) {
+// sameCopies checks that every copy of each of capture's seqs, stored or only attempted, is byte-identical, its redaction entries included,
+// and that each seq has the first delivery's copy and the redelivery's.
+func sameCopies(t *testing.T, w *rotationWorld, capture tracepack.UUID, attempted [][]byte) {
 	t.Helper()
 	type copyOf struct {
 		rec     tracepack.Record
 		entries []tracepack.RedactionEntry
 	}
-	bySeq := map[uint64][]copyOf{}
+	packs := attempted
 	for _, k := range storedKeys(t, w.st) {
-		h := packHeader(t, w.st, k)
+		obj, err := w.st.Open(t.Context(), k)
+		if err != nil {
+			t.Fatal(err)
+		}
+		b, err := io.ReadAll(io.NewSectionReader(obj, 0, obj.Size()))
+		_ = obj.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+		packs = append(packs, b)
+	}
+	bySeq := map[uint64][]copyOf{}
+	for _, data := range packs {
+		rd, err := tracepack.Open(t.Context(), bytes.NewReader(data), int64(len(data)), tracepack.ReaderOptions{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		h := rd.Header()
 		if h.CaptureID != capture {
 			continue
 		}
-		for _, r := range records(t, w.st, k) {
+		var recs []tracepack.Record
+		collect := func(it *tracepack.Item) error {
+			recs = append(recs, it.Record)
+			return nil
+		}
+		if _, err := rd.Iterate(t.Context(), tracepack.Query{Payloads: true}, collect); err != nil {
+			t.Fatal(err)
+		}
+		for _, r := range recs {
 			var es []tracepack.RedactionEntry
 			for _, e := range h.Meta.Redaction {
 				if e.Seq == r.Seq {
@@ -336,9 +409,12 @@ func sameCopies(t *testing.T, w *rotationWorld, capture tracepack.UUID) {
 		}
 	}
 	if len(bySeq) == 0 {
-		t.Fatal("no stored copy")
+		t.Fatal("no copy")
 	}
 	for seq, cs := range bySeq {
+		if len(cs) < 2 {
+			t.Errorf("seq %d: %d copies, want the first delivery's and the redelivery's", seq, len(cs))
+		}
 		for _, c := range cs[1:] {
 			if !sameRecord(&c.rec, &cs[0].rec) || !bytes.Equal(c.rec.Payload, cs[0].rec.Payload) {
 				t.Errorf("seq %d: two stored copies differ", seq)
@@ -366,21 +442,6 @@ func mergeClean(t *testing.T, w *rotationWorld) {
 	if err != nil || len(rep.Merged) == 0 || len(rep.Conflicted)+len(rep.Failed)+len(rep.Stale) != 0 {
 		t.Errorf("Merges = %+v, %v; want every scope merged", rep, err)
 	}
-}
-
-func packHeader(t *testing.T, st store.ObjectStore, key string) *tracepack.PackHeader {
-	t.Helper()
-	obj, err := st.Open(t.Context(), key)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer obj.Close()
-	r, err := tracepack.Open(t.Context(), obj, obj.Size(), tracepack.ReaderOptions{})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	return r.Header()
 }
 
 // entriesKey spells entries by value, an item path by the path it points to.

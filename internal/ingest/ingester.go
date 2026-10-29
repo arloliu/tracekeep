@@ -334,11 +334,22 @@ func (g *Ingester) delay(delivered uint64) time.Duration {
 	return nakDelay(delivered)
 }
 
+// alert logs a disposition that raises an alert: its reason, and for a masking failure its incident and why,
+// an error that names keys, references and seqs and never material or content.
+func (g *Ingester) alert(d *Delivery, dec Decision) {
+	if !dec.Alert {
+		return
+	}
+	attrs := []any{"reason", dec.Reason, "msg_id", d.Msg.Env.MsgID}
+	if d.MaskErr != nil {
+		attrs = append(attrs, "incident", d.Incident, "error", d.MaskErr.Error())
+	}
+	g.Log.Warn("ingest: alert", attrs...)
+}
+
 // act carries out a final disposition.
 func (g *Ingester) act(ctx context.Context, e Entry, dec Decision, delivered uint64) {
-	if dec.Alert {
-		g.Log.Warn("ingest: alert", "reason", dec.Reason, "msg_id", e.D.Msg.Env.MsgID)
-	}
+	g.alert(e.D, dec)
 	g.Metrics.Disposed(dec.Action.String(), delivered > 1)
 	switch dec.Action {
 	case ActBatch: // settled once its batch is registered: a batch the Writer refuses keeps it deferred

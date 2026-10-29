@@ -94,6 +94,10 @@ const (
 	ReasonKeyUnavailable  = "key-unavailable"
 )
 
+// IncidentKeyBindingMismatch is the incident of a refused key whose material no longer matches its binding,
+// parked under ReasonKeyRefused like every refused key (runbook `key-binding-mismatch`).
+const IncidentKeyBindingMismatch = "key-binding-mismatch"
+
 // Decision is Decide's answer: a step to run, or a final action with its reason.
 type Decision struct {
 	Step   Step

@@ -133,7 +133,7 @@ func TestBoundaryWorkingFiles(t *testing.T) {
 	t.Parallel()
 	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
 		carriers, secrets := secretsOf(t)
-		p := maskingPipeline(t, c, maskingKeys(t, c, nil))
+		p := maskingPipeline(t, c, maskingKeys(t, c))
 		inspected := 0
 		inspect := func() error {
 			dirClean(t, p.f.WorkDir, secrets)
@@ -163,7 +163,7 @@ func TestBoundaryFailures(t *testing.T) {
 		deep := maskingtest.TooDeep()
 		secrets = append(secrets, deep.Secrets...)
 		// A crash after the put: the orphan is masked.
-		p := maskingPipeline(t, c, maskingKeys(t, c, nil))
+		p := maskingPipeline(t, c, maskingKeys(t, c))
 		p.f.hooks[hookAfterPut] = func() error { return errCrash }
 		feedCarriers(t, p, tracepack.UUID{0x82}, carriers)
 		if _, err := p.flushOne(t); err == nil {
@@ -171,19 +171,23 @@ func TestBoundaryFailures(t *testing.T) {
 		}
 		storeClean(t, p.st, secrets)
 		dirClean(t, p.f.WorkDir, secrets)
-		// A failed put: nothing stored, nothing left.
-		q := maskingPipeline(t, c, maskingKeys(t, c, nil))
-		q.f.Store = &failingPut{ObjectStore: q.st, at: 1}
+		// A failed put: the bytes it was given and the live working file hold no secret; nothing stored, nothing left.
+		q := maskingPipeline(t, c, maskingKeys(t, c))
+		fp := &inspectingPut{ObjectStore: q.st, t: t, secrets: secrets, workDir: q.f.WorkDir, fail: func(string) bool { return true }}
+		q.f.Store = fp
 		feedCarriers(t, q, tracepack.UUID{0x83}, carriers)
 		if _, err := q.flushOne(t); err == nil {
 			t.Fatal("Flush passed the failed put")
+		}
+		if fp.inspected != 1 {
+			t.Errorf("inspected %d puts, want the failed one", fp.inspected)
 		}
 		if ks := storedKeys(t, q.st); len(ks) != 0 {
 			t.Errorf("objects %v after a failed put", ks)
 		}
 		dirClean(t, q.f.WorkDir, secrets)
 		// A record masking cannot screen amid masked ones.
-		r := maskingPipeline(t, c, maskingKeys(t, c, nil))
+		r := maskingPipeline(t, c, maskingKeys(t, c))
 		capture := tracepack.UUID{0x84}
 		feedCarriers(t, r, capture, carriers[:3])
 		if _, dec := dispose(t, r.x, inline(t, capture, carrierRecord(&deep, 4), nil)); dec.Action != ActNak || dec.Reason != ReasonCannotScreen {
@@ -196,15 +200,33 @@ func TestBoundaryFailures(t *testing.T) {
 	})
 }
 
-// interruptingStore fails every put of a merge's archive, as an interrupted merge would end.
-type interruptingStore struct{ store.ObjectStore }
+// inspectingPut checks, inside each put fail selects, the bytes the put was given and the live working directory, then fails it,
+// as a crash at the put would leave them: the attempted artifact itself, before any cleanup.
+type inspectingPut struct {
+	store.ObjectStore
+	t         *testing.T
+	secrets   [][]byte
+	workDir   string
+	fail      func(key string) bool
+	inspected int
+}
 
-func (s interruptingStore) Put(ctx context.Context, key string, r io.ReadSeeker, size int64) error {
-	if bytes.HasPrefix([]byte(key), []byte("archive/")) {
-		return errCrash
+func (s *inspectingPut) Put(ctx context.Context, key string, r io.ReadSeeker, size int64) error {
+	if !s.fail(key) {
+		return s.ObjectStore.Put(ctx, key, r, size)
 	}
+	b, err := io.ReadAll(r)
+	if err != nil {
+		return err
+	}
+	if int64(len(b)) != size || size == 0 {
+		s.t.Errorf("put %s: %d bytes of %d, want the whole artifact", key, len(b), size)
+	}
+	noClearText(s.t, "the attempted "+key, b, s.secrets)
+	dirClean(s.t, s.workDir, s.secrets)
+	s.inspected++
 
-	return s.ObjectStore.Put(ctx, key, r, size)
+	return errCrash
 }
 
 // An interrupted merge of masked segments leaves no secret in the compactor's working directory or the store.
@@ -212,7 +234,7 @@ func TestBoundaryInterruptedMerge(t *testing.T) {
 	t.Parallel()
 	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
 		carriers, secrets := secretsOf(t)
-		p := maskingPipeline(t, c, maskingKeys(t, c, nil))
+		p := maskingPipeline(t, c, maskingKeys(t, c))
 		capture := tracepack.UUID{0x85}
 		feedCarriers(t, p, capture, carriers[:5])
 		p.flushAll(t)
@@ -223,16 +245,20 @@ func TestBoundaryInterruptedMerge(t *testing.T) {
 		if err != nil || !ok {
 			t.Fatal(ok, err)
 		}
+		archive := &inspectingPut{
+			ObjectStore: p.st, t: t, secrets: secrets, workDir: work,
+			fail: func(key string) bool { return bytes.HasPrefix([]byte(key), []byte("archive/")) },
+		}
 		r := &compact.Compactor{
-			Catalog: c, Store: interruptingStore{p.st}, HorizonHour: func() int64 { return HourOf(now) - 24 }, Log: slog.New(slog.DiscardHandler),
+			Catalog: c, Store: archive, HorizonHour: func() int64 { return HourOf(now) - 24 }, Log: slog.New(slog.DiscardHandler),
 			WorkDir: work, Writer: "tracekeep-test", QuietPeriod: 15 * time.Minute, Now: func() time.Time { return time.Unix(0, now).Add(3 * time.Hour) },
 		}
 		if rep, err := r.Conflicts(t.Context(), lease); err != nil || rep.Confirmed != 0 {
 			t.Fatalf("Conflicts = %+v, %v", rep, err)
 		}
 		rep, err := r.Merges(t.Context(), lease)
-		if err != nil || len(rep.Failed) == 0 {
-			t.Fatalf("Merges = %+v, %v; want the merge interrupted", rep, err)
+		if err != nil || len(rep.Failed) == 0 || archive.inspected == 0 {
+			t.Fatalf("Merges = %+v, %v, %d archives inspected; want the merge interrupted at its archive's put", rep, err, archive.inspected)
 		}
 		dirClean(t, work, secrets)
 		storeClean(t, p.st, secrets)

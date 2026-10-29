@@ -10,7 +10,7 @@ Read when an alert names an incident.
 |---|---|---|---|
 | `key-binding-mismatch` | `key_resolutions_total{outcome="refused"}` | restore the bound material, then `key verify` | stop using the key id: rotate to a new one |
 | `key-refused` | `key_resolutions_total{outcome="refused"}`, `key_provider_errors_total{reason}` | fix the declaration or restore the bound version | rotate to a new key id; `capture terminate` for deferred records that need the old one |
-| `cannot-screen` | `messages_total{disposition="nak"}`, `deferred_messages{reason="cannot-screen"}` | fix the producer or the policy, then let the redelivery retry | `capture terminate` for the records masking cannot screen |
+| `cannot-screen` | `cannot_screen_total`, `deferred_messages{reason="cannot-screen"}` | fix the producer or the policy, then let the redelivery retry | `capture terminate` for the records masking cannot screen |
 | `incompatible-configuration` | `deferred_messages{reason="incompatible-configuration"}` | stage and activate a masking configuration; upgrade a member that cannot execute it | `capture terminate` for the capture that waits |
 
 ## key-binding-mismatch
@@ -58,7 +58,9 @@ and for a `digest` key id, `Digest` under it is refused.
 an annotation whose payload does not decode while the policy has annotation rules, or a record that already arrives marked redacted.
 The record is never written unscreened: it is nak'd and redelivered, and the capture's later records are written around it.
 
-1. `tracekeep admin deferred list --capture <capture>` names the waiting records.
+1. The alert's log line names the message (`msg_id`, the capture and seq) and why masking failed;
+   `cannot_screen_total` and `deferred_messages{reason="cannot-screen"}` count the records waiting.
+   These records are nak'd and redelivered, not parked, so `deferred list` does not list them.
 2. A malformed record is the producer's: fix it, and the redelivery is masked.
    A rule the policy should not apply to that message is the policy's: stage a corrected policy version and activate it for new captures.
 
