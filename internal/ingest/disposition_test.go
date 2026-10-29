@@ -48,6 +48,7 @@ func drive(t *testing.T, f Facts, w world) (Decision, []Step) {
 // Answers shared by the cases.
 var (
 	unresolved    = func(f *Facts) { f.Resolution = Unresolved }
+	masks         = func(f *Facts) { f.Masked = MaskedOK }
 	framed        = func(f *Facts) { f.Framing = Framed }
 	framedStart   = func(f *Facts) { f.Framing, f.Start = Framed, true }
 	unknown       = func(f *Facts) { f.Capture = CaptureUnknown }
@@ -73,7 +74,7 @@ var raw = Facts{LayoutOK: true, MsgIDOK: true}
 // The cases prove the decision; the barrier schedules prove the re-reads under the capture row.
 func TestDecide(t *testing.T) {
 	t.Parallel()
-	normal := world{{StepResolve, unresolved}, {StepFrame, framed}, {StepLookupCapture, admittedCap}, {StepCheckConfig, executes}, {StepDerive, derives}}
+	normal := world{{StepResolve, unresolved}, {StepFrame, framed}, {StepLookupCapture, admittedCap}, {StepCheckConfig, executes}, {StepDerive, derives}, {StepMask, masks}}
 	with := func(base, changes world) world { return append(append(world{}, base...), changes...) }
 	claim := raw
 	claim.ClaimCheck = true
@@ -104,17 +105,17 @@ func TestDecide(t *testing.T) {
 		{"ErrBusNotAccepted: rejected durably, parked", raw, world{{StepResolve, unresolved}, {StepFrame, func(f *Facts) { f.Framing = FramedNotAccepted }}, {StepLookupCapture, unknown}, {StepReject, rejects}},
 			Decision{Action: ActPark, Reason: ReasonCaptureRejected, Alert: true}, []Step{StepResolve, StepFrame, StepLookupCapture, StepReject}},
 		{"start of an unknown capture: admitted, then ingested", raw, with(normal, world{{StepFrame, framedStart}, {StepLookupCapture, unknown}, {StepValidateDescriptor, accepted}, {StepAdmit, admits}}),
-			Decision{Action: ActBatch}, []Step{StepResolve, StepFrame, StepLookupCapture, StepValidateDescriptor, StepAdmit, StepCheckConfig, StepDerive}},
+			Decision{Action: ActBatch}, []Step{StepResolve, StepFrame, StepLookupCapture, StepValidateDescriptor, StepAdmit, StepCheckConfig, StepDerive, StepMask}},
 		{"start of a rejected capture a fixed consumer accepts", raw, with(normal, world{{StepFrame, framedStart}, {StepLookupCapture, rejectedCap}, {StepValidateDescriptor, accepted}, {StepAdmit, admits}}),
-			Decision{Action: ActBatch}, []Step{StepResolve, StepFrame, StepLookupCapture, StepValidateDescriptor, StepAdmit, StepCheckConfig, StepDerive}},
+			Decision{Action: ActBatch}, []Step{StepResolve, StepFrame, StepLookupCapture, StepValidateDescriptor, StepAdmit, StepCheckConfig, StepDerive, StepMask}},
 		{"descriptor not accepted: rejected durably, parked", raw, world{{StepResolve, unresolved}, {StepFrame, framedStart}, {StepLookupCapture, unknown}, {StepValidateDescriptor, notAccepted}, {StepReject, rejects}},
 			Decision{Action: ActPark, Reason: ReasonCaptureRejected, Alert: true}, []Step{StepResolve, StepFrame, StepLookupCapture, StepValidateDescriptor, StepReject}},
 		{"rejection finds the capture admitted with these bytes: ingested", raw,
 			with(normal, world{{StepFrame, framedStart}, {StepLookupCapture, unknown}, {StepValidateDescriptor, notAccepted}, {StepReject, func(f *Facts) { f.AlreadyAdmitted, f.Capture = true, CaptureAdmitted }}}),
-			Decision{Action: ActBatch}, []Step{StepResolve, StepFrame, StepLookupCapture, StepValidateDescriptor, StepReject, StepCheckConfig, StepDerive}},
+			Decision{Action: ActBatch}, []Step{StepResolve, StepFrame, StepLookupCapture, StepValidateDescriptor, StepReject, StepCheckConfig, StepDerive, StepMask}},
 		{"claim-check start of an unknown capture: fetched first", claim,
 			with(normal, world{{StepLookupCapture, unknown}, {StepFetchClaim, claimOKStart}, {StepValidateDescriptor, accepted}, {StepAdmit, admits}}),
-			Decision{Action: ActBatch}, []Step{StepResolve, StepFrame, StepLookupCapture, StepFetchClaim, StepValidateDescriptor, StepAdmit, StepCheckConfig, StepDerive}},
+			Decision{Action: ActBatch}, []Step{StepResolve, StepFrame, StepLookupCapture, StepFetchClaim, StepValidateDescriptor, StepAdmit, StepCheckConfig, StepDerive, StepMask}},
 		{"claim-check message of an unknown capture whose object is missing", claim, world{{StepResolve, unresolved}, {StepFrame, framed}, {StepLookupCapture, unknown}, {StepFetchClaim, claimMissing}},
 			Decision{Action: ActNak, Reason: ReasonClaimMissing, Alert: true}, []Step{StepResolve, StepFrame, StepLookupCapture, StepFetchClaim}},
 		{"object still missing once the nak delay reached its last step: parked", lastClaim, world{{StepResolve, unresolved}, {StepFrame, framed}, {StepLookupCapture, unknown}, {StepFetchClaim, claimMissing}},
@@ -128,9 +129,9 @@ func TestDecide(t *testing.T) {
 		{"record of a capture an earlier parking left pending: parked", raw, world{{StepResolve, unresolved}, {StepFrame, framed}, {StepLookupCapture, pendingCap}},
 			Decision{Action: ActPark, Reason: ReasonUnknownCapture}, []Step{StepResolve, StepFrame, StepLookupCapture}},
 		{"start of a pending capture: admitted in place", raw, with(normal, world{{StepFrame, framedStart}, {StepLookupCapture, pendingCap}, {StepValidateDescriptor, accepted}, {StepAdmit, admits}}),
-			Decision{Action: ActBatch}, []Step{StepResolve, StepFrame, StepLookupCapture, StepValidateDescriptor, StepAdmit, StepCheckConfig, StepDerive}},
+			Decision{Action: ActBatch}, []Step{StepResolve, StepFrame, StepLookupCapture, StepValidateDescriptor, StepAdmit, StepCheckConfig, StepDerive, StepMask}},
 		{"start of a registered capture, equal bytes: normal ingestion", raw, with(normal, world{{StepFrame, framedStart}, {StepValidateDescriptor, accepted}, {StepAdmit, admits}}),
-			Decision{Action: ActBatch}, []Step{StepResolve, StepFrame, StepLookupCapture, StepValidateDescriptor, StepAdmit, StepCheckConfig, StepDerive}},
+			Decision{Action: ActBatch}, []Step{StepResolve, StepFrame, StepLookupCapture, StepValidateDescriptor, StepAdmit, StepCheckConfig, StepDerive, StepMask}},
 		{"start of a registered capture, other bytes: conflict", raw, with(normal, world{{StepFrame, framedStart}, {StepValidateDescriptor, accepted}, {StepAdmit, conflicts}}),
 			Decision{Action: ActNak, Reason: ReasonConflict, Alert: true}, []Step{StepResolve, StepFrame, StepLookupCapture, StepValidateDescriptor, StepAdmit}},
 		{"claim object missing, equal receipt: already staged", claim, with(normal, world{{StepFetchClaim, claimMissing}, {StepLookupReceipt, func(f *Facts) { f.Receipt = ReceiptEqual }}}),
@@ -140,7 +141,7 @@ func TestDecide(t *testing.T) {
 		{"claim object missing, no receipt", claim, with(normal, world{{StepFetchClaim, claimMissing}, {StepLookupReceipt, func(f *Facts) { f.Receipt = ReceiptNone }}}),
 			Decision{Action: ActNak, Reason: ReasonClaimMissing, Alert: true}, []Step{StepResolve, StepFrame, StepLookupCapture, StepFetchClaim, StepLookupReceipt}},
 		{"claim-check record of an admitted capture", claim, with(normal, world{{StepFetchClaim, claimOK}}),
-			Decision{Action: ActBatch}, []Step{StepResolve, StepFrame, StepLookupCapture, StepFetchClaim, StepCheckConfig, StepDerive}},
+			Decision{Action: ActBatch}, []Step{StepResolve, StepFrame, StepLookupCapture, StepFetchClaim, StepCheckConfig, StepDerive, StepMask}},
 		{"expired record of an admitted capture: terminated with an audit row", expired, normal,
 			Decision{Action: ActTerminate, Reason: ReasonBeyondRetention, Alert: true, Audit: true}, []Step{StepResolve, StepFrame, StepLookupCapture}},
 		{"expired start of an unknown capture: admitted first, then terminated", expired, with(normal, world{{StepFrame, framedStart}, {StepLookupCapture, unknown}, {StepValidateDescriptor, accepted}, {StepAdmit, admits}}),
@@ -161,7 +162,13 @@ func TestDecide(t *testing.T) {
 			Decision{Action: ActNak, Reason: ReasonInvariant, Alert: true}, []Step{StepResolve, StepFrame, StepLookupCapture, StepCheckConfig, StepDerive}},
 		{"configuration this replica cannot execute", raw, with(normal, world{{StepCheckConfig, func(f *Facts) { f.Config = No }}}),
 			Decision{Action: ActNak, Reason: ReasonIncompatible, Alert: true}, []Step{StepResolve, StepFrame, StepLookupCapture, StepCheckConfig}},
-		{"ordinary record", raw, normal, Decision{Action: ActBatch}, []Step{StepResolve, StepFrame, StepLookupCapture, StepCheckConfig, StepDerive}},
+		{"record masking cannot screen", raw, with(normal, world{{StepMask, func(f *Facts) { f.Masked = MaskedCannotScreen }}}),
+			Decision{Action: ActNak, Reason: ReasonCannotScreen, Alert: true}, []Step{StepResolve, StepFrame, StepLookupCapture, StepCheckConfig, StepDerive, StepMask}},
+		{"record whose key is refused: parked", raw, with(normal, world{{StepMask, func(f *Facts) { f.Masked = MaskedKeyRefused }}}),
+			Decision{Action: ActPark, Reason: ReasonKeyRefused, Alert: true}, []Step{StepResolve, StepFrame, StepLookupCapture, StepCheckConfig, StepDerive, StepMask}},
+		{"record whose key is unavailable: nak'd", raw, with(normal, world{{StepMask, func(f *Facts) { f.Masked = MaskedKeyUnavailable }}}),
+			Decision{Action: ActNak, Reason: ReasonKeyUnavailable, Alert: true}, []Step{StepResolve, StepFrame, StepLookupCapture, StepCheckConfig, StepDerive, StepMask}},
+		{"ordinary record", raw, normal, Decision{Action: ActBatch}, []Step{StepResolve, StepFrame, StepLookupCapture, StepCheckConfig, StepDerive, StepMask}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

@@ -7,12 +7,15 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/nats-io/nats.go"
 
 	"github.com/arloliu/go-secs/tracepack"
 	"github.com/arloliu/go-secs/tracepack/redact"
 	"github.com/arloliu/tracekeep/internal/catalog"
+	"github.com/arloliu/tracekeep/internal/keys"
+	"github.com/arloliu/tracekeep/internal/metrics"
 	"github.com/arloliu/tracekeep/internal/policy"
 )
 
@@ -56,8 +59,11 @@ type Delivery struct {
 	Record tracepack.BusRecord
 	// ConfigID is the capture's processing configuration once it is admitted.
 	ConfigID int64
-	// Claim is the claim object of a claim-check record once fetched.
-	Claim []byte
+	// Claim is the claim object of a claim-check record once fetched, until the record is masked; ClaimSize is its size.
+	Claim     []byte
+	ClaimSize int64
+	// Redaction is the masked record's redaction entries, nil when nothing was masked.
+	Redaction []tracepack.RedactionEntry
 	// ToolID is the capture's tool once the capture is looked up and admitted, or its start admitted, for the metrics labelled by tool.
 	ToolID string
 }
@@ -88,6 +94,10 @@ type Executor struct {
 	Horizon func() int64
 	// Configs are the processing configurations this replica executes, by id.
 	Configs map[int64]Config
+	// Keys gives each delivery's masking the keys its configuration names (masking-keys.md §9).
+	Keys MaskKeys
+	// Metrics records the masking's duration; nil records nothing.
+	Metrics *metrics.Ingest
 
 	// accepts is the descriptor check, nil for acceptedDescriptor; a test widens it to stand in for a fixed release.
 	accepts func(descriptor []byte) bool
@@ -155,13 +165,8 @@ func (x *Executor) run(ctx context.Context, d *Delivery, s Step) error {
 			return err
 		}
 		f.Receipt = map[catalog.ReceiptMatch]Receipt{catalog.ReceiptNone: ReceiptNone, catalog.ReceiptEqual: ReceiptEqual, catalog.ReceiptOther: ReceiptOther}[m]
-	case StepCheckConfig:
-		f.Config = No
-		if _, ok := x.Configs[d.ConfigID]; ok {
-			f.Config = Yes
-		}
-	case StepDerive:
-		x.derive(d)
+	case StepCheckConfig, StepDerive, StepMask:
+		return x.record(ctx, d, s)
 	case StepNone:
 	default:
 		return fmt.Errorf("ingest: unknown step %d", s)
@@ -253,7 +258,7 @@ func (x *Executor) fetchClaim(ctx context.Context, d *Delivery) error {
 	case err != nil:
 		return err // CheckBusPayload of a record that is not a claim-check one: an invariant failure, nak'd
 	default:
-		d.Facts.Claim, d.Facts.Start, d.Claim = ClaimOK, d.Record.Descriptor != nil, payload
+		d.Facts.Claim, d.Facts.Start, d.Claim, d.ClaimSize = ClaimOK, d.Record.Descriptor != nil, payload, int64(len(payload))
 	}
 
 	return nil
@@ -314,6 +319,59 @@ func (x *Executor) reject(ctx context.Context, d *Delivery) error {
 		return fmt.Errorf("ingest: rejection returned the admission outcome %d", res.Outcome)
 	default:
 		return fmt.Errorf("ingest: unknown rejection outcome %d", res.Outcome)
+	}
+
+	return nil
+}
+
+// record runs the steps on the record itself, once its capture is admitted: the configuration's check, the classification and the masking.
+func (x *Executor) record(ctx context.Context, d *Delivery, s Step) error {
+	if s == StepCheckConfig {
+		d.Facts.Config = No
+		if _, ok := x.Configs[d.ConfigID]; ok {
+			d.Facts.Config = Yes
+		}
+
+		return nil
+	}
+	if s == StepDerive {
+		x.derive(d)
+		return nil
+	}
+
+	return x.mask(ctx, d)
+}
+
+// MaskKeys gives one use's masking its keys; *keys.Keys is one.
+type MaskKeys interface {
+	ForUse(ctx context.Context) redact.Keys
+}
+
+// mask masks the record under its capture's configuration (ingest.md §6.2), unobserved as the bus record's quality bit 7 says;
+// the delivery then holds the masked record and its entries, and drops the claim object's clear bytes.
+// A policy-less configuration leaves the record as received. A failure is a verdict, not an error, unless the delivery's context ended.
+func (x *Executor) mask(ctx context.Context, d *Delivery) error {
+	cfg := x.Configs[d.ConfigID]
+	if cfg.Masking == nil {
+		d.Facts.Masked = MaskedOK
+		return nil
+	}
+	started := time.Now()
+	r := d.Record.Record
+	masked, entries, err := cfg.Masking.Mask(d.Raw.Version.Capture, &r, r.Quality.Has(tracepack.QualityUnobserved), x.Keys.ForUse(ctx))
+	x.Metrics.Masked(time.Since(started))
+	switch {
+	case err == nil:
+		d.Record.Record, d.Redaction, d.Facts.Masked = masked, entries, MaskedOK
+		d.Claim = nil
+	case ctx.Err() != nil:
+		return ctx.Err()
+	case errors.Is(err, redact.ErrCannotScreen), errors.Is(err, redact.ErrNotUnobserved), errors.Is(err, redact.ErrRedacted):
+		d.Facts.Masked = MaskedCannotScreen
+	case keys.Refused(err), errors.Is(err, redact.ErrKeySize):
+		d.Facts.Masked = MaskedKeyRefused
+	default:
+		d.Facts.Masked = MaskedKeyUnavailable
 	}
 
 	return nil

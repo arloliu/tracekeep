@@ -724,7 +724,7 @@ func TestParkedCopiesReplayInOrder(t *testing.T) {
 			t.Errorf("versions %+v, want every one staged", vs)
 		}
 		var staged [][]uint64
-		for _, k := range keys(t, r.st) {
+		for _, k := range storedKeys(t, r.st) {
 			var seqs []uint64
 			for _, rec := range records(t, r.st, k) {
 				seqs = append(seqs, rec.Seq)

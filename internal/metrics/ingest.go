@@ -18,7 +18,7 @@ import (
 type Ingest struct {
 	messages, segments, segmentBytes, conflicts, losses, gapObservations *prometheus.CounterVec
 	redelivered, inProgress                                              prometheus.Counter
-	put, registration                                                    prometheus.Histogram
+	put, registration, mask                                              prometheus.Histogram
 	refreshFailures                                                      prometheus.Counter
 	snap                                                                 *snapshot
 	deferred                                                             *deferrals
@@ -48,13 +48,15 @@ func NewIngest(s *Server, now func() time.Time) (*Ingest, error) {
 			Help: "The put of a segment to the store.", Buckets: prometheus.ExponentialBuckets(0.01, 2, 12)}),
 		registration: prometheus.NewHistogram(prometheus.HistogramOpts{Namespace: "tracekeep", Subsystem: "ingest", Name: "registration_seconds",
 			Help: "The catalog registration of a segment.", Buckets: prometheus.ExponentialBuckets(0.001, 2, 12)}),
+		mask: prometheus.NewHistogram(prometheus.HistogramOpts{Namespace: "tracekeep", Subsystem: "ingest", Name: "mask_seconds",
+			Help: "The masking of one record, its keys' resolution included.", Buckets: prometheus.ExponentialBuckets(0.00001, 2, 16)}),
 		refreshFailures: prometheus.NewCounter(prometheus.CounterOpts{Namespace: "tracekeep", Subsystem: "ingest", Name: "refresh_failures_total",
 			Help: "Refreshes of the catalog and bus gauges that failed, the gauges keeping their previous values."}),
 		snap:     &snapshot{now: now},
 		deferred: &deferrals{byID: map[string]deferral{}, now: now},
 	}
 	for _, c := range []prometheus.Collector{
-		m.messages, m.segments, m.segmentBytes, m.conflicts, m.losses, m.gapObservations, m.redelivered, m.inProgress, m.put, m.registration,
+		m.messages, m.segments, m.segmentBytes, m.conflicts, m.losses, m.gapObservations, m.redelivered, m.inProgress, m.put, m.registration, m.mask,
 		m.refreshFailures, m.snap, m.deferred,
 	} {
 		if err := s.Registry().Register(c); err != nil {
@@ -110,6 +112,14 @@ func (m *Ingest) InProgress(n int) {
 		return
 	}
 	m.inProgress.Add(float64(n))
+}
+
+// Masked observes one record's masking.
+func (m *Ingest) Masked(d time.Duration) {
+	if m == nil {
+		return
+	}
+	m.mask.Observe(d.Seconds())
 }
 
 // Put observes a segment's put.

@@ -293,6 +293,7 @@ func (f *Flusher) write(w *os.File, b *Batch, capture *catalog.Capture, cfg *Con
 	meta.FlushIntervalNs = &interval
 	meta.ScopeGeneration = new(uint64) // 0: a segment, which no merge produced
 	meta.Classifiers, meta.MaxFrameLens = []string{cfg.Name}, []uint64{cfg.MaxFrameLen}
+	meta.RedactionPolicy, meta.Redaction = redaction(cfg, seg.entries)
 	tw, err := tracepack.NewWriter(w, tracepack.WriterOptions{
 		Meta: meta, Facts: facts(seg.entries), PackID: seg.id, CaptureID: b.Key.Capture, Sync: w, Now: f.Now,
 	})
@@ -358,6 +359,26 @@ func batchName(b *Batch) string {
 	return fmt.Sprintf("%s/%d/%d", b.Key.Capture, b.Key.Hour, b.ConfigID)
 }
 
+// redaction is the segment's redaction policy and entries under cfg, nil for a policy-less configuration (ingest.md §6.2):
+// the entries of the sorted records, each record's in its first masked offset's order.
+func redaction(cfg *Config, entries []Entry) (*tracepack.RedactionPolicy, []tracepack.RedactionEntry) {
+	if cfg.Policy == nil {
+		return nil, nil
+	}
+	p := &tracepack.RedactionPolicy{
+		PolicyID: cfg.Policy.ID, PolicyVersion: cfg.Policy.Version, KeyID: cfg.DigestKey.ID, DigestAlgorithm: tracepack.DigestAlgorithmHMACSHA256,
+	}
+	if cfg.EncryptionKey.ID != "" {
+		p.EncryptionAlgorithm, p.EncryptionKeyID = new(tracepack.EncryptionAlgorithmAESSIVCMAC512), new(cfg.EncryptionKey.ID)
+	}
+	var out []tracepack.RedactionEntry
+	for _, e := range entries {
+		out = append(out, e.D.Redaction...)
+	}
+
+	return p, out
+}
+
 // facts are what the segment's metadata is validated against.
 func facts(entries []Entry) tracepack.PackFacts {
 	f := tracepack.PackFacts{DurableRecorder: true}
@@ -368,6 +389,9 @@ func facts(entries []Entry) tracepack.PackFacts {
 		}
 		if ds == tracepack.DecodeStatusOversized {
 			f.AnyOversized = true
+		}
+		if e.D.Record.Record.Quality.Has(tracepack.QualityRedacted) {
+			f.AnyRedacted = true
 		}
 	}
 
@@ -414,7 +438,7 @@ func evidence(entries []Entry) *catalog.Evidence {
 		v := e.D.Raw.Version
 		// The object's key is its Tpk-Payload-Ref, "<bucket>/<Nats-Msg-Id>".
 		ev.Receipts = append(ev.Receipts, catalog.Receipt{
-			Seq: v.Seq, Header: v.Header, PayloadSHA256: v.Digest, ObjectKey: e.D.Msg.Env.PayloadRef, ObjectSize: int64(len(e.D.Claim)),
+			Seq: v.Seq, Header: v.Header, PayloadSHA256: v.Digest, ObjectKey: e.D.Msg.Env.PayloadRef, ObjectSize: e.D.ClaimSize,
 		})
 	}
 

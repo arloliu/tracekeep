@@ -417,7 +417,7 @@ func ingesters(ctx context.Context, e *Env) (_ []*ingest.Ingester, err error) {
 	if err != nil {
 		return nil, fmt.Errorf("service: claim bucket: %w", err)
 	}
-	x := &ingest.Executor{Catalog: e.Catalog, Claims: ingest.ObjectClaims{Store: claims}, Horizon: e.horizon, Configs: configs}
+	x := &ingest.Executor{Catalog: e.Catalog, Claims: ingest.ObjectClaims{Store: claims}, Horizon: e.horizon, Configs: configs, Keys: ks}
 	f := &ingest.Flusher{
 		Catalog: e.Catalog, Store: e.Store, WorkDir: c.Ingest.WorkDir, KeyPrefix: c.Store.KeyPrefix, Configs: configs,
 		Interval: c.Ingest.FlushInterval, HorizonHour: func() int64 { return ingest.HourOf(e.horizon()) }, Writer: writerName, Now: e.now,
@@ -437,7 +437,7 @@ func ingesters(ctx context.Context, e *Env) (_ []*ingest.Ingester, err error) {
 			return nil, err
 		}
 	}
-	f.Metrics = m
+	f.Metrics, x.Metrics = m, m
 	k := &ingest.Coordinator{Catalog: e.Catalog, Bus: e.JS, ParkPrefix: cmp.Or(c.Bus.ParkPrefix, busconfig.DefaultParkPrefix)}
 	for _, role := range []string{catalog.RoleTraffic, catalog.RoleParking} {
 		cons, err := bus.Consumer(ctx, ss[role], incs[role], bus.ConsumerConfig{AckWait: c.Ingest.AckWait, MaxAckPending: c.Ingest.MaxAckPending})
