@@ -2,7 +2,6 @@ package ingest
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -13,6 +12,7 @@ import (
 	"github.com/arloliu/tracekeep/internal/catalog"
 	"github.com/arloliu/tracekeep/internal/catalog/catalogtest"
 	"github.com/arloliu/tracekeep/internal/policy"
+	"github.com/arloliu/tracekeep/internal/procconfig"
 )
 
 // The built-in configuration is named for its classifier's implementation and version;
@@ -199,7 +199,7 @@ func masking(t *testing.T, c *catalog.Catalog, p *policy.Policy) Config {
 		}
 	}
 
-	return Config{Name: "go-secs/v2.8.0", MaxFrameLen: 1, Policy: p, DigestKey: KeyRef{"d-1", "fp-d-1"}, EncryptionKey: KeyRef{"m-1", "fp-m-1"}}
+	return Config{Name: "go-secs/v2.8.0", MaxFrameLen: 1, Policy: p, DigestKey: KeyRef{ID: "d-1", Fingerprint: "fp-d-1"}, EncryptionKey: KeyRef{ID: "m-1", Fingerprint: "fp-m-1"}}
 }
 
 func stageMasking(t *testing.T, c *catalog.Catalog, m *Config) int64 {
@@ -239,8 +239,8 @@ func TestRebuildMasking(t *testing.T) {
 		if string(got.Content()) != string(m.Content()) {
 			t.Errorf("the rebuilt configuration's content differs:\n%s\n%s", got.Content(), m.Content())
 		}
-		var cc ConfigContent
-		if err := json.Unmarshal(m.Content(), &cc); err != nil || cc.FormatMinor != 1 || cc.Policy.Version != 1 {
+		cc, err := procconfig.Decode(m.Content())
+		if err != nil || cc.FormatMinor != 1 || cc.Policy.Version != 1 {
 			t.Errorf("content = %s (%v); want format_minor 1 and the policy's version", m.Content(), err)
 		}
 	})

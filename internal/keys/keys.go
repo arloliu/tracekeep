@@ -468,3 +468,14 @@ func (k *Keys) Declares(keyID, kind string) bool {
 
 	return ok && d.Kind == kind
 }
+
+// Fingerprint resolves keyID, a key id declared as kind, binding it at its first use as any use does,
+// and returns its material's fingerprint, as staging a configuration records it.
+func (k *Keys) Fingerprint(ctx context.Context, keyID, kind string) (string, error) {
+	m, err := k.declaredAs(ctx, kind, keyID)
+	if err != nil {
+		return "", err
+	}
+
+	return Fingerprint(m), nil
+}

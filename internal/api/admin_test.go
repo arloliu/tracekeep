@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"connectrpc.com/connect"
@@ -15,6 +16,7 @@ import (
 	"github.com/arloliu/tracekeep/internal/admin"
 	"github.com/arloliu/tracekeep/internal/catalog"
 	"github.com/arloliu/tracekeep/internal/catalog/catalogtest"
+	"github.com/arloliu/tracekeep/internal/ingest"
 	"github.com/arloliu/tracekeep/internal/keys"
 	tkv1 "github.com/arloliu/tracekeep/proto/tracekeep/v1"
 	"github.com/arloliu/tracekeep/proto/tracekeep/v1/tracekeepv1connect"
@@ -92,5 +94,63 @@ func TestKeyVerifyOverTheAPI(t *testing.T) {
 	}
 	if rows, err := c.AuditByActor(t.Context(), "operator"); err != nil || len(rows) != 1 || rows[0].Action != "key verify" {
 		t.Errorf("audit = %+v, %v; want key verify's row with the principal as actor", rows, err)
+	}
+}
+
+// The policy and config commands answer the same through AdminService as directly, refusals included.
+func TestConfigCommandsOverTheAPI(t *testing.T) {
+	t.Parallel()
+	c := catalogtest.Open(t, catalog.EngineSQLite)
+	path := filepath.Join(t.TempDir(), "d-1")
+	if err := os.WriteFile(path, []byte(base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{0x84}, 32))), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	k, err := keys.New(keys.Config{Declared: map[string]keys.Declaration{"d-1": {Provider: keys.ProviderFile, Ref: path, Kind: catalog.KindDigest}}}, c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := ingest.Builtin(0, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := &admin.Admin{Catalog: c, Keys: k, Classifier: b.Name, MaxFrameLen: b.MaxFrameLen}
+	s := &Server{Catalog: c, Auth: testAuthenticator(nil), Admin: a}
+	srv := httptest.NewServer(s.Handler())
+	t.Cleanup(srv.Close)
+	cl := tracekeepv1connect.NewAdminServiceClient(srv.Client(), srv.URL)
+	remote := func(words ...string) (string, error) {
+		resp, err := cl.Admin(t.Context(), withToken(&tkv1.AdminRequest{Words: words}, adminToken))
+		if err != nil {
+			return "", err
+		}
+
+		return resp.Msg.GetJson(), nil
+	}
+	direct := func(words ...string) string {
+		out, err := admin.Run(t.Context(), a, words)
+		if err != nil {
+			t.Fatalf("%q directly = %v", words, err)
+		}
+		j, err := json.MarshalIndent(out, "", "  ")
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		return string(j)
+	}
+	staged, err := remote("config", "stage", "d-1")
+	if err != nil || !strings.Contains(staged, `"ConfigID": 1`) {
+		t.Fatalf("config stage over the API = %s, %v", staged, err)
+	}
+	for _, words := range [][]string{{"config", "list"}, {"policy", "list"}, {"policy", "show", "baseline", "1"}} {
+		if got, err := remote(words...); err != nil || got != direct(words...) {
+			t.Errorf("%q over the API = %s, %v; want the direct answer", words, got, err)
+		}
+	}
+	if _, err := remote("config", "activate", "1"); connect.CodeOf(err) != connect.CodeFailedPrecondition || !strings.Contains(err.Error(), "does not mask") {
+		t.Errorf("activating the masking configuration over the API = %v, want refused", err)
+	}
+	if _, err := remote("config", "stage"); connect.CodeOf(err) != connect.CodeInvalidArgument {
+		t.Errorf("config stage without a key id = %v, want invalid argument", err)
 	}
 }

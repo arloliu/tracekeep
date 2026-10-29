@@ -1,10 +1,8 @@
 package ingest
 
 import (
-	"bytes"
 	"context"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 
@@ -12,13 +10,11 @@ import (
 
 	"github.com/arloliu/tracekeep/internal/catalog"
 	"github.com/arloliu/tracekeep/internal/policy"
+	"github.com/arloliu/tracekeep/internal/procconfig"
 )
 
 // unversioned is what classify.Name reports when the build names no go-secs version, as a workspace build does.
 const unversioned = "go-secs/unknown"
-
-// maskingFormatMinor is the format_minor a masking configuration's captures need (rollouts.md §6.4).
-const maskingFormatMinor = 1
 
 var (
 	// ErrUnversionedBuild refuses a build whose classifier cannot name its version:
@@ -33,33 +29,15 @@ var (
 	ErrCannotExecute = errors.New("ingest: the replica cannot execute the configuration")
 )
 
-// KeyRef names a key id and its material's fingerprint, as a configuration records them.
-type KeyRef struct {
-	ID          string `json:"id"`
-	Fingerprint string `json:"fingerprint"`
-}
+// KeyRef and PolicyRef are what a configuration records of its keys and policy.
+type (
+	KeyRef    = procconfig.KeyRef
+	PolicyRef = procconfig.PolicyRef
+)
 
-// PolicyRef names a policy by id and version, with the SHA-256 of its canonical bytes in hex.
-type PolicyRef struct {
-	ID      string `json:"id"`
-	Version int64  `json:"version"`
-	SHA256  string `json:"sha256"`
-}
-
-// ConfigContent is a processing configuration as the catalog stores it, its fields in this order and the empty ones omitted,
-// so a policy-less configuration's bytes are the classifier and the frame limit alone and equal content is one configuration (rollouts.md §6.4).
-type ConfigContent struct {
-	Classifier    string     `json:"classifier"`
-	MaxFrameLen   uint64     `json:"max_frame_len"`
-	Policy        *PolicyRef `json:"policy,omitempty"`
-	DigestKey     *KeyRef    `json:"digest_key,omitempty"`
-	EncryptionKey *KeyRef    `json:"encryption_key,omitempty"`
-	FormatMinor   int        `json:"format_minor,omitempty"`
-}
-
-// Content returns c's stored bytes.
+// Content returns c's stored bytes (procconfig.Content).
 func (c *Config) Content() []byte {
-	cc := ConfigContent{Classifier: c.Name, MaxFrameLen: c.MaxFrameLen}
+	cc := procconfig.Content{Classifier: c.Name, MaxFrameLen: c.MaxFrameLen}
 	if c.Policy != nil {
 		_, sum := c.Policy.Canonical()
 		cc.Policy = &PolicyRef{ID: c.Policy.ID, Version: int64(c.Policy.Version), SHA256: hex.EncodeToString(sum[:])} //nolint:gosec // policy.Parse bounds a version to int64
@@ -67,14 +45,10 @@ func (c *Config) Content() []byte {
 		if c.EncryptionKey.ID != "" {
 			cc.EncryptionKey = &c.EncryptionKey
 		}
-		cc.FormatMinor = maskingFormatMinor
-	}
-	b, err := json.Marshal(cc)
-	if err != nil {
-		panic(fmt.Sprintf("ingest: configuration content: %v", err)) // strings and integers only
+		cc.FormatMinor = procconfig.MaskingFormatMinor
 	}
 
-	return b
+	return cc.Encode()
 }
 
 // Builtin is the policy-less processing configuration this binary executes: the go-secs classifier, named for its implementation and version
@@ -141,10 +115,8 @@ func Executable(ctx context.Context, cat *catalog.Catalog, builtin *Config, keys
 // its classifier this replica's under the stored frame limit, and, for a masking one, its policy read back and its hash compared,
 // both key ids declared with their kinds and their fingerprints their bindings', and the policy compiled under them.
 func rebuild(ctx context.Context, cat *catalog.Catalog, builtin *Config, keys Keys, content []byte, dev bool) (Config, error) {
-	dec := json.NewDecoder(bytes.NewReader(content))
-	dec.DisallowUnknownFields()
-	var cc ConfigContent
-	if err := dec.Decode(&cc); err != nil {
+	cc, err := procconfig.Decode(content)
+	if err != nil {
 		return Config{}, fmt.Errorf("%w: %w", ErrCannotExecute, err)
 	}
 	if cc.Classifier != builtin.Name {

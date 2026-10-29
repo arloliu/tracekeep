@@ -17,7 +17,7 @@ import (
 var ErrUsage = errors.New("usage")
 
 // reads are the commands that only read, which audit their run here; every other command audits itself in its transaction.
-var reads = []string{"status", "deferred list", "parked list", "capture show", "object list", "key verify"}
+var reads = []string{"status", "deferred list", "parked list", "capture show", "object list", "key verify", "policy list", "policy show", "config list"}
 
 // Run runs the operator command words name (operations.md §10.4) and returns what it prints as JSON:
 // the one dispatch tracekeep admin and status share, whether the CLI runs it on the catalog or the api process does (api.md §10.1).
@@ -59,6 +59,8 @@ func operate(ctx context.Context, a *Admin, cmd string, args []string) (any, err
 		return a.AdoptStream(ctx, args[2])
 	case cmd == "key verify" && len(args) == 3:
 		return a.KeyVerify(ctx, args[2])
+	case slices.Contains([]string{"policy list", "policy show", "config list", "config activate", "config stage"}, cmd):
+		return onConfig(ctx, a, cmd, args)
 	case (cmd == "conflict acknowledge" || cmd == "scope merge") && len(args) == 4,
 		cmd == "scope exclude-input" && len(args) == 3:
 		return onScope(ctx, a, cmd, args[2:])
@@ -170,4 +172,49 @@ func parseCapture(s string) (tracepack.UUID, error) {
 	}
 
 	return id, nil
+}
+
+// onConfig runs a policy or config command, args being the whole command line.
+func onConfig(ctx context.Context, a *Admin, cmd string, args []string) (any, error) {
+	switch {
+	case cmd == "policy list" && len(args) == 2:
+		return a.PolicyList(ctx)
+	case cmd == "policy show" && len(args) == 4:
+		v, err := strconv.ParseInt(args[3], 10, 64)
+		if err != nil || v <= 0 {
+			return nil, fmt.Errorf("%w: version %q", ErrUsage, args[3])
+		}
+
+		return a.PolicyShow(ctx, args[2], v)
+	case cmd == "config list" && len(args) == 2:
+		return a.ConfigList(ctx)
+	case cmd == "config activate" && len(args) == 3:
+		id, err := strconv.ParseInt(args[2], 10, 64)
+		if err != nil || id <= 0 {
+			return nil, fmt.Errorf("%w: configuration %q", ErrUsage, args[2])
+		}
+
+		return a.ConfigActivate(ctx, id)
+	case cmd == "config stage":
+		return onStage(ctx, a, args[2:])
+	default:
+		return nil, fmt.Errorf("%w: admin %v", ErrUsage, args)
+	}
+}
+
+// onStage runs config stage <digest key id> [<encryption key id>] [--policy <file>].
+func onStage(ctx context.Context, a *Admin, args []string) (any, error) {
+	file := ""
+	if n := len(args); n >= 2 && args[n-2] == "--policy" {
+		file, args = args[n-1], args[:n-2]
+	}
+	if len(args) < 1 || len(args) > 2 || slices.Contains(args, "--policy") {
+		return nil, fmt.Errorf("%w: config stage <digest key id> [<encryption key id>] [--policy <file>]", ErrUsage)
+	}
+	encryption := ""
+	if len(args) == 2 {
+		encryption = args[1]
+	}
+
+	return a.ConfigStage(ctx, args[0], encryption, file)
 }
