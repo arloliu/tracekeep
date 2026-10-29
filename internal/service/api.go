@@ -160,7 +160,7 @@ func (e *Env) downloads(ctx context.Context, dl *api.Downloads, m *metrics.API) 
 	}
 	declared := map[string]keys.Declaration{}
 	for id, d := range c.Keys.Declared {
-		declared[id] = keys.Declaration{Provider: d.Provider, Ref: d.Ref, Version: d.Version}
+		declared[id] = keys.Declaration{Provider: d.Provider, Ref: d.Ref, Version: d.Version, Kind: d.Kind}
 	}
 	k, err := keys.New(keys.Config{
 		Dev: e.Dev, Declared: declared, Download: keys.Purpose{Issuing: c.Keys.Download.Issuing, Accepted: c.Keys.Download.Accepted},

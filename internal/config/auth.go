@@ -61,11 +61,13 @@ type Keys struct {
 	Download KeyPurpose                `yaml:"download"`
 }
 
-// KeyDeclaration names a key id's provider, file or env, its reference there and, optionally, its version.
+// KeyDeclaration names a key id's provider, its reference there and, optionally, its version,
+// and its kind, which a digest or master key id names (masking-keys.md §9).
 type KeyDeclaration struct {
 	Provider string `yaml:"provider"`
 	Ref      string `yaml:"ref"`
 	Version  string `yaml:"version"`
+	Kind     string `yaml:"kind"`
 }
 
 // KeyPurpose is a purpose's issuing key id and the key ids it accepts.
