@@ -143,7 +143,11 @@ func dispatch(ctx context.Context, args []string, stdout, stderr io.Writer) erro
 
 		return err
 	}
-	a := &admin.Admin{Catalog: e.Catalog, Bus: e.JS, Config: e.Bus(), Actor: *actor}
+	k, err := e.Keys()
+	if err != nil {
+		return err
+	}
+	a := &admin.Admin{Catalog: e.Catalog, Bus: e.JS, Config: e.Bus(), Actor: *actor, Keys: k}
 
 	return runAdmin(ctx, a, words, stdout)
 }

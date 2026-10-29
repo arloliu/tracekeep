@@ -7,6 +7,7 @@ package admin
 import (
 	"context"
 	"crypto/rand"
+	"errors"
 	"fmt"
 
 	"github.com/nats-io/nats.go/jetstream"
@@ -14,6 +15,7 @@ import (
 	"github.com/arloliu/go-secs/tracepack"
 	"github.com/arloliu/tracekeep/internal/bus"
 	"github.com/arloliu/tracekeep/internal/catalog"
+	"github.com/arloliu/tracekeep/internal/keys"
 )
 
 // Admin runs the operator's operations against the catalog and the bus.
@@ -24,6 +26,8 @@ type Admin struct {
 	Config bus.Config
 	// Actor names the operator in every audit row.
 	Actor string
+	// Keys resolves the declared keys, for key verify.
+	Keys *keys.Keys
 }
 
 // Termination is what a termination did: its action id, which its audit row, its versions and its order name,
@@ -113,3 +117,13 @@ func (a *Admin) AdoptStream(ctx context.Context, role string) (catalog.Incarnati
 
 // actionID names one operator action.
 func actionID() string { return rand.Text() }
+
+// KeyVerify is key verify: keyID's material re-resolved at its binding's reference and version, past the cache,
+// and its fingerprint compared with the binding's, for the key-binding-mismatch incident; a mismatch is reported, not an error.
+func (a *Admin) KeyVerify(ctx context.Context, keyID string) (keys.Verification, error) {
+	if a.Keys == nil {
+		return keys.Verification{}, errors.New("admin: this process resolves no keys")
+	}
+
+	return a.Keys.Verify(ctx, keyID)
+}

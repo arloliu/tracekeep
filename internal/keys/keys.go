@@ -323,3 +323,40 @@ func (u useKeys) DigestKey(keyID string) ([]byte, error) { return u.k.Digest(u.c
 func (u useKeys) EncryptionKey(capture tracepack.UUID, keyID string) ([]byte, error) {
 	return u.k.Encryption(u.ctx, capture, keyID)
 }
+
+// ErrNotBound marks a key id without a binding: nothing to verify against.
+var ErrNotBound = errors.New("keys: key id not bound")
+
+// Verification is key verify's answer (operations.md §10.4): the binding, the fingerprint of the material resolved now
+// at its pinned reference and version, and whether the two agree. A fingerprint reveals nothing of the material.
+type Verification struct {
+	KeyID, Kind, ProviderRef, ProviderVersion string
+	Bound, Resolved                           string
+	Match                                     bool
+}
+
+// Verify re-resolves keyID's material at its binding's reference and version, bypassing the cache, and compares its fingerprint
+// with the binding's, for the key-binding-mismatch incident; it binds, caches and hands out nothing.
+func (k *Keys) Verify(ctx context.Context, keyID string) (Verification, error) {
+	b, bound, err := k.binder.KeyBinding(ctx, keyID)
+	if err != nil {
+		return Verification{}, err
+	}
+	if !bound {
+		return Verification{}, fmt.Errorf("%w: %s", ErrNotBound, keyID)
+	}
+	v := Verification{KeyID: keyID, Kind: b.Kind, ProviderRef: b.ProviderRef, ProviderVersion: b.ProviderVersion, Bound: b.Fingerprint}
+	provider, at, _ := strings.Cut(b.ProviderRef, ":")
+	p, ok := k.providers[provider]
+	if !ok {
+		return v, fmt.Errorf("keys: key id %s: unknown provider %q", keyID, provider)
+	}
+	m, _, err := p.Material(ctx, at, b.ProviderVersion)
+	if err != nil {
+		return v, fmt.Errorf("keys: %s key id %s at %s version %q: %w", b.Kind, keyID, b.ProviderRef, b.ProviderVersion, err)
+	}
+	v.Resolved = Fingerprint(m)
+	v.Match = hmac.Equal([]byte(v.Resolved), []byte(v.Bound))
+
+	return v, nil
+}

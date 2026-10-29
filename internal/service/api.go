@@ -93,6 +93,12 @@ func API(ctx context.Context, e *Env) error {
 	if err := e.downloads(ctx, &s.Downloads, m); err != nil {
 		return err
 	}
+	// key verify's keys, after downloads named what a missing download key costs.
+	k, err := e.Keys()
+	if err != nil {
+		return err
+	}
+	s.Admin.Keys = k
 	e.ready("api", e.Catalog.Ping)
 	log.Info("api: serving", "listen", ln.Addr().String(), "tls", !c.API.Plaintext, "presigned", s.Downloads.Presigner != nil)
 	served := make(chan error, 1)
@@ -253,6 +259,16 @@ func (e *Env) APIAddr() string {
 	a, _ := e.apiAddr.Load().(string)
 
 	return a
+}
+
+// Keys is the keys this configuration declares over the catalog; it resolves nothing until a key is used.
+func (e *Env) Keys() (*keys.Keys, error) {
+	kc, err := keysConfig(e.Config.Keys, e.Dev)
+	if err != nil {
+		return nil, err
+	}
+
+	return keys.New(kc, e.Catalog)
 }
 
 // keysConfig is the keys module's configuration from the service's: the declarations, the download purpose
