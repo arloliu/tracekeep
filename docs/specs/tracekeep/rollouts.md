@@ -23,7 +23,7 @@ Contract changes go through proposals, which the subject [README.md](README.md) 
   a failed observation is not emptiness.
 - **Linking**: a release links every classifier, and every masker a masking-output change left in use,
   that a retained or open capture references.
-- **Activation gate**: a replica registers in `consumers` with the configurations it executes and renews a lease before every fetch;
+- **Activation gate**: a replica registers in `members` with the configurations it executes and renews a lease before every fetch;
   registration is refused unless it executes every active configuration;
   a new capture binds the newest configuration every leased member supports;
   capture binding and every membership change, renewals included, serialize on the sentinel row `counters('membership')` (T-32);
@@ -116,7 +116,7 @@ so the current binary runs against the current schema with the current keys and 
 "retired" only means no new capture may bind it.
 
 **Rollouts never create incompatibility**, by an **activation gate with membership leases** instead of a delivery guarantee the bus does not give:
-- an `ingest` replica **registers** in `consumers` with the configurations it executes before its first pull and holds a **lease** it renews before every fetch;
+- an `ingest` replica **registers** in `members` with the configurations it executes before its first pull and holds a **lease** it renews before every fetch;
   a replica whose lease lapsed stops fetching until it re-registers,
   so a paused or partitioned replica never pulls with stale knowledge;
 - registration is **refused** unless the replica executes **every active configuration**,
@@ -128,7 +128,7 @@ so the current binary runs against the current schema with the current keys and 
 - a new capture binds the **newest configuration every leased member supports**, in a transaction that reads the member set,
   and an activated configuration becomes bindable the moment the last member lacking it has lapsed or left;
   capture binding and membership changes serialize on one sentinel row, `counters('membership')` (T-32):
-  every binding path of `Admit` updates it after the capture row and before it reads `consumers` and configurations,
+  every binding path of `Admit` updates it after the capture row and before it reads `members` and configurations,
   and every member registration, renewal and leave, and every configuration activation and retirement, updates it first,
   so no renewal still uncommitted when `Admit` reads can extend a membership admission has excluded;
   a lease's lapse is judged by the database's clock in both;
@@ -152,7 +152,13 @@ outside `tracekeep dev`, a capture is admitted only under a configuration whose 
 with none available it is not admitted, and its records wait as `incompatible-configuration` does.
 A capture admitted before the cutover keeps its configuration without a policy, since a binding never changes,
 and its traffic, a synthetic backlog included, is still processed under it.
-Once a masking configuration is active, a consumer that cannot mask cannot hold a membership outside `tracekeep dev`,
-and a compactor that cannot write a masked capture's close cannot hold the compactor lease.
+Under `tracekeep dev` any bindable configuration serves.
+A consumer that cannot mask cannot hold a membership, and a compactor that cannot write a masked capture's close cannot hold the compactor lease:
+the migration of the release that masks **fences them out** (T-43),
+moving the membership tables to names an earlier release does not use and the compactor lease to a row it does not name,
+so an earlier ingest replica can neither register nor renew, an earlier compactor can neither take nor renew the lease,
+and every transaction an earlier compactor runs fails its lease check;
+every ingest replica and every compactor is therefore upgraded at that migration, the earlier ones failing closed.
+A release that masks activates a masking configuration like any other.
 So before sensitive traffic starts, every producer whose capture predates the cutover is stopped or rotated, old leaders that may still publish included,
 and the new captures are confirmed bound to a masking configuration, a step of the production-admission guide.

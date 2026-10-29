@@ -517,3 +517,15 @@ the service refuses to start outside `tracekeep dev` with a policy that lacks an
 a capture admitted before keeps its binding, a consumer that cannot mask cannot hold a membership and a compactor that cannot write a masked close cannot hold the lease,
 and every producer whose capture predates the cutover is stopped or rotated before sensitive traffic starts, old leaders included.
 The plan splits the phase into six sub-phases.
+
+### T-43 — old consumers fenced at the masking migration (2026-10-30)
+
+A phase 1 or 2 ingest replica decodes a configuration's content leniently and would run a masking configuration as a policy-less one,
+and a replica of the release before masking rebuilds it but writes clear text,
+so neither can be trusted to report that it cannot execute one.
+**The migration of the release that masks fences them out at the catalog**, as it fences old compactors:
+the membership tables move to names an earlier release does not use and the compactor lease to a row it does not name,
+so an earlier ingest replica can neither register nor renew and an earlier compactor can neither take nor renew the lease.
+Every ingest replica and every compactor is upgraded at that migration; the earlier ones fail closed and stop fetching or compacting.
+A content shape earlier parsers reject was considered and not taken: it fences only once a masking configuration exists, and changes the stored content's form.
+

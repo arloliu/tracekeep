@@ -22,7 +22,7 @@ Contract changes go through proposals, which the subject [README.md](README.md) 
 - **Batching**: per (capture, UTC hour of the record), sorted by seq at flush;
   equal copies deduplicated, conflicting copies kept in conflict segments;
   one new segment per flush, never reopened (§6.2).
-- **Masking** happens before the `Writer` is built, with the capture's classifier and policy (§6.2).
+- **Masking** happens per delivery, after classification and before batching, with the capture's classifier and policy (§6.2).
 - **Acknowledgement**: each message individually, after the transaction that registered a segment holding its record commits;
   `DoubleAck` for a claim-check message (§6.2; `architecture.md` §3.1).
 - **Registration transaction**: idempotent on `pack_id`, the same for `ingest` and the reconciler;
@@ -67,7 +67,7 @@ an expired non-start record of a capture the catalog does **not** know is **neve
 it is deferred and, being indefinite, parked (below), until its capture becomes known or an operator decides.
 Only after this does any wait on catalog state or on a claim object begin → **admission** (a `start` of an unknown capture registers it;
 a claim-check message of an unknown capture is fetched first,
-because `CheckBusMessage` recognizes a claim-check `start` only in `CheckBusPayload`) → capture known → claim payload → processing configuration executable → classify and mask → batch.
+because `CheckBusMessage` recognizes a claim-check `start` only in `CheckBusPayload`) → capture known → claim payload → processing configuration executable → classify → mask → batch.
 
 **The disposition classifier.**
 The order of checks and the table below are one decision procedure, kept apart from its effects.
@@ -116,7 +116,9 @@ so an expired `start` that admission has just admitted terminates as beyond-rete
 | `DeriveBusRecord` → `ErrInvalidRecord` for a kind outside the four | terminate, alert (a producer fault; the record cannot be stored) | seq gap |
 | `DeriveBusRecord` → `ErrInvalidRecord` for a classifier result out of range; `CheckBusPayload` called for a non-claim record | internal invariant failure: nak with delay, alert, never terminate | open incident |
 | processing configuration this consumer cannot execute (§6.4) | nak with delay, alert `incompatible-configuration` | pending count |
-| `ErrCannotScreen`, or masking fails for the record | nak with delay, alert; counted per capture; other captures unaffected | open incident |
+| `ErrCannotScreen`, or masking fails for the record | nak with delay, alert `cannot-screen`; counted per capture; other captures unaffected | open incident |
+| a key the record's masking needs is refused (`keys.Refused`: a binding mismatch, a key id undeclared or of another kind, material malformed, short or missing at its pinned version, `masking-keys.md` §9) | deferred indefinitely, so parked; alert `key-binding-mismatch` or `key-refused`; the key's other records follow it | parked count, `deferred_messages{reason=key-refused}` |
+| a key the record's masking needs is unavailable (the provider unreachable, its deadline passed, its credential refused) | nak with delay; the key resolves at a later delivery | `deferred_messages{reason=key-unavailable}` |
 | write or put fails | no ack; the batch is retried by redelivery; the same batch failing the `Writer`'s validation three times is deterministic: alert `write-failure`, the batch's messages stay deferred, operator | open incident |
 
 Nothing is auto-terminated after N deliveries; every terminal action is one of the rows above or an operator's.
@@ -162,9 +164,17 @@ the cases prove the decision, the schedules prove the re-reads under the capture
   `Writer` accepts strictly increasing seqs with gaps, which a sorted batch is;
   a record delivered later with a lower seq starts the next segment, which [STO §4] allows and the merge normalizes.
   No segment is reopened.
-- Before the `Writer` is constructed:
-  classify each record from its payload as received (`DeriveBusRecord` with the capture's classifier), then mask the batch (`redact.Compiled.Mask`),
-  collect the redaction entries into `PackMeta.Redaction`, and set the capture's `redaction_policy`, `classifier` and `max_frame_len` (tracepack-go.md §3).
+- **Masking, per delivery** (§6.1): each record is classified from its payload as received (`DeriveBusRecord` with the capture's classifier),
+  then masked with its capture's configuration (`redact.Compiled.Mask`, the keys of `masking-keys.md` §9 given for that delivery),
+  `unobserved` being the bus record's quality bit 7, before it joins a batch;
+  inline and claim-check records alike, so a batch, a working file and a pack hold masked records only.
+  The delivery keeps the record as received beside the masked one:
+  its version key, its receipt (header and payload digest) and the termination evidence of §6.1 are the original's,
+  and a capture's configuration, and so its policy and keys, never changes, so equal originals mask to equal records and entries.
+- The segment's metadata names the capture's `classifier` and `max_frame_len` (tracepack-go.md §3)
+  and, for a masking configuration, its `redaction_policy` (policy id and version, digest key id and algorithm, encryption algorithm and key id)
+  and its records' redaction entries in `PackMeta.Redaction`, ordered by seq and then by first masked offset, conflict segments' their own;
+  a masking configuration writes `format_minor` 1 at least.
 - Ack ownership: each message is acked individually after the transaction that registered a segment holding its record commits;
   a claim-check message with `DoubleAck`.
 
