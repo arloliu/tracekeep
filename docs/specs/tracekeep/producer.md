@@ -364,28 +364,28 @@ Thinning anything the gateway cannot positively identify as the FDC service's in
   and `fdc_grpc` advertises support for several,
   so a second FDC-source channel is admissible.
 
-**The eqp-hub change that gives provenance** (a prerequisite for enabling thinning, not for phase 0):
-`fdc_grpc` builds **interval-only requests**
-(a request holding only interval-poll contexts;
-a batch that contains any proxy or event context is sent whole on the ordinary channel)
-and sends them, and their drain resends, on a dedicated channel (`fdc_poll-eqp`).
-`eqp-hsms` already receives `msgChannel` in `doSendToTarget`.
-The producer's configuration names such channels (`pollChannels`); without one it thins nothing and declares nothing.
+**The eqp-hub change that gives provenance** (a prerequisite for enabling thinning, not for phase 0; phase G's, T-42):
+`fdc_grpc`'s `buildRequest` marks a request **interval-only** when every context it consolidates is a kernel DC task,
+event-started and timer-started alike, since each is sampled at its `SampleFreq` and so is interval polling under G5-225;
+a request holding a proxy context is unmarked.
+The mark travels on the hub's message to `eqp-hsms`'s `doSendToTarget`, which hands it to the SDK's registration in place of a channel.
+Everything `buildRequest` does not build (drain resends, post-event queries, MES commands) carries no mark,
+and an unmarked request is never thinned, so a lost mark costs a thin, never a wrong one.
+The SDK thins only a marked `S1F3` and its reply;
+the producer's configuration enables thinning, and without it the SDK thins nothing and declares nothing.
 In parallel mode nothing is thinned at all:
-the legacy host's channel is not polling-only by construction,
+the legacy host's polls never pass `buildRequest` and carry no provenance,
+and the legacy host's channel is not polling-only by construction,
 since `fdc_grpc` itself expects MES queries, event-triggered post-event queries and interval `S1F3` on that shadow
 (`service/message_handler.go:202-231`, `event_dispatcher.go:397-417`),
 so no declaration can make it so.
-Whether timer-triggered (cron) collection contexts,
-which accumulate into the same bucket as interval contexts (`service/timer_handler.go:57`),
-count as interval polling under G5-225 or must stay on the ordinary channel is the FDC maintainers' and the owner's to say.
 
 **Association protocol** (the one piece of state shared between the send path and the record pipeline;
 it also serves §4.4's T3 attribution):
 
 - `doSendToTarget` registers **every forwarded W-bit primary** before `ForwardDataMessage` as a **pending request**:
   an immutable **token** (unique per send), the key `(session id, System Bytes)`, the capture reference, the sending channel,
-  and, when the channel is in `pollChannels`, the **thin decision** for the pair taken right there from the sampling rule.
+  and, when the registration carries the interval-only mark, the **thin decision** for the pair taken right there from the sampling rule.
   A failed send removes the entry **by token**;
   an entry expires at the end of its wait plus a reporting grace (default 5 s), or 30 s after its registration if no wait was opened on it (*Send-path token protocol* below, T-31);
   a completed entry is retained until its expiry so a late callback still finds it.
@@ -435,7 +435,7 @@ it also serves §4.4's T3 attribution):
   `doSendToTarget` hands it to the waiter with the wait it opens.
   The SDK's calls are in `producer-sdk.md` §4.7 *Send path*.
   - **Registration** is unconditional:
-    every forwarded W-bit primary is registered, whether or not its channel is a poll channel and past the ambiguity set's cap as well,
+    every forwarded W-bit primary is registered, whether or not it is marked interval-only and past the ambiguity set's cap as well,
     because §4.4's T3 attribution needs the entry even where nothing is thinned.
   - **Send progress**, reported once per token by whichever eqp-hub code learns it:
     `Sent`, the forwarding call returned without error;
@@ -483,11 +483,11 @@ it also serves §4.4's T3 attribution):
     Reports add no thinning condition:
     a record is zero-filled only under the publisher's conditions above.
 - **Sampling rule** (LS-7, decided 2026-10-25): a poll keeps its bodies when `count mod N == 0` or `now − last_kept ≥ T`;
-  defaults `N = 60`, `T = 60 s`, **configurable per poll channel** in the producer's configuration (`pollChannels[].keep_every_n`, `keep_interval`), never compiled in;
+  defaults `N = 60`, `T = 60 s`, **configurable** in the producer's configuration (its keys in `producer-sdk.md`), never compiled in;
   a change rotates the capture, since the declaration lives in the descriptor.
   A `thinning` entry carries only `stream`, `function` and `source` ([FMT §5] nested tags),
   so the producer writes the rule into `source` with a **key=value convention tracekeep owns**
-  (e.g. `fdc interval polling on channel fdc_poll-eqp; keep_every_n=60; keep_interval_ms=60000; abnormal=kept`):
+  (e.g. `fdc interval polling by request origin; keep_every_n=60; keep_interval_ms=60000; abnormal=kept`):
   the SDK writes it, the catalog parses it at registration, tracepack treats it as text;
   the tracepack maintainers advise against a structured nested tag (2026-10-25):
   tracepack never evaluates a sampling rule, each record's `quality.unobserved` is that record's truth,

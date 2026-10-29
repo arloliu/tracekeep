@@ -48,8 +48,8 @@ whether to keep the rule in `thinning.source` as the key=value convention of §4
 Parallel mode thins nothing (§4.6); that option is closed by fact, not by choice.
 
 **Decided (2026-10-25):** N = 60 and T = 60 s as defaults
-that **must be configurable** per poll channel in the producer's configuration, the `fdc_grpc` interval-only channel to be built,
-whether timer-triggered collection contexts count as interval polling **left to the FDC maintainers** (the one item still open), parallel mode closed by fact, the rule kept in `thinning.source` as the key=value convention.
+that **must be configurable** per poll channel in the producer's configuration (the channel superseded by T-42), the `fdc_grpc` interval-only channel to be built (superseded by T-42),
+whether timer-triggered collection contexts count as interval polling **left to the FDC maintainers** (the one item still open; superseded by T-42), parallel mode closed by fact, the rule kept in `thinning.source` as the key=value convention.
 
 ### T-4 — retention against lineage
 
@@ -161,7 +161,7 @@ compactor singleton under a catalog lease; parking enabled by default (G5-267);
 durable consumers named per stream incarnation, `Preflight` refusing a traffic or parking stream with a mirror, sources or `AllowDirect`, and **replacing, restoring or rewinding either stream only as the stop-the-world maintenance procedure of §6.1 that ends in `bus adopt-stream`**
 (an operational constraint on every deployment, cluster or host, made part of the design's approval in external review rounds 18–20, kept outside the repository);
 the traffic stream and claim bucket are created by `tracekeep migrate`; Atlas CLI for the first release (superseded by T-41); HSMS-SS only in phase 0;
-thinning disabled until the poll channel exists.
+thinning disabled until the poll channel exists (superseded by T-42).
 
 ## Repository decisions
 
@@ -493,3 +493,27 @@ so neither needs the service stopped nor gives an admin process the lease.
 **An excluded input emits `excluded`**, a scope event of its own.
 **The redelivery slack** of `catalog.md` §7.3 is `compact.redelivery_slack`, default 2 minutes,
 and Q is validated strictly above F + `ack_wait` + slack (5 + 7 + 2 < 15 minutes).
+
+### T-42 — what the phase 3 plan settled (2026-10-29)
+
+The owner's answers to nine points the phase 3 plan raised before it started.
+**Thinning takes its provenance from a per-request origin, not a channel**:
+a dedicated interval-only channel changes the production gateway too much,
+so `fdc_grpc`'s `buildRequest` marks a request interval-only when every context it consolidates is a kernel DC task,
+the mark travels on the hub's message to the send path, and the SDK's registration takes it in place of the channel;
+a request holding a proxy context, and everything `buildRequest` does not build (drain resends, post-event and MES commands), is unmarked and never thinned,
+so a lost mark costs a thin, never a wrong one.
+**Every kernel DC task counts as interval polling**, event-started and timer-started alike, which answers T-3's open item.
+**Parallel mode never thins**: the legacy host's polls carry no provenance.
+The eqp-hub side is phase G's; until it ships nothing is marked and nothing thins.
+**Exports are checked in phase 4**, whose gate gains "no clear recipe body in an export".
+**`Restore` addresses a record by `(capture, seq, hour)`**, and restores it only when every non-excluded copy of `(capture, seq)` is equal in any hour;
+differing versions are refused as a conflict, an acknowledged one included, and no version selector is offered.
+**The `session` key purpose waits for phase 4**, with people's OIDC; phase 3 adds `digest` and `master`.
+**Vault is tested** against a dev-mode container in CI and an `httptest` fake.
+**A tool type's production admission** (T-6) is an operator procedure in `docs/guides/`;
+the service refuses to start outside `tracekeep dev` with a policy that lacks any baseline row.
+**The cutover to masking**: outside `tracekeep dev` a capture is admitted only under a configuration whose policy holds every baseline row,
+a capture admitted before keeps its binding, a consumer that cannot mask cannot hold a membership and a compactor that cannot write a masked close cannot hold the lease,
+and every producer whose capture predates the cutover is stopped or rotated before sensitive traffic starts, old leaders included.
+The plan splits the phase into six sub-phases.

@@ -1,17 +1,18 @@
 # Phase 3 — masking and keys
 
-Status: draft (2026-10-29) — awaiting the owner
+Status: active (2026-10-29) — phase 3.1 next
 
 Milestone 3 of the [roadmap](../ROADMAP.md):
 the redaction policy bound to each capture and applied before anything is written,
 the keys it needs and their bindings, `Restore` and `Digest`, and thinning in the producer SDK.
 Its scope and gate are the roadmap's phase 3 row;
 the design is `docs/specs/tracekeep/masking-keys.md` §9, `ingest.md` §6.2, `rollouts.md` §6.4, `compactor.md` §8.2, `api.md` §10.1–§10.2, `operations.md` §10.4, `producer.md` §4.6 and `producer-sdk.md`.
+The owner's answers to the points it raised before starting are T-42.
 This plan only orders the work.
 
-## Before it starts
+## Settled before it started
 
-The owner's answers to the points below become one decision-log entry when the plan is activated, as T-41 did for phase 2.
+The owner's answers, recorded as T-42; the phases below cite them by number.
 
 1. **Thinning takes its provenance from a per-request origin, not a channel** (answered 2026-10-29):
    a dedicated interval-only channel (`fdc_poll-eqp`, `producer.md` §4.6) changes the production environment too much.
@@ -58,11 +59,11 @@ The owner's answers to the points below become one decision-log entry when the p
    since a conflict spans hours (`ingest.md` §6.2) and the hour only says where to look;
    differing versions are refused and reported as a conflict, an acknowledged conflict included, and no version selector is offered.
 
-When the plan is activated, its commit also amends:
-`producer.md` §4.6, `positioning.md`'s thinning row and the roadmap row for points 1 and 2;
+The commit that activated this plan amended:
+`producer.md` §4.6 and the roadmap's phase 3 row for points 1 and 2;
 T-3's channel clause and T-12's "thinning disabled until the poll channel exists" marked superseded, `positioning.md`'s LS-7 summary no longer pending a channel, and T-3's open item dropped from the roadmap;
 `api.md` §10.1 for points 3 and 9 and for the interim admin commands below, and `operations.md` §10.4 for those commands;
-`api.md` §10.2 and the roadmap's phase 4 row for point 4;
+the roadmap's phase 4 row for points 2 and 4, and phase G's row for point 1;
 `rollouts.md` §6.4 for point 8.
 Each sub-phase's spec step then writes the detail its row names.
 
