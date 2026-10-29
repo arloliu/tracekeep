@@ -53,8 +53,8 @@ func TestLease(t *testing.T) {
 	})
 }
 
-// A replica registers only when it executes every configuration not yet retired (rollouts.md §6.4).
-func TestRegisterNeedsEveryUnretiredConfig(t *testing.T) {
+// A replica registers only when it executes every active configuration (rollouts.md §6.4).
+func TestRegisterNeedsEveryActiveConfig(t *testing.T) {
 	t.Parallel()
 	engines(t, func(t *testing.T, c *Catalog) {
 		ctx := t.Context()
