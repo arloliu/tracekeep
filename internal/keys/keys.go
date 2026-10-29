@@ -132,8 +132,11 @@ type Keys struct {
 	cache map[[2]string][]byte
 	// flights are the resolutions in flight, one per kind and key id, which concurrent uses wait on.
 	flights map[[2]string]*flight
-	// joined, when set by a test, runs as a use joins a resolution already in flight.
-	joined func()
+	// joined, when set by a test, runs as a use joins a resolution already in flight;
+	// locking runs as a use is about to take the cache's lock, delivering as a use is about to take a completed resolution's result.
+	joined     func()
+	locking    func()
+	delivering func(ctx context.Context)
 }
 
 // flight is one resolution that every use asking for its key id meanwhile shares, its failure included.
@@ -266,11 +269,16 @@ func (k *Keys) declaredAs(ctx context.Context, kind, keyID string) ([]byte, erro
 // Concurrent uses of one key id share one resolution; a use whose context ends stops waiting and gets nothing,
 // while the resolution goes on for the others.
 func (k *Keys) resolve(ctx context.Context, kind, keyID string) ([]byte, error) {
+	key := [2]string{kind, keyID}
+	if k.locking != nil {
+		k.locking()
+	}
+	k.mu.Lock()
+	// Checked once the lock is held, so a use cancelled while it waited for the lock gets nothing either.
 	if err := ctx.Err(); err != nil {
+		k.mu.Unlock()
 		return k.cancelled(kind, keyID, err)
 	}
-	key := [2]string{kind, keyID}
-	k.mu.Lock()
 	if m, ok := k.cache[key]; ok {
 		k.mu.Unlock()
 		k.metrics.Resolution(kind, "cached")
@@ -287,11 +295,15 @@ func (k *Keys) resolve(ctx context.Context, kind, keyID string) ([]byte, error) 
 	k.mu.Unlock()
 	select {
 	case <-f.done:
+		if k.delivering != nil {
+			k.delivering(ctx)
+		}
 		// Both may be ready at once, and select picks either: a cancelled use gets nothing whichever it picked.
 		if err := ctx.Err(); err != nil {
 			return k.cancelled(kind, keyID, err)
 		}
 		k.metrics.Resolution(kind, outcome(f.err))
+
 		return f.m, f.err
 	case <-ctx.Done():
 		return k.cancelled(kind, keyID, ctx.Err())

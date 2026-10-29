@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"slices"
 	"testing"
 
 	"github.com/arloliu/tracekeep/internal/catalog"
@@ -167,33 +168,85 @@ func TestCancelledUseGetsNothingWarm(t *testing.T) {
 	}
 }
 
-// A waiter cancelled before its shared resolution completes gets nothing, whichever of the two its select sees first;
-// the leader's use, not cancelled, gets the key.
+// A warm use cancelled while it waits for the cache's lock gets nothing: the check comes once the lock is held.
+func TestCancelledWhileWaitingForTheCache(t *testing.T) {
+	t.Parallel()
+	cat := catalogtest.Open(t, catalog.EngineSQLite)
+	k := newKeys(t, maskingKeys(oneVersion(material(0x68, 32))), cat)
+	if _, err := k.Digest(t.Context(), "d-1"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := k.Encryption(t.Context(), testCapture, "m-1"); err != nil {
+		t.Fatal(err)
+	}
+	for name, use := range map[string]func(ctx context.Context) ([]byte, error){
+		"DigestKey":     func(ctx context.Context) ([]byte, error) { return k.ForUse(ctx).DigestKey("d-1") },
+		"EncryptionKey": func(ctx context.Context) ([]byte, error) { return k.ForUse(ctx).EncryptionKey(testCapture, "m-1") },
+	} {
+		locking := make(chan struct{})
+		k.locking = func() { close(locking) }
+		ctx, cancel := context.WithCancel(t.Context())
+		type result struct {
+			key []byte
+			err error
+		}
+		res := make(chan result, 1)
+		k.mu.Lock()
+		go func() { key, err := use(ctx); res <- result{key, err} }()
+		// The use is past any check before the lock and about to wait for it, which this test holds.
+		<-locking
+		cancel()
+		k.mu.Unlock()
+		if r := <-res; !errors.Is(r.err, context.Canceled) || r.key != nil {
+			t.Errorf("%s cancelled while waiting for the lock = %x, %v; want nothing", name, r.key, r.err)
+		}
+		k.locking = nil
+	}
+}
+
+// A waiter whose shared resolution has completed, cancelled as it is about to take the result, gets nothing,
+// and is counted as cancelled; the leader's use, not cancelled, gets the key.
 func TestCancelledWaiterAsTheResolutionCompletes(t *testing.T) {
 	t.Parallel()
 	cat := catalogtest.Open(t, catalog.EngineSQLite)
 	m := material(0x67, 32)
 	p := oneVersion(m)
 	p.gate = newGate()
-	k := newKeys(t, maskingKeys(p), cat)
+	r := &recorder{}
+	cfg := maskingKeys(p)
+	cfg.Metrics = r
+	k := newKeys(t, cfg, cat)
 	joined := joining(k)
-	leader, waiter := make(chan []byte, 1), make(chan error, 1)
+	ctx, cancel := context.WithCancel(t.Context())
+	held, release := make(chan struct{}), make(chan struct{})
+	k.delivering = func(c context.Context) {
+		if c == ctx {
+			close(held)
+			<-release
+		}
+	}
+	leader := make(chan []byte, 1)
 	go func() { got, _ := k.Digest(t.Context(), "d-1"); leader <- got }()
 	<-p.gate.arrived
-	ctx, cancel := context.WithCancel(t.Context())
-	var waiterKey []byte
-	go func() {
-		got, err := k.Digest(ctx, "d-1")
-		waiterKey = got
-		waiter <- err
-	}()
+	type result struct {
+		key []byte
+		err error
+	}
+	waiter := make(chan result, 1)
+	go func() { key, err := k.Digest(ctx, "d-1"); waiter <- result{key, err} }()
 	<-joined
-	cancel()
 	close(p.gate.release)
+	// The resolution has completed and the waiter took the completed branch; cancel it before it takes the result.
+	<-held
+	cancel()
+	close(release)
 	if got := <-leader; !bytes.Equal(got, m) {
 		t.Errorf("the leader = %x, want the material", got)
 	}
-	if err := <-waiter; !errors.Is(err, context.Canceled) || waiterKey != nil {
-		t.Errorf("the cancelled waiter = %x, %v; want nothing", waiterKey, err)
+	if w := <-waiter; !errors.Is(w.err, context.Canceled) || w.key != nil {
+		t.Errorf("the cancelled waiter = %x, %v; want nothing", w.key, w.err)
+	}
+	if got := r.recorded(); !slices.Contains(got, "resolution digest cancelled") || slices.Contains(got, "resolution digest cached") {
+		t.Errorf("recorded %q, want the waiter counted as cancelled", got)
 	}
 }
