@@ -6,6 +6,7 @@ import (
 
 	"github.com/arloliu/tracekeep/internal/config"
 	"github.com/arloliu/tracekeep/internal/keys"
+	"github.com/arloliu/tracekeep/internal/metrics"
 )
 
 // A key id declared with vault brings the vault provider, built from keys.vault; none declared, none is built.
@@ -18,7 +19,7 @@ func TestKeysConfigBuildsVaultOnlyWhenDeclared(t *testing.T) {
 			Auth: config.VaultAuth{Method: keys.VaultAppRole, RoleID: "r-1", SecretID: "s-1"},
 		},
 	}
-	kc, err := keysConfig(c, false)
+	kc, err := keysConfig(c, false, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -26,11 +27,26 @@ func TestKeysConfigBuildsVaultOnlyWhenDeclared(t *testing.T) {
 		t.Errorf("keys config = %+v, want the vault provider and m-1 as master", kc)
 	}
 	c.Vault.Auth.SecretID = ""
-	if _, err := keysConfig(c, false); err == nil {
+	if _, err := keysConfig(c, false, nil); err == nil {
 		t.Error("keysConfig with approle and no secret id succeeded")
 	}
 	c.Declared["m-1"] = config.KeyDeclaration{Provider: keys.ProviderFile, Ref: "/k", Kind: "master"}
-	if kc, err := keysConfig(c, false); err != nil || kc.Providers != nil {
+	if kc, err := keysConfig(c, false, nil); err != nil || kc.Providers != nil {
 		t.Errorf("keysConfig without a vault key id = %+v, %v; want no vault provider", kc.Providers, err)
+	}
+}
+
+// Every role of a process shares one keys module, and its metrics are registered once.
+func TestEnvKeysShared(t *testing.T) {
+	t.Parallel()
+	e := devEnv(t)
+	e.Metrics = metrics.NewServer()
+	a, err := e.Keys()
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := e.Keys()
+	if err != nil || a != b {
+		t.Errorf("a second Keys = %p, %v; want the first, %p", b, err, a)
 	}
 }

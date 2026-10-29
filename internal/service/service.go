@@ -26,6 +26,7 @@ import (
 	"github.com/arloliu/tracekeep/internal/compact"
 	"github.com/arloliu/tracekeep/internal/config"
 	"github.com/arloliu/tracekeep/internal/ingest"
+	"github.com/arloliu/tracekeep/internal/keys"
 	"github.com/arloliu/tracekeep/internal/metrics"
 	"github.com/arloliu/tracekeep/internal/store"
 	"github.com/arloliu/tracekeep/internal/store/s3store"
@@ -52,6 +53,10 @@ type Env struct {
 	Now func() time.Time
 	// Metrics is the process's metrics and health server; nil records and serves none.
 	Metrics *metrics.Server
+
+	// keys is the process's one keys module, which every role shares, so a key is resolved and bound once per process.
+	keysMu sync.Mutex
+	keys   *keys.Keys
 
 	// joined, when not nil, runs once Ingest's consumers joined and its readiness is registered; a test's barrier.
 	joined func()

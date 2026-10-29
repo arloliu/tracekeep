@@ -164,11 +164,7 @@ func (e *Env) downloads(ctx context.Context, dl *api.Downloads, m *metrics.API) 
 		return errors.New("service: api: downloads go through the API (the store does not presign, or store.presign is off), " +
 			"which needs api.public_url and a keys.download issuing key id")
 	}
-	kc, err := keysConfig(c.Keys, e.Dev)
-	if err != nil {
-		return err
-	}
-	k, err := keys.New(kc, e.Catalog)
+	k, err := e.Keys()
 	if err != nil {
 		return err
 	}
@@ -261,21 +257,38 @@ func (e *Env) APIAddr() string {
 	return a
 }
 
-// Keys is the keys this configuration declares over the catalog; it resolves nothing until a key is used.
+// Keys is the process's keys, those this configuration declares over the catalog, built at the first call and shared by every role;
+// it resolves nothing until a key is used.
 func (e *Env) Keys() (*keys.Keys, error) {
-	kc, err := keysConfig(e.Config.Keys, e.Dev)
+	e.keysMu.Lock()
+	defer e.keysMu.Unlock()
+	if e.keys != nil {
+		return e.keys, nil
+	}
+	var m keys.Metrics
+	if e.Metrics != nil {
+		km, err := metrics.NewKeys(e.Metrics)
+		if err != nil {
+			return nil, err
+		}
+		m = km
+	}
+	kc, err := keysConfig(e.Config.Keys, e.Dev, m)
 	if err != nil {
 		return nil, err
 	}
+	if e.keys, err = keys.New(kc, e.Catalog); err != nil {
+		return nil, err
+	}
 
-	return keys.New(kc, e.Catalog)
+	return e.keys, nil
 }
 
 // keysConfig is the keys module's configuration from the service's: the declarations, the download purpose
 // and, when a key id is declared with vault, the vault provider, which calls nothing until a key is first used.
-func keysConfig(c config.Keys, dev bool) (keys.Config, error) {
+func keysConfig(c config.Keys, dev bool, m keys.Metrics) (keys.Config, error) {
 	kc := keys.Config{
-		Dev: dev, Declared: map[string]keys.Declaration{},
+		Dev: dev, Declared: map[string]keys.Declaration{}, Metrics: m,
 		Download: keys.Purpose{Issuing: c.Download.Issuing, Accepted: c.Download.Accepted},
 	}
 	vault := false
@@ -288,7 +301,7 @@ func keysConfig(c config.Keys, dev bool) (keys.Config, error) {
 		p, err := keys.NewVault(keys.VaultConfig{
 			Address: v.Address, CAFile: v.CAFile, Mount: v.Mount, Timeout: v.Timeout,
 			Method: v.Auth.Method, AuthMount: v.Auth.Mount, Role: v.Auth.Role, TokenFile: v.Auth.TokenFile,
-			RoleID: v.Auth.RoleID, SecretID: v.Auth.SecretID,
+			RoleID: v.Auth.RoleID, SecretID: v.Auth.SecretID, Metrics: m,
 		})
 		if err != nil {
 			return keys.Config{}, err
