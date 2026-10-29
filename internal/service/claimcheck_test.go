@@ -35,7 +35,7 @@ func TestClaimCheckStartAtTheMinimumMaxPayload(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		e := &Env{Config: load(t, srv.URL()), Log: slog.New(slog.DiscardHandler), Catalog: c, NC: nc, JS: js, Store: store.NewMem(), AllowUnversioned: true}
+		e := &Env{Config: load(t, srv.URL()), Log: slog.New(slog.DiscardHandler), Catalog: c, NC: nc, JS: js, Store: store.NewMem(), AllowUnversioned: true, Dev: true}
 		e.Config.Ingest.FlushInterval, e.Config.Ingest.MaxWait = 200*time.Millisecond, time.Second
 		if err := Migrate(ctx, e); err != nil {
 			t.Fatal(err)

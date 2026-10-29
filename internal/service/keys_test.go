@@ -4,6 +4,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/arloliu/tracekeep/internal/catalog"
+	"github.com/arloliu/tracekeep/internal/catalog/catalogtest"
 	"github.com/arloliu/tracekeep/internal/config"
 	"github.com/arloliu/tracekeep/internal/keys"
 	"github.com/arloliu/tracekeep/internal/metrics"
@@ -49,4 +51,34 @@ func TestEnvKeysShared(t *testing.T) {
 	if err != nil || a != b {
 		t.Errorf("a second Keys = %p, %v; want the first, %p", b, err, a)
 	}
+}
+
+// Outside dev an ingest start stages its own configuration and activates nothing (rollouts.md §6.4); under dev it activates its own.
+func TestIngestStartStagesOutsideDev(t *testing.T) {
+	t.Parallel()
+	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
+		e := env(t, c)
+		e.Dev = false
+		gs, err := ingesters(t.Context(), e)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, g := range gs {
+			e.leave(g.Replica)
+		}
+		cs, err := c.Configs(t.Context())
+		if err != nil || len(cs) != 1 || cs[0].State() != catalog.ConfigStaged {
+			t.Fatalf("after a start outside dev: %+v, %v; want one staged configuration", cs, err)
+		}
+		e.Dev = true
+		if gs, err = ingesters(t.Context(), e); err != nil {
+			t.Fatal(err)
+		}
+		for _, g := range gs {
+			e.leave(g.Replica)
+		}
+		if cs, err = c.Configs(t.Context()); err != nil || len(cs) != 1 || cs[0].State() != catalog.ConfigActive {
+			t.Errorf("after a dev start: %+v, %v; want it active", cs, err)
+		}
+	})
 }

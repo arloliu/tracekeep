@@ -461,3 +461,10 @@ func outcome(err error) string {
 		return "unavailable"
 	}
 }
+
+// Declares reports whether keyID is declared with kind, as rebuilding a configuration checks without a provider call.
+func (k *Keys) Declares(keyID, kind string) bool {
+	d, ok := k.declared[keyID]
+
+	return ok && d.Kind == kind
+}
