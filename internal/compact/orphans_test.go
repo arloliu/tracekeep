@@ -36,7 +36,7 @@ func newFixture(t *testing.T, c *catalog.Catalog) *fixture {
 	t.Helper()
 	f := &fixture{c: c, s: store.NewMem(), horizon: hour - 24}
 	f.r = &Compactor{Catalog: c, Store: f.s, HorizonHour: func() int64 { return f.horizon }, Log: slog.New(slog.DiscardHandler)}
-	lease, ok, err := c.TakeLease(t.Context(), "compactor", "reconciler", time.Hour)
+	lease, ok, err := c.TakeLease(t.Context(), "compactor/2", "reconciler", time.Hour)
 	if err != nil || !ok {
 		t.Fatalf("TakeLease = %v, %v", ok, err)
 	}
@@ -403,7 +403,7 @@ func TestOrphansUnderALostLease(t *testing.T) {
 		b := segment(t, f.admit(t), []uint64{1}, false)
 		f.put(t, b.key, b.data)
 		f.pass(t)
-		if _, ok, err := c.TakeLease(t.Context(), "compactor", "other", time.Hour); err != nil || ok {
+		if _, ok, err := c.TakeLease(t.Context(), "compactor/2", "other", time.Hour); err != nil || ok {
 			t.Fatalf("a live lease was taken: %v, %v", ok, err)
 		}
 		f.lease.Fence-- // a stale holder

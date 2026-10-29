@@ -53,6 +53,21 @@ func newCatalog(t *testing.T, engine string) *Catalog {
 // mariadbDatabase creates a database of the test's own on the configured server, migrates it and returns its DSN.
 func mariadbDatabase(t *testing.T) string {
 	t.Helper()
+	dsn := mariadbEmpty(t)
+	mc, err := mysql.ParseDSN(dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := mc.Clone()
+	m.MultiStatements = true
+	migrate(t, "mysql", m.FormatDSN(), EngineMariaDB)
+
+	return dsn
+}
+
+// mariadbEmpty creates an empty database of the test's own on the configured server and returns its DSN.
+func mariadbEmpty(t *testing.T) string {
+	t.Helper()
 	dsn := os.Getenv(envMariaDB)
 	if dsn == "" {
 		t.Skipf("%s not set: no MariaDB to test against", envMariaDB)
@@ -78,9 +93,6 @@ func mariadbDatabase(t *testing.T) string {
 		}
 	})
 	mc.DBName = name
-	m := mc.Clone()
-	m.MultiStatements = true
-	migrate(t, "mysql", m.FormatDSN(), EngineMariaDB)
 
 	return mc.FormatDSN()
 }

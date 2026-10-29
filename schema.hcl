@@ -396,7 +396,7 @@ table "claim_objects" {
 }
 
 # Ingest replicas and their membership leases (rollouts.md §6.4).
-table "consumers" {
+table "members" {
   schema = schema.main
   column "replica_id" {
     type = varchar(128)
@@ -416,7 +416,7 @@ table "consumers" {
   }
 }
 
-table "consumer_configs" {
+table "member_configs" {
   schema = schema.main
   column "replica_id" {
     type = varchar(128)

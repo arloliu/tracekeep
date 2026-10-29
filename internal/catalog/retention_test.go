@@ -122,7 +122,7 @@ func TestRecordRetentionUnderALostLease(t *testing.T) {
 	t.Parallel()
 	engines(t, func(t *testing.T, c *Catalog) {
 		stale := compactorLease(t, c, "old")
-		lapse(t, c, `UPDATE leases SET until_ns = 0 WHERE name = 'compactor'`)
+		lapse(t, c, `UPDATE leases SET until_ns = 0 WHERE name = 'compactor/2'`)
 		compactorLease(t, c, "new")
 		if _, err := c.RecordRetention(t.Context(), stale, month, delay, hourNS(1)); !errors.Is(err, ErrLeaseLost) {
 			t.Fatalf("RecordRetention = %v, want ErrLeaseLost", err)

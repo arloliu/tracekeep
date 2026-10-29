@@ -132,7 +132,7 @@ func TestCrashAfterTheArchivePut(t *testing.T) {
 			if err := c.ReleaseLease(t.Context(), f.lease); err != nil {
 				t.Fatal(err)
 			}
-			l, ok, err := c.TakeLease(t.Context(), "compactor", "next", time.Hour)
+			l, ok, err := c.TakeLease(t.Context(), "compactor/2", "next", time.Hour)
 			if err != nil || !ok {
 				t.Fatalf("TakeLease = %v, %v", ok, err)
 			}

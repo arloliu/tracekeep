@@ -384,7 +384,7 @@ func TestPublishAcceptedAfterTheCutOffRead(t *testing.T) {
 func survivorAndStray(t *testing.T, c *catalog.Catalog) {
 	t.Helper()
 	ctx := t.Context()
-	lease, ok, err := c.TakeLease(ctx, "compactor", "w", time.Hour)
+	lease, ok, err := c.TakeLease(ctx, "compactor/2", "w", time.Hour)
 	if err != nil || !ok {
 		t.Fatalf("TakeLease = %v, %v", ok, err)
 	}

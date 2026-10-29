@@ -185,7 +185,7 @@ func TestLeaseTakeoverAgainstAPrune(t *testing.T) {
 		waits := c.write.Stats().WaitCount
 		leaseRowHeld(t, c, release)
 		lapsed := run(func() {
-			_, lerr = c.write.ExecContext(t.Context(), `UPDATE leases SET until_ns = 0 WHERE name = 'compactor'`)
+			_, lerr = c.write.ExecContext(t.Context(), `UPDATE leases SET until_ns = 0 WHERE name = 'compactor/2'`)
 		})
 		waitBehindLeaseRow(t, c, waits, release)
 		close(release)

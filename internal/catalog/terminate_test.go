@@ -256,7 +256,7 @@ func TestAdoptionLosesToTermination(t *testing.T) {
 	t.Parallel()
 	engines(t, func(t *testing.T, c *Catalog) {
 		ctx := t.Context()
-		lease, _, err := c.TakeLease(ctx, "compactor", "w", ttl)
+		lease, _, err := c.TakeLease(ctx, "compactor/2", "w", ttl)
 		if err != nil {
 			t.Fatal(err)
 		}

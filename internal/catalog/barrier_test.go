@@ -64,7 +64,7 @@ func leaseRowHeld(t *testing.T, c *Catalog, release chan struct{}) {
 	}
 	tx, err := c.write.BeginTxx(t.Context(), nil)
 	if err == nil {
-		_, err = tx.ExecContext(t.Context(), `SELECT name FROM leases WHERE name = 'compactor' FOR UPDATE NOWAIT`)
+		_, err = tx.ExecContext(t.Context(), `SELECT name FROM leases WHERE name = 'compactor/2' FOR UPDATE NOWAIT`)
 		_ = tx.Rollback()
 	}
 	if err == nil || !strings.Contains(err.Error(), "1205") {
@@ -238,7 +238,7 @@ func TestRenewalRacingAnAdmission(t *testing.T) {
 		}
 		time.Sleep(2 * short) // the scenario: the old member's committed lease lapses while its renewal is uncommitted
 		var lapsed int
-		if err := c.read.GetContext(ctx, &lapsed, `SELECT COUNT(*) FROM consumers WHERE replica_id = 'old' AND lease_until < `+c.d.nowNS); err != nil || lapsed != 1 {
+		if err := c.read.GetContext(ctx, &lapsed, `SELECT COUNT(*) FROM members WHERE replica_id = 'old' AND lease_until < `+c.d.nowNS); err != nil || lapsed != 1 {
 			t.Fatalf("the committed lease has not lapsed (%d, %v)", lapsed, err)
 		}
 

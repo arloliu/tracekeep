@@ -278,7 +278,7 @@ func TestDuringAComparison(t *testing.T) {
 					if err := f.c.ReleaseLease(t.Context(), f.lease); err != nil {
 						t.Error(err)
 					}
-					if _, ok, err := f.c.TakeLease(t.Context(), "compactor", "another", time.Hour); err != nil || !ok {
+					if _, ok, err := f.c.TakeLease(t.Context(), "compactor/2", "another", time.Hour); err != nil || !ok {
 						t.Errorf("TakeLease = %v, %v", ok, err)
 					}
 				}

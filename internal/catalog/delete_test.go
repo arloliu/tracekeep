@@ -128,7 +128,7 @@ func TestDeletePackUnderALostLease(t *testing.T) {
 	engines(t, func(t *testing.T, c *Catalog) {
 		stale := compactorLease(t, c, "old")
 		capture, inputs, archive := mergedScope(t, c, stale, 0)
-		lapse(t, c, `UPDATE leases SET until_ns = 0 WHERE name = 'compactor'`)
+		lapse(t, c, `UPDATE leases SET until_ns = 0 WHERE name = 'compactor/2'`)
 		compactorLease(t, c, "new")
 		d := Deletable{Pack: inputs[0].ID, Capture: capture, Key: inputs[0].Key}
 		if _, err := c.DeletePack(t.Context(), stale, d, deleteAt(t, c, archive), time.Hour); !errors.Is(err, ErrLeaseLost) {

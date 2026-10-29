@@ -212,7 +212,7 @@ func (f *fixture) adoptStream(t *testing.T, bs *streams) {
 	if _, err := f.c.AdoptStream(ctx, catalog.RoleParking, bs.inc.Stream, bs.inc.CreatedNS+1, "op"); err != nil {
 		t.Fatal(err)
 	}
-	lease, ok, err := f.c.TakeLease(ctx, "compactor", "reconciler", time.Hour)
+	lease, ok, err := f.c.TakeLease(ctx, "compactor/2", "reconciler", time.Hour)
 	if err != nil || !ok {
 		t.Fatalf("TakeLease = %v, %v", ok, err)
 	}

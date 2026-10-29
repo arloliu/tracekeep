@@ -59,7 +59,7 @@ func TestPruneEventsUnderALostLease(t *testing.T) {
 	t.Parallel()
 	engines(t, func(t *testing.T, c *Catalog) {
 		stale := compactorLease(t, c, "old")
-		lapse(t, c, `UPDATE leases SET until_ns = 0 WHERE name = 'compactor'`)
+		lapse(t, c, `UPDATE leases SET until_ns = 0 WHERE name = 'compactor/2'`)
 		compactorLease(t, c, "new")
 		eventsAt(t, c, 10, 70)
 		if _, err := c.PruneEvents(t.Context(), stale, 25, 80); !errors.Is(err, ErrLeaseLost) {

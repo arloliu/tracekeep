@@ -114,7 +114,7 @@ func TestCompactRequests(t *testing.T) {
 			t.Errorf("audit = %v", got)
 		}
 		stale := compactorLease(t, c, "old")
-		lapse(t, c, `UPDATE leases SET until_ns = 0 WHERE name = 'compactor'`)
+		lapse(t, c, `UPDATE leases SET until_ns = 0 WHERE name = 'compactor/2'`)
 		l := compactorLease(t, c, "new")
 		if _, err := c.DecideRequest(t.Context(), stale, q); !errors.Is(err, ErrLeaseLost) {
 			t.Errorf("DecideRequest under a lost lease = %v, want ErrLeaseLost", err)

@@ -140,7 +140,7 @@ func TestRecordConflictUnderALostLease(t *testing.T) {
 	engines(t, func(t *testing.T, c *Catalog) {
 		capture, s := suspected(t, c)
 		stale := compactorLease(t, c, "old")
-		lapse(t, c, `UPDATE leases SET until_ns = 0 WHERE name = 'compactor'`)
+		lapse(t, c, `UPDATE leases SET until_ns = 0 WHERE name = 'compactor/2'`)
 		compactorLease(t, c, "new")
 		if _, err := c.RecordConflict(t.Context(), stale, s, true); !errors.Is(err, ErrLeaseLost) {
 			t.Fatalf("RecordConflict = %v, want ErrLeaseLost", err)

@@ -437,7 +437,7 @@ func (c *Catalog) AdoptStream(ctx context.Context, role, stream string, createdN
 	inc := Incarnation{Role: role, Stream: stream, CreatedNS: createdNS}
 	err := c.inTx(ctx, func(tx *sqlx.Tx) error {
 		var live int
-		err := tx.GetContext(ctx, &live, `SELECT (SELECT COUNT(*) FROM consumers WHERE lease_until >= `+c.d.nowNS+`)
+		err := tx.GetContext(ctx, &live, `SELECT (SELECT COUNT(*) FROM members WHERE lease_until >= `+c.d.nowNS+`)
 			+ (SELECT COUNT(*) FROM leases WHERE until_ns >= `+c.d.nowNS+`)`)
 		if err != nil {
 			return err

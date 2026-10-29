@@ -333,7 +333,7 @@ func TestAdoptStreamRefusedWhileALeaseIsLive(t *testing.T) {
 		if err := c.Leave(ctx, "r"); err != nil {
 			t.Fatal(err)
 		}
-		if _, ok, err := c.TakeLease(ctx, "compactor", "h", time.Minute); err != nil || !ok {
+		if _, ok, err := c.TakeLease(ctx, "compactor/2", "h", time.Minute); err != nil || !ok {
 			t.Fatalf("TakeLease = %v, %v", ok, err)
 		}
 		if _, err := c.AdoptStream(ctx, RoleTraffic, "S", 2, "op"); !errors.Is(err, ErrLeaseLive) {
@@ -490,7 +490,7 @@ func TestReconcileCopies(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		lease, _, err := c.TakeLease(ctx, "compactor", "w", ttl)
+		lease, _, err := c.TakeLease(ctx, "compactor/2", "w", ttl)
 		if err != nil {
 			t.Fatal(err)
 		}

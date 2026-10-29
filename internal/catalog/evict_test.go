@@ -240,7 +240,7 @@ func TestEvictHourGuards(t *testing.T) {
 		if packState(t, c, p.ID) != "staged" || count(t, c, `SELECT COUNT(*) FROM tombstones`) != 0 {
 			t.Error("a refused eviction wrote")
 		}
-		lapse(t, c, `UPDATE leases SET until_ns = 0 WHERE name = 'compactor'`)
+		lapse(t, c, `UPDATE leases SET until_ns = 0 WHERE name = 'compactor/2'`)
 		compactorLease(t, c, "new")
 		if _, err := c.EvictHour(t.Context(), l, Scope{capture, 1}, hourEvictedNow); !errors.Is(err, ErrLeaseLost) {
 			t.Errorf("EvictHour under a lost lease = %v, want ErrLeaseLost", err)

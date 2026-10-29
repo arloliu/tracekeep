@@ -51,7 +51,7 @@ func TestCommitMergeUnderALapsedLease(t *testing.T) {
 		register(t, c, in, Registration{Evidence: &Evidence{}})
 		l := compactorLease(t, c, "h")
 		snap := snapshot(t, c, capture)
-		lapse(t, c, `UPDATE leases SET until_ns = 0 WHERE name = 'compactor'`)
+		lapse(t, c, `UPDATE leases SET until_ns = 0 WHERE name = 'compactor/2'`)
 		rev, evs := captureRevision(t, c, capture), events(t, c)
 		archive := archiveOf(t, capture, 1, in)
 		if _, err := c.CommitMerge(t.Context(), l, mergeOf(snap, archive)); !errors.Is(err, ErrLeaseLost) {
@@ -163,7 +163,7 @@ func TestLeaseTakeoverAgainstAMergeCommit(t *testing.T) {
 			}
 			var lerr error
 			lapsed := run(func() {
-				_, lerr = c.write.ExecContext(t.Context(), `UPDATE leases SET until_ns = 0 WHERE name = 'compactor'`)
+				_, lerr = c.write.ExecContext(t.Context(), `UPDATE leases SET until_ns = 0 WHERE name = 'compactor/2'`)
 			})
 			if beforeLock {
 				<-lapsed

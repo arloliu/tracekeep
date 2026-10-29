@@ -9,8 +9,8 @@ import (
 	"github.com/arloliu/tracekeep/internal/catalog"
 )
 
-// leaseName is the compactor lease the migrations create.
-const leaseName = "compactor"
+// leaseName is the compactor lease's row, moved by the masking migration so earlier compactors cannot take it (T-43).
+const leaseName = "compactor/2"
 
 // The test seams of the package.
 const (
