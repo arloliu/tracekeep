@@ -185,7 +185,7 @@ func TestSettledHourReopenedThroughTheAPI(t *testing.T) {
 		ctx := t.Context()
 		capture := w.admit(t)
 		in := w.stage(t, capture)
-		lease, ok, err := c.TakeLease(ctx, "compactor", "merger", time.Hour)
+		lease, ok, err := c.TakeLease(ctx, "compactor/2", "merger", time.Hour)
 		if err != nil || !ok {
 			t.Fatalf("TakeLease = %v, %v", ok, err)
 		}

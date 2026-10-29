@@ -136,7 +136,7 @@ func TestDevServesTheMachineAPI(t *testing.T) {
 // under a lease of the test's own that lapses at once, which that compactor then takes.
 func seedRetention(t *testing.T, e *Env) {
 	t.Helper()
-	seed, ok, err := e.Catalog.TakeLease(t.Context(), "compactor", "test-seed", 50*time.Millisecond)
+	seed, ok, err := e.Catalog.TakeLease(t.Context(), "compactor/2", "test-seed", 50*time.Millisecond)
 	if err != nil || !ok {
 		t.Fatalf("TakeLease = %v, %v", ok, err)
 	}

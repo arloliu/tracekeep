@@ -243,7 +243,7 @@ func TestParkingCrashPoints(t *testing.T) {
 // retention takes the compactor's lease and records a one-hour retention, for evictNow.
 func retention(t *testing.T, c *catalog.Catalog) catalog.Lease {
 	t.Helper()
-	lease, ok, err := c.TakeLease(t.Context(), "compactor", "retention", time.Hour)
+	lease, ok, err := c.TakeLease(t.Context(), "compactor/2", "retention", time.Hour)
 	if err != nil || !ok {
 		t.Fatalf("TakeLease = %v, %v", ok, err)
 	}

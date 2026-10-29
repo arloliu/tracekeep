@@ -203,7 +203,7 @@ func TestCloseIntentUnderALostLease(t *testing.T) {
 	engines(t, func(t *testing.T, c *Catalog) {
 		capture := admitted(t, c)
 		stale := compactorLease(t, c, "old")
-		lapse(t, c, `UPDATE leases SET until_ns = 0 WHERE name = 'compactor'`)
+		lapse(t, c, `UPDATE leases SET until_ns = 0 WHERE name = 'compactor/2'`)
 		compactorLease(t, c, "new")
 		if _, err := c.CloseIntent(t.Context(), stale, intentOf(t, capture, CloseOperator, c.now())); !errors.Is(err, ErrLeaseLost) {
 			t.Fatalf("CloseIntent = %v, want ErrLeaseLost", err)
@@ -376,7 +376,7 @@ func TestPublishCloseUnderALostLease(t *testing.T) {
 	engines(t, func(t *testing.T, c *Catalog) {
 		stale := compactorLease(t, c, "old")
 		capture, in := intended(t, c, stale)
-		lapse(t, c, `UPDATE leases SET until_ns = 0 WHERE name = 'compactor'`)
+		lapse(t, c, `UPDATE leases SET until_ns = 0 WHERE name = 'compactor/2'`)
 		compactorLease(t, c, "new")
 		if _, err := c.PublishClose(t.Context(), stale, closePack(t, capture, in.PackID), 0); !errors.Is(err, ErrLeaseLost) {
 			t.Fatalf("PublishClose = %v, want ErrLeaseLost", err)
@@ -607,7 +607,7 @@ func TestLeaseTakeoverAgainstAClose(t *testing.T) {
 				}
 				var lerr error
 				lapsed := run(func() {
-					_, lerr = c.write.ExecContext(t.Context(), `UPDATE leases SET until_ns = 0 WHERE name = 'compactor'`)
+					_, lerr = c.write.ExecContext(t.Context(), `UPDATE leases SET until_ns = 0 WHERE name = 'compactor/2'`)
 				})
 				if beforeLock {
 					<-lapsed

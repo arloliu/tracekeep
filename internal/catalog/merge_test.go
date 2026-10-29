@@ -12,7 +12,7 @@ import (
 // compactorLease takes the compactor lease for holder.
 func compactorLease(t *testing.T, c *Catalog, holder string) Lease {
 	t.Helper()
-	l, ok, err := c.TakeLease(t.Context(), "compactor", holder, time.Minute)
+	l, ok, err := c.TakeLease(t.Context(), "compactor/2", holder, time.Minute)
 	if err != nil || !ok {
 		t.Fatalf("TakeLease = %v, %v", ok, err)
 	}
@@ -316,7 +316,7 @@ func TestCommitMergeUnderALostLease(t *testing.T) {
 		in := segment(t, capture, 1, 0, 9)
 		register(t, c, in, Registration{Evidence: &Evidence{}})
 		stale := compactorLease(t, c, "old")
-		lapse(t, c, `UPDATE leases SET until_ns = 0 WHERE name = 'compactor'`)
+		lapse(t, c, `UPDATE leases SET until_ns = 0 WHERE name = 'compactor/2'`)
 		compactorLease(t, c, "new")
 		snap := snapshot(t, c, capture)
 		rev, evs := captureRevision(t, c, capture), events(t, c)

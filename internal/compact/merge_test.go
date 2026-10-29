@@ -271,7 +271,7 @@ func TestMergeUnderALostLease(t *testing.T) {
 			if err := c.ReleaseLease(t.Context(), f.lease); err != nil {
 				t.Error(err)
 			}
-			if _, ok, err := c.TakeLease(t.Context(), "compactor", "another", time.Hour); err != nil || !ok {
+			if _, ok, err := c.TakeLease(t.Context(), "compactor/2", "another", time.Hour); err != nil || !ok {
 				t.Errorf("TakeLease = %v, %v", ok, err)
 			}
 		}
@@ -392,7 +392,7 @@ func TestRequestedAndFailedMergeMetrics(t *testing.T) {
 		if out, err := c.RegisterPack(t.Context(), q, catalog.Registration{Evidence: &catalog.Evidence{}, HorizonHour: f.horizon}); err != nil || out != catalog.Registered {
 			t.Fatalf("RegisterPack = %v, %v", out, err)
 		}
-		if f.lease, _, err = c.TakeLease(t.Context(), "compactor", "again", time.Hour); err != nil {
+		if f.lease, _, err = c.TakeLease(t.Context(), "compactor/2", "again", time.Hour); err != nil {
 			t.Fatal(err)
 		}
 		// The scope of the failed read is merged by this pass too; it is the conflicting one that fails the task.

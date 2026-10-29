@@ -159,7 +159,7 @@ func TestMergeRequestUnderALostLease(t *testing.T) {
 			if err := c.ReleaseLease(t.Context(), f.lease); err != nil {
 				t.Error(err)
 			}
-			l, ok, err := c.TakeLease(t.Context(), "compactor", "next", time.Hour)
+			l, ok, err := c.TakeLease(t.Context(), "compactor/2", "next", time.Hour)
 			if err != nil || !ok {
 				t.Errorf("TakeLease = %v, %v", ok, err)
 			}

@@ -124,19 +124,19 @@ func (c *Catalog) Register(ctx context.Context, replica string, configs []int64,
 		if err := tx.GetContext(ctx, &m.Generation, `SELECT value FROM counters WHERE name = 'membership'`); err != nil {
 			return err
 		}
-		if _, err := tx.ExecContext(ctx, `DELETE FROM consumers WHERE replica_id = ?`, replica); err != nil {
+		if _, err := tx.ExecContext(ctx, `DELETE FROM members WHERE replica_id = ?`, replica); err != nil {
 			return err
 		}
-		if _, err := tx.ExecContext(ctx, `DELETE FROM consumer_configs WHERE replica_id = ?`, replica); err != nil {
+		if _, err := tx.ExecContext(ctx, `DELETE FROM member_configs WHERE replica_id = ?`, replica); err != nil {
 			return err
 		}
-		_, err := tx.ExecContext(ctx, `INSERT INTO consumers (replica_id, lease_until, generation, registered_at) VALUES (?, `+c.d.nowNS+` + ?, ?, ?)`,
+		_, err := tx.ExecContext(ctx, `INSERT INTO members (replica_id, lease_until, generation, registered_at) VALUES (?, `+c.d.nowNS+` + ?, ?, ?)`,
 			replica, ttl.Nanoseconds(), m.Generation, c.now())
 		if err != nil {
 			return err
 		}
 		for _, id := range configs {
-			if _, err := tx.ExecContext(ctx, `INSERT INTO consumer_configs (replica_id, config_id) VALUES (?, ?)`, replica, id); err != nil {
+			if _, err := tx.ExecContext(ctx, `INSERT INTO member_configs (replica_id, config_id) VALUES (?, ?)`, replica, id); err != nil {
 				return err
 			}
 		}
@@ -156,7 +156,7 @@ func (c *Catalog) Renew(ctx context.Context, m Membership, ttl time.Duration) er
 		if err := c.lockMembership(ctx, tx); err != nil {
 			return err
 		}
-		res, err := tx.ExecContext(ctx, `UPDATE consumers SET lease_until = `+c.d.nowNS+` + ?
+		res, err := tx.ExecContext(ctx, `UPDATE members SET lease_until = `+c.d.nowNS+` + ?
 			WHERE replica_id = ? AND generation = ? AND lease_until >= `+c.d.nowNS, ttl.Nanoseconds(), m.Replica, m.Generation)
 
 		return affected(res, err, ErrMembershipLapsed)
@@ -174,10 +174,10 @@ func (c *Catalog) Leave(ctx context.Context, replica string) error {
 		if err := c.lockMembership(ctx, tx); err != nil {
 			return err
 		}
-		if _, err := tx.ExecContext(ctx, `DELETE FROM consumers WHERE replica_id = ?`, replica); err != nil {
+		if _, err := tx.ExecContext(ctx, `DELETE FROM members WHERE replica_id = ?`, replica); err != nil {
 			return err
 		}
-		_, err := tx.ExecContext(ctx, `DELETE FROM consumer_configs WHERE replica_id = ?`, replica)
+		_, err := tx.ExecContext(ctx, `DELETE FROM member_configs WHERE replica_id = ?`, replica)
 
 		return err
 	})
@@ -197,8 +197,8 @@ func (c *Catalog) bindableConfig(ctx context.Context, tx *sqlx.Tx) (int64, bool,
 	var id sql.NullInt64
 	err := tx.GetContext(ctx, &id, `SELECT MAX(p.config_id) FROM processing_configs p
 		WHERE p.activated_at IS NOT NULL AND p.retired_at IS NULL
-		AND NOT EXISTS (SELECT 1 FROM consumers m WHERE m.lease_until >= `+c.d.nowNS+`
-			AND NOT EXISTS (SELECT 1 FROM consumer_configs mc WHERE mc.replica_id = m.replica_id AND mc.config_id = p.config_id))`)
+		AND NOT EXISTS (SELECT 1 FROM members m WHERE m.lease_until >= `+c.d.nowNS+`
+			AND NOT EXISTS (SELECT 1 FROM member_configs mc WHERE mc.replica_id = m.replica_id AND mc.config_id = p.config_id))`)
 
 	return id.Int64, id.Valid, err
 }

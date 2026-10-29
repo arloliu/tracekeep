@@ -76,7 +76,7 @@ func (w *world) urls(t *testing.T, now *time.Time, record bool) {
 	if !record {
 		return
 	}
-	l, ok, err := w.c.TakeLease(t.Context(), "compactor", "test", time.Hour)
+	l, ok, err := w.c.TakeLease(t.Context(), "compactor/2", "test", time.Hour)
 	if err != nil || !ok {
 		t.Fatalf("TakeLease = %v, %v", ok, err)
 	}

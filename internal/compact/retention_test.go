@@ -533,7 +533,7 @@ func TestLeaseLostBeforeAnEvictionsRemovals(t *testing.T) {
 			if err := c.ReleaseLease(t.Context(), f.lease); err != nil {
 				t.Error(err)
 			}
-			if _, ok, err := c.TakeLease(t.Context(), "compactor", "other", time.Hour); err != nil || !ok {
+			if _, ok, err := c.TakeLease(t.Context(), "compactor/2", "other", time.Hour); err != nil || !ok {
 				t.Errorf("TakeLease = %v, %v", ok, err)
 			}
 		}

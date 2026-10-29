@@ -293,7 +293,7 @@ func TestLeaseTakeoverBehindADeletionOrAnEviction(t *testing.T) {
 				leaseRowHeld(t, c, release)
 				var lerr error
 				lapsed := run(func() {
-					_, lerr = c.write.ExecContext(t.Context(), `UPDATE leases SET until_ns = 0 WHERE name = 'compactor'`)
+					_, lerr = c.write.ExecContext(t.Context(), `UPDATE leases SET until_ns = 0 WHERE name = 'compactor/2'`)
 				})
 				waitBehindLeaseRow(t, c, waits, release)
 				close(release)
@@ -335,7 +335,7 @@ func TestLeaseTakeoverBeforeADeletionOrAnEviction(t *testing.T) {
 				_, err = c.DeletePack(t.Context(), l, Deletable{Pack: inputs[0].ID, Capture: capture, Key: inputs[0].Key}, deleteAt(t, c, archive), time.Hour)
 			})
 			<-held
-			lapse(t, c, `UPDATE leases SET until_ns = 0 WHERE name = 'compactor'`)
+			lapse(t, c, `UPDATE leases SET until_ns = 0 WHERE name = 'compactor/2'`)
 			compactorLease(t, c, "new")
 			close(release)
 			<-done

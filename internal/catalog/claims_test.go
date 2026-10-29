@@ -116,7 +116,7 @@ func TestRecordListingUnderALostLease(t *testing.T) {
 	t.Parallel()
 	engines(t, func(t *testing.T, c *Catalog) {
 		stale := compactorLease(t, c, "old")
-		lapse(t, c, `UPDATE leases SET until_ns = 0 WHERE name = 'compactor'`)
+		lapse(t, c, `UPDATE leases SET until_ns = 0 WHERE name = 'compactor/2'`)
 		compactorLease(t, c, "new")
 		if _, err := c.RecordListing(t.Context(), stale, []Listed{{Key: "claims/odd", Size: 1}}, 1); !errors.Is(err, ErrLeaseLost) {
 			t.Fatalf("RecordListing = %v, want ErrLeaseLost", err)
@@ -194,7 +194,7 @@ func TestSurvivorReleaseGuards(t *testing.T) {
 			t.Error("a live row was removed")
 		}
 		lapse(t, c, `UPDATE claim_objects SET state = 'deletable', evicted_hour = 1`)
-		lapse(t, c, `UPDATE leases SET until_ns = 0 WHERE name = 'compactor'`)
+		lapse(t, c, `UPDATE leases SET until_ns = 0 WHERE name = 'compactor/2'`)
 		compactorLease(t, c, "new")
 		if err := c.RemoveClaimObject(t.Context(), l, "claims/live"); !errors.Is(err, ErrLeaseLost) {
 			t.Errorf("RemoveClaimObject under a lost lease = %v, want ErrLeaseLost", err)

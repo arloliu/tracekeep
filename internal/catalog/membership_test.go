@@ -24,19 +24,19 @@ func TestLease(t *testing.T) {
 	t.Parallel()
 	engines(t, func(t *testing.T, c *Catalog) {
 		ctx := t.Context()
-		a, ok, err := c.TakeLease(ctx, "compactor", "a", ttl)
+		a, ok, err := c.TakeLease(ctx, "compactor/2", "a", ttl)
 		if err != nil || !ok || a.Fence != 1 {
 			t.Fatalf("first take = %+v, %v, %v; want fence 1", a, ok, err)
 		}
-		if _, ok, err := c.TakeLease(ctx, "compactor", "b", ttl); err != nil || ok {
+		if _, ok, err := c.TakeLease(ctx, "compactor/2", "b", ttl); err != nil || ok {
 			t.Fatalf("take of a live lease = %v, %v; want refused", ok, err)
 		}
 		if err := c.RenewLease(ctx, a, ttl); err != nil {
 			t.Fatalf("renew by the holder: %v", err)
 		}
 
-		lapse(t, c, `UPDATE leases SET until_ns = 0 WHERE name = 'compactor'`)
-		b, ok, err := c.TakeLease(ctx, "compactor", "b", ttl)
+		lapse(t, c, `UPDATE leases SET until_ns = 0 WHERE name = 'compactor/2'`)
+		b, ok, err := c.TakeLease(ctx, "compactor/2", "b", ttl)
 		if err != nil || !ok || b.Fence != 2 {
 			t.Fatalf("take of a lapsed lease = %+v, %v, %v; want fence 2", b, ok, err)
 		}
@@ -97,7 +97,7 @@ func TestRenew(t *testing.T) {
 		if err := c.Renew(ctx, m, ttl); !errors.Is(err, ErrMembershipLapsed) {
 			t.Errorf("renew of a replaced registration = %v, want ErrMembershipLapsed", err)
 		}
-		lapse(t, c, `UPDATE consumers SET lease_until = 0 WHERE replica_id = 'r'`)
+		lapse(t, c, `UPDATE members SET lease_until = 0 WHERE replica_id = 'r'`)
 		if err := c.Renew(ctx, again, ttl); !errors.Is(err, ErrMembershipLapsed) {
 			t.Errorf("renew of a lapsed lease = %v, want ErrMembershipLapsed", err)
 		}
@@ -169,7 +169,7 @@ func TestIdentitiesCompareByteForByte(t *testing.T) {
 		if err := c.Renew(ctx, ms[2], ttl); err != nil {
 			t.Errorf("leaving %q ended %q: %v", "r ", "R", err)
 		}
-		if n := count(t, c, `SELECT COUNT(*) FROM consumers`); n != 2 {
+		if n := count(t, c, `SELECT COUNT(*) FROM members`); n != 2 {
 			t.Errorf("%d members, want two", n)
 		}
 	})
@@ -204,7 +204,7 @@ func TestBindableConfig(t *testing.T) {
 		if id, ok := bindable(t, c); !ok || id != v1 {
 			t.Fatalf("bindable while the old member is leased = %d, %v; want v1", id, ok)
 		}
-		lapse(t, c, `UPDATE consumers SET lease_until = 0 WHERE replica_id = 'old'`)
+		lapse(t, c, `UPDATE members SET lease_until = 0 WHERE replica_id = 'old'`)
 		if id, ok := bindable(t, c); !ok || id != v2 {
 			t.Errorf("bindable once the old member lapsed = %d, %v; want v2", id, ok)
 		}

@@ -102,7 +102,7 @@ func TestRegisterFindsAnAdoptedPack(t *testing.T) {
 	t.Parallel()
 	engines(t, func(t *testing.T, c *Catalog) {
 		capture := admitted(t, c)
-		lease, _, err := c.TakeLease(t.Context(), "compactor", "w", ttl)
+		lease, _, err := c.TakeLease(t.Context(), "compactor/2", "w", ttl)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -140,7 +140,7 @@ func TestRegisterGuards(t *testing.T) {
 		}
 
 		// The reconciler's orphan of a capture no start admitted, pending or rejected, stays unregistered.
-		lease, _, _ := c.TakeLease(ctx, "compactor", "w", ttl)
+		lease, _, _ := c.TakeLease(ctx, "compactor/2", "w", ttl)
 		if out := register(t, c, segment(t, newID(t), 5, 0, 9), Registration{Lease: &lease, Adopted: true}); out != UnadmittedCapture {
 			t.Errorf("an orphan of an unknown capture = %v, want unadmitted", out)
 		}
@@ -264,7 +264,7 @@ func TestRegisterRefusesInvalidInput(t *testing.T) {
 	t.Parallel()
 	engines(t, func(t *testing.T, c *Catalog) {
 		capture := admitted(t, c)
-		lease, _, _ := c.TakeLease(t.Context(), "compactor", "w", ttl)
+		lease, _, _ := c.TakeLease(t.Context(), "compactor/2", "w", ttl)
 		ingest := Registration{Evidence: &Evidence{}}
 		big := uint64(closeSentinel)
 		cases := map[string]struct {
@@ -301,7 +301,7 @@ func TestRegisterClose(t *testing.T) {
 	engines(t, func(t *testing.T, c *Catalog) {
 		capture := admitted(t, c)
 		register(t, c, segment(t, capture, 1, 0, 9), Registration{Evidence: &Evidence{}})
-		lease, _, _ := c.TakeLease(t.Context(), "compactor", "w", ttl)
+		lease, _, _ := c.TakeLease(t.Context(), "compactor/2", "w", ttl)
 		cl := segment(t, capture, 1, 0, 0)
 		cl.Role, cl.Ranges, cl.SeqStart = RoleClose, nil, closeSentinel
 		if out := register(t, c, cl, Registration{Lease: &lease}); out != Registered {
@@ -357,7 +357,7 @@ func TestVerifyLease(t *testing.T) {
 	t.Parallel()
 	engines(t, func(t *testing.T, c *Catalog) {
 		ctx := t.Context()
-		lease, ok, err := c.TakeLease(ctx, "compactor", "w", ttl)
+		lease, ok, err := c.TakeLease(ctx, "compactor/2", "w", ttl)
 		if err != nil || !ok {
 			t.Fatalf("TakeLease = %v, %v", ok, err)
 		}
@@ -381,14 +381,14 @@ func TestReleaseLease(t *testing.T) {
 	t.Parallel()
 	engines(t, func(t *testing.T, c *Catalog) {
 		ctx := t.Context()
-		lease, _, err := c.TakeLease(ctx, "compactor", "a", ttl)
+		lease, _, err := c.TakeLease(ctx, "compactor/2", "a", ttl)
 		if err != nil {
 			t.Fatal(err)
 		}
 		if err := c.ReleaseLease(ctx, lease); err != nil {
 			t.Fatal(err)
 		}
-		other, ok, err := c.TakeLease(ctx, "compactor", "b", ttl)
+		other, ok, err := c.TakeLease(ctx, "compactor/2", "b", ttl)
 		if err != nil || !ok {
 			t.Fatalf("TakeLease after the release = %v, %v", ok, err)
 		}

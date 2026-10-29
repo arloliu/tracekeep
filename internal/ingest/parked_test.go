@@ -634,7 +634,7 @@ type retainer struct {
 // retention takes the compactor lease for a retainer over r.
 func (r *replica) retention(t *testing.T) *retainer {
 	t.Helper()
-	lease, ok, err := r.cat.TakeLease(t.Context(), "compactor", "retention", time.Hour)
+	lease, ok, err := r.cat.TakeLease(t.Context(), "compactor/2", "retention", time.Hour)
 	if err != nil || !ok {
 		t.Fatalf("TakeLease = %v, %v", ok, err)
 	}

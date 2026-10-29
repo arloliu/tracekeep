@@ -479,7 +479,7 @@ func TestAdoptionWinsAfterThePut(t *testing.T) {
 	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
 		ctx := t.Context()
 		p := newPipeline(t, c)
-		lease, ok, err := c.TakeLease(ctx, "compactor", "reconciler", time.Hour)
+		lease, ok, err := c.TakeLease(ctx, "compactor/2", "reconciler", time.Hour)
 		if err != nil || !ok {
 			t.Fatalf("TakeLease = %v, %v", ok, err)
 		}
@@ -541,7 +541,7 @@ func TestFlushPutAcrossAnEviction(t *testing.T) {
 			t.Fatal(err)
 		}
 		first := keys(t, p.st)
-		lease, ok, err := c.TakeLease(ctx, "compactor", "retention", time.Hour)
+		lease, ok, err := c.TakeLease(ctx, "compactor/2", "retention", time.Hour)
 		if err != nil || !ok {
 			t.Fatalf("TakeLease = %v, %v", ok, err)
 		}

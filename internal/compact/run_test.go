@@ -291,7 +291,7 @@ func TestLeaseLostDuringACycle(t *testing.T) {
 			if err := c.ReleaseLease(ctx, *a.lease); err != nil {
 				t.Error(err)
 			}
-			if _, ok, err := c.TakeLease(ctx, "compactor", "other", time.Hour); err != nil || !ok {
+			if _, ok, err := c.TakeLease(ctx, "compactor/2", "other", time.Hour); err != nil || !ok {
 				t.Errorf("takeover = %v, %v", ok, err)
 			}
 			<-held.Done()
@@ -331,7 +331,7 @@ func TestRunReleasesTheLease(t *testing.T) {
 		if a.lease != nil {
 			t.Errorf("a still holds %+v", *a.lease)
 		}
-		if _, ok, err := c.TakeLease(t.Context(), "compactor", "standby", time.Hour); err != nil || !ok {
+		if _, ok, err := c.TakeLease(t.Context(), "compactor/2", "standby", time.Hour); err != nil || !ok {
 			t.Errorf("the standby's take = %v, %v; want the released lease", ok, err)
 		}
 	})

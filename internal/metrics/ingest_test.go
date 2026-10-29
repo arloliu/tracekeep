@@ -269,7 +269,7 @@ func TestUnknownTailDropsAClosedCapture(t *testing.T) {
 			t.Errorf("an open capture's unknown tail not counted:\n%s", b)
 		}
 		// The compactor closes it, as its inactivity close would.
-		lease, ok, err := c.TakeLease(ctx, "compactor", "test", time.Hour)
+		lease, ok, err := c.TakeLease(ctx, "compactor/2", "test", time.Hour)
 		if err != nil || !ok {
 			t.Fatalf("TakeLease = %v, %v", ok, err)
 		}

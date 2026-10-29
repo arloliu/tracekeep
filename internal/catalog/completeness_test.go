@@ -214,7 +214,7 @@ func TestCompletenessWithoutAFrontier(t *testing.T) {
 	t.Parallel()
 	engines(t, func(t *testing.T, c *Catalog) {
 		capture := admitted(t, c)
-		lease, _, err := c.TakeLease(t.Context(), "compactor", "w", ttl)
+		lease, _, err := c.TakeLease(t.Context(), "compactor/2", "w", ttl)
 		if err != nil {
 			t.Fatal(err)
 		}
