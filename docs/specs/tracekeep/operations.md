@@ -44,7 +44,7 @@ Contract changes go through proposals, which the subject [README.md](README.md) 
 | `deferred list [--capture]` | what is waiting, since when, why: the unresolved parked versions (`parking`, `parked`, `evicted-hour`) by capture and reason, each group's count and oldest parking time; an indefinite deferral is parked (`ingest.md` §6.1), and a short delay that never parks lives only in ingest's metrics |
 
 **Runbook**: one section per named incident
-(`capture-rejected`, `descriptor-conflict`, `claim-conflict`, `write-failure`, `incompatible-configuration`, `seq-conflict`, `beyond-retention`, `capture_fault`, `key-binding-mismatch`, `cannot-screen`, `damaged-input`, `parked`, `bus-incarnation-changed`),
+(`capture-rejected`, `descriptor-conflict`, `claim-conflict`, `write-failure`, `incompatible-configuration`, `seq-conflict`, `beyond-retention`, `capture_fault`, `key-binding-mismatch`, `key-refused`, `cannot-screen`, `damaged-input`, `parked`, `bus-incarnation-changed`),
 each row of a compact table incident → metric → recovery command → terminal alternative
 (for example `cannot-screen`: `cannot_screen_total` → fix the consumer or the policy, then let the parked consumer retry after `parking.redelivery_delay` → `capture terminate`),
 each with the alert that raises it, the metric to look at, the admin command that resolves it, and what is lost if it is ignored;
@@ -68,6 +68,7 @@ everything per capture is served by `tracekeep status` and the admin commands, n
 | ingest | `messages_total{disposition}`, `deferred_messages{reason}`, `deferred_oldest_age_seconds{reason}`, `quarantined_total`, `segments_total{tool_id}`, `segment_bytes_total{tool_id}`, `put_seconds`, `registration_seconds`, `mask_seconds`, `in_progress_acks_total`, `captures_open{tool_id}`, `conflicts_total{tool_id}`, `gap_observations_total{tool_id}` (a hole first seen at registration; it may be filled later, so it is an event count, not a loss count), `open_gaps{tool_id}` (gauge: holes currently unfilled), `declared_losses_total{tool_id}`, `captures_with_unknown_tail{tool_id}` (gauge), `parked_messages{reason}`, `key_binding_mismatches_total`, `cannot_screen_total`, `damaged_inputs`, `stream_backlog_messages`, `stream_backlog_bytes`, `consumer_ack_pending`, `redelivered_total` |
 | compact | `cycle_seconds{task=merge,close,delete,retention,reconcile}`, `last_success_timestamp{task}`, `lease_held`, `scopes{state}`, `merges_total{outcome}`, `closes_total{trigger}`, `deletions_total`, `tombstones_total`, `orphans_adopted_total`, `orphans_quarantined_total`, `claim_objects`, `claim_object_bytes`, `conflicts_open`, `oldest_unmerged_scope_age_seconds`, `retirement_blockers` |
 | api | request rate, errors and duration per operation; `export_jobs{state}`; `restores_total{role}`, `digests_total{role}`; `auth_failures_total{reason}`; `download_urls_total{kind=presigned,api}`, `download_urls_refused_total` (`pack-superseded`) |
+| keys (every role that resolves a key; `kind` the only per-key label, never a key id, a reference or a credential) | `key_resolutions_total{kind,outcome=cached,resolved,unavailable,refused}`, `key_provider_seconds{provider,op=login,renew,read}`, `key_provider_errors_total{provider,reason=unreachable,deadline,auth,missing,malformed,server}`, `key_credential_expiry_timestamp{provider}` (the current token's expiry, for a provider with credentials) |
 | catalog | pool usage, transaction retries (`busy`, `deadlock`), migration version |
 
 Health: `/healthz` (process) and `/readyz` (catalog reachable, lease state for `compact`, consumer bound for `ingest`);
@@ -77,5 +78,5 @@ Deferred messages are the tool's unresolved parked versions, as `deferred list` 
 backlog is the traffic stream's messages on the tool's subjects, whose token after the prefix is the tool's (tracepack's `BusSubject`),
 and the stream's bytes, which no subject divides, once for all tools.
 The Helm chart ships alert rules:
-deferred age above an hour, backlog bytes above a threshold, a tool with a connected gateway and no records for ten minutes, producer drop rate, lease lost, no successful merge for two hours, `open_gaps` or `declared_losses_total` increasing on a tool, `preflight_ok` false.
+deferred age above an hour, backlog bytes above a threshold, a tool with a connected gateway and no records for ten minutes, producer drop rate, lease lost, no successful merge for two hours, `open_gaps` or `declared_losses_total` increasing on a tool, `preflight_ok` false, a key refused, keys unavailable for five minutes.
 Logs are structured, one line per state change with `capture_id`, `tool_id` and `seq` where they apply, never one line per record.

@@ -71,6 +71,28 @@ Contract changes go through proposals, which the subject [README.md](README.md) 
     Only after the check succeeds does the module derive a capture key, hand out the material or publish a cache entry;
     a failed check caches nothing.
     The order holds for every use: a consumer's write, and the API's restore, digest, session cookie and download tokens.
+  - **Which key ids a use may name**: a `session` or `download` key id is one its purpose accepts (below);
+    a `digest` or `master` key id is one a policy names (`redact.Policy`'s digest key id and encryption key id),
+    and its declaration names that kind.
+    A key id that is not declared, or is declared or bound under another kind than the one requested, fails closed before any provider call.
+  - **The cache and an outage**: the cache holds bound material and nothing derived;
+    a capture key is derived again at each use.
+    An entry never expires, since a binding is immutable and so is the material it pins,
+    so a warm cache serves every bound key id through a provider outage, and a restart is the only thing that empties it.
+    A cold key id is resolved at its first use, never at start, so a start never waits on a provider;
+    one resolution of a key id is in flight at a time, and concurrent uses wait on it and share its outcome, failure included, which nothing caches.
+  - **Failures** are of two classes, which every caller tells apart:
+    *unavailable* (the provider unreachable, its deadline passed, its credential refused or expired) may succeed when retried,
+    so ingest defers the records that need the key and the API answers unavailable;
+    *refused* (a fingerprint mismatch, a kind mismatch, a key id not declared or not accepted, material that is malformed, shorter than its minimum, or missing at the pinned version)
+    stays refused until an operator acts, alerts as `key-binding-mismatch` or, for the rest, as `key-refused`, and defers likewise.
+    An error names the key id, its kind, its provider, reference and version, and a provider's status,
+    never the material, a token, a secret id or a provider's response body,
+    and a log line or a metric holds no more than the error.
+  - **`redact.Keys` per use**: its methods take no context,
+    so the adapter `redact.Mask` is given is built for one use, a batch's masking or one API request, over that use's context and never kept beyond it;
+    a shared resolution runs under the provider's deadline, not under any one use's context,
+    so a cancelled use stops waiting and gets no material while the other uses keep waiting.
   - **Key purposes stay distinct**: each key id has one purpose, recorded as its binding's kind:
     `digest` (`DigestKey`), `master` (the IKM of `EncryptionKey`), `session` (the session cookie of `api.md` §10.2) and `download` (the download tokens of `api.md` §10.1).
     A request for a key id under another kind fails closed,
@@ -83,11 +105,25 @@ Contract changes go through proposals, which the subject [README.md](README.md) 
     then drop the old id once no replica issues under it and the longest credential lifetime plus the clock tolerance has passed.
     Such a key id is retired when no credential issued under it can still be valid, which says nothing about captures.
 - `KeyProvider` implementations:
-  `vault` (KV v2 with the version pinned in the binding; Kubernetes auth in the cluster, AppRole on a host; material held in memory only, never on disk, and cached by the `keys` module),
+  `vault` (KV v2 with the version pinned in the binding; Kubernetes auth in the cluster, AppRole on a host; material held in memory only, never on disk, and cached by the `keys` module, below),
   `file` (files a Vault Agent or an operator places, mode 0600, for standalone; a file any other user may read is refused), `env` (development only, refused in production mode: every command but `tracekeep dev` refuses it at load).
   Vault Transit does not fit: the derivation and AES-SIV need the raw master key in process.
   A provider returns the material as base64 text in standard encoding, surrounding white space ignored;
-  a `download` key's material holds at least 32 bytes.
+  a `digest`, `master` or `download` key's material holds at least 32 bytes.
+- **The `vault` provider**:
+  - **Configuration**: the server's address (https only) and the CA that verifies it, the KV v2 mount, and one auth method with its role:
+    `kubernetes`, which logs in with the service account token read from its file at each login, since the file rotates,
+    or `approle`, whose role id is configuration and whose secret id is read by reference, never written in the file.
+  - **A declaration's reference** is the secret's path under the mount;
+    the material is the secret's `material` field, and the version is the KV v2 version as a decimal number.
+    A version deleted or destroyed is missing, a refusal: a bound key id never falls back to another version.
+  - **Credentials**: the provider logs in at its first call, renews its token once two thirds of the token's TTL have passed,
+    and logs in afresh when a renewal fails, when the token is not renewable or its maximum TTL is near, and once when a read is refused as forbidden, retrying that read once.
+  - **A deadline** bounds every call to the server, login, renewal and read alike (default 10 s), beside the caller's context.
+  - **Versions are kept as long as data needs them**: a pinned version of a `digest` or `master` key id is never deleted or destroyed,
+    by an operator or by the mount's `max_versions` or `delete_version_after`,
+    while a retained pack of a capture bound to it remains, since `Restore` and `Digest` need it after every producer is quiescent;
+    a `download` or `session` key id's version may go once the key id is retired.
   `file` and `env` return an empty version, which the binding records.
   A key id's declaration names its provider and reference;
   the issuing key id of a purpose is one of its accepted key ids, and every accepted key id is declared.

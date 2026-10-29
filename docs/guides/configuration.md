@@ -1,6 +1,6 @@
 # Configuration guide
 
-Status: current (2026-10-28) — the keys phases 1 and 2 read
+Status: current (2026-10-29) — the keys phases 1 and 2 read, and the vault provider's
 
 Every key the service reads, its default, its environment override, and what moving it costs.
 Read when deploying a role, tuning one, or adding a key.
@@ -62,5 +62,11 @@ and where the API serves downloads itself (an `fs` store, or `store.presign` off
 | `auth.oidc.jwks_ttl`, `.fetch_interval`, `.leeway` | `1h`, `10s`, `1m` | `TRACEKEEP_AUTH_OIDC_…` | how long cached keys verify, an outage longer than it refusing every token; the least time between two fetches of the JWKS, which bounds the IdP's load from unknown `kid`s and how soon its return is noticed; the clock tolerance of `exp`, `nbf` and `iat` |
 | `auth.mtls.client_ca_file`, `auth.mtls.subjects` | — | `TRACEKEEP_AUTH_MTLS_CLIENT_CA_FILE` | the CA client certificates are verified against, and each verified identity's roles (its first URI name, else its first DNS name); given together |
 | `auth.static.enabled`, `auth.static.tokens` | `false`, — | `TRACEKEEP_AUTH_STATIC_ENABLED` | the static-token provider of a standalone host without an IdP; only the flag admits the tokens, each a `subject`, a `token_ref` naming a token of at least 32 bytes (never the token itself) and its `roles`; never turned on by a failure |
-| `keys.declared.<key id>` | — | — | a key id's `provider` (`file`, mode 0600; `env` only under `tracekeep dev`), `ref` and `version`, empty for both, which have no versions (`masking-keys.md` §9); a key id of at most 128 characters, a provider and ref of at most 255 together; a bound key id is read at its binding's reference whatever its declaration says later |
+| `keys.declared.<key id>` | — | — | a key id's `provider` (`vault`; `file`, mode 0600; `env` only under `tracekeep dev`), `ref` (for `vault`, the secret's path under the mount, its `material` field holding the key) and `version` (for `vault`, the KV v2 version; empty for `file` and `env`, which have no versions), and its `kind`, required for a `digest` or `master` key id and refused under any other (`masking-keys.md` §9); a key id of at most 128 characters, a provider and ref of at most 255 together; a bound key id is read at its binding's reference whatever its declaration says later |
 | `keys.download.issuing`, `keys.download.accepted` | — | — | the download tokens' issuing key id, one of the accepted ones, each declared; rotation adds the new id to `accepted` on every replica, then switches `issuing`, then drops the old id once the longest download lifetime plus the clock skew has passed |
+| `keys.vault.address`, `keys.vault.ca_file` | — | `TRACEKEEP_KEYS_VAULT_ADDRESS`, `…_CA_FILE` | the Vault server, https only, and the CA that verifies it beside the system's roots; required once a key id is declared with `vault` |
+| `keys.vault.mount` | `secret` | `TRACEKEEP_KEYS_VAULT_MOUNT` | the KV v2 mount the references are under; its `max_versions` and `delete_version_after` must never remove a version a `digest` or `master` binding pins while a retained pack needs it, or `Restore` and masking under that key id are refused for good |
+| `keys.vault.timeout` | `10s` | `TRACEKEEP_KEYS_VAULT_TIMEOUT` | the deadline of every call to Vault (login, renewal, read); longer waits longer on a stalled server before deferring, shorter fails a slow but healthy one |
+| `keys.vault.auth.method`, `keys.vault.auth.mount`, `keys.vault.auth.role` | —, the method's name, — | `TRACEKEEP_KEYS_VAULT_AUTH_…` | `kubernetes` in a cluster or `approle` on a host, the auth mount, and the role the service logs in as |
+| `keys.vault.auth.token_file` | the service account token's standard path | `TRACEKEEP_KEYS_VAULT_AUTH_TOKEN_FILE` | `kubernetes` only: read at every login, since the token rotates |
+| `keys.vault.auth.role_id`, `keys.vault.auth.secret_id_ref` | — | `TRACEKEEP_KEYS_VAULT_AUTH_ROLE_ID`, `…_SECRET_ID_REF` | `approle` only: the role id, and the secret id by reference |
