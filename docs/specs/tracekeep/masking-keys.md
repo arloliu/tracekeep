@@ -79,7 +79,8 @@ Contract changes go through proposals, which the subject [README.md](README.md) 
     a capture key is derived again at each use.
     An entry never expires, since a binding is immutable and so is the material it pins,
     so a warm cache serves every bound key id through a provider outage, and a restart is the only thing that empties it.
-    A cold key id is resolved at its first use, never at start, so a start never waits on a provider;
+    A cold key id is resolved at its first use, never at start, so a start never waits on a provider,
+    except the download purpose's issuing key id, which the `api` role resolves at start so that a bad key fails the start rather than the first URL;
     one resolution of a key id is in flight at a time, and concurrent uses wait on it and share its outcome, failure included, which nothing caches.
   - **Failures** are of two classes, which every caller tells apart:
     *unavailable* (the provider unreachable, its deadline passed, its credential refused or expired) may succeed when retried,
@@ -92,7 +93,8 @@ Contract changes go through proposals, which the subject [README.md](README.md) 
   - **`redact.Keys` per use**: its methods take no context,
     so the adapter `redact.Mask` is given is built for one use, a batch's masking or one API request, over that use's context and never kept beyond it;
     a shared resolution runs under the provider's deadline, not under any one use's context,
-    so a cancelled use stops waiting and gets no material while the other uses keep waiting.
+    so a cancelled use stops waiting and gets no material while the other uses keep waiting;
+    a use whose context has ended gets no material from the cache either.
   - **Key purposes stay distinct**: each key id has one purpose, recorded as its binding's kind:
     `digest` (`DigestKey`), `master` (the IKM of `EncryptionKey`), `session` (the session cookie of `api.md` §10.2) and `download` (the download tokens of `api.md` §10.1).
     A request for a key id under another kind fails closed,

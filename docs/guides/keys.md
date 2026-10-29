@@ -50,11 +50,18 @@ an environment variable for `env`, which only `tracekeep dev` accepts.
 
 For `vault`:
 
-1. Write the secret: `vault kv put secret/tracekeep/master-2026a material="$(head -c 32 /dev/urandom | base64)"`.
-2. Keep every version a binding pins.
-   On the paths tracekeep reads, leave `max_versions` at 0 and `delete_version_after` at 0,
-   and never delete or destroy a version of a `digest` or `master` key id while a retained pack of a capture bound to it remains:
+1. Give each key id a secret path of its own and write it once:
+   `vault kv metadata put -cas-required=true -delete-version-after=0s secret/tracekeep/master-2026a`,
+   then `vault kv put -cas=0 secret/tracekeep/master-2026a material="$(head -c 32 /dev/urandom | base64)"`.
+   With `cas_required` every later write must name the current version, so the path is never overwritten by accident,
+   and declaring the key id with `version: "1"` pins it before its first use.
+2. Keep the version a binding pins for as long as data needs it.
+   KV v2 keeps only the newest `max_versions` versions of a path, 10 by default, and a path's 0 means the mount's limit, not unlimited;
+   a path written once holds one version, which no limit evicts.
+   `delete_version_after` must stay 0 on the path and the mount.
+   Never delete or destroy a version of a `digest` or `master` key id while a retained pack of a capture bound to it remains:
    `Restore` and `Digest` need it after the capture's producer has long stopped.
+   New material is a new key id at a new path, never a new version of a bound one.
 3. Give the service's role a policy that reads those paths and nothing else,
    for example `path "secret/data/tracekeep/*" { capabilities = ["read"] }`.
 4. Check a key id after its first use with `tracekeep admin key verify <key id>`:
