@@ -362,3 +362,21 @@ func TestFirstUseRaceEqualMaterialOtherVersion(t *testing.T) {
 		}
 	})
 }
+
+// Staging's fingerprint is the bound material's, resolving and binding the key id at its first use, under its declared kind only.
+func TestFingerprintBinds(t *testing.T) {
+	t.Parallel()
+	cat := catalogtest.Open(t, catalog.EngineSQLite)
+	m := material(0x35, 32)
+	k := newKeys(t, maskingKeys(oneVersion(m)), cat)
+	fp, err := k.Fingerprint(t.Context(), "m-1", catalog.KindMaster)
+	if err != nil || fp != specFingerprint(m) {
+		t.Fatalf("Fingerprint = %q, %v", fp, err)
+	}
+	if b, ok, _ := cat.KeyBinding(t.Context(), "m-1"); !ok || b.Fingerprint != fp || b.Kind != catalog.KindMaster {
+		t.Errorf("binding = %+v, %v", b, ok)
+	}
+	if _, err := k.Fingerprint(t.Context(), "m-1", catalog.KindDigest); !errors.Is(err, ErrUnknownKey) {
+		t.Errorf("Fingerprint under another kind = %v, want ErrUnknownKey", err)
+	}
+}

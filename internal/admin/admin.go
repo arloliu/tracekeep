@@ -26,8 +26,13 @@ type Admin struct {
 	Config bus.Config
 	// Actor names the operator in every audit row.
 	Actor string
-	// Keys resolves the declared keys, for key verify.
+	// Keys resolves the declared keys, for key verify and config stage.
 	Keys *keys.Keys
+	// Classifier and MaxFrameLen are this binary's classifier and frame limit, which config stage records.
+	Classifier  string
+	MaxFrameLen uint64
+	// Dev admits a policy lacking baseline rules, as only tracekeep dev may.
+	Dev bool
 }
 
 // Termination is what a termination did: its action id, which its audit row, its versions and its order name,

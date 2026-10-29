@@ -20,6 +20,7 @@ import (
 	"github.com/arloliu/tracekeep/internal/auth"
 	"github.com/arloliu/tracekeep/internal/catalog"
 	"github.com/arloliu/tracekeep/internal/config"
+	"github.com/arloliu/tracekeep/internal/ingest"
 	"github.com/arloliu/tracekeep/internal/keys"
 	"github.com/arloliu/tracekeep/internal/metrics"
 	"github.com/arloliu/tracekeep/internal/store"
@@ -45,8 +46,7 @@ func API(ctx context.Context, e *Env) error {
 	log := e.Log.With("role", "api")
 	s := &api.Server{
 		Catalog: e.Catalog, QuietPeriod: c.Compact.QuietPeriod, Store: e.Store, Metrics: m, Log: log,
-		Admin: &admin.Admin{Catalog: e.Catalog, Bus: e.JS, Config: e.Bus()},
-		Auth:  authenticator(&c.Auth, m, log),
+		Auth: authenticator(&c.Auth, m, log),
 		Downloads: api.Downloads{
 			PublicURL: c.API.PublicURL, Lifetime: c.Store.DownloadLifetime, Margin: c.API.DownloadMargin, Floor: c.API.DownloadFloor,
 			DeleteDelay: c.Compact.DeleteDelay, Now: e.Now,
@@ -93,12 +93,10 @@ func API(ctx context.Context, e *Env) error {
 	if err := e.downloads(ctx, &s.Downloads, m); err != nil {
 		return err
 	}
-	// key verify's keys, after downloads named what a missing download key costs.
-	k, err := e.Keys()
-	if err != nil {
+	// The admin commands' keys, after downloads named what a missing download key costs.
+	if s.Admin, err = e.Admin(""); err != nil {
 		return err
 	}
-	s.Admin.Keys = k
 	e.ready("api", e.Catalog.Ping)
 	log.Info("api: serving", "listen", ln.Addr().String(), "tls", !c.API.Plaintext, "presigned", s.Downloads.Presigner != nil)
 	served := make(chan error, 1)
@@ -255,6 +253,22 @@ func (e *Env) APIAddr() string {
 	a, _ := e.apiAddr.Load().(string)
 
 	return a
+}
+
+// Admin is the admin commands' operations in this process, actor naming the operator in their audit rows.
+func (e *Env) Admin(actor string) (*admin.Admin, error) {
+	k, err := e.Keys()
+	if err != nil {
+		return nil, err
+	}
+	builtin, err := ingest.Builtin(e.Config.Ingest.MaxFrameLen, e.AllowUnversioned)
+	if err != nil {
+		return nil, err
+	}
+
+	return &admin.Admin{
+		Catalog: e.Catalog, Bus: e.JS, Config: e.Bus(), Actor: actor, Keys: k, Classifier: builtin.Name, MaxFrameLen: builtin.MaxFrameLen, Dev: e.Dev,
+	}, nil
 }
 
 // Keys is the process's keys, those this configuration declares over the catalog, built at the first call and shared by every role;
