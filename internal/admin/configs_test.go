@@ -115,7 +115,7 @@ func TestConfigStageRefuses(t *testing.T) {
 }
 
 // config activate activates a staged policy-less configuration, leaves an active one as it is, refuses an unknown or retired one,
-// and refuses a masking one while ingest does not mask; each answered activation is audited.
+// and activates a masking one as any other; each answered activation is audited.
 func TestConfigActivate(t *testing.T) {
 	t.Parallel()
 	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
@@ -143,11 +143,8 @@ func TestConfigActivate(t *testing.T) {
 			t.Fatal(err)
 		}
 		masking := as[admin.Staged](t, staged).ConfigID
-		if _, err := run(t, a, "config", "activate", itoa(masking)); !errors.Is(err, admin.ErrMaskingNotExecuted) {
-			t.Errorf("activating a masking configuration = %v, want ErrMaskingNotExecuted", err)
-		}
-		if cs, _ := c.Configs(t.Context()); cs[1].State() != catalog.ConfigStaged {
-			t.Errorf("the masking configuration is %s, want still staged", cs[1].State())
+		if out, err := run(t, a, "config", "activate", itoa(masking)); err != nil || !as[admin.Activation](t, out).Changed {
+			t.Errorf("activating a masking configuration = %+v, %v", out, err)
 		}
 		if err := c.RetireConfig(t.Context(), own, nil); err != nil {
 			t.Fatal(err)
@@ -162,8 +159,8 @@ func TestConfigActivate(t *testing.T) {
 				n++
 			}
 		}
-		if n != 2 {
-			t.Errorf("%d config activate rows, want the two answered activations", n)
+		if n != 3 {
+			t.Errorf("%d config activate rows, want the three answered activations", n)
 		}
 	})
 }

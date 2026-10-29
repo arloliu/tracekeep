@@ -90,6 +90,13 @@ type Capture struct {
 // a rejected one does the same when its retained bytes equal d's;
 // equal bytes on an admitted capture change nothing, and other bytes are a descriptor conflict.
 func (c *Catalog) Admit(ctx context.Context, dv *Identity, d *Descriptor) (Result, error) {
+	return c.AdmitWhere(ctx, dv, d, nil)
+}
+
+// AdmitWhere is Admit binding the newest configuration every leased member supports that bindable admits,
+// as admission outside tracekeep dev binds only a masking configuration (rollouts.md §6.4); nil admits any.
+// With none, the admission returns ErrNoBindableConfig and writes nothing.
+func (c *Catalog) AdmitWhere(ctx context.Context, dv *Identity, d *Descriptor, bindable func(configID int64) bool) (Result, error) {
 	id := dv.Version.Capture
 	var res Result
 	err := c.inTx(ctx, func(tx *sqlx.Tx) error {
@@ -121,7 +128,7 @@ func (c *Catalog) Admit(ctx context.Context, dv *Identity, d *Descriptor) (Resul
 		if err := c.lockMembership(ctx, tx); err != nil {
 			return err
 		}
-		cfg, ok, err := c.bindableConfig(ctx, tx)
+		cfg, ok, err := c.bindableConfig(ctx, tx, bindable)
 		if err != nil {
 			return err
 		}

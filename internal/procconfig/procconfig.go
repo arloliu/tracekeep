@@ -9,9 +9,6 @@ import (
 	"runtime/debug"
 )
 
-// Masks reports whether this release's ingest masks: until it does, no configuration naming a policy may be activated (rollouts.md §6.4).
-const Masks = false
-
 // MaskingFormatMinor is the format_minor a masking configuration's captures need.
 const MaskingFormatMinor = 1
 

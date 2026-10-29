@@ -418,6 +418,11 @@ func ingesters(ctx context.Context, e *Env) (_ []*ingest.Ingester, err error) {
 		return nil, fmt.Errorf("service: claim bucket: %w", err)
 	}
 	x := &ingest.Executor{Catalog: e.Catalog, Claims: ingest.ObjectClaims{Store: claims}, Horizon: e.horizon, Configs: configs, Keys: ks}
+	if !e.Dev {
+		// Outside dev a capture binds only a masking configuration, one whose policy holds the whole baseline,
+		// which Executable refuses to rebuild otherwise (rollouts.md §6.4).
+		x.Bindable = func(id int64) bool { cfg, ok := configs[id]; return ok && cfg.Policy != nil }
+	}
 	f := &ingest.Flusher{
 		Catalog: e.Catalog, Store: e.Store, WorkDir: c.Ingest.WorkDir, KeyPrefix: c.Store.KeyPrefix, Configs: configs,
 		Interval: c.Ingest.FlushInterval, HorizonHour: func() int64 { return ingest.HourOf(e.horizon()) }, Writer: writerName, Now: e.now,

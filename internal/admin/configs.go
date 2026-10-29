@@ -17,8 +17,6 @@ import (
 var (
 	// ErrIncompletePolicy refuses to stage, outside tracekeep dev, a policy lacking a baseline rule (masking-keys.md §9).
 	ErrIncompletePolicy = errors.New("admin: the policy lacks baseline rules")
-	// ErrMaskingNotExecuted refuses to activate a masking configuration in a release whose ingest does not mask (rollouts.md §6.4).
-	ErrMaskingNotExecuted = errors.New("admin: this release's ingest does not mask, so a configuration naming a policy cannot be activated")
 )
 
 // PolicySummary is one stored policy as policy list prints it.
@@ -179,16 +177,13 @@ type Activation struct {
 }
 
 // ConfigActivate is config activate: a staged configuration activated under the membership serialization, an active one left as it is,
-// an unknown or retired one refused, and, while ingest does not mask, a masking one refused (rollouts.md §6.4).
+// an unknown or retired one refused, and one whose content this release cannot read refused (rollouts.md §6.4).
+// A masking configuration becomes bindable once every leased member executes it.
 func (a *Admin) ConfigActivate(ctx context.Context, id int64) (Activation, error) {
 	// Judged inside the activation's transaction, so no configuration staged meanwhile escapes it.
 	check := func(b []byte) error {
-		cc, err := content(b)
-		if err != nil {
+		if _, err := content(b); err != nil {
 			return fmt.Errorf("admin: configuration %d: %w", id, err)
-		}
-		if cc.Policy != nil && !procconfig.Masks {
-			return fmt.Errorf("%w: configuration %d names policy %s version %d", ErrMaskingNotExecuted, id, cc.Policy.ID, cc.Policy.Version)
 		}
 
 		return nil
