@@ -46,6 +46,41 @@ const fingerprintMessage = "tracekeep/key-fingerprint/v1"
 // ErrUnknownKey marks a key id the purpose does not accept: an unknown or a dropped one, which fails closed.
 var ErrUnknownKey = errors.New("keys: key id not accepted")
 
+// errRefusedMaterial marks material no retry can cure: shorter than its minimum, or under an unknown provider.
+var errRefusedMaterial = errors.New("keys: material refused")
+
+// Refused reports whether err is masking-keys.md §9's refused class, which stays refused until an operator acts:
+// a binding mismatch, a key id not declared or accepted, or material malformed, short or missing at its version.
+// Any other failure is unavailable, and a retry may cure it.
+func Refused(err error) bool {
+	var pe *ProviderError
+	switch {
+	case errors.Is(err, catalog.ErrKeyBindingMismatch), errors.Is(err, ErrUnknownKey), errors.Is(err, errRefusedMaterial):
+		return true
+	case errors.As(err, &pe):
+		return !errors.Is(pe, ErrUnavailable)
+	default:
+		return false
+	}
+}
+
+// Metrics is what the module records (operations.md §10.4 keys); *metrics.Keys is one.
+type Metrics interface {
+	// Resolution counts one use of a kind's key: cached, resolved, unavailable or refused.
+	Resolution(kind, outcome string)
+	// ProviderCall records one provider call for op, failed for reason or succeeded when reason is empty.
+	ProviderCall(provider, op, reason string, d time.Duration)
+	// CredentialExpiry records when the provider's current token expires.
+	CredentialExpiry(provider string, at time.Time)
+}
+
+// noMetrics records nothing.
+type noMetrics struct{}
+
+func (noMetrics) Resolution(string, string)                          {}
+func (noMetrics) ProviderCall(string, string, string, time.Duration) {}
+func (noMetrics) CredentialExpiry(string, time.Time)                 {}
+
 // Provider returns a key's material at a reference (masking-keys.md §9).
 type Provider interface {
 	// Material returns the material at ref and at version, or at the current version when version is empty,
@@ -73,6 +108,8 @@ type Config struct {
 	Download Purpose
 	// Providers are the providers beside file and env, by the name declarations give, such as vault.
 	Providers map[string]Provider
+	// Metrics records each use's outcome; nil records nothing.
+	Metrics Metrics
 }
 
 // Binder is the catalog's key bindings; a *catalog.Catalog is one.
@@ -87,6 +124,7 @@ type Keys struct {
 	declared  map[string]Declaration
 	purposes  map[string]Purpose
 	providers map[string]Provider
+	metrics   Metrics
 
 	mu sync.Mutex
 	// cache holds the material of every key id whose check passed, by kind and key id; an entry never expires,
@@ -114,6 +152,10 @@ func New(cfg Config, binder Binder) (*Keys, error) {
 	k := &Keys{
 		binder: binder, declared: cfg.Declared, purposes: map[string]Purpose{},
 		providers: map[string]Provider{ProviderFile: File{}}, cache: map[[2]string][]byte{}, flights: map[[2]string]*flight{},
+	}
+	k.metrics = cfg.Metrics
+	if k.metrics == nil {
+		k.metrics = noMetrics{}
 	}
 	// A role that issues no download URL declares no download purpose.
 	if cfg.Download.Issuing != "" || len(cfg.Download.Accepted) > 0 {
@@ -182,6 +224,7 @@ func (k *Keys) Accepted(ctx context.Context, kind, keyID string) ([]byte, error)
 		return nil, fmt.Errorf("keys: no %s purpose", kind)
 	}
 	if !slices.Contains(p.Accepted, keyID) {
+		k.metrics.Resolution(kind, "refused")
 		return nil, fmt.Errorf("%w: %s under %s", ErrUnknownKey, keyID, kind)
 	}
 
@@ -212,6 +255,7 @@ func (k *Keys) Encryption(ctx context.Context, capture tracepack.UUID, keyID str
 // declaredAs resolves keyID, which must be declared as kind; any other key id fails closed before its binding or provider is read.
 func (k *Keys) declaredAs(ctx context.Context, kind, keyID string) ([]byte, error) {
 	if d, ok := k.declared[keyID]; !ok || d.Kind != kind {
+		k.metrics.Resolution(kind, "refused")
 		return nil, fmt.Errorf("%w: %s under %s", ErrUnknownKey, keyID, kind)
 	}
 
@@ -226,6 +270,7 @@ func (k *Keys) resolve(ctx context.Context, kind, keyID string) ([]byte, error) 
 	k.mu.Lock()
 	if m, ok := k.cache[key]; ok {
 		k.mu.Unlock()
+		k.metrics.Resolution(kind, "cached")
 		return m, nil
 	}
 	f, ok := k.flights[key]
@@ -239,6 +284,7 @@ func (k *Keys) resolve(ctx context.Context, kind, keyID string) ([]byte, error) 
 	k.mu.Unlock()
 	select {
 	case <-f.done:
+		k.metrics.Resolution(kind, outcome(f.err))
 		return f.m, f.err
 	case <-ctx.Done():
 		return nil, fmt.Errorf("keys: %s key id %s: %w", kind, keyID, ctx.Err())
@@ -278,7 +324,7 @@ func (k *Keys) check(ctx context.Context, kind, keyID string) ([]byte, error) {
 	provider, at, _ := strings.Cut(ref, ":")
 	p, ok := k.providers[provider]
 	if !ok {
-		return nil, fmt.Errorf("keys: key id %s: unknown provider %q", keyID, provider)
+		return nil, fmt.Errorf("%w: key id %s: unknown provider %q", errRefusedMaterial, keyID, provider)
 	}
 	asked := version
 	var m []byte
@@ -287,7 +333,7 @@ func (k *Keys) check(ctx context.Context, kind, keyID string) ([]byte, error) {
 		return nil, fmt.Errorf("keys: %s key id %s at %s version %q: %w", kind, keyID, ref, asked, err)
 	}
 	if len(m) < minMaterial {
-		return nil, fmt.Errorf("keys: key id %s: material of %d bytes, below %d", keyID, len(m), minMaterial)
+		return nil, fmt.Errorf("%w: key id %s: material of %d bytes, below %d", errRefusedMaterial, keyID, len(m), minMaterial)
 	}
 	bind := catalog.KeyBinding{KeyID: keyID, Kind: kind, ProviderRef: ref, ProviderVersion: version, Fingerprint: Fingerprint(m)}
 	if _, err := k.binder.BindKey(ctx, bind); err != nil {
@@ -359,4 +405,16 @@ func (k *Keys) Verify(ctx context.Context, keyID string) (Verification, error) {
 	v.Match = hmac.Equal([]byte(v.Resolved), []byte(v.Bound))
 
 	return v, nil
+}
+
+// outcome is a resolution's outcome label.
+func outcome(err error) string {
+	switch {
+	case err == nil:
+		return "resolved"
+	case Refused(err):
+		return "refused"
+	default:
+		return "unavailable"
+	}
 }

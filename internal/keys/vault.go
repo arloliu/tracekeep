@@ -73,6 +73,8 @@ type VaultConfig struct {
 	TokenFile string
 	// RoleID and SecretID are approle's credentials.
 	RoleID, SecretID string
+	// Metrics records each call and the token's expiry; nil records nothing.
+	Metrics Metrics
 }
 
 // Vault is the vault provider: KV v2 reads at a version, under a token it logs in for, renews and replaces.
@@ -141,6 +143,10 @@ func NewVault(cfg VaultConfig) (*Vault, error) {
 		Transport: transport,
 		// A redirect could carry the token elsewhere; none is followed.
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+	}
+
+	if cfg.Metrics == nil {
+		cfg.Metrics = noMetrics{}
 	}
 
 	return &Vault{cfg: cfg, client: client, now: time.Now}, nil
@@ -228,11 +234,13 @@ func (v *Vault) loginLocked(ctx context.Context) (string, error) {
 	return token, nil
 }
 
-// setRenewAt schedules the renewal at two thirds of ttl; a token without a TTL is never renewed.
+// setRenewAt schedules the renewal at two thirds of ttl, and records the token's expiry; a token without a TTL is never renewed.
 func (v *Vault) setRenewAt(ttl time.Duration) {
 	v.renewAt = time.Time{}
 	if ttl > 0 {
-		v.renewAt = v.now().Add(ttl * 2 / 3)
+		now := v.now()
+		v.renewAt = now.Add(ttl * 2 / 3)
+		v.cfg.Metrics.CredentialExpiry(ProviderVault, now.Add(ttl))
 	}
 }
 
@@ -294,6 +302,20 @@ func (v *Vault) read(ctx context.Context, token, ref, version string) ([]byte, s
 // do sends one request under the call deadline and decodes a 2xx response into out.
 // Its error holds the operation, a reason and the status, never the body.
 func (v *Vault) do(ctx context.Context, op, method, path, token string, body, out any) error {
+	start := time.Now()
+	err := v.call(ctx, op, method, path, token, body, out)
+	reason := ""
+	var pe *ProviderError
+	if errors.As(err, &pe) {
+		reason = pe.Reason
+	}
+	v.cfg.Metrics.ProviderCall(ProviderVault, op, reason, time.Since(start))
+
+	return err
+}
+
+// call is do without its metrics.
+func (v *Vault) call(ctx context.Context, op, method, path, token string, body, out any) error {
 	ctx, cancel := context.WithTimeout(ctx, v.cfg.Timeout)
 	defer cancel()
 	var rd io.Reader
