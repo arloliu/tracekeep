@@ -1,6 +1,6 @@
 # Production admission guide
 
-Status: current (2026-10-29) — the policy, its staging and the cutover's prerequisites
+Status: current (2026-10-30) — the policy, its staging, the masking migration and the cutover's prerequisites
 
 How a tool type is admitted to production traffic, and what must hold before sensitive traffic reaches tracekeep at all.
 Read before a tool type's first production capture, before writing a site's policy, and before the cutover to masking.
@@ -50,9 +50,14 @@ A capture keeps the configuration it was bound with for its whole life,
 so masking applies only to captures admitted after a masking configuration is active.
 Before sensitive traffic starts:
 
-- every compactor is upgraded first, so none that cannot write a masked capture's close holds the lease;
+- every ingest replica and every compactor is upgraded at the migration of the release that masks:
+  `tracekeep migrate` moves the membership tables and the compactor lease (T-43),
+  so an earlier ingest replica can no longer register or renew and stops fetching,
+  and an earlier compactor can no longer hold the lease and stops compacting;
+  the traffic waits on the stream meanwhile, nothing is lost, and the upgraded replicas take it up;
 - the masking configuration is staged (above) and activated with `tracekeep admin config activate <config_id>`;
-  a release whose ingest does not mask refuses that activation, so the cutover waits for one that does;
+  outside `tracekeep dev` a capture is admitted only under a masking configuration whose policy holds the whole baseline,
+  so until one is active new captures wait as `incompatible-configuration`, and the alert says so;
 - every producer whose capture predates the cutover is stopped or rotated, old leaders that may still publish included,
   since such a capture keeps its policy-less configuration;
 - the new captures are confirmed bound to the masking configuration: `config list` names its id, and `ListCaptures` each capture's.

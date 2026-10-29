@@ -1,6 +1,6 @@
 # Runbook
 
-Status: current (2026-10-29) — the key incidents; the others join with their alerts
+Status: current (2026-10-30) — the key and masking incidents; the others join with their alerts
 
 One section per named incident of `docs/specs/tracekeep/operations.md` §10.4:
 the alert that raises it, the metric to look at, the command that resolves it, and what is lost if it is ignored.
@@ -10,6 +10,8 @@ Read when an alert names an incident.
 |---|---|---|---|
 | `key-binding-mismatch` | `key_resolutions_total{outcome="refused"}` | restore the bound material, then `key verify` | stop using the key id: rotate to a new one |
 | `key-refused` | `key_resolutions_total{outcome="refused"}`, `key_provider_errors_total{reason}` | fix the declaration or restore the bound version | rotate to a new key id; `capture terminate` for deferred records that need the old one |
+| `cannot-screen` | `messages_total{disposition="nak"}`, `deferred_messages{reason="cannot-screen"}` | fix the producer or the policy, then let the redelivery retry | `capture terminate` for the records masking cannot screen |
+| `incompatible-configuration` | `deferred_messages{reason="incompatible-configuration"}` | stage and activate a masking configuration; upgrade a member that cannot execute it | `capture terminate` for the capture that waits |
 
 ## key-binding-mismatch
 
@@ -49,3 +51,28 @@ or its pinned version is missing from the provider.
 terminate them with `capture terminate` once nothing can bring the material back, which declares them lost.
 Packs already written under the key id stay readable masked, but their originals can no longer be restored,
 and for a `digest` key id, `Digest` under it is refused.
+
+## cannot-screen
+
+**Alert**: ingest cannot mask a record before writing it: a data record whose message text nests lists deeper than the masking walker's limit,
+an annotation whose payload does not decode while the policy has annotation rules, or a record that already arrives marked redacted.
+The record is never written unscreened: it is nak'd and redelivered, and the capture's later records are written around it.
+
+1. `tracekeep admin deferred list --capture <capture>` names the waiting records.
+2. A malformed record is the producer's: fix it, and the redelivery is masked.
+   A rule the policy should not apply to that message is the policy's: stage a corrected policy version and activate it for new captures.
+
+**If ignored**: the record stays deferred, and its seq a gap in the capture, until an operator terminates it with `capture terminate`, which declares it lost.
+
+## incompatible-configuration
+
+**Alert**: a record cannot be processed under a configuration this replica executes,
+or, outside `tracekeep dev`, a capture's start finds no masking configuration it may bind.
+
+1. `tracekeep admin config list` shows each configuration's state.
+2. With no masking configuration active, stage one and activate it (`docs/guides/production-admission.md`);
+   the waiting starts are admitted at their next delivery.
+3. With one active but not bindable, a leased member does not execute it: upgrade or stop that member; it becomes bindable once the member lapses or leaves.
+
+**If ignored**: the capture's records wait on the stream, bounded by the capture, until a configuration binds or an operator terminates the capture.
+
