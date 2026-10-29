@@ -14,6 +14,7 @@ import (
 	"github.com/arloliu/go-secs/tracepack"
 	"github.com/arloliu/tracekeep/internal/catalog"
 	"github.com/arloliu/tracekeep/internal/metrics"
+	"github.com/arloliu/tracekeep/internal/procconfig"
 	"github.com/arloliu/tracekeep/internal/store"
 )
 
@@ -365,12 +366,7 @@ func redaction(cfg *Config, entries []Entry) (*tracepack.RedactionPolicy, []trac
 	if cfg.Policy == nil {
 		return nil, nil
 	}
-	p := &tracepack.RedactionPolicy{
-		PolicyID: cfg.Policy.ID, PolicyVersion: cfg.Policy.Version, KeyID: cfg.DigestKey.ID, DigestAlgorithm: tracepack.DigestAlgorithmHMACSHA256,
-	}
-	if cfg.EncryptionKey.ID != "" {
-		p.EncryptionAlgorithm, p.EncryptionKeyID = new(tracepack.EncryptionAlgorithmAESSIVCMAC512), new(cfg.EncryptionKey.ID)
-	}
+	p := procconfig.RedactionPolicy(cfg.Policy.ID, cfg.Policy.Version, cfg.DigestKey.ID, cfg.EncryptionKey.ID)
 	var out []tracepack.RedactionEntry
 	for _, e := range entries {
 		out = append(out, e.D.Redaction...)
