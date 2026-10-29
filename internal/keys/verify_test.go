@@ -11,7 +11,11 @@ import (
 // key verify re-resolves at the binding's version past the cache, reports a mismatch without failing, and binds nothing.
 func TestVerify(t *testing.T) {
 	t.Parallel()
-	cat := catalogtest.Open(t, catalog.EngineSQLite)
+	catalogtest.Engines(t, func(t *testing.T, cat *catalog.Catalog) { verify(t, cat) })
+}
+
+func verify(t *testing.T, cat *catalog.Catalog) {
+	t.Helper()
 	m := material(0x71, 32)
 	p := &fakeProvider{byVer: map[string][]byte{"1": m}, current: "1"}
 	k := newKeys(t, maskingKeys(p), cat)

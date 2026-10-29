@@ -153,6 +153,20 @@ func TestEncryptionKeyNamesItsKeyID(t *testing.T) {
 	}
 }
 
+// A key id's UTF-8 bytes, not another encoding, follow the capture id in the info.
+func TestEncryptionKeyNonASCIIKeyID(t *testing.T) {
+	t.Parallel()
+	cat := catalogtest.Open(t, catalog.EngineSQLite)
+	cfg := maskingKeys(oneVersion(material(0x21, 32)))
+	cfg.Declared["主鍵-1"] = Declaration{Provider: "fake", Ref: "secret/m-x", Kind: catalog.KindMaster}
+	got, err := newKeys(t, cfg, cat).Encryption(t.Context(), testCapture, "主鍵-1")
+	// Computed independently of this repository (RFC 5869 by hand) for these inputs.
+	const vector = "64c5c9ee76d117cedb9da21ad5aa435fb8058f639598eb3d04a4183b0cde58c6a7a9db1cae43ca216295dd72e4d00fccb0f8b74da49eefd2a93a0a5c0be766c6"
+	if err != nil || hex.EncodeToString(got) != vector {
+		t.Errorf("EncryptionKey under a non-ASCII key id = %x, %v; want the vector", got, err)
+	}
+}
+
 // DigestKey is the bound material itself, one key whatever the capture.
 func TestDigestKeyIsTheBoundMaterial(t *testing.T) {
 	t.Parallel()

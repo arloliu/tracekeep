@@ -144,3 +144,56 @@ func joining(k *Keys) <-chan struct{} {
 
 	return ch
 }
+
+// A cancelled use gets nothing from a warm cache either, through both adapter methods.
+func TestCancelledUseGetsNothingWarm(t *testing.T) {
+	t.Parallel()
+	cat := catalogtest.Open(t, catalog.EngineSQLite)
+	k := newKeys(t, maskingKeys(oneVersion(material(0x66, 32))), cat)
+	if _, err := k.Digest(t.Context(), "d-1"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := k.Encryption(t.Context(), testCapture, "m-1"); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	use := k.ForUse(ctx)
+	if got, err := use.DigestKey("d-1"); !errors.Is(err, context.Canceled) || got != nil {
+		t.Errorf("DigestKey from a warm cache, cancelled = %x, %v", got, err)
+	}
+	if got, err := use.EncryptionKey(testCapture, "m-1"); !errors.Is(err, context.Canceled) || got != nil {
+		t.Errorf("EncryptionKey from a warm cache, cancelled = %x, %v", got, err)
+	}
+}
+
+// A waiter cancelled before its shared resolution completes gets nothing, whichever of the two its select sees first;
+// the leader's use, not cancelled, gets the key.
+func TestCancelledWaiterAsTheResolutionCompletes(t *testing.T) {
+	t.Parallel()
+	cat := catalogtest.Open(t, catalog.EngineSQLite)
+	m := material(0x67, 32)
+	p := oneVersion(m)
+	p.gate = newGate()
+	k := newKeys(t, maskingKeys(p), cat)
+	joined := joining(k)
+	leader, waiter := make(chan []byte, 1), make(chan error, 1)
+	go func() { got, _ := k.Digest(t.Context(), "d-1"); leader <- got }()
+	<-p.gate.arrived
+	ctx, cancel := context.WithCancel(t.Context())
+	var waiterKey []byte
+	go func() {
+		got, err := k.Digest(ctx, "d-1")
+		waiterKey = got
+		waiter <- err
+	}()
+	<-joined
+	cancel()
+	close(p.gate.release)
+	if got := <-leader; !bytes.Equal(got, m) {
+		t.Errorf("the leader = %x, want the material", got)
+	}
+	if err := <-waiter; !errors.Is(err, context.Canceled) || waiterKey != nil {
+		t.Errorf("the cancelled waiter = %x, %v; want nothing", waiterKey, err)
+	}
+}

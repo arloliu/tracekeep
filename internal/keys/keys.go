@@ -66,7 +66,7 @@ func Refused(err error) bool {
 
 // Metrics is what the module records (operations.md §10.4 keys); *metrics.Keys is one.
 type Metrics interface {
-	// Resolution counts one use of a kind's key: cached, resolved, unavailable or refused.
+	// Resolution counts one use of a kind's key: cached, resolved, unavailable, refused, or cancelled when its context ended first.
 	Resolution(kind, outcome string)
 	// ProviderCall records one provider call for op, failed for reason or succeeded when reason is empty.
 	ProviderCall(provider, op, reason string, d time.Duration)
@@ -266,6 +266,9 @@ func (k *Keys) declaredAs(ctx context.Context, kind, keyID string) ([]byte, erro
 // Concurrent uses of one key id share one resolution; a use whose context ends stops waiting and gets nothing,
 // while the resolution goes on for the others.
 func (k *Keys) resolve(ctx context.Context, kind, keyID string) ([]byte, error) {
+	if err := ctx.Err(); err != nil {
+		return k.cancelled(kind, keyID, err)
+	}
 	key := [2]string{kind, keyID}
 	k.mu.Lock()
 	if m, ok := k.cache[key]; ok {
@@ -284,11 +287,39 @@ func (k *Keys) resolve(ctx context.Context, kind, keyID string) ([]byte, error) 
 	k.mu.Unlock()
 	select {
 	case <-f.done:
+		// Both may be ready at once, and select picks either: a cancelled use gets nothing whichever it picked.
+		if err := ctx.Err(); err != nil {
+			return k.cancelled(kind, keyID, err)
+		}
 		k.metrics.Resolution(kind, outcome(f.err))
 		return f.m, f.err
 	case <-ctx.Done():
-		return nil, fmt.Errorf("keys: %s key id %s: %w", kind, keyID, ctx.Err())
+		return k.cancelled(kind, keyID, ctx.Err())
 	}
+}
+
+// cancelled answers a use whose context ended before it got its key: no material, counted as cancelled.
+func (k *Keys) cancelled(kind, keyID string, err error) ([]byte, error) {
+	k.metrics.Resolution(kind, "cancelled")
+
+	return nil, fmt.Errorf("keys: %s key id %s: %w", kind, keyID, err)
+}
+
+// material reads ref's material at version from the provider named provider, recording the read with its reason.
+func (k *Keys) material(ctx context.Context, provider string, p Provider, ref, version string) ([]byte, string, error) {
+	start := time.Now()
+	m, got, err := p.Material(ctx, ref, version)
+	reason := ""
+	if err != nil {
+		reason = "unreachable"
+		var pe *ProviderError
+		if errors.As(err, &pe) {
+			reason = pe.Reason
+		}
+	}
+	k.metrics.ProviderCall(provider, "read", reason, time.Since(start))
+
+	return m, got, err
 }
 
 // fly runs f's resolution, publishes its material in the cache only when it succeeded, and ends the flight.
@@ -328,7 +359,7 @@ func (k *Keys) check(ctx context.Context, kind, keyID string) ([]byte, error) {
 	}
 	asked := version
 	var m []byte
-	m, version, err = p.Material(ctx, at, version)
+	m, version, err = k.material(ctx, provider, p, at, version)
 	if err != nil {
 		return nil, fmt.Errorf("keys: %s key id %s at %s version %q: %w", kind, keyID, ref, asked, err)
 	}
@@ -397,7 +428,7 @@ func (k *Keys) Verify(ctx context.Context, keyID string) (Verification, error) {
 	if !ok {
 		return v, fmt.Errorf("keys: key id %s: unknown provider %q", keyID, provider)
 	}
-	m, _, err := p.Material(ctx, at, b.ProviderVersion)
+	m, _, err := k.material(ctx, provider, p, at, b.ProviderVersion)
 	if err != nil {
 		return v, fmt.Errorf("keys: %s key id %s at %s version %q: %w", b.Kind, keyID, b.ProviderRef, b.ProviderVersion, err)
 	}

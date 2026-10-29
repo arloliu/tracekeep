@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"strings"
 )
@@ -15,56 +16,65 @@ const maxFile = 64 << 10
 
 // File is the file provider (masking-keys.md §9): a regular file an operator or a Vault Agent places, mode 0600 exactly,
 // holding base64 text of at most 64 KiB; any other file is refused. It has no versions.
+// An absent file is missing and any file it refuses is malformed, both refusals; another read failure is unavailable.
 type File struct{}
 
 // Material implements Provider; ref is the file's path.
 func (File) Material(_ context.Context, ref, version string) ([]byte, string, error) {
+	fail := func(reason, detail string) ([]byte, string, error) {
+		return nil, "", &ProviderError{Provider: ProviderFile, Op: "read", Reason: reason, Detail: detail}
+	}
 	if version != "" {
-		return nil, "", fmt.Errorf("file provider: no versions, asked for %q", version)
+		return fail("malformed", "no versions")
 	}
 	f, err := os.Open(ref)
-	if err != nil {
-		return nil, "", fmt.Errorf("file provider: %w", err)
+	if errors.Is(err, fs.ErrNotExist) {
+		return fail("missing", "")
+	} else if err != nil {
+		return fail("unreachable", "")
 	}
 	defer f.Close()
 	info, err := f.Stat()
 	if err != nil {
-		return nil, "", fmt.Errorf("file provider: %w", err)
+		return fail("unreachable", "")
 	}
 	if !info.Mode().IsRegular() || info.Mode().Perm() != 0o600 {
-		return nil, "", fmt.Errorf("file provider: %s is mode %s, not a regular file of mode 0600", ref, info.Mode())
+		return fail("malformed", fmt.Sprintf("mode %s, not a regular file of mode 0600", info.Mode()))
 	}
 	text, err := io.ReadAll(io.LimitReader(f, maxFile+1))
 	if err != nil {
-		return nil, "", fmt.Errorf("file provider: %w", err)
+		return fail("unreachable", "")
 	}
 	if len(text) > maxFile {
-		return nil, "", fmt.Errorf("file provider: %s holds more than %d bytes", ref, maxFile)
+		return fail("malformed", fmt.Sprintf("more than %d bytes", maxFile))
 	}
 	m, err := decode(string(text))
 	if err != nil {
-		return nil, "", fmt.Errorf("file provider: %s: %w", ref, err)
+		return fail("malformed", err.Error())
 	}
 
 	return m, "", nil
 }
 
 // Env is the env provider (masking-keys.md §9), for development only: an environment variable holding base64 text.
-// It has no versions.
+// It has no versions; an unset variable is missing and anything else it refuses is malformed.
 type Env struct{}
 
 // Material implements Provider; ref is the variable's name.
 func (Env) Material(_ context.Context, ref, version string) ([]byte, string, error) {
+	fail := func(reason, detail string) ([]byte, string, error) {
+		return nil, "", &ProviderError{Provider: ProviderEnv, Op: "read", Reason: reason, Detail: detail}
+	}
 	if version != "" {
-		return nil, "", fmt.Errorf("env provider: no versions, asked for %q", version)
+		return fail("malformed", "no versions")
 	}
 	text, ok := os.LookupEnv(ref)
 	if !ok {
-		return nil, "", fmt.Errorf("env provider: %s is not set", ref)
+		return fail("missing", "")
 	}
 	m, err := decode(text)
 	if err != nil {
-		return nil, "", fmt.Errorf("env provider: %s: %w", ref, err)
+		return fail("malformed", err.Error())
 	}
 
 	return m, "", nil

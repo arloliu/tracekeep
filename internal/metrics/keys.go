@@ -20,7 +20,7 @@ type Keys struct {
 func NewKeys(s *Server) (*Keys, error) {
 	m := &Keys{
 		resolutions: prometheus.NewCounterVec(prometheus.CounterOpts{Namespace: "tracekeep", Name: "key_resolutions_total",
-			Help: "Uses of a key by kind and outcome: cached, resolved, unavailable (a retry may cure it) or refused (masking-keys.md §9)."}, []string{"kind", "outcome"}),
+			Help: "Uses of a key by kind and outcome: cached, resolved, unavailable (a retry may cure it), refused (masking-keys.md §9), or cancelled by its use."}, []string{"kind", "outcome"}),
 		providerErrors: prometheus.NewCounterVec(prometheus.CounterOpts{Namespace: "tracekeep", Name: "key_provider_errors_total",
 			Help: "Failed provider calls by provider and reason."}, []string{"provider", "reason"}),
 		providerSeconds: prometheus.NewHistogramVec(prometheus.HistogramOpts{Namespace: "tracekeep", Name: "key_provider_seconds",

@@ -2,6 +2,8 @@ package keys
 
 import (
 	"errors"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
@@ -64,8 +66,10 @@ func TestResolutionOutcomes(t *testing.T) {
 	p.byVer["1"] = material(0x92, 16)                        // short material for the next key id read
 	_, _ = k.Encryption(t.Context(), testCapture, "m-short") // short: refused
 	want := []string{
-		"resolution digest unavailable", "resolution digest resolved", "resolution digest cached",
-		"resolution digest refused", "resolution master refused", "resolution master refused",
+		"call fake read unreachable", "resolution digest unavailable",
+		"call fake read ", "resolution digest resolved", "resolution digest cached",
+		"resolution digest refused", "resolution master refused",
+		"call fake read ", "resolution master refused",
 	}
 	if got := r.recorded(); !slices.Equal(got, want) {
 		t.Errorf("recorded %q, want %q", got, want)
@@ -107,7 +111,16 @@ func TestVaultMetrics(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, _, _ = v.Material(t.Context(), "tk/absent", "")
-	want := []string{"call vault login ", "expiry vault", "call vault read ", "call vault read missing"}
+	// A renewal answered 200 with no token is a malformed renewal, counted as a failure, then replaced by a login.
+	now = now.Add(21 * time.Second)
+	f.mu.Lock()
+	f.renewBody = `{"auth":null}`
+	f.mu.Unlock()
+	if _, _, err := v.Material(t.Context(), "tk/d-1", ""); err != nil {
+		t.Fatal(err)
+	}
+	// Reads are the keys module's to record; the provider records its logins and renewals once validated.
+	want := []string{"call vault login ", "expiry vault", "call vault renew malformed", "call vault login ", "expiry vault"}
 	if got := r.recorded(); !slices.Equal(got, want) {
 		t.Errorf("recorded %q, want %q", got, want)
 	}
@@ -120,5 +133,39 @@ func TestVaultMetrics(t *testing.T) {
 				t.Errorf("a label holds %s: %q", s, c)
 			}
 		}
+	}
+}
+
+// File and env failures are refusals or unavailable by reason, through real Keys uses, and their reads are recorded with that reason.
+func TestFileFailuresClassified(t *testing.T) {
+	t.Parallel()
+	cat := catalogtest.Open(t, catalog.EngineSQLite)
+	dir := t.TempDir()
+	bad := filepath.Join(dir, "bad")
+	if err := os.WriteFile(bad, []byte("not base64!"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	open := keyFile(t, material(0x94, 32), 0o644)
+	r := &recorder{}
+	cfg := Config{
+		Declared: map[string]Declaration{
+			"d-absent": {Provider: ProviderFile, Ref: filepath.Join(dir, "absent"), Kind: catalog.KindDigest},
+			"d-bad":    {Provider: ProviderFile, Ref: bad, Kind: catalog.KindDigest},
+			"d-open":   {Provider: ProviderFile, Ref: open, Kind: catalog.KindDigest},
+		},
+		Metrics: r,
+	}
+	k := newKeys(t, cfg, cat)
+	for id, reason := range map[string]string{"d-absent": "missing", "d-bad": "malformed", "d-open": "malformed"} {
+		_, err := k.Digest(t.Context(), id)
+		if !Refused(err) {
+			t.Errorf("%s = %v, want refused", id, err)
+		}
+		if !slices.Contains(r.recorded(), "call file read "+reason) {
+			t.Errorf("%s: recorded %q, want a %s read", id, r.recorded(), reason)
+		}
+	}
+	if n := strings.Count(strings.Join(r.recorded(), ","), "resolution digest refused"); n != 3 {
+		t.Errorf("refusals counted %d, want 3", n)
 	}
 }
