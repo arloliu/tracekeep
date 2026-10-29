@@ -1,6 +1,7 @@
 package ingest
 
 import (
+	"cmp"
 	"context"
 	"encoding/hex"
 	"errors"
@@ -37,7 +38,7 @@ type (
 
 // Content returns c's stored bytes (procconfig.Content).
 func (c *Config) Content() []byte {
-	cc := procconfig.Content{Classifier: c.Name, MaxFrameLen: c.MaxFrameLen}
+	cc := procconfig.Content{Classifier: c.Name, MaxFrameLen: c.MaxFrameLen, FormatMinor: c.FormatMinor}
 	if c.Policy != nil {
 		_, sum := c.Policy.Canonical()
 		cc.Policy = &PolicyRef{ID: c.Policy.ID, Version: int64(c.Policy.Version), SHA256: hex.EncodeToString(sum[:])} //nolint:gosec // policy.Parse bounds a version to int64
@@ -45,7 +46,8 @@ func (c *Config) Content() []byte {
 		if c.EncryptionKey.ID != "" {
 			cc.EncryptionKey = &c.EncryptionKey
 		}
-		cc.FormatMinor = procconfig.MaskingFormatMinor
+		cc.FormatMinor = max(cc.FormatMinor, procconfig.MaskingFormatMinor)
+		cc.Masker = cmp.Or(c.Masker, procconfig.Masker)
 	}
 
 	return cc.Encode()
@@ -122,9 +124,23 @@ func rebuild(ctx context.Context, cat *catalog.Catalog, builtin *Config, keys Ke
 	if cc.Classifier != builtin.Name {
 		return Config{}, fmt.Errorf("%w: %s, this replica's classifier being %s", ErrForeignConfiguration, cc.Classifier, builtin.Name)
 	}
+	if cc.FormatMinor < 0 || cc.FormatMinor > procconfig.NewestFormatMinor {
+		return Config{}, fmt.Errorf("%w: format_minor %d, this release writing at most %d", ErrCannotExecute, cc.FormatMinor, procconfig.NewestFormatMinor)
+	}
 	c, err := namedConfig(builtin.Name, cc.MaxFrameLen, true)
-	if err != nil || cc.Policy == nil {
-		return c, err
+	if err != nil {
+		return Config{}, err
+	}
+	c.FormatMinor, c.Masker = cc.FormatMinor, cc.Masker
+	if cc.Policy == nil {
+		if cc.Masker != "" || cc.DigestKey != nil || cc.EncryptionKey != nil {
+			return Config{}, fmt.Errorf("%w: a masker or key without a policy", ErrCannotExecute)
+		}
+
+		return c, nil
+	}
+	if cc.FormatMinor < procconfig.MaskingFormatMinor {
+		return Config{}, fmt.Errorf("%w: a policy under format_minor %d", ErrCannotExecute, cc.FormatMinor)
 	}
 	stored, ok, err := cat.Policy(ctx, cc.Policy.ID, cc.Policy.Version)
 	switch {

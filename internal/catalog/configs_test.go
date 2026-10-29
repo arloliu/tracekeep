@@ -94,23 +94,23 @@ func TestActivateStaged(t *testing.T) {
 			t.Fatal(err)
 		}
 		audit := &AuditEntry{Actor: "op", Action: "config activate", Detail: "config activate"}
-		if changed, err := c.ActivateStaged(ctx, s, audit); err != nil || !changed {
+		if changed, err := c.ActivateStaged(ctx, s, nil, audit); err != nil || !changed {
 			t.Fatalf("ActivateStaged = %v, %v", changed, err)
 		}
 		if id, ok := bindable(t, c); !ok || id != s {
 			t.Errorf("bindable after the activation = %d, %v; want %d", id, ok, s)
 		}
-		if changed, err := c.ActivateStaged(ctx, s, audit); err != nil || changed {
+		if changed, err := c.ActivateStaged(ctx, s, nil, audit); err != nil || changed {
 			t.Errorf("ActivateStaged of an active one = %v, %v; want unchanged", changed, err)
 		}
-		if _, err := c.ActivateStaged(ctx, 999, audit); !errors.Is(err, ErrUnknownConfig) {
+		if _, err := c.ActivateStaged(ctx, 999, nil, audit); !errors.Is(err, ErrUnknownConfig) {
 			t.Errorf("ActivateStaged of an unknown id = %v", err)
 		}
 		r := stage(t, c, "retired")
 		if err := c.RetireConfig(ctx, r, nil); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := c.ActivateStaged(ctx, r, audit); !errors.Is(err, ErrConfigRetired) || state(t, c, r) != ConfigRetired {
+		if _, err := c.ActivateStaged(ctx, r, nil, audit); !errors.Is(err, ErrConfigRetired) || state(t, c, r) != ConfigRetired {
 			t.Errorf("ActivateStaged of a retired one = %v, state %s", err, state(t, c, r))
 		}
 		if rows, err := c.AuditByActor(ctx, "op"); err != nil || len(rows) != 2 {
@@ -200,7 +200,7 @@ func TestActivationRacesAnAdmission(t *testing.T) {
 			var res Result
 			var errA, errB error
 			admit := func() { res, errA = c.Admit(ctx, start(newID(t)), descriptor(t, "d")) }
-			activateIt := func() { _, errB = c.ActivateStaged(ctx, s, nil) }
+			activateIt := func() { _, errB = c.ActivateStaged(ctx, s, nil, nil) }
 			first, second := admit, activateIt
 			if !admissionFirst {
 				first, second = activateIt, admit
@@ -239,7 +239,7 @@ func TestActivationRacesARegistration(t *testing.T) {
 			held, release := holdAt(c, hookBeforeCommit)
 			var errR, errA error
 			register := func() { _, errR = c.Register(ctx, "old", []int64{v1}, ttl) }
-			activateIt := func() { _, errA = c.ActivateStaged(ctx, s, nil) }
+			activateIt := func() { _, errA = c.ActivateStaged(ctx, s, nil, nil) }
 			first, second := register, activateIt
 			if !registrationFirst {
 				first, second = activateIt, register
@@ -289,6 +289,49 @@ func TestConcurrentStagingSharesOneRow(t *testing.T) {
 		cs, err := c.Configs(t.Context())
 		if err1 != nil || err2 != nil || err != nil || id1 != id2 || len(cs) != 1 {
 			t.Errorf("stagings = %d (%v), %d (%v); %d rows (%v); want one shared row", id1, err1, id2, err2, len(cs), err)
+		}
+	})
+}
+
+var errRefused = errors.New("refused by the check")
+
+// An activation's check judges the content inside its transaction: refused, nothing is activated or audited;
+// and a configuration staged while the activation waits for the sentinel is judged once it is committed, never skipped.
+func TestActivationCheckRunsInTheTransaction(t *testing.T) {
+	t.Parallel()
+	engines(t, func(t *testing.T, c *Catalog) {
+		ctx := t.Context()
+		refuseMasking := func(content []byte) error {
+			if string(content) == "masking" {
+				return errRefused
+			}
+
+			return nil
+		}
+		audit := &AuditEntry{Actor: "op", Action: "config activate"}
+		held, release := holdAt(c, hookBeforeCommit)
+		var staged int64
+		var errS, errA error
+		a := run(func() { staged, errS = c.StageConfig(ctx, Staging{Content: []byte("masking")}) })
+		<-held
+		waits := c.write.Stats().WaitCount
+		// The activation names the id the held staging allocates, as a racing operator could.
+		b := run(func() { _, errA = c.ActivateStaged(ctx, 1, refuseMasking, audit) })
+		waitBlocked(t, c, waits, "UPDATE counters SET value", 1)
+		close(release)
+		<-a
+		<-b
+		if errS != nil || staged != 1 || !errors.Is(errA, errRefused) {
+			t.Fatalf("staging %d (%v), activation %v; want the activation refused by the check", staged, errS, errA)
+		}
+		if st := state(t, c, 1); st != ConfigStaged {
+			t.Errorf("state = %s, want still staged", st)
+		}
+		if rows, _ := c.AuditByActor(ctx, "op"); len(rows) != 0 {
+			t.Errorf("audit = %+v, want none for the refused activation", rows)
+		}
+		if changed, err := c.ActivateStaged(ctx, stage(t, c, "plain"), refuseMasking, audit); err != nil || !changed {
+			t.Errorf("an activation the check admits = %v, %v", changed, err)
 		}
 	})
 }

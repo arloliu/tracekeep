@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"math"
 	"slices"
 	"strings"
@@ -53,20 +54,44 @@ type AnnotationRule struct {
 // Parse reads a policy from its YAML form, refusing any field the form does not name, and checks it as redact would compile it.
 func Parse(doc []byte) (Policy, error) {
 	dec := yaml.NewDecoder(bytes.NewReader(doc))
-	dec.KnownFields(true)
-	var p Policy
-	if err := dec.Decode(&p); err != nil {
+	var node yaml.Node
+	if err := dec.Decode(&node); err != nil {
 		return Policy{}, fmt.Errorf("%w: %w", ErrInvalid, err)
 	}
-	var extra any
-	if err := dec.Decode(&extra); err == nil {
+	// Only the end may follow the policy: another document, well-formed or not, is refused.
+	var extra yaml.Node
+	if err := dec.Decode(&extra); !errors.Is(err, io.EOF) {
 		return Policy{}, fmt.Errorf("%w: more than one document", ErrInvalid)
+	}
+	// A policy holds integers and strings only: a fractional number would be truncated into an integer field.
+	if err := noFloats(&node); err != nil {
+		return Policy{}, err
+	}
+	var p Policy
+	strict := yaml.NewDecoder(bytes.NewReader(doc))
+	strict.KnownFields(true)
+	if err := strict.Decode(&p); err != nil {
+		return Policy{}, fmt.Errorf("%w: %w", ErrInvalid, err)
 	}
 	if err := p.check(); err != nil {
 		return Policy{}, err
 	}
 
 	return p, nil
+}
+
+// noFloats refuses a floating-point scalar anywhere in n.
+func noFloats(n *yaml.Node) error {
+	if n.Kind == yaml.ScalarNode && n.Tag == "!!float" {
+		return fmt.Errorf("%w: line %d: %q is not an integer or a string", ErrInvalid, n.Line, n.Value)
+	}
+	for _, c := range n.Content {
+		if err := noFloats(c); err != nil {
+			return err
+		}
+	}
+
+	return nil
 }
 
 // FromCanonical reads a policy back from its canonical bytes, as the catalog stores them.

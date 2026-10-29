@@ -75,6 +75,9 @@ type Config struct {
 	Policy                   *policy.Policy
 	DigestKey, EncryptionKey KeyRef
 	Masking                  *redact.Compiled
+	// FormatMinor is the format_minor the configuration's captures need, 0 for none; Masker records the masker it was staged with.
+	FormatMinor int
+	Masker      string
 }
 
 // Executor answers Decide's steps for a delivery: the reads, the claim fetch and the admission transactions.

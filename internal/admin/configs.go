@@ -101,7 +101,7 @@ func (a *Admin) ConfigStage(ctx context.Context, digestKeyID, encryptionKeyID, f
 	}
 	body, sum := p.Canonical()
 	c := procconfig.Content{
-		Classifier: a.Classifier, MaxFrameLen: a.MaxFrameLen, FormatMinor: procconfig.MaskingFormatMinor,
+		Classifier: a.Classifier, MaxFrameLen: a.MaxFrameLen, FormatMinor: procconfig.MaskingFormatMinor, Masker: procconfig.Masker,
 		Policy: &procconfig.PolicyRef{ID: p.ID, Version: int64(p.Version), SHA256: hex.EncodeToString(sum[:])}, //nolint:gosec // policy.Parse bounds a version to int64
 	}
 	digest, err := a.keyRef(ctx, digestKeyID, catalog.KindDigest)
@@ -183,24 +183,20 @@ type Activation struct {
 // ConfigActivate is config activate: a staged configuration activated under the membership serialization, an active one left as it is,
 // an unknown or retired one refused, and, while ingest does not mask, a masking one refused (rollouts.md §6.4).
 func (a *Admin) ConfigActivate(ctx context.Context, id int64) (Activation, error) {
-	infos, err := a.Catalog.Configs(ctx)
-	if err != nil {
-		return Activation{}, err
-	}
-	for i := range infos {
-		if infos[i].ID != id {
-			continue
-		}
-		cc, err := content(infos[i].Content)
+	// Judged inside the activation's transaction, so no configuration staged meanwhile escapes it.
+	check := func(b []byte) error {
+		cc, err := content(b)
 		if err != nil {
-			return Activation{}, fmt.Errorf("admin: configuration %d: %w", id, err)
+			return fmt.Errorf("admin: configuration %d: %w", id, err)
 		}
 		if cc.Policy != nil && !procconfig.Masks {
-			return Activation{}, fmt.Errorf("%w: configuration %d names policy %s version %d", ErrMaskingNotExecuted, id, cc.Policy.ID, cc.Policy.Version)
+			return fmt.Errorf("%w: configuration %d names policy %s version %d", ErrMaskingNotExecuted, id, cc.Policy.ID, cc.Policy.Version)
 		}
+
+		return nil
 	}
 	action := actionID()
-	changed, err := a.Catalog.ActivateStaged(ctx, id, &catalog.AuditEntry{
+	changed, err := a.Catalog.ActivateStaged(ctx, id, check, &catalog.AuditEntry{
 		Actor: a.Actor, Action: "config activate", ActionID: action, Detail: "config activate " + strconv.FormatInt(id, 10),
 	})
 

@@ -43,8 +43,9 @@ a record of a capture bound to one it cannot execute is deferred (§6.1), never 
 **Stored content and its reconstruction.**
 A configuration is stored as its content's bytes, a JSON object of the fields above in one fixed order with the empty ones omitted,
 so a policy-less configuration holds only `classifier` and `max_frame_len`, and keyed by their SHA-256: equal content is one configuration.
-The masker is recorded beside them (below).
+A masking configuration also records the masker it was staged with (below), which does not decide the masker that executes it.
 A replica rebuilds what it executes from those bytes with no provider call:
+a `format_minor` newer than this release writes is not executable,
 the policy read from the catalog by id and version, its hash compared,
 and each key id declared, with the kind its use needs, and its fingerprint equal to its binding's (§9);
 any difference refuses the configuration.
