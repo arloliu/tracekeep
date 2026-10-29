@@ -133,7 +133,7 @@ The steps settle four points the row leaves open:
   a changed `ingest.max_frame_len` now needs `config activate` before captures bind it.
 - **Where a masking configuration comes from.** A policy is the rules, written in YAML, the embedded baseline when no file is given;
   its key ids are not part of the policy's bytes.
-  `config stage <digest key id> [<encryption key id>] [--policy <file>]` stores the policy (insert-or-compare on its id and version by hash, a differing body refused),
+  `config stage <digest key id> <encryption key id> [--policy <file>]` stores the policy (insert-or-compare on its id and version by hash, a differing body refused),
   resolves both key ids, which binds them as 3.1's first use, and stages the configuration naming this binary's classifier and frame limit, the policy, and both key ids with their fingerprints.
   The operator stages, not a start, because the fingerprints need the keys resolved and a start never waits on a provider (`masking-keys.md` §9);
   a start reads them back from the catalog's bindings only.

@@ -53,7 +53,7 @@ func TestConfigStage(t *testing.T) {
 		out, err := run(t, a, "config", "stage", "d-1", "m-1")
 		staged, ok := out.(admin.Staged)
 		if err != nil || !ok || staged.Policy.ID != "baseline" || staged.Policy.Version != 1 || staged.DigestKey.ID != "d-1" ||
-			staged.EncryptionKey == nil || staged.EncryptionKey.ID != "m-1" || staged.DigestKey.Fingerprint == "" {
+			staged.EncryptionKey.ID != "m-1" || staged.DigestKey.Fingerprint == "" {
 			t.Fatalf("config stage = %+v, %v", out, err)
 		}
 		for _, id := range []string{"d-1", "m-1"} {
@@ -80,31 +80,31 @@ func TestConfigStageRefuses(t *testing.T) {
 			t.Fatal(err)
 		}
 		a := stager(t, c, false)
-		if _, err := run(t, a, "config", "stage", "d-1", "--policy", partial); !errors.Is(err, admin.ErrIncompletePolicy) {
+		if _, err := run(t, a, "config", "stage", "d-1", "m-1", "--policy", partial); !errors.Is(err, admin.ErrIncompletePolicy) {
 			t.Errorf("a partial policy outside dev = %v, want ErrIncompletePolicy", err)
 		}
-		if _, err := run(t, a, "config", "stage", "d-9"); !errors.Is(err, keys.ErrUnknownKey) {
+		if _, err := run(t, a, "config", "stage", "d-9", "m-1"); !errors.Is(err, keys.ErrUnknownKey) {
 			t.Errorf("an undeclared key id = %v, want ErrUnknownKey", err)
 		}
-		if _, err := run(t, a, "config", "stage", "m-1"); !errors.Is(err, keys.ErrUnknownKey) {
+		if _, err := run(t, a, "config", "stage", "m-1", "m-1"); !errors.Is(err, keys.ErrUnknownKey) {
 			t.Errorf("a master key id as the digest key = %v, want ErrUnknownKey", err)
 		}
 		if cs, _ := c.Configs(t.Context()); len(cs) != 0 {
 			t.Errorf("refused stagings stored %d configurations", len(cs))
 		}
 		dev := stager(t, c, true)
-		if _, err := run(t, dev, "config", "stage", "d-1", "--policy", partial); err != nil {
+		if _, err := run(t, dev, "config", "stage", "d-1", "m-1", "--policy", partial); err != nil {
 			t.Errorf("a partial policy under dev = %v", err)
 		}
 		changed := filepath.Join(dir, "changed.yaml")
 		if err := os.WriteFile(changed, []byte("policy_id: site\nversion: 1\nitem_rules:\n  - {stream: 7, function: 6, path: \"2\", domain: ppbody}\n"), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := run(t, dev, "config", "stage", "d-1", "--policy", changed); !errors.Is(err, catalog.ErrPolicyConflict) {
+		if _, err := run(t, dev, "config", "stage", "d-1", "m-1", "--policy", changed); !errors.Is(err, catalog.ErrPolicyConflict) {
 			t.Errorf("another body under site version 1 = %v, want ErrPolicyConflict", err)
 		}
 		for _, words := range [][]string{
-			{"config", "stage"}, {"config", "stage", "d-1", "m-1", "x"}, {"config", "stage", "d-1", "--policy"},
+			{"config", "stage"}, {"config", "stage", "d-1"}, {"config", "stage", "d-1", "m-1", "x"}, {"config", "stage", "d-1", "--policy"},
 			{"config", "stage", "--policy", partial}, {"policy", "show", "site", "x"}, {"config", "activate", "x"}, {"config", "list", "x"},
 		} {
 			if _, err := run(t, dev, words...); !errors.Is(err, admin.ErrUsage) {
@@ -174,7 +174,7 @@ func readBack(t *testing.T, a *admin.Admin, staged *admin.Staged) {
 	list, err := run(t, a, "config", "list")
 	cs, _ := list.([]admin.ConfigSummary)
 	if err != nil || len(cs) != 1 || cs[0].ID != staged.ConfigID || cs[0].State != catalog.ConfigStaged || cs[0].Policy == nil ||
-		cs[0].Policy.SHA256 != staged.Policy.SHA256 || cs[0].MaxFrameLen != 1<<20 || cs[0].EncryptionKey == nil {
+		cs[0].Policy.SHA256 != staged.Policy.SHA256 || cs[0].MaxFrameLen != 1<<20 || cs[0].EncryptionKey == nil || cs[0].EncryptionKey.ID != "m-1" {
 		t.Errorf("config list = %+v, %v", list, err)
 	}
 	pl, err := run(t, a, "policy", "list")

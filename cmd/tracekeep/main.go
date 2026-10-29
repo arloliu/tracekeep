@@ -51,7 +51,7 @@ commands:
                scope merge <capture> <hour, RFC 3339>
                key verify <key id>
                policy list | policy show <policy id> <version>
-               config stage <digest key id> [<encryption key id>] [--policy <file>]
+               config stage <digest key id> <encryption key id> [--policy <file>]
                config list | config activate <config id>`
 
 // errUsage marks a command line the binary cannot run; it exits 2.

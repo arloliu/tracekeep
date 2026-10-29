@@ -162,14 +162,15 @@ func rebuild(ctx context.Context, cat *catalog.Catalog, builtin *Config, keys Ke
 	if err := checkKey(ctx, cat, keys, cc.DigestKey, catalog.KindDigest); err != nil {
 		return Config{}, err
 	}
-	encryption := ""
-	if cc.EncryptionKey != nil {
-		if err := checkKey(ctx, cat, keys, cc.EncryptionKey, catalog.KindMaster); err != nil {
-			return Config{}, err
-		}
-		c.EncryptionKey, encryption = *cc.EncryptionKey, cc.EncryptionKey.ID
+	// A pack masked at write encrypts, so a masking configuration names its encryption key (the tracepack format specification §5).
+	if cc.EncryptionKey == nil {
+		return Config{}, fmt.Errorf("%w: a policy and no encryption key", ErrCannotExecute)
 	}
-	if c.Masking, err = p.Compile(cc.DigestKey.ID, encryption); err != nil {
+	if err := checkKey(ctx, cat, keys, cc.EncryptionKey, catalog.KindMaster); err != nil {
+		return Config{}, err
+	}
+	c.EncryptionKey = *cc.EncryptionKey
+	if c.Masking, err = p.Compile(cc.DigestKey.ID, cc.EncryptionKey.ID); err != nil {
 		return Config{}, fmt.Errorf("%w: %w", ErrCannotExecute, err)
 	}
 	c.Policy, c.DigestKey = &p, *cc.DigestKey

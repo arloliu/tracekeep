@@ -71,11 +71,11 @@ type Staged struct {
 	ConfigID      int64
 	Policy        procconfig.PolicyRef
 	DigestKey     procconfig.KeyRef
-	EncryptionKey *procconfig.KeyRef `json:",omitempty"`
+	EncryptionKey procconfig.KeyRef
 }
 
 // ConfigStage is config stage: the policy at file, or the embedded baseline when file is empty, parsed and, outside dev, checked for the baseline;
-// both key ids resolved under their kinds, which binds them; and the configuration of this binary's classifier and frame limit
+// both key ids resolved under their kinds, which binds them, the encryption key being required since a pack masked at write encrypts; and the configuration of this binary's classifier and frame limit
 // with the policy and the key ids' fingerprints stored as staged, with the policy and the audit row, in one transaction (rollouts.md §6.4).
 // The file is read by the process that runs the command.
 func (a *Admin) ConfigStage(ctx context.Context, digestKeyID, encryptionKeyID, file string) (Staged, error) {
@@ -109,13 +109,11 @@ func (a *Admin) ConfigStage(ctx context.Context, digestKeyID, encryptionKeyID, f
 		return Staged{}, err
 	}
 	c.DigestKey = &digest
-	if encryptionKeyID != "" {
-		enc, err := a.keyRef(ctx, encryptionKeyID, catalog.KindMaster)
-		if err != nil {
-			return Staged{}, err
-		}
-		c.EncryptionKey = &enc
+	enc, err := a.keyRef(ctx, encryptionKeyID, catalog.KindMaster)
+	if err != nil {
+		return Staged{}, err
 	}
+	c.EncryptionKey = &enc
 	action := actionID()
 	id, err := a.Catalog.StageConfig(ctx, catalog.Staging{
 		Content: c.Encode(),
@@ -127,7 +125,7 @@ func (a *Admin) ConfigStage(ctx context.Context, digestKeyID, encryptionKeyID, f
 		return Staged{}, err
 	}
 
-	return Staged{ActionID: action, ConfigID: id, Policy: *c.Policy, DigestKey: *c.DigestKey, EncryptionKey: c.EncryptionKey}, nil
+	return Staged{ActionID: action, ConfigID: id, Policy: *c.Policy, DigestKey: *c.DigestKey, EncryptionKey: *c.EncryptionKey}, nil
 }
 
 // keyRef resolves keyID under kind, binding it at its first use, and names it with its fingerprint.
