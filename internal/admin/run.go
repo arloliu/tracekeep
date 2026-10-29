@@ -17,7 +17,7 @@ import (
 var ErrUsage = errors.New("usage")
 
 // reads are the commands that only read, which audit their run here; every other command audits itself in its transaction.
-var reads = []string{"status", "deferred list", "parked list", "capture show", "object list"}
+var reads = []string{"status", "deferred list", "parked list", "capture show", "object list", "key verify"}
 
 // Run runs the operator command words name (operations.md §10.4) and returns what it prints as JSON:
 // the one dispatch tracekeep admin and status share, whether the CLI runs it on the catalog or the api process does (api.md §10.1).
@@ -57,6 +57,8 @@ func operate(ctx context.Context, a *Admin, cmd string, args []string) (any, err
 		return onCapture(ctx, a, cmd, args[2:])
 	case cmd == "bus adopt-stream" && len(args) == 3:
 		return a.AdoptStream(ctx, args[2])
+	case cmd == "key verify" && len(args) == 3:
+		return a.KeyVerify(ctx, args[2])
 	case (cmd == "conflict acknowledge" || cmd == "scope merge") && len(args) == 4,
 		cmd == "scope exclude-input" && len(args) == 3:
 		return onScope(ctx, a, cmd, args[2:])
