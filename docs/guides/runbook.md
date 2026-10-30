@@ -1,6 +1,6 @@
 # Runbook
 
-Status: current (2026-10-30) — the key and masking incidents, and refused restores and digests; the others join with their alerts
+Status: current (2026-10-30) — the key and masking incidents, refused restores and digests, merges over budget; the others join with their alerts
 
 One section per named incident of `docs/specs/tracekeep/operations.md` §10.4:
 the alert that raises it, the metric to look at, the command that resolves it, and what is lost if it is ignored.
@@ -10,6 +10,7 @@ Read when an alert names an incident.
 |---|---|---|---|
 | `key-binding-mismatch` | `key_resolutions_total{outcome="refused"}` | restore the bound material, then `key verify` | stop using the key id: rotate to a new one |
 | `key-refused` | `key_resolutions_total{outcome="refused"}`, `key_provider_errors_total{reason}` | fix the declaration or restore the bound version | rotate to a new key id; `capture terminate` for deferred records that need the old one |
+| `merge-over-budget` | `merges_total{outcome="refused"}`, `scopes{state="unmergeable"}` | lower the policy's masking density for new captures; an hour already refused merges by `scope merge <capture> <hour>` only once a release can merge it within the budget | leave it: the hour's segments stay readable and retention evicts it on time |
 | `cannot-screen` | `cannot_screen_total`, `deferred_messages{reason="cannot-screen"}` | fix the producer or the policy, then let the redelivery retry | `capture terminate` for the records masking cannot screen |
 | `incompatible-configuration` | `deferred_messages{reason="incompatible-configuration"}` | stage and activate a masking configuration; upgrade a member that cannot execute it | `capture terminate` for the capture that waits |
 

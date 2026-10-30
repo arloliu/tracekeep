@@ -144,6 +144,7 @@ the cases prove the decision, the schedules prove the re-reads under the capture
   so a batch closes, due at once, before the record whose entries would take their estimated encoded size past half of it,
   and that record opens the next batch of its key;
   a segment whose metadata still exceeds the budget when its working file is reopened is the `Writer`'s refusal (§6.1 *write or put fails*), never a transient failure.
+  The segments of one hour may still exceed it together, which leaves their scope unmergeable (`compactor.md` §8.1, T-45).
 - **Conflicts**: equal seq with different bytes are both kept,
   as [FMT I-12] and [STO §4] *Merge* require of every component:
   the first version goes into the batch's segment, each further version into a **conflict segment** of its own for the same scope,
