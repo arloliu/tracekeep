@@ -5,6 +5,7 @@ import (
 	"context"
 	"log/slog"
 	"maps"
+	"strings"
 	"testing"
 	"time"
 
@@ -110,7 +111,7 @@ func TestThinnedRecordsThroughMaskingAndTheMerge(t *testing.T) {
 		}
 
 		last := recs[len(recs)-1].TSUTCNs
-		mergeToTheArchive(t, c, p, last)
+		mergeToTheArchives(t, c, p, recs)
 		if th, kp := checkThinnedStorage(t, p, sent); !maps.Equal(th, thinned) || !maps.Equal(kp, kept) {
 			t.Errorf("the archive holds %d thinned and %d kept data records, want the segments' %d and %d", len(th), len(kp), len(thinned), len(kept))
 		}
@@ -129,10 +130,15 @@ func TestThinnedRecordsThroughMaskingAndTheMerge(t *testing.T) {
 	})
 }
 
-// mergeToTheArchive merges the hour of p's segments that last falls in, with no conflict, then deletes the segments,
-// so the archive alone is stored.
-func mergeToTheArchive(t *testing.T, c *catalog.Catalog, p *pipeline, last int64) {
+// mergeToTheArchives merges every hour recs fall in, with no conflict, then deletes the segments,
+// so one archive for each of those hours is all p stores; the simulator's records carry the wall clock, so they may span two hours.
+func mergeToTheArchives(t *testing.T, c *catalog.Catalog, p *pipeline, recs []tracepack.Record) {
 	t.Helper()
+	hours := map[int64]bool{}
+	for i := range recs {
+		hours[HourOf(recs[i].TSUTCNs)] = true
+	}
+	last := recs[len(recs)-1].TSUTCNs
 	lease, ok, err := c.TakeLease(t.Context(), "compactor/2", "test", time.Hour)
 	if err != nil || !ok {
 		t.Fatal(ok, err)
@@ -153,8 +159,14 @@ func mergeToTheArchive(t *testing.T, c *catalog.Catalog, p *pipeline, last int64
 	if err := r.Deletions(t.Context(), lease, &compact.RetentionReport{}); err != nil {
 		t.Fatal(err)
 	}
-	if n := len(storedKeys(t, p.st)); n != 1 {
-		t.Fatalf("%d objects after the deletion, want the archive alone", n)
+	stored := storedKeys(t, p.st)
+	for _, k := range stored {
+		if !strings.HasPrefix(k, "archive/") {
+			t.Errorf("%s stored after the deletion, want archives alone", k)
+		}
+	}
+	if len(stored) != len(hours) {
+		t.Fatalf("%d objects after the deletion, want an archive for each of the %d hours", len(stored), len(hours))
 	}
 }
 
