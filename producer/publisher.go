@@ -763,24 +763,42 @@ func (pb *publisher) report(force bool) {
 		connected = 0
 	}
 	m.Set("bus_connected", nil, connected)
+	pb.reportPending(&last.pending)
+
+	last.core, last.published, last.steps, last.dropped, last.dropBytes = c, pb.published, pb.clockSteps, pb.dropped, pb.dropBytes
+}
+
+// reportPending sends the send path's and thinning's counts gathered since last.
+func (pb *publisher) reportPending(last *core.PendingCounters) {
+	m, rec := pb.p.metrics, pb.p.rec
 	pc := rec.Pending.Counters()
 	for i := range core.NumIgnoredReasons {
-		if delta := pc.Ignored[i] - last.pending.Ignored[i]; delta > 0 {
+		if delta := pc.Ignored[i] - last.Ignored[i]; delta > 0 {
 			m.Add("pending_reports_ignored_total", map[string]string{"reason": ignoredReasons[i]}, float64(delta))
 		}
 	}
 	for i := range core.NumTimeoutDropReasons {
-		if delta := pc.TimeoutsDropped[i] - last.pending.TimeoutsDropped[i]; delta > 0 {
+		if delta := pc.TimeoutsDropped[i] - last.TimeoutsDropped[i]; delta > 0 {
 			m.Add("pending_timeouts_dropped_total", map[string]string{"reason": timeoutDropReasons[i]}, float64(delta))
 		}
 	}
-	if delta := pc.Ambiguous - last.pending.Ambiguous; delta > 0 {
+	if delta := pc.Ambiguous - last.Ambiguous; delta > 0 {
 		m.Add("ambiguous_total", nil, float64(delta))
 	}
+	if delta := pc.Thinned - last.Thinned; delta > 0 {
+		m.Add("thinned_total", nil, float64(delta))
+	}
+	if delta := pc.HeaderMismatches - last.HeaderMismatches; delta > 0 {
+		m.Add("thinning_header_mismatches_total", nil, float64(delta))
+	}
+	// Thinning is enabled while the current capture has a sampling rule and no registration has found the ambiguity set full.
+	enabled := 0.0
+	if c := rec.Current(); c != nil && c.Thins() && !pc.Capped {
+		enabled = 1
+	}
+	m.Set("thinning_enabled", nil, enabled)
 	m.Set("pending_requests", nil, float64(pc.Live))
-	last.pending = pc
-
-	last.core, last.published, last.steps, last.dropped, last.dropBytes = c, pb.published, pb.clockSteps, pb.dropped, pb.dropBytes
+	*last = pc
 }
 
 // mayPublish is the dependency barrier: seq may be published only when no reserved seq below it is unaccepted,

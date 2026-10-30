@@ -163,6 +163,9 @@ func NewCapture(p CaptureParams) *Capture {
 	return c
 }
 
+// Thins reports whether the capture has a sampling rule.
+func (c *Capture) Thins() bool { return c.sampler != nil }
+
 // Declares reports whether the capture's descriptor declares stream and function in thinning:
 // a capture with a sampling rule declares S1F3 and S1F4.
 func (c *Capture) Declares(stream, function uint8) bool {

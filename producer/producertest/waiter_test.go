@@ -243,7 +243,7 @@ func TestCompetingReportsOnTheProducer(t *testing.T) {
 	clk := producertest.NewClock()
 	w := producertest.NewWaiter(clk)
 
-	tok := p.Pending().Register(1, 7, "c")
+	tok := p.Pending().RegisterRequest(producer.Request{SessionID: 1, SystemBytes: 7, Stream: 1, Function: 3, Channel: "c", Origin: producer.OriginIntervalPoll})
 	tok.Sent()
 	w.Await(tok, time.Second)
 	producertest.Compete(tok, func(t producer.Token) { w.Reply(t) }, func(producer.Token) { clk.Advance(time.Second) })
