@@ -40,6 +40,8 @@ No test reaches a network or a shared server.
 The SDK's tests use `producertest`'s in-memory bus; the SDK module never imports `internal/testbus`.
 What needs a real server (the SDK's default connection, `WithConn`, `Preflight` on a live stream) is tested in `producer/internal/bustest`,
 a test-only module that imports both and runs, like the SDK, with `GOWORK=off` (T-35).
+The packaging jobs are the exception (T-48): the Helm chart on kind and the systemd unit on the runner,
+each a CI job of its own that drives the built image or binary against real services and a browser, never part of `make test`.
 
 ## Patterns
 

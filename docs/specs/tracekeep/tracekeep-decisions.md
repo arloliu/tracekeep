@@ -571,3 +571,27 @@ A producer of another version, or another tool's text, then costs only the param
 and the catalog needs no columns or migration for values the descriptor already holds.
 Considered and not taken: parsing at admission into columns of `captures`, which adds a migration for no reader that needs them indexed,
 and refusing a capture whose `source` does not parse, which would lose traffic over a descriptive field.
+
+### T-48 — what the phase 4 plan settled (2026-10-31)
+
+The owner's answers to twelve points the phase 4 plan raised before it started; three were corrected after the plan's first outside review, and the owner was told.
+**No holds**: T-4 stands, and the roadmap row's holds, left from seed v21, are dropped.
+**`FindTransaction` joins `QueryRecords`**, over a pack source that answers every hour the lookup asks for; `FindTransactions` stays unadopted.
+**`Export` ships `kind=canonical` only**:
+tracepack's per-record JSONL writer is not exported, and the payload format lives in go-secs,
+so `kind=filtered` is refused until go-secs exports a filtered writer.
+**The first pages** are the tool and time browser with scope completeness, the record viewer and export;
+SML is rendered by the server from go-secs; the restore and admin pages, and the typed admin operations, come later.
+**People need an IdP**: the static-token provider stays a service credential.
+**Every accepted session key id is resolved at start**, a failure failing the start,
+so a started `api` replica validates every cookie without the key provider;
+a replica started while the provider is down does not start, and those already running keep serving.
+**The frontend build is optional for the Go build**: a tracked fallback page is embedded beside `web/dist`,
+and a release binary and the image are built after `make web` and never ship the fallback.
+**The gate runs the real packaging**: the Helm chart on kind and the systemd unit on the CI runner, both driven by a browser,
+as CI jobs of their own, the testing rule's one exception to "no test reaches a network".
+**Human reads see masked packs only, from one read set**:
+outside `tracekeep dev`, a pack whose capture's configuration has no policy is withheld from `QueryRecords`, `FindTransaction` and `Export` and named as withheld;
+the three read an hour's `staged` packs (its archive and the segments registered after a reopen) and its `excluded` packs, never a `merged` input.
+**The image** is a static, distroless build for amd64 and arm64, published as `ghcr.io/arloliu/tracekeep`.
+The plan splits the phase into six sub-phases.

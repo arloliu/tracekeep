@@ -26,7 +26,7 @@ Contract changes go through proposals, which the subject [README.md](README.md) 
 - **Services**: OAuth2 client credentials validated against the IdP's JWKS, or mTLS in the cluster;
   startup never blocks on the IdP (§10.2).
 - **Roles**: `pack-reader`, `scorer`, `viewer`, `exporter`, `restorer`, `admin`, granted separately (§10.2).
-- **Frontend**: `web/` built into the binary and served at `/`; no pages in the first version (§10.3).
+- **Frontend**: `web/` built into the binary and served at `/`; the first pages are the tool and time browser, the record viewer and export (§10.3).
 - **Gate**: connect-go's overhead against plain gRPC is measured before the API is implemented (T-7).
 
 ## 10. API, auth and frontend (requirements 5 and 6)
@@ -45,9 +45,9 @@ gRPC for Go clients, JSON over HTTP for the browser, one definition.
 | `PackURL(pack_id)` | a download URL (expiry clamped to the object's deadline, or `pack-superseded`, *Downloads* below) so the VE reads packs with tracepack's own reader; this makes the VE service a privileged reader of packs that hold ciphertext in place (§13) |
 | `QueryRecords(selector, predicates)` | streamed masked records, via `MergeIterate`; the predicates below, plus capture, seq range and epoch |
 | `FindTransaction(capture, seq, hour)` | tracepack's lookup |
-| `Export(filter, kind)` | an asynchronous job producing a **bundle** (tar) under `exports/`, fetched by a download URL (*Downloads* below): one JSONL file **per source pack**, `tracepack-jsonl/1`, `/2` or `/3` by that pack's `format_minor` 0, 1 or 2 (G5-233, G5-270), plus `manifest.json` naming packs, captures, hours, each pack's incompleteness from its read, conflicts, and the filter. `kind=canonical` uses the canonical exporter unfiltered; `kind=filtered` writes the same record schema with the filter applied and is declared non-canonical in the manifest. A filtered `.tpk` is an extract, a v1.0 non-goal, and is not offered. A cancelled or failed job deletes its partial objects; a completed bundle is kept for its retention (default 24 h) and then deleted by the compactor (T-33) |
+| `Export(filter, kind)` | an asynchronous job producing a **bundle** (tar) under `exports/`, fetched by a download URL (*Downloads* below): one JSONL file **per source pack**, `tracepack-jsonl/1`, `/2` or `/3` by that pack's `format_minor` 0, 1 or 2 (G5-233, G5-270), plus `manifest.json` naming packs, captures, hours, each pack's incompleteness from its read, conflicts, and the filter. `kind=canonical` uses the canonical exporter unfiltered; `kind=filtered` writes the same record schema with the filter applied and is declared non-canonical in the manifest; it is refused until go-secs exports a filtered writer, since the record schema is tracepack's (T-48). A filtered `.tpk` is an extract, a v1.0 non-goal, and is not offered. A cancelled or failed job deletes its partial objects; a completed bundle is kept for its retention (default 24 h) and then deleted by the compactor (T-33) |
 | `Restore(capture, seq, hour)`, `Digest(digest_key_id, inputs)` | `masking-keys.md` §9; `Restore` returns a record only when every non-excluded copy of `(capture, seq)` is equal, in any hour, the hour naming one that holds a copy (otherwise not found); differing versions are refused as a conflict, an acknowledged one included, and none is selectable (T-42); `Digest` digests a list of inputs under one digest key id (T-44) |
-| admin | policies, processing configurations, key ids (no material), retention, thinning status, holds if LS-13 (a) is chosen; until these are typed operations, §10.4's `policy`, `config` and `key` commands serve them through `Admin(words)` |
+| admin | policies, processing configurations, key ids (no material), retention, thinning status (tracekeep keeps no holds, T-4); until these are typed operations, §10.4's `policy`, `config` and `key` commands serve them through `Admin(words)` |
 | `Admin(words)` | the `tracekeep admin` command those words name, run by the `api` process, its JSON result returned: the transport of §10.4's commands while that process holds a SQLite catalog |
 
 **Admin over the API.**
@@ -58,7 +58,7 @@ the CLI's `--actor` names the actor of the direct path only.
 The CLI authenticates with the configuration's static token that holds `admin` (`auth.static`, its flag on),
 reaching the service at `api.public_url` and trusting its certificate (`api.tls_cert_file`) beside the system's roots;
 without such a token it refuses and says so.
-The typed admin operations of the table above stay phases 3 and 4's.
+The typed admin operations of the table above wait for a later phase, with the admin page (T-48).
 
 **Selector.**
 A reader names the connection it wants by (`tool_id`, device),
@@ -138,7 +138,7 @@ and needs no knowledge of capture ids beyond what `ListPacks` returns.
 **Downloads.**
 `PackURL` and an export's fetch return a download URL that never outlives its object (T-33).
 Each object has a **deadline**, the earliest time it may be deleted:
-for every pack, the time retention may first evict its hour (hour end plus the retention period in force, read from the catalog by the one function of §8.3, pushed out by a hold), `staged` and `excluded` packs included,
+for every pack, the time retention may first evict its hour (hour end plus the retention period in force, read from the catalog by the one function of §8.3), `staged` and `excluded` packs included,
 and for a merged input the earlier of that and its own merge's `merges.delete_at`, `merges.at` + D fixed at the commit (§8.3);
 for a completed export bundle, the end of its retention.
 The URL expires at the earlier of now plus its lifetime and the deadline minus a margin (default 2 min) that covers clock skew and a read in flight.
@@ -205,6 +205,7 @@ otherwise it is a URL on the API itself carrying a download token, and the API s
   The **static-token provider** for a standalone host without an IdP is an explicit flag and is never activated by a failure:
   with the flag on, a bearer token is compared in constant time with each configured static token, read by reference, which names its subject and roles;
   with it off, none is consulted, whatever the IdP's state.
+  It is a service credential: people's sign-in never accepts it, so a host where people sign in names an IdP (T-48).
 - **Roles**: `pack-reader` (ListPacks, PackURL), `pack-reader` or `viewer` (ListDevices, ListCaptures, ListScopeChanges, T-41), `scorer` (Digest), `viewer`, `exporter`, `restorer`, `admin`;
   separately granted.
   Each operation names the roles any one of which admits it, `admin` alone admitting admin;
@@ -222,6 +223,8 @@ otherwise it is a URL on the API itself carrying a download token, and the API s
 `make web` builds `web/dist`, which the binary embeds with `go:embed` and `api` serves at `/`,
 so a standalone host ships one file;
 in development Vite proxies `/api` to the Go server.
-The PoC and the first version ship no pages; the layout, the auth flow and the embedding exist from day one.
-First pages, when they come:
-tool and time browser with scope completeness, record viewer with SML rendering, export, restore, admin.
+The embedding package embeds a tracked fallback page beside `web/dist`,
+so the Go build needs no Node, and a binary built without `make web` serves the fallback, which says the frontend was not built;
+a release binary and the image are built after `make web` and never ship the fallback (T-48).
+The first pages are the tool and time browser with scope completeness, the record viewer with SML the server renders from go-secs, and export;
+the restore and admin pages come later (T-48).

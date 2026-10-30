@@ -1,6 +1,6 @@
 # Phase 4 — people
 
-Status: draft (2026-10-31) — the owner's answers in; external review next
+Status: active (2026-10-31) — 4.1 next
 
 Milestone 4 of the [roadmap](../ROADMAP.md):
 people's sign-in through the API, the first pages, `QueryRecords` and `FindTransaction`, `Export` bundles, and the packaging a standalone host and a cluster run.
@@ -8,9 +8,9 @@ Its scope and gate are the roadmap's phase 4 row;
 the design is `docs/specs/tracekeep/api.md` §10.1–§10.3, `masking-keys.md` §9, `catalog.md` §7.1–§7.3, `compactor.md` §8.3–§8.4, `architecture.md`, `storage.md` §5.2 and `operations.md` §10.4.
 This plan only orders the work.
 
-## Before it starts
+## Settled before it started
 
-The owner's answers to the points below become one decision-log entry when the plan is activated, as T-42 did for phase 3.
+The owner's answers, recorded as T-48; the phases below cite them by number.
 
 1. **No holds** (settled by T-4):
    LS-13 was decided (b), the VE copies what it promotes, so tracekeep keeps no holds.
@@ -60,7 +60,7 @@ The owner's answers to the points below become one decision-log entry when the p
 11. **The image** (answered 2026-10-31) is a static, distroless build of the one binary, for amd64 and arm64, published as `ghcr.io/arloliu/tracekeep`.
 12. **The split below** into six sub-phases (answered 2026-10-31).
 
-The commit that activates this plan amends:
+The commit that activated this plan amended:
 the roadmap's phase 4 row (holds dropped, `FindTransaction` named) and its open items (the filtered writer asked of go-secs);
 for point 1, `api.md` §10.1's admin row and *Downloads* deadline, `compactor.md` §8.3's hold sentence and §8.4's "holds included", `catalog.md` §7.2's `EvictHour` precondition, and `positioning.md` §14, LS-13 settled by T-4;
 `api.md` §10.1's `Export` row for point 3 and its typed-admin sentence for point 10;
@@ -109,8 +109,10 @@ Spec first (`api.md` §10.2, `masking-keys.md` §9, `operations.md` §10.4), the
 - IdP down before start and after start: existing sessions keep working until expiry, a login answers `idp-unavailable`.
 - The configuration guide and the runbook for a session key's rotation and an IdP outage.
 - Tests: a login on one replica with its callback on another; a wrong audience, nonce or state; swapped login cookies; a replayed callback; a rotation during a login;
+  two callbacks of one login racing on two replicas; a rotation between a login and its callback;
   a bad bearer token beside a valid cookie; cross-origin and absent-`Origin` requests; a download token beside an absent, invalid or expired cookie;
-  a start with the key provider down; the IdP down cold and warm, and a stalled token exchange.
+  a start with the key provider down, and an old accepted cookie first used after a good start and a provider outage;
+  the IdP down cold and warm, and a stalled token exchange.
 
 ## Gate cases and their owners
 

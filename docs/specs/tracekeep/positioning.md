@@ -54,5 +54,5 @@ and serves it back for VE learning and for troubleshooting.
 ## 14. Rows of `ve-log-service.md` this design settles once agreed
 
 LS-2 (the tool's side, one header), LS-3 (§4.4), LS-4 and LS-5 (observers see every frame and socket, rejected and self-originated included),
-LS-6 (§4.5), LS-7 (the rule of §4.6, pending the interval-only request origin, T-42), LS-10 and LS-11 (§7.3, §10.1), LS-14 (§4.3), LS-15 as qualified in §13 item 2.
-Still open there: LS-8's fields beyond recipe bodies, LS-13.
+LS-6 (§4.5), LS-7 (the rule of §4.6, pending the interval-only request origin, T-42), LS-10 and LS-11 (§7.3, §10.1), LS-14 (§4.3), LS-15 as qualified in §13 item 2, LS-13 as (b), no holds (T-4).
+Still open there: LS-8's fields beyond recipe bodies.
