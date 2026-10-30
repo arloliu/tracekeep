@@ -52,6 +52,9 @@ type Compactor struct {
 	Writer      string
 	QuietPeriod time.Duration
 	Now         func() time.Time
+	// Reader is what a merge opens its inputs with and bounds its archive's metadata by:
+	// zero takes the budgets every reader of a pack opens with (compactor.md §8.1).
+	Reader tracepack.ReaderOptions
 	// Inactivity is I, after which a capture without a registration is closed (compactor.md §8.2);
 	// FlushInterval is ingest's F, which a close's metadata carries as every segment of its capture does.
 	Inactivity    time.Duration

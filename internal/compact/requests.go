@@ -71,11 +71,16 @@ func (r *Compactor) mergeRequested(ctx context.Context, lease catalog.Lease, q c
 		return ended, err
 	}
 	out, err := r.attempt(ctx, lease, catalog.Scope{Capture: q.Capture, Hour: *q.Hour}, &q.ID, merges)
-	if err != nil || out != merged {
+	switch {
+	case err != nil:
 		return "", err
+	case out == merged:
+		return "merged", nil
+	case out == refused: // the refusal ended it failed
+		return overBudgetReason, nil
+	default:
+		return "", nil
 	}
-
-	return "merged", nil
 }
 
 // closeRequested closes the capture q names by an intent with the operator's trigger and returns how q ended, empty when it stays pending.

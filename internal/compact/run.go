@@ -280,7 +280,8 @@ func (r *Compactor) closePass(ctx context.Context, lease catalog.Lease) error {
 }
 
 // mergePass runs the operators' requests and the scheduled merges, one merge task, and records their metrics, then reads the scope gauges;
-// the task succeeds when neither ended in an error and no merge failed or found conflicting records, and a failed read of the gauges keeps their previous values.
+// the task succeeds when neither ended in an error and no merge failed or found conflicting records, a merge refused over the metadata budget withholding nothing,
+// and a failed read of the gauges keeps their previous values.
 func (r *Compactor) mergePass(ctx context.Context, lease catalog.Lease) error {
 	started := time.Now()
 	reqs, err := r.Requests(ctx, lease)
@@ -292,7 +293,7 @@ func (r *Compactor) mergePass(ctx context.Context, lease catalog.Lease) error {
 	}
 	// A merge that fails on conflicting records failed too (compactor.md §8.1).
 	r.Metrics.Cycle("merge", time.Since(started), err == nil && len(rep.Failed)+len(rep.Conflicted) == 0)
-	r.Metrics.Merges(len(rep.Merged), len(rep.Stale), len(rep.Conflicted), len(rep.Failed))
+	r.Metrics.Merges(len(rep.Merged), len(rep.Stale), len(rep.Conflicted), len(rep.Failed), len(rep.Refused))
 	if err != nil {
 		return err
 	}
