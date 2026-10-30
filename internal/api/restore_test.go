@@ -422,6 +422,8 @@ func TestRestoreRefusals(t *testing.T) {
 	_, err = m.cl.Restore(t.Context(), withToken(&tkv1.RestoreRequest{CaptureId: capture.String(), Seq: 1,
 		Hour: timestamppb.New(time.Unix(0, hour*nsPerHour+1))}, restorerToken))
 	refused("an hour that is no hour start", connect.CodeInvalidArgument, err)
+	_, err = m.cl.Restore(t.Context(), withToken(&tkv1.RestoreRequest{CaptureId: capture.String(), Seq: 1}, restorerToken))
+	refused("no hour", connect.CodeInvalidArgument, err)
 	_, err = m.cl.Restore(t.Context(), withToken(&tkv1.RestoreRequest{CaptureId: capture.String(), Seq: closeSentinel, Hour: hourTS(hour)}, restorerToken))
 	refused("the close sentinel", connect.CodeInvalidArgument, err)
 	_, err = m.restore(t, capture, 3, hour)
@@ -467,6 +469,25 @@ func TestRestoreRefusals(t *testing.T) {
 	}
 	_, err = m.restore(t, capture, 1, hour)
 	refused("a copy that cannot be read", connect.CodeUnavailable, err)
+	// Second copies whose stored bytes are damaged:
+	// one truncated, which the comparison finds incomplete, and one whose block body does not read.
+	m.patch = func(b []byte) []byte { return slices.Clone(b[:len(b)-1]) }
+	m.put(t, capture, hour, ms[1:2], seqEntries(entries, 2), m.policy())
+	_, err = m.restore(t, capture, 2, hour)
+	refused("a truncated copy", connect.CodeUnavailable, err)
+	m.patch = func(b []byte) []byte {
+		b = slices.Clone(b)
+		r, err := tracepack.Open(t.Context(), bytes.NewReader(b), int64(len(b)), tracepack.ReaderOptions{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		b[r.Blocks()[0].Offset+40] ^= 1 // the first byte of the body, past the 40-byte envelope, its CRC left as it was
+
+		return b
+	}
+	m.put(t, plain, hour, rs[:1], nil, nil)
+	_, err = m.restore(t, plain, 1, hour)
+	refused("a copy whose block does not read", connect.CodeUnavailable, err)
 
 	if d := auditDetails(t, c); len(d) != 0 {
 		t.Errorf("refusals wrote audit rows %v", d)
@@ -531,22 +552,29 @@ func countEntries(all []tracepack.RedactionEntry, n uint64) int {
 	return k
 }
 
-// Copies whose records agree but whose redaction entries differ are differing versions.
+// Copies whose records agree but whose redaction entries differ are differing versions,
+// the entry that differs the last of a record's several.
 func TestRestoreComparesEntries(t *testing.T) {
 	t.Parallel()
-	c := catalogtest.Open(t, catalog.EngineSQLite)
-	m := newMasked(t, c)
-	capture := m.admitActive(t)
-	rs := recordsOf(carriers(t)[:1], hour)
-	ms, entries := m.mask(t, capture, rs)
-	m.put(t, capture, hour, ms, entries, m.policy())
-	other := slices.Clone(entries)
-	other[0].Digest = bytes.Clone(other[0].Digest)
-	other[0].Digest[0] ^= 1
-	m.put(t, capture, hour, ms, other, m.policy())
-	if _, err := m.restore(t, capture, 1, hour); connect.CodeOf(err) != connect.CodeFailedPrecondition || !strings.Contains(err.Error(), "copies differ") {
-		t.Errorf("Restore of copies with differing entries = %v, want a conflict", err)
-	}
+	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
+		m := newMasked(t, c)
+		capture := m.admitActive(t)
+		ms, entries := m.mask(t, capture, recordsOf(carriers(t), hour))
+		i := slices.IndexFunc(ms, func(r tracepack.Record) bool { return len(seqEntries(entries, r.Seq)) > 1 })
+		if i < 0 {
+			t.Fatal("no carrier masks into several entries")
+		}
+		seq, own := ms[i].Seq, seqEntries(entries, ms[i].Seq)
+		m.put(t, capture, hour, ms[i:i+1], own, m.policy())
+		other := slices.Clone(own)
+		last := &other[len(other)-1]
+		last.Digest = bytes.Clone(last.Digest)
+		last.Digest[0] ^= 1
+		m.put(t, capture, hour, ms[i:i+1], other, m.policy())
+		if _, err := m.restore(t, capture, seq, hour); connect.CodeOf(err) != connect.CodeFailedPrecondition || !strings.Contains(err.Error(), "copies differ") {
+			t.Errorf("Restore of copies with differing entries = %v, want a conflict", err)
+		}
+	})
 }
 
 // flipReservedFlag returns pack, written uncompressed, with a reserved record_flags bit (bit 5 of header byte 43) of seq's record flipped:

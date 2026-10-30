@@ -13,6 +13,7 @@ func TestAPIKeys(t *testing.T) {
 		t.Fatal(err)
 	}
 	if a := c.API; a.Listen != ":8443" || a.DownloadMargin != 2*time.Minute || a.DownloadFloor != time.Minute || a.Plaintext ||
+		a.DigestRate != 200 || a.DigestBurst != 2000 ||
 		a.PublicURL != "https://tracekeep.example.invalid:8443" {
 		t.Errorf("api = %+v", a)
 	}
@@ -24,6 +25,8 @@ func TestAPIKeys(t *testing.T) {
 		"a delay past a century":     {"compact:\n  delete_delay: 876001h\n", "DeleteDelay"},
 		"a lifetime past a day":      {"compact:\n  delete_delay: 26h\n", "DownloadLifetime"},
 		"a margin past a day":        {"api:\n  download_margin: 25h\n", "DownloadMargin"},
+		"no digest rate":             {"api:\n  digest_rate: 0\n", "API.DigestRate"},
+		"a burst below one request":  {"api:\n  digest_burst: 999\n", "API.DigestBurst"},
 	} {
 		base := minimal
 		if name == "a lifetime past a day" {

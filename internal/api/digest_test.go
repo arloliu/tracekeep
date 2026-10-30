@@ -14,6 +14,7 @@ import (
 	"testing"
 
 	"connectrpc.com/connect"
+	"github.com/arloliu/go-secs/tracepack"
 	"github.com/arloliu/go-secs/tracepack/redact"
 	"github.com/arloliu/go-secs/v2/secs2"
 
@@ -153,6 +154,10 @@ func TestDigestRefusals(t *testing.T) {
 	if _, err := m.cl.Digest(t.Context(), digestReq("d-1", good...)); connect.CodeOf(err) != connect.CodeUnavailable {
 		t.Errorf("Digest with its key unavailable = %v, want unavailable", err)
 	}
+	// The checks run before the key is resolved: an invalid input is refused as invalid, the provider down notwithstanding.
+	if _, err := m.cl.Digest(t.Context(), digestReq("d-1", with(func(in *tkv1.DigestInput) { in.Kind = "record" })...)); connect.CodeOf(err) != connect.CodeInvalidArgument {
+		t.Errorf("an invalid input with its key unavailable = %v, want invalid", err)
+	}
 	m.srv.Keys = m.keys
 	m.srv.Catalog = failingAudit{c}
 	if resp, err := m.cl.Digest(t.Context(), digestReq("d-1", good...)); connect.CodeOf(err) != connect.CodeInternal || resp != nil {
@@ -162,6 +167,42 @@ func TestDigestRefusals(t *testing.T) {
 	if rows, err := c.AuditByActor(t.Context(), "scorer"); err != nil || len(rows) != 0 {
 		t.Errorf("refusals wrote audit rows %v, %v", rows, err)
 	}
+}
+
+// A retired configuration's digest key id is accepted while a capture is bound to it, and refused when none is.
+func TestDigestRetiredConfiguration(t *testing.T) {
+	t.Parallel()
+	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
+		m := newMasked(t, c)
+		m.srv.DigestLimit = &DigestLimit{Rate: 1e9, Burst: 1 << 30}
+		capture := m.admitActive(t)
+		// A second configuration under d-2, active and bound to no capture;
+		// d-2 is declared nowhere, so its key is refused once it passes the checks.
+		unbound := maskingContent(t, m.keys)
+		unbound.DigestKey = &procconfig.KeyRef{ID: "d-2", Fingerprint: "unbound"}
+		id, err := c.StageConfig(t.Context(), catalog.Staging{Content: unbound.Encode()})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := c.ActivateStaged(t.Context(), id, nil, nil); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := m.cl.Digest(t.Context(), digestReq("d-2", baselineInputs()...)); connect.CodeOf(err) != connect.CodeFailedPrecondition {
+			t.Fatalf("Digest under an active configuration's undeclared key id = %v, want it past the checks and its key refused", err)
+		}
+		if err := c.RetireConfig(t.Context(), m.cfg, []tracepack.UUID{capture}); err != nil {
+			t.Fatal(err)
+		}
+		if err := c.RetireConfig(t.Context(), id, nil); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := m.cl.Digest(t.Context(), digestReq("d-1", baselineInputs()...)); err != nil {
+			t.Errorf("Digest under a retired configuration a capture is bound to: %v", err)
+		}
+		if _, err := m.cl.Digest(t.Context(), digestReq("d-2", baselineInputs()...)); connect.CodeOf(err) != connect.CodeInvalidArgument {
+			t.Errorf("Digest under a retired configuration no capture is bound to = %v, want invalid", err)
+		}
+	})
 }
 
 // The limit counts inputs per principal: a request beyond the bucket is refused whole, one within it passes,
@@ -184,8 +225,13 @@ func TestDigestRateLimit(t *testing.T) {
 	if _, err := m.cl.Digest(t.Context(), digestReq("d-1", text)); connect.CodeOf(err) != connect.CodeResourceExhausted {
 		t.Errorf("an input past the burst = %v, want refused", err)
 	}
-	if !m.srv.DigestLimit.allow("another", 3) {
-		t.Error("another principal's bucket was taken")
+	// A second scorer has its own bucket, the first's still spent.
+	second := withToken(&tkv1.DigestRequest{DigestKeyId: "d-1", Inputs: []*tkv1.DigestInput{text, text, text}}, scorer2Token)
+	if _, err := m.cl.Digest(t.Context(), second); err != nil {
+		t.Errorf("a second scorer's 3 inputs on a burst of 3: %v", err)
+	}
+	if _, err := m.cl.Digest(t.Context(), digestReq("d-1", text)); connect.CodeOf(err) != connect.CodeResourceExhausted {
+		t.Errorf("the first scorer past its burst after the second's request = %v, want refused", err)
 	}
 }
 
