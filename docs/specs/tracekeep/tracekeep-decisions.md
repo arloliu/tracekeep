@@ -537,3 +537,15 @@ A scorer comparing one recipe digests many items, and one call and one audit row
 at most 1,000 inputs and 8 MiB of originals a request, answered in order;
 one audit row a request names the count and the distinct domains, and the rate limit counts inputs.
 One input a call, as the earlier signature had it, was considered and not taken.
+
+### T-45 — an hour merged past the metadata budget stays unmergeable (2026-10-30)
+
+Masking puts one redaction entry a masked field in a pack's metadata, which every reader opens within tracepack's budget, 64 MiB, about 470,000 entries;
+ingest keeps each segment within it, but the segments of one heavily masked hour can merge past it, and tracepack then refuses the merge.
+The refusal is deterministic, since a scope's inputs only grow, and retrying it every cycle re-reads every input and withheld the merge task's success for good.
+**Such a scope is marked `unmergeable` once, under its capture row and the lease, with an `unmergeable` event**:
+it is no longer a candidate, a registration leaves it so, and only an operator's `scope merge` tries it again;
+its segments stay readable and are evicted on time, and the refusal is counted apart from a failure, raising its own alert.
+The budget stays tracepack's default, since every reader, the VE's included, must agree on it and it bounds their memory.
+Considered and not taken: raising the budget, one merge writing several archives (the format allows one archive a merge), and partitioned merges of an hour's packs (kept in reserve until production rates are measured).
+The lasting fix, redaction entries outside the pack metadata, is a format change asked of go-secs.

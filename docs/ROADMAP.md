@@ -57,9 +57,8 @@ Phase 2 is done (#22, #23, #24, #25, #26, #27, #28, #29).
 
 ## Open items
 
-- A capture-hour merge whose archive's metadata would exceed the reader's budget fails with `ErrMergeLimit`, which the compactor does not handle yet;
-  ingest keeps each segment within the budget (`ingest.md` §6.2), but many masked segments of one hour can still merge past it.
-  Its design is open.
+- An hour whose masked segments merge past the reader's metadata budget stays unmergeable (T-45);
+  the lasting fix, redaction entries kept outside the pack metadata, is a format change asked of go-secs.
 - Masking's cost at ingest, measured on 2026-10-30 (the measurements are kept outside the repository), leaves these improvements:
   - go-secs: a format-minor accessor, so a flush need not decode a working file's metadata twice (26–53 % of a masked segment's write);
     the AES-SIV cipher built once per key, not once per masked field (35–45 % of `Mask` on many-field records);

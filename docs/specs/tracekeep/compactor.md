@@ -36,7 +36,7 @@ Contract changes go through proposals, which the subject [README.md](README.md) 
 ### 8.1 Merge
 
 1. Take the compactor lease (`leases`, `fence_token` = a monotonic counter) and renew it.
-2. Candidate scopes: `open` or `reopened`, hour end + Q passed, having packs in state `staged`, and no `conflicts` row
+2. Candidate scopes: `open` or `reopened` (never `unmergeable`, below), hour end + Q passed, having packs in state `staged`, and no `conflicts` row
    (a row touches a scope when either of its packs is a pack of that capture and hour, in any state,
    unless either pack is `excluded`, which is never an input).
 3. Snapshot: read `scopes.revision` = r first, then the **inputs**:
@@ -65,6 +65,21 @@ a segment registered between the snapshot and the commit, in any scope state, fa
 and the next cycle merges it with the registered archive.
 A merge failure (conflict, damaged input) leaves the scope as it was and raises an alert;
 the operator acts ([STO §4] *Merge*).
+
+**A merge over the reader's budget** (T-45):
+tracepack refuses, before it writes anything, a merge whose archive's metadata would exceed the reader's metadata budget (`ErrMergeLimit`)
+or one of whose inputs exceeds it (`ErrReadLimit`),
+which many masked segments of one hour can reach though each is within it (`ingest.md` §6.2);
+the scope's inputs only grow, so the refusal is deterministic.
+The merge then commits the refusal instead, one transaction starting with the capture row (`catalog.md` §7.2 `RefuseMerge`):
+`UPDATE scopes SET state='unmergeable', revision=revision+1 WHERE … AND revision=r`, the lease check,
+an operator's request it executes ended `failed` with the reason, and the `unmergeable` event last;
+a stale revision writes nothing, and the next cycle tries once more.
+An `unmergeable` scope is never a candidate, and a registration into it advances its revision and leaves it `unmergeable`;
+only an operator's `scope merge` merges it again (`operations.md` §10.4), which settles it or refuses it again.
+Its packs stay `staged` and readable, and its completeness is their ranges and gaps;
+none of them becomes deletable, since no merge took them (§8.3), and retention evicts the hour on time.
+The refusal is counted apart from a failure, so it neither withholds the merge task's success nor counts as an unmerged scope's age (`operations.md` §10.4).
 
 ### 8.2 Close a capture left open
 
