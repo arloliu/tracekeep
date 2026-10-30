@@ -41,12 +41,13 @@ func TestMergeMetrics(t *testing.T) {
 	}
 	clock := time.Unix(10000, 0)
 	m.now = func() time.Time { return clock }
-	m.Merges(2, 1, 0, 1)
+	m.Merges(2, 1, 0, 1, 1)
 	m.Scopes(map[string]int{"open": 3, "settled": 5}, 2, clock.Add(-90*time.Second))
 	b := body(t, s)
 	for _, want := range []string{
 		`tracekeep_compact_merges_total{outcome="merged"} 2`, `tracekeep_compact_merges_total{outcome="stale"} 1`,
-		`tracekeep_compact_merges_total{outcome="failed"} 1`, `tracekeep_compact_scopes{state="open"} 3`,
+		`tracekeep_compact_merges_total{outcome="failed"} 1`, `tracekeep_compact_merges_total{outcome="refused"} 1`,
+		`tracekeep_compact_scopes{state="open"} 3`, `tracekeep_compact_scopes{state="unmergeable"} 0`,
 		`tracekeep_compact_scopes{state="reopened"} 0`, "tracekeep_compact_conflicts_open 2",
 		"tracekeep_compact_oldest_unmerged_scope_age_seconds 90",
 	} {

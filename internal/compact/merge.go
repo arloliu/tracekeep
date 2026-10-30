@@ -47,6 +47,18 @@ type MergeReport struct {
 	Conflicted []catalog.Scope
 	// Failed scopes could not be merged (a damaged input, a failed read or put); each stays as it was, and an operator acts.
 	Failed []catalog.Scope
+	// Refused scopes were refused over the reader's metadata budget and are unmergeable until an operator's request (T-45).
+	Refused []catalog.Scope
+}
+
+// overBudgetReason ends a merge request refused over the reader's metadata budget.
+const overBudgetReason = "the merge exceeds the reader's metadata budget"
+
+// overBudget reports a merge tracepack refused over one of its budgets, before anything was put:
+// the archive's or an input's metadata over MaxPackMetadataLen, and likewise a footer, a block or the open blocks over theirs;
+// each is deterministic for the scope's inputs, which only grow.
+func overBudget(err error) bool {
+	return errors.Is(err, tracepack.ErrMergeLimit) || errors.Is(err, tracepack.ErrReadLimit)
 }
 
 // Merges merges every scope whose hour has ended and whose quiet period has passed, under lease (compactor.md §8.1):
@@ -91,6 +103,8 @@ func (r *Compactor) attempt(ctx context.Context, lease catalog.Lease, s catalog.
 	case out == conflicted:
 		r.Log.Warn("compact: merge found conflicting records", "capture", s.Capture, "hour", s.Hour)
 		rep.Conflicted = append(rep.Conflicted, s)
+	case out == refused:
+		rep.Refused = append(rep.Refused, s)
 	default:
 		// The snapshot found the scope no longer eligible.
 	}
@@ -104,6 +118,7 @@ func (rep *MergeReport) add(other MergeReport) {
 	rep.Stale = append(rep.Stale, other.Stale...)
 	rep.Conflicted = append(rep.Conflicted, other.Conflicted...)
 	rep.Failed = append(rep.Failed, other.Failed...)
+	rep.Refused = append(rep.Refused, other.Refused...)
 }
 
 // mergeOutcome is what the merge of one scope did.
@@ -114,6 +129,7 @@ const (
 	merged
 	stale
 	conflicted
+	refused
 )
 
 // merge merges one scope, for request when it is not nil, whose commit then ends the request.
@@ -134,6 +150,15 @@ func (r *Compactor) merge(ctx context.Context, lease catalog.Lease, s catalog.Sc
 	report, found, err := r.write(ctx, tmp, lease, &snap)
 	if found != nil {
 		return conflicted, r.mergeConflicts(ctx, lease, s, found)
+	}
+	if overBudget(err) {
+		r.Log.Warn("compact: alert", "reason", "merge-over-budget", "capture", s.Capture, "hour", s.Hour, "error", err)
+		out, err := r.Catalog.RefuseMerge(ctx, lease, &catalog.Refusal{Scope: s, Revision: snap.Revision, Request: request, Reason: overBudgetReason})
+		if err != nil || out != catalog.Refused {
+			return stale, err
+		}
+
+		return refused, nil
 	}
 	if err != nil {
 		return 0, err
@@ -164,6 +189,8 @@ func (r *Compactor) merge(ctx context.Context, lease catalog.Lease, s catalog.Sc
 		return merged, nil
 	case catalog.MergeStale, catalog.ArchiveAdopted, catalog.ArchiveTombstoned:
 		return stale, nil
+	case catalog.Refused: // RefuseMerge's alone
+		return 0, fmt.Errorf("compact: a merge commit refused the merge")
 	default:
 		return 0, fmt.Errorf("compact: unknown merge outcome %d", out)
 	}
@@ -195,6 +222,7 @@ func (r *Compactor) write(ctx context.Context, w *os.File, lease catalog.Lease, 
 		Now:             r.now,
 		OnConflict:      func(c tracepack.Conflict) { conflicts = append(conflicts, c) },
 		Sync:            w,
+		Reader:          r.Reader,
 	})
 	if errors.Is(err, tracepack.ErrMergeConflict) {
 		return report, conflicts, nil

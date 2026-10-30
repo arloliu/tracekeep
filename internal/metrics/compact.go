@@ -116,11 +116,11 @@ func (m *Compact) Orphans(adopted, quarantined, tombstoned int) {
 }
 
 // Merges counts what a merge pass did, by outcome.
-func (m *Compact) Merges(merged, stale, conflicted, failed int) {
+func (m *Compact) Merges(merged, stale, conflicted, failed, refused int) {
 	if m == nil {
 		return
 	}
-	for outcome, n := range map[string]int{"merged": merged, "stale": stale, "conflicted": conflicted, "failed": failed} {
+	for outcome, n := range map[string]int{"merged": merged, "stale": stale, "conflicted": conflicted, "failed": failed, "refused": refused} {
 		m.merges.WithLabelValues(outcome).Add(float64(n))
 	}
 }
@@ -131,7 +131,7 @@ func (m *Compact) Scopes(byState map[string]int, openConflicts int, oldestUnmerg
 	if m == nil {
 		return
 	}
-	for _, state := range []string{"open", "settled", "reopened"} {
+	for _, state := range []string{"open", "settled", "reopened", "unmergeable"} {
 		m.scopes.WithLabelValues(state).Set(float64(byState[state]))
 	}
 	m.conflictsOpen.Set(float64(openConflicts))
