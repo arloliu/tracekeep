@@ -11,9 +11,9 @@ import (
 // requests by operation and code with their durations, and auth's refusals.
 // Every method records nothing on a nil *API.
 type API struct {
-	authFailures, requests, downloadURLs, restores *prometheus.CounterVec
-	downloadsRefused                               prometheus.Counter
-	duration                                       *prometheus.HistogramVec
+	authFailures, requests, downloadURLs, restores, digests *prometheus.CounterVec
+	downloadsRefused, digestInputs                          prometheus.Counter
+	duration                                                *prometheus.HistogramVec
 }
 
 // NewAPI registers the api role's collectors on s.
@@ -32,7 +32,11 @@ func NewAPI(s *Server) (*API, error) {
 		Help: "Download URLs refused as pack-superseded: the object's deadline too near, or the pack deleted."})
 	m.restores = prometheus.NewCounterVec(prometheus.CounterOpts{Namespace: "tracekeep", Subsystem: "api", Name: "restores_total",
 		Help: "Restores by outcome: ok, or the reason it was refused (masking-keys.md §9)."}, []string{"outcome"})
-	for _, c := range []prometheus.Collector{m.authFailures, m.requests, m.duration, m.downloadURLs, m.downloadsRefused, m.restores} {
+	m.digests = prometheus.NewCounterVec(prometheus.CounterOpts{Namespace: "tracekeep", Subsystem: "api", Name: "digests_total",
+		Help: "Digest requests by outcome: ok, or the reason it was refused (masking-keys.md §9)."}, []string{"outcome"})
+	m.digestInputs = prometheus.NewCounter(prometheus.CounterOpts{Namespace: "tracekeep", Subsystem: "api", Name: "digest_inputs_total",
+		Help: "Inputs digested by Digest requests answered ok."})
+	for _, c := range []prometheus.Collector{m.authFailures, m.requests, m.duration, m.downloadURLs, m.downloadsRefused, m.restores, m.digests, m.digestInputs} {
 		if err := s.Registry().Register(c); err != nil {
 			return nil, fmt.Errorf("metrics: api: %w", err)
 		}
@@ -80,4 +84,15 @@ func (m *API) Restore(outcome string) {
 		return
 	}
 	m.restores.WithLabelValues(outcome).Inc()
+}
+
+// Digest counts one digest request of outcome, and its n inputs when it was answered.
+func (m *API) Digest(outcome string, n int) {
+	if m == nil {
+		return
+	}
+	m.digests.WithLabelValues(outcome).Inc()
+	if outcome == "ok" {
+		m.digestInputs.Add(float64(n))
+	}
 }

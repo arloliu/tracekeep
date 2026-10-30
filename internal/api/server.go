@@ -36,6 +36,8 @@ type Server struct {
 	Downloads Downloads
 	// Keys resolves the keys Restore and Digest use; nil serves neither.
 	Keys Keys
+	// DigestLimit is Digest's rate limit; nil refuses every Digest.
+	DigestLimit *DigestLimit
 	// Auth checks every request; Metrics records them, nil for none; Log logs failures, nil for none.
 	Auth    *auth.Authenticator
 	Metrics *metrics.API
@@ -64,6 +66,8 @@ type Catalog interface {
 	Capture(ctx context.Context, id tracepack.UUID) (catalog.Capture, error)
 	ConfigContent(ctx context.Context, id int64) ([]byte, error)
 	RecordCopies(ctx context.Context, capture tracepack.UUID, seq uint64) ([]catalog.Copy, error)
+	Configs(ctx context.Context) ([]catalog.ConfigInfo, error)
+	Policy(ctx context.Context, id string, version int64) (catalog.StoredPolicy, bool, error)
 }
 
 // Handler is the HTTP handler serving the machine API.
@@ -82,22 +86,22 @@ func PrincipalFrom(ctx context.Context) (auth.Principal, bool) {
 // operations are the procedures the service serves; any other path under it is opUnknown, one label, and refused.
 var operations = map[string]bool{
 	auth.OpListDevices: true, auth.OpListCaptures: true, auth.OpListPacks: true, auth.OpListScopeChanges: true, auth.OpPackURL: true,
-	auth.OpRestore: true, auth.OpAdmin: true,
+	auth.OpRestore: true, auth.OpDigest: true, auth.OpAdmin: true,
 }
 
 const opUnknown = "unknown"
 
 // routes is the HTTP handler serving impl behind the auth middleware, with response compression off (T-7),
+// requests bounded and their decode errors quoting none of their bytes,
 // and the downloads the API serves when it has download tokens.
 // Downloads and unclean paths are answered before the mux, which would redirect an unclean path to its clean form,
 // a download's token in the redirect.
 func (s *Server) routes(impl tracekeepv1connect.MachineServiceHandler) http.Handler {
 	mux := http.NewServeMux()
-	prefix, h := tracekeepv1connect.NewMachineServiceHandler(impl,
-		connect.WithCompression("gzip", nil, nil), connect.WithInterceptors(s.observe()))
+	opts := append(codecs(), connect.WithCompression("gzip", nil, nil), connect.WithInterceptors(s.observe()))
+	prefix, h := tracekeepv1connect.NewMachineServiceHandler(impl, opts...)
 	mux.Handle(prefix, s.authenticate(prefix, h))
-	adminPrefix, ah := tracekeepv1connect.NewAdminServiceHandler(adminService{s: s},
-		connect.WithCompression("gzip", nil, nil), connect.WithInterceptors(s.observe()))
+	adminPrefix, ah := tracekeepv1connect.NewAdminServiceHandler(adminService{s: s}, opts...)
 	mux.Handle(adminPrefix, s.authenticate(adminPrefix, ah))
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
