@@ -53,7 +53,6 @@ func delivered(m Message) *Delivery {
 // parkingBus runs a bus, standalone or a cluster of three, with the traffic and parking streams of that many replicas.
 func parkingBus(t *testing.T, clustered bool) (jetstream.JetStream, jetstream.Stream) {
 	t.Helper()
-	ctx := t.Context()
 	url := testbus.Start(t)
 	if clustered {
 		url = testbus.StartCluster(t, 3)
@@ -67,11 +66,8 @@ func parkingBus(t *testing.T, clustered bool) (jetstream.JetStream, jetstream.St
 	if err != nil {
 		t.Fatal(err)
 	}
-	// shortcut: a request to a cluster just formed sometimes gets no reply; both steps are idempotent, so they are retried.
 	var parked jetstream.Stream
-	for attempt := 1; ; attempt++ {
-		actx, cancel := context.WithTimeout(ctx, 10*time.Second)
-		err = nil
+	testbus.Retry(t, func(actx context.Context) (err error) {
 		if clustered {
 			// Ensure keeps an existing traffic stream, and gives the parking stream its replicas.
 			c := busconfig.StreamConfig(busconfig.DefaultTrafficStream, prefix)
@@ -83,14 +79,9 @@ func parkingBus(t *testing.T, clustered bool) (jetstream.JetStream, jetstream.St
 		if err == nil {
 			_, parked, err = bus.Ensure(actx, js, bus.Config{SubjectPrefix: prefix, ClaimBucket: bucket})
 		}
-		cancel()
-		if err == nil {
-			break
-		}
-		if !errors.Is(err, context.DeadlineExceeded) || attempt == 3 {
-			t.Fatal(err)
-		}
-	}
+
+		return err
+	})
 	if clustered {
 		testbus.AwaitStream(t, js, parked)
 	}
