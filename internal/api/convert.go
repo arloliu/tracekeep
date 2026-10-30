@@ -102,7 +102,9 @@ func captureOf(c *catalog.CaptureInfo) *tkv1.Capture {
 		ConfigId: c.ConfigID, EquipmentEndpoint: c.EquipmentEndpoint, DeviceId: c.DeviceID, Overlap: c.Overlap,
 	}
 	for _, th := range c.Thinning {
-		out.Thinning = append(out.Thinning, &tkv1.Thinning{Stream: th.Stream, Function: th.Function, Source: th.Source})
+		out.Thinning = append(out.Thinning, &tkv1.Thinning{
+			Stream: th.Stream, Function: th.Function, Source: th.Source, KeepEveryN: th.KeepEveryN, KeepIntervalMs: th.KeepIntervalMs,
+		})
 	}
 	for _, u := range c.Unregistered {
 		out.Unregistered = append(out.Unregistered, &tkv1.UnregisteredInterval{Start: optTS(u.Start), End: ts(u.End)})
