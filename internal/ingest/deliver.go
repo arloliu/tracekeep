@@ -413,6 +413,14 @@ func (d *Delivery) identity() *catalog.Identity {
 	return &catalog.Identity{Version: *d.versionKey(), Incarnation: d.Msg.Incarnation, StreamSeq: d.Msg.StreamSeq, Hour: HourOf(d.Raw.TS)}
 }
 
+// deferralID names the delivery's deferral in the ingest metrics: its message id and its version,
+// since two versions of one seq share the message id and each is settled on its own.
+func (d *Delivery) deferralID() string {
+	v := &d.Raw.Version
+
+	return fmt.Sprintf("%s/%x/%x", d.Msg.Env.MsgID, v.Header, v.Digest[:8])
+}
+
 func (d *Delivery) versionKey() *catalog.VersionKey {
 	v := d.Raw.Version
 

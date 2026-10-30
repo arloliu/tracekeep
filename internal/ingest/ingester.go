@@ -75,8 +75,9 @@ type Ingester struct {
 	// Metrics records the role's metrics; nil records none.
 	Metrics *metrics.Ingest
 
-	// writeFailures counts, by batch, the flushes the Writer refused: the same batch refused three times is deterministic.
-	writeFailures map[string]int
+	// writeFailures counts, by record version, the flushes the Writer refused holding it: a record refused three times is deterministic,
+	// whichever batch held it, since a live capture's redelivered records join fresh ones and the metadata budget splits a key's batches.
+	writeFailures map[Version]int
 	// mu guards the batcher and flushing against the heartbeat.
 	mu sync.Mutex
 	// flushing are the messages of the batches a flush took from the batcher and has not finished,
@@ -230,7 +231,7 @@ func (g *Ingester) beat() {
 	ids := make([]string, len(held))
 	for i, e := range held {
 		_ = e.Msg.InProgress()
-		ids[i] = e.D.Msg.Env.MsgID
+		ids[i] = e.D.deferralID()
 	}
 	g.Metrics.InProgress(len(held))
 	g.Metrics.Held(ids)
@@ -353,17 +354,17 @@ func (g *Ingester) act(ctx context.Context, e Entry, dec Decision, delivered uin
 	g.Metrics.Disposed(dec.Action.String(), delivered > 1)
 	switch dec.Action {
 	case ActBatch: // settled once its batch is registered: a batch the Writer refuses keeps it deferred
-		g.Metrics.Held([]string{e.D.Msg.Env.MsgID}) // kept from now, the heartbeat keeping it while held
+		g.Metrics.Held([]string{e.D.deferralID()}) // kept from now, the heartbeat keeping it while held
 		g.mu.Lock()
 		g.Batcher.Add(e, g.Now())
 		g.mu.Unlock()
 	case ActAck:
-		g.Metrics.Settled(e.D.Msg.Env.MsgID)
+		g.resolved(e)
 		g.acknowledge(ctx, e)
 	case ActPark: // park records whether the message stays deferred
 		g.park(ctx, e, dec.Reason, delivered)
 	case ActTerminate:
-		g.Metrics.Settled(e.D.Msg.Env.MsgID)
+		g.resolved(e)
 		if e.D.Msg.Parked && dec.Reason == ReasonBeyondRetention {
 			// A parked message is never terminated for its age (G5-267): its version waits for an operator as evicted-hour.
 			g.evict(ctx, e)
@@ -389,7 +390,7 @@ func (g *Ingester) act(ctx context.Context, e Entry, dec Decision, delivered uin
 
 // deferMsg naks e's message for redelivery after delay, noting it deferred for reason.
 func (g *Ingester) deferMsg(e Entry, reason string, delay time.Duration) {
-	g.Metrics.Deferred(e.D.Msg.Env.MsgID, reason, delay)
+	g.Metrics.Deferred(e.D.deferralID(), reason, delay)
 	_ = e.Msg.NakWithDelay(delay)
 }
 
@@ -428,14 +429,14 @@ func (g *Ingester) park(ctx context.Context, e Entry, reason string, delivered u
 	case p.Begun.BeyondRetention:
 		g.act(ctx, e, Decision{Action: ActTerminate, Reason: ReasonBeyondRetention, Alert: true, Audit: true}, delivered)
 	case p.Begun.State.Resolved():
-		g.Metrics.Settled(id)
+		g.resolved(e)
 		g.acknowledge(ctx, e)
 	case p.Confirmation == Suppressed:
 		g.deferMsg(e, reason, suppressedNakDelay)
 	case p.Confirmation != Confirmed:
 		g.deferMsg(e, reason, g.delay(delivered))
 	default: // parked: the original was acknowledged
-		g.Metrics.Settled(id)
+		g.resolved(e)
 	}
 }
 
@@ -460,7 +461,7 @@ func (g *Ingester) flush(ctx context.Context, batches []*Batch) error {
 		case err != nil:
 			errs = append(errs, err)
 			g.settled(b.Entries[:out.Acked])
-			if errors.As(err, &refused) && g.refused(refused.batch) >= writeFailureLimit {
+			if errors.As(err, &refused) && g.refused(b.Entries[out.Acked:]) >= writeFailureLimit {
 				// Deterministic: the messages stay deferred for an operator (ingest.md §6.1 `write-failure`), parked when parking is on.
 				g.Log.Warn("ingest: alert", "reason", ReasonWriteFailure, "capture", b.Key.Capture.String(), "hour", b.Key.Hour, "error", err)
 				for _, e := range b.Entries[out.Acked:] {
@@ -486,7 +487,6 @@ func (g *Ingester) flush(ctx context.Context, batches []*Batch) error {
 				g.act(ctx, e, Decision{Action: ActTerminate, Reason: ReasonBeyondRetention, Alert: true, Audit: true}, 0)
 			}
 		default: // registered and acknowledged
-			delete(g.writeFailures, batchName(b))
 			g.settled(b.Entries)
 		}
 	}
@@ -494,21 +494,37 @@ func (g *Ingester) flush(ctx context.Context, batches []*Batch) error {
 	return errors.Join(errs...)
 }
 
-// settled forgets the deferrals of the entries a flush acknowledged.
+// settled resolves the entries a flush acknowledged.
 func (g *Ingester) settled(entries []Entry) {
 	for _, e := range entries {
-		g.Metrics.Settled(e.D.Msg.Env.MsgID)
+		g.resolved(e)
 	}
 }
 
-// refused counts one more refusal of the batch named batch by the Writer and returns the count.
-func (g *Ingester) refused(batch string) int {
-	if g.writeFailures == nil {
-		g.writeFailures = map[string]int{}
-	}
-	g.writeFailures[batch]++
+// resolved forgets e's deferral and its refusals: its message is acknowledged, terminated or parked, so no write of it is pending here.
+func (g *Ingester) resolved(e Entry) {
+	g.Metrics.Settled(e.D.deferralID())
+	delete(g.writeFailures, e.D.Raw.Version)
+}
 
-	return g.writeFailures[batch]
+// refused counts one more refusal by the Writer of each record version of entries and returns the highest count among them.
+func (g *Ingester) refused(entries []Entry) int {
+	if g.writeFailures == nil {
+		g.writeFailures = map[Version]int{}
+	}
+	counted := make(map[Version]bool, len(entries))
+	most := 0
+	for _, e := range entries {
+		v := e.D.Raw.Version
+		if counted[v] { // equal copies are one record
+			continue
+		}
+		counted[v] = true
+		g.writeFailures[v]++
+		most = max(most, g.writeFailures[v])
+	}
+
+	return most
 }
 
 // readMessage reads a delivery's headers, body, stream sequence and delivery count.

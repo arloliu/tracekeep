@@ -147,7 +147,8 @@ func TestIngesterAcknowledgesUnderTheTermination(t *testing.T) {
 	})
 }
 
-// A batch the Writer refused at the write-failure limit is parked, each original acknowledged once its copy is stored.
+// A batch the Writer refused at the write-failure limit is parked, each original acknowledged once its copy is stored
+// and its refusals forgotten.
 func TestIngesterParksAWriteFailure(t *testing.T) {
 	t.Parallel()
 	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
@@ -161,7 +162,7 @@ func TestIngesterParksAWriteFailure(t *testing.T) {
 		r.step(t)
 		for _, b := range r.g.Batcher.batches { // the batch was refused twice before
 			for range writeFailureLimit - 1 {
-				r.g.refused(batchName(b))
+				r.g.refused(b.Entries)
 			}
 		}
 		r.clk.flushInterval()
@@ -177,6 +178,9 @@ func TestIngesterParksAWriteFailure(t *testing.T) {
 			return v.State != catalog.VersionParked || v.Reason != ReasonWriteFailure
 		}) {
 			t.Errorf("versions %+v, %v; want 4 parked as write failures", vs, err)
+		}
+		if n := len(r.g.writeFailures); n != 0 {
+			t.Errorf("%d records' refusals kept after their parking, want none", n)
 		}
 	})
 }

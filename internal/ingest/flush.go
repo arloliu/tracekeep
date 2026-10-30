@@ -44,9 +44,13 @@ type Flusher struct {
 	Now func() time.Time
 	// Metrics records the put and registration of each segment; nil records none.
 	Metrics *metrics.Ingest
+	// Reader is what the working file is reopened with: zero takes the budgets every reader of a pack opens with.
+	Reader tracepack.ReaderOptions
 
 	// hooks are the package's test seams, each between two side effects of a flush; an error is a crash there.
 	hooks [numFlushHooks]func() error
+	// check, a test seam, judges a segment before its records are appended; its error is the Writer's refusal.
+	check func(*segment) error
 }
 
 // Flush hooks: the crash points of ingest.md §6.3.
@@ -299,27 +303,33 @@ func (f *Flusher) write(w *os.File, b *Batch, capture *catalog.Capture, cfg *Con
 		Meta: meta, Facts: facts(seg.entries), PackID: seg.id, CaptureID: b.Key.Capture, Sync: w, Now: f.Now,
 	})
 	if err != nil {
-		return 0, refusal(b, err)
+		return 0, refusal(err)
 	}
 	if err := f.hook(hookWrite); err != nil {
-		return 0, refusal(b, err)
+		return 0, refusal(err)
+	}
+	if f.check != nil {
+		if err := f.check(seg); err != nil {
+			return 0, refusal(err)
+		}
 	}
 	for _, e := range seg.entries {
 		r := e.D.Record.Record
 		if err := tw.Append(&r); err != nil {
-			return 0, refusal(b, fmt.Errorf("append seq %d: %w", r.Seq, err))
+			return 0, refusal(fmt.Errorf("append seq %d: %w", r.Seq, err))
 		}
 	}
 	if _, err := tw.Close(); err != nil {
-		return 0, refusal(b, err)
+		return 0, refusal(err)
 	}
 	size, err := w.Seek(0, io.SeekEnd)
 	if err != nil {
 		return 0, err
 	}
-	r, err := tracepack.Open(context.Background(), w, size, tracepack.ReaderOptions{})
+	// Opened with every reader's budget: metadata over it is refused like the Writer's own validation (ingest.md §6.1).
+	r, err := tracepack.Open(context.Background(), w, size, f.Reader)
 	if err != nil {
-		return 0, fmt.Errorf("ingest: reopen the working file: %w", err)
+		return 0, refusal(fmt.Errorf("reopen the working file: %w", err))
 	}
 
 	return r.Header().FormatMinor, nil
@@ -328,11 +338,9 @@ func (f *Flusher) write(w *os.File, b *Batch, capture *catalog.Capture, cfg *Con
 // errWrite marks a batch the Writer refused: deterministic, unlike a failed put or a failed working file (ingest.md §6.1 `write-failure`).
 var errWrite = errors.New("ingest: write")
 
-// refusalError is the Writer's refusal of a batch, named by the batch's capture, hour and configuration:
-// a live capture's redelivered batch gains records between tries, so its messages do not name it.
+// refusalError is the Writer's refusal of a batch.
 type refusalError struct {
-	batch string
-	err   error
+	err error
 }
 
 func (e *refusalError) Error() string { return fmt.Sprintf("%v: %v", errWrite, e.err) }
@@ -344,20 +352,16 @@ var refusals = []error{
 	tracepack.ErrSeqOrder, tracepack.ErrPayloadTooLarge, tracepack.ErrFieldValidity, tracepack.ErrMetadataCommitment,
 	tracepack.ErrValidation, tracepack.ErrScopeBreach, tracepack.ErrInvalidRecord, tracepack.ErrMergeLimit,
 	tracepack.ErrRequiredTag, tracepack.ErrFieldValue, tracepack.ErrFieldLength, tracepack.ErrAnnotationText, tracepack.ErrReservedTag,
+	tracepack.ErrReadLimit,
 }
 
 // refusal returns err as a refusal of b when it is one of the Writer's validation errors, and as a plain error otherwise.
-func refusal(b *Batch, err error) error {
+func refusal(err error) error {
 	if slices.ContainsFunc(refusals, func(r error) bool { return errors.Is(err, r) }) {
-		return &refusalError{batch: batchName(b), err: err}
+		return &refusalError{err: err}
 	}
 
 	return fmt.Errorf("ingest: write: %w", err)
-}
-
-// batchName names b's capture, hour and configuration.
-func batchName(b *Batch) string {
-	return fmt.Sprintf("%s/%d/%d", b.Key.Capture, b.Key.Hour, b.ConfigID)
 }
 
 // redaction is the segment's redaction policy and entries under cfg, nil for a policy-less configuration (ingest.md §6.2):
