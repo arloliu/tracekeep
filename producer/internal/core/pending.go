@@ -94,6 +94,8 @@ type PendingCounters struct {
 	Ignored [NumIgnoredReasons]uint64
 	// Ambiguous counts the entries marked ambiguous.
 	Ambiguous uint64
+	// HeaderMismatches counts the entries whose outbound frame named another stream or function than the request.
+	HeaderMismatches uint64
 	// Capped reports that the ambiguity set reached its cap: keys registered since are not remembered past their entry.
 	Capped bool
 	// TimeoutsDropped counts the forwarded timeouts that recorded no T3, by reason.
@@ -120,25 +122,47 @@ type PendingTable struct {
 
 	// socket is the connection's newest socket, which a registration compares its send's socket against.
 	socket atomic.Uint64
-	// emit records a forwarded request's T3; the recorder sets it.
-	emit func(e *PendingEntry, effective time.Duration)
+	// emit records a forwarded request's T3, and current returns the current capture, whose rule a registration takes;
+	// the recorder sets both.
+	emit    func(e *PendingEntry, effective time.Duration)
+	current func() *Capture
 	// bindHooks, set only by tests, hold Bind just before and just after it records the socket.
 	bindHooks [2]func()
 
-	ignored         [NumIgnoredReasons]atomic.Uint64
-	ambiguous       atomic.Uint64
-	timeoutsDropped [NumTimeoutDropReasons]atomic.Uint64
+	ignored          [NumIgnoredReasons]atomic.Uint64
+	ambiguous        atomic.Uint64
+	headerMismatches atomic.Uint64
+	timeoutsDropped  [NumTimeoutDropReasons]atomic.Uint64
+}
+
+// Request is a forwarded W-bit primary as the gateway registers it (producer.md §4.6 *Association protocol*).
+type Request struct {
+	SessionID   uint16
+	SystemBytes uint32
+	// Stream and Function are the primary's, checked against its outbound frame when Named.
+	Stream, Function uint8
+	Named            bool
+	// Channel is the channel that sends it.
+	Channel string
+	// Marked is the interval-only origin: every context the request consolidates is interval polling.
+	Marked bool
 }
 
 // PendingEntry is one registration and the token that reports its fate.
 type PendingEntry struct {
-	t           *PendingTable
-	key         uint64
-	SessionID   uint16
-	SystemBytes uint32
-	Channel     string
+	t                *PendingTable
+	key              uint64
+	SessionID        uint16
+	SystemBytes      uint32
+	Stream, Function uint8
+	Channel          string
+	named            bool
+	// thin is the decision taken at registration and never revised.
+	thin bool
 
 	ambiguous atomic.Bool
+	// mismatch is set when the outbound frame named another stream or function than the request.
+	mismatch atomic.Bool
 	// regSocket is the connection's newest socket at registration;
 	// bound is the socket the outbound frame went out on, 0 until it is observed, and hdr that frame's stream and function.
 	regSocket uint64
@@ -174,11 +198,26 @@ func NewPendingTable(p PendingParams) *PendingTable {
 	return t
 }
 
-// Register records a forwarded W-bit primary before it is sent and returns its entry, whose methods are its token.
-// A key registered before in this process marks the new entry, and the key's newest entry still kept, ambiguous.
+// Register records an unmarked forwarded W-bit primary that names no stream and function; see RegisterRequest.
 func (t *PendingTable) Register(sessionID uint16, systemBytes uint32, channel string) *PendingEntry {
-	k := key(sessionID, systemBytes)
-	e := &PendingEntry{t: t, key: k, SessionID: sessionID, SystemBytes: systemBytes, Channel: channel, regSocket: t.socket.Load()}
+	return t.RegisterRequest(Request{SessionID: sessionID, SystemBytes: systemBytes, Channel: channel})
+}
+
+// RegisterRequest records a forwarded W-bit primary before it is sent and returns its entry, whose methods are its token.
+// A marked S1F3 takes its thin decision here, from the rule of the capture current now;
+// every other registration keeps its bodies.
+// A key registered before in this process marks the new entry, and the key's newest entry still kept, ambiguous.
+func (t *PendingTable) RegisterRequest(r Request) *PendingEntry {
+	k := key(r.SessionID, r.SystemBytes)
+	e := &PendingEntry{
+		t: t, key: k, SessionID: r.SessionID, SystemBytes: r.SystemBytes, Stream: r.Stream, Function: r.Function,
+		Channel: r.Channel, named: r.Named, regSocket: t.socket.Load(),
+	}
+	if r.Marked && r.Named && r.Stream == 1 && r.Function == 3 && t.current != nil {
+		if c := t.current(); c != nil && c.sampler != nil {
+			e.thin = c.sampler.thin(t.now())
+		}
+	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	e.expires = t.now() + t.unawaited
@@ -240,6 +279,10 @@ func (t *PendingTable) Bind(sessionID uint16, systemBytes uint32, stream, functi
 	if socket != e.regSocket || t.socket.Load() != e.regSocket {
 		t.markAmbiguous(e)
 	}
+	// A frame other than the registered request never thins, but its key and binding still attribute its T3.
+	if e.named && (stream != e.Stream || function != e.Function) && e.mismatch.CompareAndSwap(false, true) {
+		t.headerMismatches.Add(1)
+	}
 	t.bindHook(0)
 	e.hdr.Store(uint32(stream)<<8 | uint32(function))
 	e.bound.CompareAndSwap(0, socket)
@@ -274,6 +317,7 @@ func (t *PendingTable) Counters() PendingCounters {
 		c.Ignored[i] = t.ignored[i].Load()
 	}
 	c.Ambiguous = t.ambiguous.Load()
+	c.HeaderMismatches = t.headerMismatches.Load()
 	for i := range t.timeoutsDropped {
 		c.TimeoutsDropped[i] = t.timeoutsDropped[i].Load()
 	}
@@ -353,6 +397,12 @@ func (e *PendingEntry) Outcome() Outcome {
 
 // Ambiguous reports whether the entry's key was registered more than once; an ambiguous entry never thins and emits no T3.
 func (e *PendingEntry) Ambiguous() bool { return e.ambiguous.Load() }
+
+// ThinSelected reports the decision taken at registration: the rule gave up the request's bodies and its reply's.
+func (e *PendingEntry) ThinSelected() bool { return e.thin }
+
+// HeaderMismatch reports that the outbound frame named another stream or function than the request; such an entry never thins.
+func (e *PendingEntry) HeaderMismatch() bool { return e.mismatch.Load() }
 
 func key(sessionID uint16, systemBytes uint32) uint64 {
 	return uint64(sessionID)<<32 | uint64(systemBytes)

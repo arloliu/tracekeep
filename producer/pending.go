@@ -53,8 +53,47 @@ var _ Token = (*core.PendingEntry)(nil)
 // Pending returns the producer's send path.
 func (p *Producer) Pending() *Pending { return &Pending{t: p.rec.Pending} }
 
-// Register records a forwarded W-bit primary before it is sent and returns its token;
-// call it for every such primary, on a poll channel or not.
+// Origin is what the gateway knows of why it sends a request (producer.md §4.6, T-42).
+type Origin uint8
+
+const (
+	// OriginUnmarked is the zero value: the request is never thinned.
+	OriginUnmarked Origin = iota
+	// OriginIntervalPoll marks a request every context of which is interval polling;
+	// a marked S1F3 may be thinned, with its reply, under the capture's sampling rule.
+	OriginIntervalPoll
+)
+
+// Request is a forwarded W-bit primary as the gateway is about to send it.
+type Request struct {
+	// SessionID and SystemBytes are the primary's key.
+	SessionID   uint16
+	SystemBytes uint32
+	// Stream and Function are the primary's; the frame the wire observer sees go out under the key must name the same.
+	Stream, Function uint8
+	// Channel is the channel that sends it.
+	Channel string
+	// Origin is the request's origin; its zero value is unmarked.
+	Origin Origin
+}
+
+// RegisterRequest records a forwarded W-bit primary before it is sent and returns its token;
+// call it, or Register, for every such primary, marked or not.
+// A marked S1F3 takes its thin decision here, from the sampling rule of the capture current now.
+//
+// Parameters:
+//   - r: the request
+//
+// Returns:
+//   - Token: the handle the forwarding call and the waiter report on
+func (p *Pending) RegisterRequest(r Request) Token {
+	return p.t.RegisterRequest(core.Request{
+		SessionID: r.SessionID, SystemBytes: r.SystemBytes, Stream: r.Stream, Function: r.Function, Named: true,
+		Channel: r.Channel, Marked: r.Origin == OriginIntervalPoll,
+	})
+}
+
+// Register records an unmarked forwarded W-bit primary that names no stream and function; it never thins.
 //
 // Parameters:
 //   - sessionID: the primary's session id
