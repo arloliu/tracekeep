@@ -319,7 +319,8 @@ so such hubs write overlapping captures of one device, which `catalog.md` §7.3 
 `device_id` from `deviceID`;
 `hsms_timers` from the go-secs properties (a timer HotReload therefore rotates the capture, §4.2);
 `equipment_connect_mode` from `mode`; `equipment_endpoint` from `hostPort`; `host_software` = eqp-hub version;
-`equipment_model` and `equipment_sw_rev` only if configured; `thinning` entries per §4.6.
+`equipment_model` and `equipment_sw_rev` only if configured;
+`thinning` entries, which the SDK writes from the descriptor's sampling rule (§4.6).
 The SDK fixes the values its way of observing decides (G5-274):
 transport HSMS-SS, capture method `raw-stream`, time source capture clock, lifecycle coverage subscribed,
 vantage **host**, since the gateway is the host endpoint of the connection it records,
@@ -368,11 +369,12 @@ Thinning anything the gateway cannot positively identify as the FDC service's in
 `fdc_grpc`'s `buildRequest` marks a request **interval-only** when every context it consolidates is a kernel DC task,
 event-started and timer-started alike, since each is sampled at its `SampleFreq` and so is interval polling under G5-225;
 a request holding a proxy context is unmarked.
-The mark travels on the hub's message to `eqp-hsms`'s `doSendToTarget`, which hands it to the SDK's registration in place of a channel.
+The mark travels on the hub's message to `eqp-hsms`'s `doSendToTarget`,
+which hands it to the SDK's registration as the request's **origin**, beside its channel.
 Everything `buildRequest` does not build (drain resends, post-event queries, MES commands) carries no mark,
 and an unmarked request is never thinned, so a lost mark costs a thin, never a wrong one.
 The SDK thins only a marked `S1F3` and its reply;
-the producer's configuration enables thinning, and without it the SDK thins nothing and declares nothing.
+a capture whose descriptor holds a sampling rule thins, and without one the SDK thins nothing and declares nothing.
 In parallel mode nothing is thinned at all:
 the legacy host's polls never pass `buildRequest` and carry no provenance,
 and the legacy host's channel is not polling-only by construction,
@@ -383,9 +385,16 @@ so no declaration can make it so.
 **Association protocol** (the one piece of state shared between the send path and the record pipeline;
 it also serves §4.4's T3 attribution):
 
-- `doSendToTarget` registers **every forwarded W-bit primary** before `ForwardDataMessage` as a **pending request**:
-  an immutable **token** (unique per send), the key `(session id, System Bytes)`, the capture reference, the sending channel,
-  and, when the registration carries the interval-only mark, the **thin decision** for the pair taken right there from the sampling rule.
+- `doSendToTarget` registers **every forwarded W-bit primary** before `ForwardDataMessage` as a **pending request**.
+  The registration takes the **request**:
+  the key `(session id, System Bytes)`, the stream and function, the sending channel and the origin,
+  whose zero value is unmarked, so an integrator that never sets it thins nothing.
+  The entry holds an immutable **token** (unique per send), the request, the capture reference and the **thin decision**,
+  taken once, right there, and never revised:
+  *thin-selected* for a marked `S1F3` that the sampling rule of the capture current at registration does not keep (*Sampling rule* below),
+  and *keep* for every other registration,
+  an unmarked one, a marked one of another stream or function, and one registered while the current capture holds no rule or no capture is current.
+  The reply found by the key inherits its primary's decision.
   A failed send removes the entry **by token**;
   an entry expires at the end of its wait plus a reporting grace (default 5 s), or 30 s after its registration if no wait was opened on it (*Send-path token protocol* below, T-31);
   a completed entry is retained until its expiry so a late callback still finds it.
@@ -411,7 +420,14 @@ it also serves §4.4's T3 attribution):
   whether the frame went out on the new socket or is an old socket's frame observed late,
   and the mark is made before the binding is recorded.
   The socket is also the epoch source of §4.4.
-- The wire callback looks the outbound primary and the inbound reply up by key (a map read, no body inspection) and attaches the **token** to the record.
+- **Header check**: the outbound observation also compares the frame's stream and function with the request's.
+  A disagreement means the integrator registered one message and sent another under its key:
+  the entry never thins and the disagreement is counted,
+  but the entry is not marked ambiguous,
+  since the key and the binding still hold and an ambiguous entry would also lose its T3 (*T3* below).
+  A registration that names no stream and function (`Register`, `producer-sdk.md` §4.7 *Send path*) is never compared and never thins.
+- The wire callback looks the outbound primary and the inbound reply up by key (a map read, no body inspection)
+  and attaches the **entry** to the record's lane entry, a pointer and no allocation.
   The key is exact: a reply whose session ID differs from its primary's matches nothing and is kept in full,
   including one that differs only in the top bit, which eqp-hub accepts as a reply.
   A reply callback that arrives before the outbound callback (go-secs delivers observations out of causal order) finds the entry,
@@ -419,12 +435,24 @@ it also serves §4.4's T3 attribution):
   it is attached provisionally,
   and the publisher zero-fills only if the binding has been established and matches by the time the reply is dequeued;
   otherwise the reply is kept in full.
-- On the publisher goroutine:
-  a record is zero-filled only if its token's decision is *thin*, the entry is not ambiguous, the socket binding matches,
-  **and the record's own capture declares the stream and function in `thinning`**;
-  the last condition covers a rotation between the send and the reply.
-  An `S1F4` whose text is empty or holds a zero-length item is kept in full whatever the decision (abnormal reply, V-27);
-  `S9Fx` is never touched.
+- On the publisher goroutine, as it dequeues a record with an entry attached,
+  the record is zero-filled only if every check holds, in this order, and is kept in full at the first that fails:
+  1. the entry's decision is *thin-selected*;
+  2. the entry's binding is established and is the record's own socket,
+     and the record was observed before the entry's expiry, whether or not the entry has been swept yet;
+  3. the entry is not ambiguous;
+  4. the header check found no disagreement;
+  5. **the record's own capture declares the record's stream and function in `thinning`**,
+     which covers a rotation between the send and the reply;
+  6. no registration has found the ambiguity set full, read at dequeue (*Ambiguity rule* above);
+  7. the record is not an abnormal reply:
+     an `S1F4` whose text is empty or holds a zero-length item is kept in full whatever the decision (V-27).
+
+  The binding is read before the marks of checks 3 and 4,
+  since the outbound observation makes its marks before it records the binding (*Socket binding* above).
+  `S9Fx` is never touched: it carries its offending message's System Bytes and may find that entry, but no capture declares it (check 5).
+  A zero-filled record is the lane's own copy of the frame,
+  its message text zero-filled and `quality.unobserved` set, and is counted.
   `WireEvent.Frame` holds the 4-byte length prefix, the 10-byte header and the message text,
   so the zero-fill covers bytes 14 onward;
   phase 0 keeps a regression test on that offset.
@@ -483,11 +511,16 @@ it also serves §4.4's T3 attribution):
     Reports add no thinning condition:
     a record is zero-filled only under the publisher's conditions above.
 - **Sampling rule** (LS-7, decided 2026-10-25): a poll keeps its bodies when `count mod N == 0` or `now − last_kept ≥ T`;
-  defaults `N = 60`, `T = 60 s`, **configurable** in the producer's configuration (its keys in `producer-sdk.md`), never compiled in;
-  a change rotates the capture, since the declaration lives in the descriptor.
+  defaults `N = 60`, `T = 60 s`, **configurable** in the producer's configuration (its keys in `producer-sdk.md`), never compiled in.
+  The rule is a **value of the capture descriptor** (`producer-sdk.md` §4.7 *Producer-side API*), absent when thinning is off,
+  so a change rotates the capture through the descriptor comparison every rotation makes (§4.2), and an equal rule does not.
+  `count` and `last_kept` belong to the capture:
+  `count` is the number of marked `S1F3` registered while it was current, before this one,
+  `last_kept` the monotonic time of the last of them the rule kept, none at first,
+  so each capture's first poll keeps its bodies.
   A `thinning` entry carries only `stream`, `function` and `source` ([FMT §5] nested tags),
-  so the producer writes the rule into `source` with a **key=value convention tracekeep owns**
-  (e.g. `fdc interval polling by request origin; keep_every_n=60; keep_interval_ms=60000; abnormal=kept`):
+  so the SDK writes two entries from the rule, `S1F3` and `S1F4`, with one `source` text in a **key=value convention tracekeep owns**
+  (`fdc interval polling by request origin; keep_every_n=60; keep_interval_ms=60000; abnormal=kept`, the defaults' text):
   the SDK writes it, the catalog parses it at registration, tracepack treats it as text;
   the tracepack maintainers advise against a structured nested tag (2026-10-25):
   tracepack never evaluates a sampling rule, each record's `quality.unobserved` is that record's truth,

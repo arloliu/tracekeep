@@ -549,3 +549,14 @@ its segments stay readable and are evicted on time, and the refusal is counted a
 The budget stays tracepack's default, since every reader, the VE's included, must agree on it and it bounds their memory.
 Considered and not taken: raising the budget, one merge writing several archives (the format allows one archive a merge), and partitioned merges of an hour's packs (kept in reserve until production rates are measured).
 The lasting fix, redaction entries outside the pack metadata, is a format change asked of go-secs.
+
+### T-46 — an SDK change the service uses lands in two pull requests (2026-10-30)
+
+The service requires the SDK at a tagged version and builds and tests with `GOWORK=off`,
+so it can use an SDK change only once that change is tagged;
+a rebase merge rewrites a branch's commits, so a tag can only follow the merge, on `main`.
+**An SDK change lands in its own pull request, `producer/vX.Y.Z` is tagged on `main` once it merges,
+and a second pull request raises the service's requirement to that tag and makes the service use it.**
+Thinning is the first: `producer/v0.3.0` follows the SDK's pull request, and the second drives thinning from `cmd/tracekeep-sim`.
+Considered and not taken: one pull request whose service side requires a pseudo-version of the branch or a `replace` of the local module,
+since the first names a commit the rebase merge discards and the second does not build from a tagged release.
