@@ -560,3 +560,14 @@ and a second pull request raises the service's requirement to that tag and makes
 Thinning is the first: `producer/v0.3.0` follows the SDK's pull request, and the second drives thinning from `cmd/tracekeep-sim`.
 Considered and not taken: one pull request whose service side requires a pseudo-version of the branch or a `replace` of the local module,
 since the first names a commit the rebase merge discards and the second does not build from a tagged release.
+
+### T-47 — the thinning parameters are read from the stored descriptor (2026-10-31)
+
+A `thinning` entry's `source` carries the sampling rule as key=value text tracekeep owns (`producer.md` §4.6),
+and `ListCaptures` names a capture's thinning parameters (`api.md`).
+**The catalog parses them from the descriptor bytes it already stores, when a capture is read;
+a `source` that does not parse leaves the parameters absent and its text kept, and never refuses the capture.**
+A producer of another version, or another tool's text, then costs only the parameters,
+and the catalog needs no columns or migration for values the descriptor already holds.
+Considered and not taken: parsing at admission into columns of `captures`, which adds a migration for no reader that needs them indexed,
+and refusing a capture whose `source` does not parse, which would lose traffic over a descriptive field.
