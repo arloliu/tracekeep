@@ -68,7 +68,8 @@ type Snapshot struct {
 	Revision int64
 	// Inputs are the scope's staged packs, segments and archives alike.
 	Inputs []Input
-	// Eligible reports a scope open or reopened, holding inputs, and touched by no conflict.
+	// Eligible reports a scope open, reopened or unmergeable, holding inputs, and touched by no conflict;
+	// an unmergeable one is no candidate, so only an operator's request reaches its snapshot.
 	Eligible bool
 }
 
@@ -108,7 +109,7 @@ func (c *Catalog) MergeSnapshot(ctx context.Context, s Scope) (Snapshot, error) 
 	if err != nil {
 		return snap, fmt.Errorf("catalog: merge snapshot: %w", err)
 	}
-	snap.Eligible = (head.State == "open" || head.State == "reopened") && len(snap.Inputs) > 0 && !touched
+	snap.Eligible = mergeable(head.State) && len(snap.Inputs) > 0 && !touched
 
 	return snap, nil
 }
@@ -144,6 +145,8 @@ const (
 	ArchiveAdopted
 	// ArchiveTombstoned: the archive's key is tombstoned; nothing was written, and the reconciler deletes the object.
 	ArchiveTombstoned
+	// Refused: the merge exceeded the reader's metadata budget, and the scope is unmergeable (RefuseMerge).
+	Refused
 )
 
 // ErrInvalidMerge refuses a merge the transaction cannot take; nothing was written.
@@ -239,11 +242,66 @@ func (c *Catalog) commitMergeIn(ctx context.Context, tx *sqlx.Tx, l Lease, m *Me
 	return Merged, c.emit(ctx, tx, []event{{m.Capture, m.Hour, "settled", m.Revision + 1}})
 }
 
+// mergeable reports a scope state a merge may settle.
+func mergeable(state string) bool {
+	return state == "open" || state == "reopened" || state == "unmergeable"
+}
+
+// Refusal is a merge tracepack refused over the reader's metadata budget (compactor.md §8.1, T-45).
+type Refusal struct {
+	Scope
+	// Revision is the snapshot's revision.
+	Revision int64
+	// Request is the operator's request the merge executed, nil for a scheduled merge; the refusal ends it failed.
+	Request *tracepack.UUID
+	// Reason is the request's outcome.
+	Reason string
+}
+
+// RefuseMerge marks r's scope unmergeable under l, in one transaction that starts with the capture row and checks the lease:
+// the scope by compare-and-set on the snapshot's revision, r's request ended failed with its reason, the unmergeable event last.
+// It returns Refused, or MergeStale, writing nothing, when the scope changed since the snapshot; a lost lease returns ErrLeaseLost.
+func (c *Catalog) RefuseMerge(ctx context.Context, l Lease, r *Refusal) (MergeOutcome, error) {
+	var out MergeOutcome
+	err := outcome(c.inTx(ctx, func(tx *sqlx.Tx) error {
+		if _, err := c.lockCapture(ctx, tx, r.Capture); err != nil {
+			return err
+		}
+		if err := c.checkLease(ctx, tx, l); err != nil {
+			return err
+		}
+		res, err := tx.ExecContext(ctx, `UPDATE scopes SET state = 'unmergeable', revision = revision + 1
+			WHERE capture_id = ? AND hour = ? AND revision = ? AND state IN ('open', 'reopened', 'unmergeable')`, r.Capture[:], r.Hour, r.Revision)
+		if err := affected(res, err, errStale); errors.Is(err, errStale) {
+			out = MergeStale
+
+			return errRollback
+		} else if err != nil {
+			return err
+		}
+		if r.Request != nil {
+			_, err := tx.ExecContext(ctx, `UPDATE compact_requests SET state = 'failed', outcome = ?, done_at = ? WHERE request_id = ? AND state = 'pending'`,
+				r.Reason, c.now(), r.Request[:])
+			if err != nil {
+				return err
+			}
+		}
+		out = Refused
+
+		return c.emit(ctx, tx, []event{{r.Capture, r.Hour, "unmergeable", r.Revision + 1}})
+	}))
+	if err != nil {
+		return 0, fmt.Errorf("catalog: refuse merge of %s hour %d: %w", r.Capture, r.Hour, err)
+	}
+
+	return out, nil
+}
+
 // errStale marks a compare-and-set that found the scope changed.
 var errStale = errors.New("catalog: scope changed")
 
 // mergeGuards re-reads, under the capture row, what the snapshot judged:
-// the scope still at the snapshot's revision and open or reopened, no conflict touching it, every input still staged,
+// the scope still at the snapshot's revision and open, reopened or unmergeable, no conflict touching it, every input still staged,
 // and the archive neither registered nor tombstoned.
 func (c *Catalog) mergeGuards(ctx context.Context, tx *sqlx.Tx, m *Merge) (MergeOutcome, bool, error) {
 	var n int
@@ -279,7 +337,7 @@ func (c *Catalog) mergeGuards(ctx context.Context, tx *sqlx.Tx, m *Merge) (Merge
 	if err != nil {
 		return 0, true, err
 	}
-	if head.Revision != m.Revision || (head.State != "open" && head.State != "reopened") || head.Touched {
+	if head.Revision != m.Revision || !mergeable(head.State) || head.Touched {
 		return MergeStale, true, nil
 	}
 	q, args := inList(`SELECT COUNT(*) FROM packs WHERE capture_id = ? AND hour = ? AND state = 'staged' AND pack_id IN`, m.Inputs, m.Capture[:], m.Hour)
