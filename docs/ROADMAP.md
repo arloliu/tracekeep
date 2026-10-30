@@ -1,6 +1,6 @@
 # Roadmap
 
-Status: current (2026-10-28) — milestones from seed v21 §12
+Status: current (2026-10-31) — milestones from seed v21 §12
 
 Where tracekeep's work stands, and the single index of active plans (`.agents/rules/450-doc-lifecycle.md`).
 The milestones and their gates are seed v21 §12, moved unchanged;
@@ -49,13 +49,14 @@ eqp-hub reviews the SDK's API (`Bus`, `Preflight`, the six guarantees, the `secs
 
 ## Active plans
 
-- [Phase 3 — masking and keys](plans/phase-3-masking-keys.md)
+None.
 
 Phase 0 is done (#1, #3, #4, #7, #8).
 Phase 1 is done (#9, #11, #13, #14, #16, #17, #18, #19).
 Phase 2 is done (#22, #23, #24, #25, #26, #27, #28, #29).
 Its closed plan's step tables (last text at e396be1) name commits of the branches before their rebase merge,
 which are not on `main`; each is among the commits of the pull request its phase row names.
+Phase 3 is done (#33, #34, #35, #36, #39, #41, #43); its closed plan's last text is at 6238649.
 
 ## Open items
 
