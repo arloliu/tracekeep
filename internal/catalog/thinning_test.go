@@ -1,6 +1,9 @@
 package catalog
 
-import "testing"
+import (
+	"fmt"
+	"testing"
+)
 
 // A thinning entry's source gives its sampling rule only when it parses as the SDK's convention;
 // any other text leaves the parameters absent.
@@ -34,4 +37,29 @@ func TestSamplingRuleOfASource(t *testing.T) {
 			t.Errorf("%s: parameters %d, %d, want %d, %d", c.name, *n, *ms, c.n, c.ms)
 		}
 	}
+}
+
+// A source is a producer's text: parsing never panics, gives both parameters or neither, never a count of zero,
+// and what it accepts reads back from the SDK's own spelling of the same rule.
+func FuzzSamplingRule(f *testing.F) {
+	f.Add("fdc interval polling by request origin; keep_every_n=60; keep_interval_ms=60000; abnormal=kept")
+	f.Add("keep_every_n=1;keep_interval_ms=0")
+	f.Add("keep_every_n=60; keep_every_n=60; keep_interval_ms=1")
+	f.Add(";;=;")
+	f.Fuzz(func(t *testing.T, source string) {
+		n, ms := samplingRule(source)
+		if (n == nil) != (ms == nil) {
+			t.Fatalf("samplingRule(%q) = %v, %v: one parameter without the other", source, n, ms)
+		}
+		if n == nil {
+			return
+		}
+		if *n == 0 {
+			t.Fatalf("samplingRule(%q) accepted a count of zero", source)
+		}
+		spelled := fmt.Sprintf("fdc interval polling by request origin; keep_every_n=%d; keep_interval_ms=%d; abnormal=kept", *n, *ms)
+		if n2, ms2 := samplingRule(spelled); n2 == nil || *n2 != *n || *ms2 != *ms {
+			t.Fatalf("samplingRule(%q) does not read back from %q", source, spelled)
+		}
+	})
 }
