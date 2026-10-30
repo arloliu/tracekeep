@@ -31,9 +31,11 @@ type Server struct {
 	QuietPeriod time.Duration
 	// Admin runs AdminService's commands, its Actor replaced by each request's principal; nil runs none.
 	Admin *admin.Admin
-	// Store serves the downloads the API serves itself; Downloads issues every download URL.
+	// Store serves the downloads the API serves itself and the packs Restore reads; Downloads issues every download URL.
 	Store     store.ObjectStore
 	Downloads Downloads
+	// Keys resolves the keys Restore and Digest use; nil serves neither.
+	Keys Keys
 	// Auth checks every request; Metrics records them, nil for none; Log logs failures, nil for none.
 	Auth    *auth.Authenticator
 	Metrics *metrics.API
@@ -59,6 +61,9 @@ type Catalog interface {
 	ListScopeChanges(ctx context.Context, after catalog.Cursor, sel catalog.Selector, limit int) (catalog.Changes, error)
 	PackDownload(ctx context.Context, pack tracepack.UUID, delay time.Duration) (catalog.Download, error)
 	Audit(ctx context.Context, e catalog.AuditEntry) error
+	Capture(ctx context.Context, id tracepack.UUID) (catalog.Capture, error)
+	ConfigContent(ctx context.Context, id int64) ([]byte, error)
+	RecordCopies(ctx context.Context, capture tracepack.UUID, seq uint64) ([]catalog.Copy, error)
 }
 
 // Handler is the HTTP handler serving the machine API.
@@ -77,7 +82,7 @@ func PrincipalFrom(ctx context.Context) (auth.Principal, bool) {
 // operations are the procedures the service serves; any other path under it is opUnknown, one label, and refused.
 var operations = map[string]bool{
 	auth.OpListDevices: true, auth.OpListCaptures: true, auth.OpListPacks: true, auth.OpListScopeChanges: true, auth.OpPackURL: true,
-	auth.OpAdmin: true,
+	auth.OpRestore: true, auth.OpAdmin: true,
 }
 
 const opUnknown = "unknown"
