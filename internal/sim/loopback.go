@@ -41,6 +41,9 @@ type Options struct {
 	WithholdEvery uint64
 	// Replay makes the equipment answer nothing itself: a replayed pack's own replies cross the pair instead.
 	Replay bool
+	// Thinning, when not nil, is every capture's sampling rule, under which Forward's interval polls are thinned;
+	// a replayed request is never marked, so it is never thinned.
+	Thinning *producer.SamplingRule
 }
 
 // Loopback is the simulator's device: a go-secs HSMS-SS pair on localhost,
@@ -155,7 +158,7 @@ func (l *Loopback) Traffic(ctx context.Context, n int) error {
 	return nil
 }
 
-// Forward relays one S1F3 to the equipment the way the gateway does.
+// Forward relays one S1F3 to the equipment the way the gateway does, marked as an interval poll.
 func (l *Loopback) Forward(ctx context.Context) error {
 	sb := l.sb.Add(1)
 	var sys [4]byte
@@ -165,7 +168,7 @@ func (l *Loopback) Forward(ctx context.Context) error {
 		return err
 	}
 
-	return l.relay(ctx, msg)
+	return l.relay(ctx, msg, producer.OriginIntervalPoll)
 }
 
 // errMalformed is a replayed frame go-secs cannot decode.
@@ -187,7 +190,7 @@ func (l *Loopback) Replay(ctx context.Context, dir tracepack.Dir, frame []byte) 
 	switch dir {
 	case tracepack.DirHostToEquipment:
 		if msg.WaitBit() && msg.Function()%2 == 1 {
-			return l.relay(ctx, msg)
+			return l.relay(ctx, msg, producer.OriginUnmarked)
 		}
 		return l.host.ForwardDataMessage(ctx, msg)
 	case tracepack.DirEquipmentToHost:
@@ -201,10 +204,13 @@ func (l *Loopback) Replay(ctx context.Context, dir tracepack.Dir, frame []byte) 
 
 // relay relays a W-bit primary the way the gateway does: register, open the wait, send, report the send.
 // The wait opens before the send, so a reply that comes back at once always finds it (TimeoutSource).
-func (l *Loopback) relay(ctx context.Context, msg *hsms.DataMessage) error {
+func (l *Loopback) relay(ctx context.Context, msg *hsms.DataMessage, origin producer.Origin) error {
 	sys := msg.SystemBytes()
 	sb := binary.BigEndian.Uint32(sys[:])
-	tok := &flight{Token: l.p.Pending().Register(l.opts.SessionID, sb, channel), l: l, sb: sb}
+	req := producer.Request{
+		SessionID: l.opts.SessionID, SystemBytes: sb, Stream: msg.Stream(), Function: msg.Function(), Channel: channel, Origin: origin,
+	}
+	tok := &flight{Token: l.p.Pending().RegisterRequest(req), l: l, sb: sb}
 	l.mu.Lock()
 	l.inflight[sb] = tok
 	l.mu.Unlock()
@@ -251,7 +257,7 @@ func (l *Loopback) Close() error {
 
 func (l *Loopback) descriptor() producer.CaptureDescriptor {
 	reload := l.reload.Load()
-	return producer.CaptureDescriptor{ToolID: l.opts.ToolID, DeviceName: l.opts.DeviceName, DeviceID: &reload}
+	return producer.CaptureDescriptor{ToolID: l.opts.ToolID, DeviceName: l.opts.DeviceName, DeviceID: &reload, Thinning: l.opts.Thinning}
 }
 
 // equipment answers a primary with its own item, unless it withholds the answer.

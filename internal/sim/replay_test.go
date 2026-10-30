@@ -102,6 +102,8 @@ func TestReplaySendsThePackThroughThePair(t *testing.T) {
 	bus := producertest.NewBus()
 	opts := testOptions()
 	opts.Replay = true
+	// A replayed request is never marked, so the second S1F3, which a marked poll would lose, keeps its text.
+	opts.Thinning = &producer.SamplingRule{KeepEveryN: 1000, KeepInterval: time.Hour}
 	l := newTestLoopbackWith(t, producer.Config{}, opts, producer.WithBus(bus))
 	if err := l.Start(t.Context()); err != nil {
 		t.Fatal(err)

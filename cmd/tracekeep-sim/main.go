@@ -35,6 +35,8 @@ type config struct {
 	stream   string
 	rate     float64
 	duration time.Duration
+	thinning bool
+	rule     producer.SamplingRule
 	opts     sim.Options
 }
 
@@ -53,6 +55,9 @@ func main() {
 	flag.Uint64Var(&c.opts.WithholdEvery, "withhold-every", 0, "the equipment leaves every n-th forwarded request unanswered; 0 answers all")
 	flag.Float64Var(&c.rate, "rate", 10, "forwarded requests per second")
 	flag.DurationVar(&c.duration, "duration", 0, "how long to run; 0 runs until interrupted")
+	flag.BoolVar(&c.thinning, "thinning", false, "thin the forwarded interval polls; a replayed request is never thinned")
+	flag.IntVar(&c.rule.KeepEveryN, "thinning-keep-every-n", 0, "keep every n-th poll's bodies; 0 takes the SDK's default")
+	flag.DurationVar(&c.rule.KeepInterval, "thinning-keep-interval", 0, "keep a poll's bodies at least this often; 0 takes the SDK's default")
 	flag.Parse()
 	c.opts.SessionID = 1
 
@@ -76,6 +81,9 @@ func run(ctx context.Context, c *config) error {
 	default:
 	}
 	c.opts.Replay = c.mode == "replay"
+	if c.thinning {
+		c.opts.Thinning = &c.rule
+	}
 	log := slog.New(slog.NewTextHandler(os.Stderr, nil))
 	p, err := producer.New(producer.Config{
 		Servers: strings.Split(c.servers, ","), SubjectPrefix: c.prefix, Stream: c.stream, ClaimBucket: c.bucket,
