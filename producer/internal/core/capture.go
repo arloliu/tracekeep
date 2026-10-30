@@ -70,6 +70,8 @@ type CaptureParams struct {
 	OriginWall, OriginMono int64
 	// RotateAt is the seq from which the capture asks to be rotated; zero takes DefaultRotateAt.
 	RotateAt uint64
+	// Sampling is the capture's sampling rule; nil, it thins nothing.
+	Sampling *Sampling
 }
 
 // Capture is one capture: its identity and the state the observer callbacks allocate under its lock
@@ -107,6 +109,8 @@ type Capture struct {
 	lifecycle *atomic.Uint64
 	tolerance int64
 	rotateAt  uint64
+	// sampler is nil when the capture thins nothing.
+	sampler *sampler
 
 	mu sync.Mutex
 	// Guarded by mu.
@@ -150,6 +154,11 @@ func NewCapture(p CaptureParams) *Capture {
 		done:         make(chan struct{}),
 	}
 	c.reservations[0] = reservation{seq: 0, mono: p.OriginMono}
+	if p.Sampling != nil {
+		rule := *p.Sampling
+		rule.KeepEveryN = max(rule.KeepEveryN, 1)
+		c.sampler = &sampler{rule: rule}
+	}
 
 	return c
 }

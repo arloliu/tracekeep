@@ -227,6 +227,7 @@ func (p *Producer) rotateLocked(ctx context.Context, d *CaptureDescriptor, previ
 		OriginWall:  wall,
 		OriginMono:  mono,
 		RotateAt:    p.rotateAt,
+		Sampling:    sampling(d.Thinning),
 	})
 	c.Descriptor = base64.StdEncoding.EncodeToString(desc)
 	if c.Subject, err = tracepack.BusSubject(p.prefix, d.ToolID, id); err != nil {

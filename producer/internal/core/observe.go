@@ -176,6 +176,7 @@ func NewRecorder(p RecorderParams) *Recorder {
 	}
 	r.Pending = NewPendingTable(p.Pending)
 	r.Pending.emit = r.forwardedT3
+	r.Pending.current = r.Current
 
 	return r
 }

@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"github.com/arloliu/go-secs/tracepack"
+
+	"github.com/arloliu/tracekeep/producer/internal/core"
 )
 
 // ErrInvalidDescriptor reports a capture descriptor the SDK refuses to start or rotate to.
@@ -92,6 +94,16 @@ func (r *SamplingRule) validate() error {
 	}
 
 	return nil
+}
+
+// sampling is r for the capture core, its defaults filled in; nil for nil.
+func sampling(r *SamplingRule) *core.Sampling {
+	if r == nil {
+		return nil
+	}
+	f := r.filled()
+
+	return &core.Sampling{KeepEveryN: uint64(f.KeepEveryN), KeepInterval: int64(f.KeepInterval)} //nolint:gosec // validate refused a negative field
 }
 
 // thinningEntries declares what r thins, under the source convention tracekeep's catalog parses.

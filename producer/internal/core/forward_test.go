@@ -133,12 +133,12 @@ func TestForwardedTimeoutDoesNotAllocate(t *testing.T) {
 	}
 }
 
-// Bind runs in the wire observer, whose only allocation is the frame copy.
+// Bind runs in the wire observer, whose only allocation is the frame copy; a header disagreement allocates nothing either.
 func TestBindDoesNotAllocate(t *testing.T) {
 	pt, _ := newTestPending(t, 0)
 	pt.SetSocket(5)
 	for i := range 101 {
-		pt.Register(0x0102, uint32(i), "c") //nolint:gosec // i < 101
+		pt.RegisterRequest(Request{SessionID: 0x0102, SystemBytes: uint32(i), Stream: 1, Function: 1, Named: true, Channel: "c"}) //nolint:gosec // i < 101
 	}
 	i := 0
 	n := testing.AllocsPerRun(100, func() {
