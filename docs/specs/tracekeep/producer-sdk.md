@@ -29,7 +29,10 @@ Contract changes go through proposals, which the subject [README.md](README.md) 
 - **Lifecycle**: `Begin`, `Rotate` and `End`, onto which the device's `Start`, `HotReload` and `Stop` map once (`producer.md` §4.2, T-26).
 - **Observers**: the integrator installs `secsobs`'s connection options and lifecycle attachment before the connection opens;
   no record enters the SDK any other way (§4.7 *Producer-side API*).
-- **Send path**: `Pending().Register` returns a `Token` on which eqp-hub reports send progress (`Sent`, `SendFailed`, `SubmissionFailed`)
+- **Thinning**: the descriptor's `Thinning *SamplingRule`, nil leaving it off;
+  the SDK writes the `thinning` entries from it, and only a request registered through `RegisterRequest` with the interval-poll origin can thin (§4.7 *Producer-side API*, `producer.md` §4.6).
+- **Send path**: `Pending().RegisterRequest(Request)` and `Pending().Register`, its unmarked form,
+  return a `Token` on which eqp-hub reports send progress (`Sent`, `SendFailed`, `SubmissionFailed`)
   and the waiter one terminal outcome (`Replied`, `TimedOut` with the effective timeout, `Cancelled`), the first winning;
   eqp-hub's waiter implements `TimeoutSource`, and `producertest` fakes it (§4.7 *Send path*, `producer.md` §4.6).
 - **`Bus`**: a narrow seam of the SDK's own types that a connection-free fake implements; NATS details stay private (§4.7).
@@ -83,7 +86,7 @@ type Config struct {
     Stream             string            // the traffic stream every publish expects; empty takes busconfig's default
     ParkedStream       string            // the parking stream Preflight checks; empty takes busconfig's default
     ClaimBucket        string
-    Tunables           Tunables          // lanes, H, τ, ε, sampler, the send path's bounds; every field has a default
+    Tunables           Tunables          // lanes, H, τ, ε, the send path's bounds; every field has a default
 }
 
 func New(cfg Config, opts ...Option) (*Producer, error)
@@ -174,14 +177,57 @@ The header-block length is computed by the SDK from the NATS header wire format,
 the `Report` says which capture it closed, whether its `stop` was queued, whether it was abandoned, whether the drain finished in time and how many records it dropped, and whether another lifecycle call held the lock past the deadline;
 the first `End` to take the lock owns the capture and its `Report`, a later one returns an empty `Report`, and the figures are those at its return, T-31),
 which the device's `Start`, `HotReload` and `Stop` map onto (`producer.md` §4.2 *Device verbs and SDK calls*, T-26);
-`Pending()` and `TimeoutSource` (*Send path*, below), `Sampler{N, T}`, and:
+`Pending()` and `TimeoutSource` (*Send path*, below), and:
+
+- **Thinning** (`producer.md` §4.6 *Sampling rule*): the descriptor carries the rule, so a change rotates the capture and an equal one does not:
+
+  ```go
+  type CaptureDescriptor struct {
+      // ... the values of producer.md §4.5 ...
+      Thinning *SamplingRule // nil: the capture thins nothing and declares nothing
+  }
+
+  // SamplingRule keeps a poll's bodies when count mod KeepEveryN == 0 or now − last_kept ≥ KeepInterval.
+  type SamplingRule struct {
+      KeepEveryN   int           // N; 0 takes the default, 60
+      KeepInterval time.Duration // T; 0 takes the default, 60 s
+  }
+  ```
+
+  The SDK writes the `S1F3` and `S1F4` `thinning` entries and their `source` text from the rule, the defaults filled in,
+  and `Begin` and `Rotate` refuse a rule with a negative field or an interval that is not a whole number of milliseconds, the unit `source` carries.
+  The integrator fills the rule from its device's configuration under the keys
+  `thinning.enabled` (default false, which leaves `Thinning` nil), `thinning.keep_every_n` and `thinning.keep_interval` (a duration),
+  named after the keys of `source`;
+  eqp-hub's `eqp-hsms` devices carry them from phase G.
 
 - **Send path** (sketch; the protocol is `producer.md` §4.6 *Send-path token protocol*,
   **reviewed with the eqp-hub maintainers before phase G**, which may reshape these signatures):
 
   ```go
-  // Register records a forwarded W-bit primary before it is sent and returns its token;
-  // the capture reference and the thin decision are the SDK's, taken inside Register.
+  // RegisterRequest records a forwarded W-bit primary before it is sent and returns its token;
+  // the capture reference and the thin decision are the SDK's, taken inside it (producer.md §4.6).
+  func (p *Pending) RegisterRequest(r Request) Token
+
+  // Request is the primary being forwarded, as the gateway is about to send it.
+  type Request struct {
+      SessionID   uint16
+      SystemBytes uint32
+      Stream      uint8  // checked against the frame the wire observer sees go out
+      Function    uint8
+      Channel     string // the channel that sends it
+      Origin      Origin
+  }
+
+  // Origin is what the gateway knows of why it sends a request.
+  type Origin uint8
+
+  const (
+      OriginUnmarked     Origin = iota // the zero value: never thinned
+      OriginIntervalPoll               // every context the request consolidates is interval polling (producer.md §4.6, T-42)
+  )
+
+  // Register is RegisterRequest with an unmarked request that names no stream and function.
   func (p *Pending) Register(sessionID uint16, systemBytes uint32, channel string) Token
 
   // Token is one registration's handle: safe from any goroutine, never blocking on anything external.
@@ -242,5 +288,5 @@ which the device's `Start`, `HotReload` and `Stop` map onto (`producer.md` §4.2
 (3) `secsobs`'s connection options and lifecycle attachment installed on the device's connection before it opens;
 (4) `End` called on an orderly stop and never allowed to fail the device;
 (5) `Rotate` called on every descriptor change;
-(6) the send path: every forwarded W-bit primary registered through `Pending()` before it is sent, its progress reported on its token,
+(6) the send path: every forwarded W-bit primary registered through `Pending()` before it is sent, a marked one through `RegisterRequest` with its stream, function and origin, its progress reported on its token,
 and a `TimeoutSource` that reports `Awaiting` and the terminal outcomes as `producer.md` §4.6 states, which the conformance check covers (T-31).
