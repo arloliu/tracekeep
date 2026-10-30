@@ -371,7 +371,11 @@ func redaction(cfg *Config, entries []Entry) (*tracepack.RedactionPolicy, []trac
 		return nil, nil
 	}
 	p := procconfig.RedactionPolicy(cfg.Policy.ID, cfg.Policy.Version, cfg.DigestKey.ID, cfg.EncryptionKey.ID)
-	var out []tracepack.RedactionEntry
+	n := 0
+	for _, e := range entries {
+		n += len(e.D.Redaction)
+	}
+	out := make([]tracepack.RedactionEntry, 0, n)
 	for _, e := range entries {
 		out = append(out, e.D.Redaction...)
 	}
