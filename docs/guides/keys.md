@@ -1,6 +1,6 @@
 # Keys guide
 
-Status: current (2026-10-29) — the digest, master and download purposes, and the vault, file and env providers
+Status: current (2026-10-30) — the digest, master and download purposes, the vault, file and env providers, and the keys `Restore` and `Digest` use
 
 How to declare the keys masking and downloads use, rotate them, and recover when their provider fails.
 Read before declaring a key id, rotating one, or answering a `key-binding-mismatch`, `key-refused` or Vault alert.
@@ -78,6 +78,15 @@ For `vault`:
 - **`download`** rotates in three steps (the configuration guide's `keys.download`):
   add the new key id to `accepted` on every replica, then switch `issuing` to it,
   then drop the old one once the longest download lifetime plus the clock skew has passed.
+
+## Restore and Digest
+
+`Restore` decrypts a record with its capture's key, derived from the `master` key id of the capture's bound configuration,
+and `Digest` digests under a `digest` key id an active or bound configuration names;
+the API resolves them as ingest does, through the same bindings, and the scorer never holds a key.
+Both need the bound version for as long as packs under it are kept,
+so a key id's versions stay in Vault for the life of its packs, after every producer is quiescent.
+A refused key refuses the request (`failed_precondition`) and alerts as below; an unavailable one answers `unavailable`, which the client retries.
 
 ## When Vault fails
 

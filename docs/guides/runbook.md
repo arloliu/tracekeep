@@ -1,6 +1,6 @@
 # Runbook
 
-Status: current (2026-10-30) — the key and masking incidents; the others join with their alerts
+Status: current (2026-10-30) — the key and masking incidents, and refused restores and digests; the others join with their alerts
 
 One section per named incident of `docs/specs/tracekeep/operations.md` §10.4:
 the alert that raises it, the metric to look at, the command that resolves it, and what is lost if it is ignored.
@@ -78,3 +78,18 @@ or, outside `tracekeep dev`, a capture's start finds no masking configuration it
 
 **If ignored**: the capture's records wait on the stream, bounded by the capture, until a configuration binds or an operator terminates the capture.
 
+## Refused restores and digests
+
+These raise no alert: the caller gets a Connect code, and `restores_total{outcome}` and `digests_total{outcome}` count them.
+Neither the error nor the log line holds a byte of the record or an original.
+
+| Outcome | Code | Meaning and action |
+|---|---|---|
+| `not-found` | `not_found` | the named hour holds no copy of the record, or the capture is unknown: name the hour the record's time falls in (`ListPacks`) |
+| `conflict` | `failed_precondition`, detail `RecordConflict` | the copies of the record differ, in some hour: no version is restored, an acknowledged conflict included; investigate the conflict as `ListPacks` reports it |
+| `not-restorable` | `failed_precondition` | an annotation, an unobserved or unmasked record, a pack without encryption, a pack naming another encryption key id than its capture's configuration, or a record that does not authenticate; the last two mean the stored pack is not what was written: investigate the store |
+| `key-refused` | `failed_precondition` | the key the request needs is refused: `key-binding-mismatch` or `key-refused` above |
+| `unavailable` | `unavailable` | the key provider, the catalog or a copy's object could not be read: the client retries; a copy that stays unreadable is the store's |
+| `audit-failed` | `internal` | the audit row could not be written, so nothing was returned: the catalog's write path |
+| `rate-limited` (`Digest`) | `resource_exhausted` | the principal's inputs a second passed `api.digest_rate`, or the request is larger than the bucket left: the scorer backs off; raise the limit in the configuration if the load is expected |
+| `invalid` | `invalid_argument` | a malformed request, or a `Digest` input whose kind and domain are no rule of the key id's configurations: the error names the input's index |
