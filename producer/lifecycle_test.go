@@ -132,6 +132,35 @@ func TestRotate(t *testing.T) {
 	}
 }
 
+// A sampling rule is a descriptor value: a changed rule rotates the capture, and an equal one, its defaults filled in, does not.
+func TestRotateOnASamplingRuleChange(t *testing.T) {
+	t.Parallel()
+	p := newTestProducer(t, Tunables{})
+	if err := p.Begin(t.Context(), testDescriptor()); err != nil {
+		t.Fatal(err)
+	}
+	steps := []struct {
+		rule    *SamplingRule
+		rotates bool
+	}{
+		{&SamplingRule{}, true},
+		{&SamplingRule{KeepEveryN: 60, KeepInterval: time.Minute}, false},
+		{&SamplingRule{KeepEveryN: 30}, true},
+		{nil, true},
+	}
+	for _, s := range steps {
+		before := p.rec.Current()
+		d := testDescriptor()
+		d.Thinning = s.rule
+		if err := p.Rotate(t.Context(), d); err != nil {
+			t.Fatalf("Rotate(%+v): %v", s.rule, err)
+		}
+		if rotated := p.rec.Current() != before; rotated != s.rotates {
+			t.Errorf("Rotate(%+v) rotated = %v, want %v", s.rule, rotated, s.rotates)
+		}
+	}
+}
+
 func TestEnd(t *testing.T) {
 	t.Parallel()
 	p := newTestProducer(t, Tunables{})

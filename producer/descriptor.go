@@ -49,8 +49,61 @@ type CaptureDescriptor struct {
 	EquipmentModel *string
 	// EquipmentSWRev is the equipment software revision, only if configured (equipment_sw_rev).
 	EquipmentSWRev *string
-	// Thinning declares the streams and functions the capture thins (docs/specs/tracekeep/producer.md §4.6).
-	Thinning []tracepack.Thinning
+	// Thinning is the capture's sampling rule; nil, the capture thins nothing and declares nothing.
+	// The SDK declares S1F3 and S1F4 from it (docs/specs/tracekeep/producer.md §4.6),
+	// so a changed rule rotates the capture.
+	Thinning *SamplingRule
+}
+
+// Defaults of a SamplingRule's zero fields (producer.md §4.6 *Sampling rule*).
+const (
+	DefaultKeepEveryN   = 60
+	DefaultKeepInterval = 60 * time.Second
+)
+
+// SamplingRule decides which interval polls keep their bodies:
+// a marked S1F3 keeps them when count mod KeepEveryN == 0 or now − last_kept ≥ KeepInterval,
+// both counted over the capture current at its registration, so each capture's first poll keeps them.
+type SamplingRule struct {
+	// KeepEveryN is N; 0 takes DefaultKeepEveryN.
+	KeepEveryN int
+	// KeepInterval is T, a whole number of milliseconds; 0 takes DefaultKeepInterval.
+	KeepInterval time.Duration
+}
+
+// filled returns r with its defaults filled in.
+func (r SamplingRule) filled() SamplingRule {
+	if r.KeepEveryN == 0 {
+		r.KeepEveryN = DefaultKeepEveryN
+	}
+	if r.KeepInterval == 0 {
+		r.KeepInterval = DefaultKeepInterval
+	}
+
+	return r
+}
+
+func (r *SamplingRule) validate() error {
+	if r.KeepEveryN < 0 {
+		return fmt.Errorf("%w: thinning keep_every_n %d is negative", ErrInvalidDescriptor, r.KeepEveryN)
+	}
+	if r.KeepInterval < 0 || r.KeepInterval%time.Millisecond != 0 {
+		return fmt.Errorf("%w: thinning keep_interval %s is not a whole, non-negative number of milliseconds", ErrInvalidDescriptor, r.KeepInterval)
+	}
+
+	return nil
+}
+
+// thinningEntries declares what r thins, under the source convention tracekeep's catalog parses.
+func thinningEntries(r *SamplingRule) []tracepack.Thinning {
+	if r == nil {
+		return nil
+	}
+	f := r.filled()
+	src := fmt.Sprintf("fdc interval polling by request origin; keep_every_n=%d; keep_interval_ms=%d; abnormal=kept",
+		f.KeepEveryN, f.KeepInterval.Milliseconds())
+
+	return []tracepack.Thinning{{Stream: 1, Function: 3, Source: src}, {Stream: 1, Function: 4, Source: src}}
 }
 
 func writeLenPrefixed(h hash.Hash, s string) {
@@ -91,7 +144,7 @@ func encodeStartDescriptor(d *CaptureDescriptor, previous *tracepack.UUID, origi
 		HostSoftware:         d.HostSoftware,
 		EquipmentModel:       d.EquipmentModel,
 		EquipmentSWRev:       d.EquipmentSWRev,
-		Thinning:             d.Thinning,
+		Thinning:             thinningEntries(d.Thinning),
 	}
 
 	return tracepack.EncodeDescriptor(m)
@@ -112,7 +165,12 @@ func (d *CaptureDescriptor) Validate() error {
 	if d.EquipmentConnectMode != nil && *d.EquipmentConnectMode > tracepack.SocketRoleActive {
 		return fmt.Errorf("%w: equipment_connect_mode %d is not a socket role", ErrInvalidDescriptor, *d.EquipmentConnectMode)
 	}
-	// The descriptor codec checks the remaining values, thinning and UTF-8 included, as a consumer's decoder will.
+	if d.Thinning != nil {
+		if err := d.Thinning.validate(); err != nil {
+			return err
+		}
+	}
+	// The descriptor codec checks the remaining values, UTF-8 included, as a consumer's decoder will.
 	if _, err := encodeStartDescriptor(d, nil, time.Unix(0, 0), tracepack.DefaultClockStepTolerance, "validate"); err != nil {
 		return fmt.Errorf("%w: %w", ErrInvalidDescriptor, err)
 	}
