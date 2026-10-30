@@ -34,7 +34,7 @@ type Server struct {
 	// Store serves the downloads the API serves itself and the packs Restore reads; Downloads issues every download URL.
 	Store     store.ObjectStore
 	Downloads Downloads
-	// Keys resolves the keys Restore and Digest use; nil serves neither.
+	// Keys resolves the keys Restore and Digest use; it must be set before either is served.
 	Keys Keys
 	// DigestLimit is Digest's rate limit; nil refuses every Digest.
 	DigestLimit *DigestLimit
@@ -153,7 +153,7 @@ func refusal(err error) error {
 	return connect.NewError(connect.CodeUnauthenticated, errors.New(e.Reason))
 }
 
-// observe records each handled request's operation, code and duration.
+// observe records each handled request's operation, code and duration, and logs a failure and a refused restore.
 func (s *Server) observe() connect.UnaryInterceptorFunc {
 	return func(next connect.UnaryFunc) connect.UnaryFunc {
 		return func(ctx context.Context, req connect.AnyRequest) (connect.AnyResponse, error) {
@@ -161,8 +161,16 @@ func (s *Server) observe() connect.UnaryInterceptorFunc {
 			resp, err := next(ctx, req)
 			op := req.Spec().Procedure[strings.LastIndex(req.Spec().Procedure, "/")+1:]
 			s.Metrics.Request(op, code(err), time.Since(start))
-			if c := connect.CodeOf(err); err != nil && (c == connect.CodeInternal || c == connect.CodeUnavailable) && s.Log != nil {
+			if err == nil || s.Log == nil {
+				return resp, err
+			}
+			switch c := connect.CodeOf(err); {
+			case c == connect.CodeInternal || c == connect.CodeUnavailable:
 				s.Log.Error("api: request failed", "operation", op, "error", err)
+			case op == auth.OpRestore:
+				// A refused restore is logged too, its error naming the request and the reason (masking-keys.md §9).
+				s.Log.Warn("api: request refused", "operation", op, "error", err)
+			default: // another operation's refusal is only counted
 			}
 
 			return resp, err

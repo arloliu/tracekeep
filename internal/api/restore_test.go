@@ -400,6 +400,7 @@ func TestRestoreRefusals(t *testing.T) {
 	}
 
 	var errs []string
+	logged := 0
 	refused := func(name string, code connect.Code, err error) {
 		t.Helper()
 		if connect.CodeOf(err) != code {
@@ -408,6 +409,13 @@ func TestRestoreRefusals(t *testing.T) {
 		if err != nil {
 			errs = append(errs, err.Error())
 		}
+		// Each refusal the handler answers leaves one line naming the operation and the reason; auth logs its own.
+		line := m.logs.String()[logged:]
+		if code != connect.CodePermissionDenied &&
+			(strings.Count(line, "\n") != 1 || !strings.Contains(line, "operation=Restore") || !strings.Contains(line, code.String())) {
+			t.Errorf("%s logged %q, want one line naming Restore and %v", name, line, code)
+		}
+		logged = m.logs.Len()
 	}
 	_, err := m.cl.Restore(t.Context(), withToken(&tkv1.RestoreRequest{CaptureId: "nope", Seq: 1, Hour: hourTS(hour)}, restorerToken))
 	refused("a capture id that does not parse", connect.CodeInvalidArgument, err)
