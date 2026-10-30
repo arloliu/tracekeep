@@ -46,7 +46,7 @@ gRPC for Go clients, JSON over HTTP for the browser, one definition.
 | `QueryRecords(selector, predicates)` | streamed masked records, via `MergeIterate`; the predicates below, plus capture, seq range and epoch |
 | `FindTransaction(capture, seq, hour)` | tracepack's lookup |
 | `Export(filter, kind)` | an asynchronous job producing a **bundle** (tar) under `exports/`, fetched by a download URL (*Downloads* below): one JSONL file **per source pack**, `tracepack-jsonl/1`, `/2` or `/3` by that pack's `format_minor` 0, 1 or 2 (G5-233, G5-270), plus `manifest.json` naming packs, captures, hours, each pack's incompleteness from its read, conflicts, and the filter. `kind=canonical` uses the canonical exporter unfiltered; `kind=filtered` writes the same record schema with the filter applied and is declared non-canonical in the manifest. A filtered `.tpk` is an extract, a v1.0 non-goal, and is not offered. A cancelled or failed job deletes its partial objects; a completed bundle is kept for its retention (default 24 h) and then deleted by the compactor (T-33) |
-| `Restore(capture, seq, hour)`, `Digest` | §9; `Restore` returns a record only when every non-excluded copy of `(capture, seq)` is equal, in any hour, the hour naming one that holds a copy (otherwise not found); differing versions are refused as a conflict, an acknowledged one included, and none is selectable (T-42) |
+| `Restore(capture, seq, hour)`, `Digest(digest_key_id, inputs)` | `masking-keys.md` §9; `Restore` returns a record only when every non-excluded copy of `(capture, seq)` is equal, in any hour, the hour naming one that holds a copy (otherwise not found); differing versions are refused as a conflict, an acknowledged one included, and none is selectable (T-42); `Digest` digests a list of inputs under one digest key id (T-44) |
 | admin | policies, processing configurations, key ids (no material), retention, thinning status, holds if LS-13 (a) is chosen; until these are typed operations, §10.4's `policy`, `config` and `key` commands serve them through `Admin(words)` |
 | `Admin(words)` | the `tracekeep admin` command those words name, run by the `api` process, its JSON result returned: the transport of §10.4's commands while that process holds a SQLite catalog |
 
@@ -96,10 +96,16 @@ A refused request carries a Connect code:
 |---|---|
 | `unauthenticated` | no credential, or one auth refuses (§10.2 *Failures*, every reason but `forbidden`) |
 | `permission_denied` | `forbidden`: no role of the principal admits the operation |
-| `invalid_argument` | a selector, a cursor or a pack id that does not parse or breaks the bounds above, or a `ListScopeChanges` limit above 10,000 |
-| `not_found` | a `PackURL` of a pack the catalog does not know, an evicted one included: eviction deletes its hour's rows (`compactor.md` §8.3) |
-| `failed_precondition` | `pack-superseded`, with the error detail `tracekeep.v1.PackSuperseded` naming the pack |
-| `unavailable` | a `PackURL` before the compactor's first retention record, when no deadline exists (`compactor.md` §8.3), or any read the catalog fails, which the client retries |
+| `invalid_argument` | a selector, a cursor or a pack id that does not parse or breaks the bounds above, a `ListScopeChanges` limit above 10,000, a request that does not decode, a `Restore` hour that is not an hour start, or a `Digest` input its checks refuse (`masking-keys.md` §9), naming the input's index |
+| `not_found` | a `PackURL` of a pack the catalog does not know, an evicted one included: eviction deletes its hour's rows (`compactor.md` §8.3); a `Restore` whose hour holds no copy of the record |
+| `failed_precondition` | `pack-superseded`, with the error detail `tracekeep.v1.PackSuperseded` naming the pack; a `Restore` of differing versions, with the detail `tracekeep.v1.RecordConflict`, or of a record that is not restorable; a key refused (`masking-keys.md` §9 *Failures*) |
+| `unavailable` | a `PackURL` before the compactor's first retention record, when no deadline exists (`compactor.md` §8.3), any read the catalog fails, a key unavailable, or a copy of a record whose object cannot be read, which the client retries |
+| `resource_exhausted` | a `Digest` beyond its principal's rate limit, or a request message above 16 MiB, refused before it is decoded |
+| `internal` | an audit row that could not be written; nothing is returned |
+
+`Restore` answers the original payload with the record's time and kind; `Digest` answers each input's digest in order with the key id.
+Neither original nor digest appears in an error, a log line or an audit row;
+a request that does not decode is refused with one fixed message, which quotes none of its bytes.
 
 Every issued `PackURL` appends an `audit_log` row naming the principal's subject, the capture, the pack and the URL's expiry, never the URL:
 the VE service reads packs that hold ciphertext in place (T-5), one row per URL issued.

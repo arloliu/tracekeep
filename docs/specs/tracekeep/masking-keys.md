@@ -145,7 +145,35 @@ Contract changes go through proposals, which the subject [README.md](README.md) 
   restored originals only in an API response, never in a file, an export or a temporary object.
 - **Restore** (`restorer` role) returns one record's original in the response and writes an `audit_log` row first;
   an export never contains originals.
+  - **The copies of a record** are read from one catalog snapshot, a single read:
+    every pack of the capture whose range holds the seq, in any hour, in any state but `excluded` and `deleted`,
+    a merged input included beside its archive.
+    A pack registered after the snapshot is not seen, and the answer holds as of the snapshot;
+    a pack merged after it stays readable for D (`compactor.md` §8.3);
+    a copy whose object cannot be opened or read refuses the restore as unavailable, and the client retries into a fresh snapshot.
+  - **The hour names where to look**: it is an hour start, and a request whose hour holds no copy is answered not found;
+    the comparison spans every copy of the snapshot, whatever hour is named (T-42).
+  - **Copies are compared whole**: the stored record, header and payload, and the seq's redaction entries in each pack's metadata;
+    equal copies answer once, and differing versions are refused as a conflict, an acknowledged one included, none selectable.
+  - **Not restorable**: an annotation, whose masks keep no original; an unobserved record; a record without masks; a pack whose policy carries no encryption;
+    and a pack whose `encryption_key_id` is not the capture's bound configuration's, since the service trusts no value a pack names.
+    The key is the capture's `EncryptionKey` under the bound configuration's key id,
+    and `redact.Restore` authenticates every entry of the record before any byte of the original leaves it.
+  - **The audit row** is written after the original is restored in memory and before the answer;
+    a failed audit returns nothing.
+    It holds only the actor, the capture, the seq, the hour, the pack and the encryption key id.
+    A refusal writes no row; it is counted by outcome, and its error and log line name the request and the reason, never a byte of the record.
 - **Digest** (`scorer` role, for the VE's protected scorer, V-26):
-  `Digest(digest_key_id, domain, kind, original)` with the three input forms `redact.Digest` defines:
+  `Digest(digest_key_id, inputs)`, each input a `domain`, a `kind` and an `original`, at most 1,000 inputs and 8 MiB of originals a request (T-44),
+  with the three input forms `redact.Digest` defines:
   `item` (the encoded SECS-II item, header included, for a resolved path), `text` (the whole message text, for a whole-text mask), `annotation` (the value bytes);
-  it returns the digest with the key id and domain it used, rate-limited and audited; the scorer never holds the key.
+  it returns each input's digest, in order, with the key id it used; the scorer never holds the key.
+  - **Checks** run before the key is resolved, and one failed input refuses the request whole:
+    the key id is the digest key id of an active or bound configuration,
+    and each input's kind and domain are a rule of that configuration's policy:
+    `item` an item rule's domain, its original exactly one encoded SECS-II item;
+    `text` the domain `message-text`;
+    `annotation` an annotation rule's domain.
+  - **The rate limit** is per principal subject and per replica, a token bucket over inputs (`api.digest_rate`, `api.digest_burst`);
+    a request that would exceed it is refused whole and digests nothing.
+  - **The audit row**, one a request, holds the actor, the key id, the input count and the distinct domains, never an original or a digest.
