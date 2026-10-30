@@ -91,6 +91,8 @@ type Observation struct {
 	// Mapped requires Socket to be in the current capture's socket map already, as a forwarded request's T3 does:
 	// a socket the capture never saw is not numbered, and the observation is dropped as unattributed.
 	Mapped bool
+	// Pending is the forwarded request the wire observer found by the frame's key, for the publisher's thinning; nil for none.
+	Pending *PendingEntry
 }
 
 // Entry is one record in a lane, waiting for the publisher.
@@ -109,6 +111,9 @@ type Entry struct {
 	Drift    int64
 	Payload  []byte
 	Event    Event
+	// Socket is the observation's socket, and Pending the forwarded request its frame's key found (producer.md §4.6).
+	Socket  uint64
+	Pending *PendingEntry
 }
 
 // Counters is a snapshot of what the observers counted; the publisher reports it to Metrics.
@@ -247,7 +252,7 @@ func (r *Recorder) Observe(o *Observation) {
 	e := Entry{
 		Cap: c, Kind: EntryObserved, Seq: a.Seq, Wall: o.Wall, Mono: o.Mono, Epoch: a.Epoch,
 		RecKind: o.Kind, Dir: o.Dir, Fidelity: o.Fidelity, Quality: q,
-		Event: o.Event,
+		Event: o.Event, Socket: o.Socket, Pending: o.Pending,
 	}
 	if n > 0 {
 		e.Payload = append(make([]byte, 0, n), o.Payload...)

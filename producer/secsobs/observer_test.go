@@ -296,6 +296,8 @@ func TestCallbacksAllocateOnlyTheFrameCopy(t *testing.T) {
 	<-r.Reserved()
 	obs := &Observer{rec: r}
 	f := frame(0, 0x01, 0x00)
+	// frame's header is an S1F1 W-bit primary of session 1 and System Bytes 7: registered, its outbound frame finds its entry.
+	r.Pending.Register(1, 7, "c")
 
 	tests := []struct {
 		name   string
@@ -303,6 +305,9 @@ func TestCallbacksAllocateOnlyTheFrameCopy(t *testing.T) {
 		allocs float64
 	}{
 		{"wire", func() { obs.wire(hsms.WireEvent{Direction: hsms.WireInbound, Socket: 3, At: time.Now(), Frame: f}) }, 1},
+		{"wire attaching a forwarded request", func() {
+			obs.wire(hsms.WireEvent{Direction: hsms.WireOutbound, Socket: 3, At: time.Now(), Frame: f})
+		}, 1},
 		{"socket", func() {
 			obs.socket(hsms.SocketEvent{Kind: hsms.SocketClosed, Socket: 3, At: time.Now(), Cause: hsms.CauseIOError, Err: io.EOF})
 		}, 0},

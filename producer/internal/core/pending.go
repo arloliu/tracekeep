@@ -96,6 +96,8 @@ type PendingCounters struct {
 	Ambiguous uint64
 	// HeaderMismatches counts the entries whose outbound frame named another stream or function than the request.
 	HeaderMismatches uint64
+	// Thinned counts the records the publisher zero-filled.
+	Thinned uint64
 	// Capped reports that the ambiguity set reached its cap: keys registered since are not remembered past their entry.
 	Capped bool
 	// TimeoutsDropped counts the forwarded timeouts that recorded no T3, by reason.
@@ -116,9 +118,10 @@ type PendingTable struct {
 
 	mu sync.Mutex
 	// Guarded by mu.
-	seen   map[uint64]struct{} // every key ever registered, up to maxKeys
-	live   map[*PendingEntry]struct{}
-	capped bool
+	seen map[uint64]struct{} // every key ever registered, up to maxKeys
+	live map[*PendingEntry]struct{}
+	// capped is set once the ambiguity set is full; the publisher reads it at dequeue.
+	capped atomic.Bool
 
 	// socket is the connection's newest socket, which a registration compares its send's socket against.
 	socket atomic.Uint64
@@ -126,12 +129,15 @@ type PendingTable struct {
 	// the recorder sets both.
 	emit    func(e *PendingEntry, effective time.Duration)
 	current func() *Capture
-	// bindHooks, set only by tests, hold Bind just before and just after it records the socket.
+	// bindHooks, set only by tests, hold Bind just before and just after it records the socket;
+	// thinHooks holds Thin between its read of the binding and its read of the marks.
 	bindHooks [2]func()
+	thinHooks func()
 
 	ignored          [NumIgnoredReasons]atomic.Uint64
 	ambiguous        atomic.Uint64
 	headerMismatches atomic.Uint64
+	thinned          atomic.Uint64
 	timeoutsDropped  [NumTimeoutDropReasons]atomic.Uint64
 }
 
@@ -161,6 +167,9 @@ type PendingEntry struct {
 	thin bool
 
 	ambiguous atomic.Bool
+	// deadline mirrors expires for the publisher, which reads it without the lock:
+	// a record observed at or past it is no reply to the entry, whether or not a sweep has expired it yet.
+	deadline atomic.Int64
 	// mismatch is set when the outbound frame named another stream or function than the request.
 	mismatch atomic.Bool
 	// regSocket is the connection's newest socket at registration;
@@ -221,6 +230,7 @@ func (t *PendingTable) RegisterRequest(r Request) *PendingEntry {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	e.expires = t.now() + t.unawaited
+	e.deadline.Store(e.expires)
 	reused := false
 	if _, ok := t.seen[k]; ok {
 		reused = true
@@ -228,7 +238,7 @@ func (t *PendingTable) RegisterRequest(r Request) *PendingEntry {
 		t.seen[k] = struct{}{}
 	} else {
 		// The set cannot remember the key, so a later reuse of it would go unseen: no T3 is attributed to it.
-		t.capped = true
+		t.capped.Store(true)
 		e.ambiguous.Store(true)
 	}
 	if old, ok := t.latest.Load(k); ok {
@@ -289,6 +299,12 @@ func (t *PendingTable) Bind(sessionID uint16, systemBytes uint32, stream, functi
 	t.bindHook(1)
 }
 
+func (t *PendingTable) thinHook() {
+	if t.thinHooks != nil {
+		t.thinHooks()
+	}
+}
+
 func (t *PendingTable) bindHook(i int) {
 	if h := t.bindHooks[i]; h != nil {
 		h()
@@ -311,13 +327,14 @@ func (t *PendingTable) Sweep() {
 func (t *PendingTable) Counters() PendingCounters {
 	var c PendingCounters
 	t.mu.Lock()
-	c.Live, c.Capped = len(t.live), t.capped
+	c.Live, c.Capped = len(t.live), t.capped.Load()
 	t.mu.Unlock()
 	for i := range t.ignored {
 		c.Ignored[i] = t.ignored[i].Load()
 	}
 	c.Ambiguous = t.ambiguous.Load()
 	c.HeaderMismatches = t.headerMismatches.Load()
+	c.Thinned = t.thinned.Load()
 	for i := range t.timeoutsDropped {
 		c.TimeoutsDropped[i] = t.timeoutsDropped[i].Load()
 	}
@@ -349,6 +366,7 @@ func (e *PendingEntry) Awaiting(timeout time.Duration) {
 	}
 	e.awaited = true
 	e.expires = now + int64(timeout) + t.grace
+	e.deadline.Store(e.expires)
 }
 
 // Replied reports a reply.

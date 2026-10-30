@@ -618,6 +618,9 @@ func (pb *publisher) add(e core.Entry) {
 		st = &capState{cap: e.Cap, subject: e.Cap.Subject}
 		pb.caps[e.Cap] = st
 	}
+	if e.Pending != nil {
+		pb.p.rec.Pending.Thin(&e)
+	}
 	pd := &pending{e: e, epoch: pb.epoch}
 	switch {
 	case st.lost && e.Seq >= st.lostFrom:

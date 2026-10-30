@@ -127,13 +127,32 @@ func (o *Observer) wire(ev hsms.WireEvent) {
 	case hsms.WireInbound:
 		obs.Dir = tracepack.DirEquipmentToHost
 		o.adopted(&ev)
+		obs.Pending = o.forwarded(ev.Frame, false)
 	case hsms.WireOutbound:
 		o.adopted(&ev)
 		obs.Dir = tracepack.DirHostToEquipment
 		o.bind(ev.Frame, ev.Socket)
+		obs.Pending = o.forwarded(ev.Frame, true)
 	default:
 	}
 	o.rec.Observe(&obs)
+}
+
+// forwarded finds the forwarded request a data frame's key names, for the publisher's thinning (producer.md §4.6):
+// an outbound W-bit primary, or an inbound reply; a map read, no body inspection.
+func (o *Observer) forwarded(f []byte, outbound bool) *core.PendingEntry {
+	if len(f) < frameHeaderEnd || f[sTypeOff] != 0 {
+		return nil
+	}
+	if outbound {
+		if f[wBitOff]&0x80 == 0 || f[functionOff]&1 == 0 {
+			return nil
+		}
+	} else if f[functionOff] == 0 || f[functionOff]&1 != 0 {
+		return nil
+	}
+
+	return o.rec.Pending.Lookup(binary.BigEndian.Uint16(f[sessionOff:]), binary.BigEndian.Uint32(f[systemBytesOff:]))
 }
 
 // adopted records the socket of a frame a generation owns as the connection's newest;
