@@ -123,7 +123,7 @@ func TestThinnedRecordsThroughMaskingAndTheMerge(t *testing.T) {
 		}
 		checkThinnedStorage(t, p, sent)
 
-		restoreThinned(t, served(t, p, k), capture, sent, thinned, kept)
+		restoreThinned(t, served(t, p, k, slog.New(slog.DiscardHandler)), capture, sent, thinned, kept)
 
 		listed, err := c.ListCaptures(t.Context(), catalog.Selector{ToolID: "SIM-TOOL", Capture: &capture, From: last - int64(time.Hour), To: last + int64(time.Hour)}, time.Minute)
 		if err != nil || len(listed) != 1 || len(listed[0].Thinning) != 2 {

@@ -29,12 +29,12 @@ const (
 	scorerToken   = "a-static-token-of-a-scorer-000000001"
 )
 
-// served is the machine API over p's catalog and store, with p's keys, for a restorer and a scorer.
-func served(t *testing.T, p *pipeline, k api.Keys) tracekeepv1connect.MachineServiceClient {
+// served is the machine API over p's catalog and store, with p's keys, for a restorer and a scorer, logging to log; opts configure its client.
+func served(t *testing.T, p *pipeline, k api.Keys, log *slog.Logger, opts ...connect.ClientOption) tracekeepv1connect.MachineServiceClient {
 	t.Helper()
 	s := &api.Server{
 		Catalog: p.cat, Store: p.st, Keys: k, DigestLimit: &api.DigestLimit{Rate: 1e6, Burst: 1 << 20},
-		Log: slog.New(slog.DiscardHandler),
+		Log: log,
 		Auth: auth.NewAuthenticator(auth.AuthenticatorConfig{StaticEnabled: true, Static: []auth.StaticToken{
 			{Token: restorerToken, Subject: "restorer", Roles: []string{auth.RoleRestorer}},
 			{Token: scorerToken, Subject: "scorer", Roles: []string{auth.RoleScorer}},
@@ -43,7 +43,7 @@ func served(t *testing.T, p *pipeline, k api.Keys) tracekeepv1connect.MachineSer
 	hs := httptest.NewServer(s.Handler())
 	t.Cleanup(hs.Close)
 
-	return tracekeepv1connect.NewMachineServiceClient(hs.Client(), hs.URL)
+	return tracekeepv1connect.NewMachineServiceClient(hs.Client(), hs.URL, opts...)
 }
 
 func bearer[T any](msg *T, token string) *connect.Request[T] {
@@ -146,7 +146,7 @@ func TestRestoreRoundTripsThroughIngest(t *testing.T) {
 		if cp, err := c.Capture(t.Context(), capture); err != nil || p.x.Configs[cp.ConfigID].Policy == nil {
 			t.Fatalf("the capture = %+v, %v; want it bound to the masking configuration", cp, err)
 		}
-		cl := served(t, p, k)
+		cl := served(t, p, k, slog.New(slog.DiscardHandler))
 		restoreAll(t, cl, capture, carriers, "the segments")
 
 		digestEveryEntry(t, cl, p, carriers)
