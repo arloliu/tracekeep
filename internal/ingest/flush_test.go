@@ -128,7 +128,7 @@ func verify(t *testing.T, st store.ObjectStore, key string) {
 	}
 }
 
-func storedKeys(t *testing.T, st store.ObjectStore) []string {
+func storedKeys(t testing.TB, st store.ObjectStore) []string {
 	t.Helper()
 	var ks []string
 	if err := st.List(t.Context(), "", func(i store.ObjectInfo) error { ks = append(ks, i.Key); return nil }); err != nil {
