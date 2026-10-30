@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"reflect"
 	"slices"
 	"sync"
 	"testing"
@@ -181,28 +182,34 @@ func maskedTraffic(t *testing.T, w *rotationWorld, capture tracepack.UUID, claim
 	return msgs
 }
 
-// rotations change the keys or the policy between two deliveries of one record (phase 3.6's gate case, owned by 3.3).
-var rotations = map[string]func(t *testing.T, w *rotationWorld){
-	"none": func(*testing.T, *rotationWorld) {},
-	"digest key": func(t *testing.T, w *rotationWorld) {
+// rotations change the keys or the policy between two deliveries of one record (phase 3.6's gate case, owned by 3.3),
+// each returning the configuration it staged and activated, or 0 when it staged none.
+var rotations = map[string]func(t *testing.T, w *rotationWorld) int64{
+	"none": func(*testing.T, *rotationWorld) int64 { return 0 },
+	"digest key": func(t *testing.T, w *rotationWorld) int64 {
 		w.declare("d-2", catalog.KindDigest)
-		w.stage(t, new(policy.Baseline()), "d-2", "m-1")
+		return w.stage(t, new(policy.Baseline()), "d-2", "m-1")
 	},
-	"master key": func(t *testing.T, w *rotationWorld) {
+	"master key": func(t *testing.T, w *rotationWorld) int64 {
 		w.declare("m-2", catalog.KindMaster)
-		w.stage(t, new(policy.Baseline()), "d-1", "m-2")
+		return w.stage(t, new(policy.Baseline()), "d-1", "m-2")
 	},
-	"provider version": func(_ *testing.T, w *rotationWorld) {
+	"provider version": func(_ *testing.T, w *rotationWorld) int64 {
 		w.prov.put("d-1")
 		w.prov.put("m-1")
+		return 0
 	},
-	"policy": func(t *testing.T, w *rotationWorld) {
+	"policy": func(t *testing.T, w *rotationWorld) int64 {
 		p := policy.Baseline()
 		p.Version = 2
-		p.ItemRules = append(slices.Clone(p.ItemRules), policy.ItemRule{Stream: 2, Function: 41, Path: "2/*/2", Domain: "cpval"})
-		w.stage(t, &p, "d-1", "m-1")
+		p.ItemRules = append(slices.Clone(p.ItemRules), newRule)
+		return w.stage(t, &p, "d-1", "m-1")
 	},
 }
+
+// newRule is the policy rotation's rule: a second path on the S7F3 carrier, its identifier,
+// so a redelivery bound to the new policy would write one entry more than the first delivery.
+var newRule = policy.ItemRule{Stream: 7, Function: 3, Path: "1", Domain: "ppbody"}
 
 // capturingPut fails every put, as a crash before the object exists would, after keeping the bytes it was given:
 // the first attempt's serialization, which its retry must reproduce.
@@ -221,10 +228,18 @@ func (c capturingPut) Put(_ context.Context, _ string, r io.ReadSeeker, _ int64)
 	return errCrash
 }
 
-// crashes are the first process's flush ending at each crash point of ingest.md §6.3, each asserting the state it leaves;
-// a crash before the put returns the bytes its put was given, which no object holds.
-var crashes = map[string]func(t *testing.T, w *rotationWorld, p *pipeline, hs []*msg) (attempted [][]byte){
-	"before the put": func(t *testing.T, w *rotationWorld, p *pipeline, hs []*msg) [][]byte {
+// crash is the first process's flush ending at a crash point of ingest.md §6.3.
+type crash struct {
+	// stop ends the flush and asserts the state it leaves:
+	// the bytes a put was given that no object holds, and how many of the first messages it acknowledged, which are not redelivered.
+	stop func(t *testing.T, w *rotationWorld, p *pipeline, hs []*msg) (attempted [][]byte, acked int)
+	// after, when set, runs once the redelivery is flushed.
+	after func(t *testing.T, w *rotationWorld)
+}
+
+// crashes are the first process's flush ending at each crash point of ingest.md §6.3.
+var crashes = map[string]crash{
+	"before the put": {stop: func(t *testing.T, w *rotationWorld, p *pipeline, hs []*msg) ([][]byte, int) {
 		var got [][]byte
 		p.f.Store = capturingPut{ObjectStore: w.st, got: &got}
 		if _, err := p.flushOne(t); !errors.Is(err, errCrash) {
@@ -235,51 +250,42 @@ var crashes = map[string]func(t *testing.T, w *rotationWorld, p *pipeline, hs []
 		}
 		untouched(t, hs)
 
-		return got
+		return got, 0
+	}},
+	"after the put, the orphan adopted": {stop: func(t *testing.T, w *rotationWorld, p *pipeline, hs []*msg) ([][]byte, int) {
+		crashAfterPut(t, p, hs)
+		adopt(t, w)
+
+		return nil, 0
+	}},
+	"after the put, the orphan adopted after the redelivery": {
+		stop: func(t *testing.T, _ *rotationWorld, p *pipeline, hs []*msg) ([][]byte, int) {
+			crashAfterPut(t, p, hs)
+			return nil, 0
+		},
+		after: adopt,
 	},
-	"after the put, the orphan adopted": func(t *testing.T, w *rotationWorld, p *pipeline, hs []*msg) [][]byte {
-		p.f.hooks[hookAfterPut] = func() error { return errCrash }
+	"during the acknowledgements": {stop: func(t *testing.T, _ *rotationWorld, p *pipeline, hs []*msg) ([][]byte, int) {
+		// The flush acknowledges in seq order: the start, then the first carrier, a masked record; the crash follows it.
+		acks := 0
+		p.f.hooks[hookAfterAck] = func() error {
+			if acks++; acks == 2 {
+				return errCrash
+			}
+			return nil
+		}
 		if _, err := p.flushOne(t); !errors.Is(err, errCrash) {
 			t.Fatalf("Flush = %v, want the crash", err)
 		}
-		untouched(t, hs)
-		r := &compact.Compactor{Catalog: w.c, Store: w.st, HorizonHour: func() int64 { return HourOf(now) - 24 }, Log: slog.New(slog.DiscardHandler)}
-		lease := w.compactorLease(t)
-		adopted := make([]string, 0, 1)
-		for range 2 { // an orphan is adopted on the second pass that finds it
-			rep, err := r.Orphans(t.Context(), lease)
-			if err != nil {
-				t.Fatal(err)
-			}
-			adopted = append(adopted, rep.Adopted...)
-		}
-		if len(adopted) != 1 {
-			t.Fatalf("adopted %v, want the orphan", adopted)
-		}
-		if cp, err := w.c.Capture(t.Context(), tracepack.UUID{0x71}); err != nil || !cp.HasHighestSeq {
-			t.Fatalf("the capture after the adoption = %+v, %v; want the orphan's records registered", cp, err)
-		}
-
-		return nil
-	},
-	"during the acknowledgements": func(t *testing.T, _ *rotationWorld, p *pipeline, hs []*msg) [][]byte {
-		p.f.hooks[hookAfterAck] = func() error { return errCrash }
-		if _, err := p.flushOne(t); !errors.Is(err, errCrash) {
-			t.Fatalf("Flush = %v, want the crash", err)
-		}
-		acked := 0
-		for _, h := range hs {
-			if len(h.done()) > 0 {
-				acked++
+		for i, h := range hs {
+			if acked := len(h.done()) == 1; acked != (i < 2) {
+				t.Fatalf("message %d: %v; want the start and the first carrier acknowledged, nothing else", i, h.done())
 			}
 		}
-		if acked != 1 {
-			t.Fatalf("%d messages acknowledged before the crash, want the first only", acked)
-		}
 
-		return nil
-	},
-	"after every acknowledgement": func(t *testing.T, _ *rotationWorld, p *pipeline, hs []*msg) [][]byte {
+		return nil, 2
+	}},
+	"after every acknowledgement": {stop: func(t *testing.T, _ *rotationWorld, p *pipeline, hs []*msg) ([][]byte, int) {
 		if _, err := p.flushOne(t); err != nil {
 			t.Fatal(err)
 		}
@@ -289,8 +295,39 @@ var crashes = map[string]func(t *testing.T, w *rotationWorld, p *pipeline, hs []
 			}
 		}
 
-		return nil
-	},
+		return nil, 0
+	}},
+}
+
+// crashAfterPut ends the flush once its segment is put, before the registration: an orphan, its messages untouched.
+func crashAfterPut(t *testing.T, p *pipeline, hs []*msg) {
+	t.Helper()
+	p.f.hooks[hookAfterPut] = func() error { return errCrash }
+	if _, err := p.flushOne(t); !errors.Is(err, errCrash) {
+		t.Fatalf("Flush = %v, want the crash", err)
+	}
+	untouched(t, hs)
+}
+
+// adopt runs the compactor's orphan passes until the one orphan is adopted, its records registered.
+func adopt(t *testing.T, w *rotationWorld) {
+	t.Helper()
+	r := &compact.Compactor{Catalog: w.c, Store: w.st, HorizonHour: func() int64 { return HourOf(now) - 24 }, Log: slog.New(slog.DiscardHandler)}
+	lease := w.compactorLease(t)
+	adopted := make([]string, 0, 1)
+	for range 2 { // an orphan is adopted on the second pass that finds it
+		rep, err := r.Orphans(t.Context(), lease)
+		if err != nil {
+			t.Fatal(err)
+		}
+		adopted = append(adopted, rep.Adopted...)
+	}
+	if len(adopted) != 1 {
+		t.Fatalf("adopted %v, want the orphan", adopted)
+	}
+	if cp, err := w.c.Capture(t.Context(), tracepack.UUID{0x71}); err != nil || !cp.HasHighestSeq {
+		t.Fatalf("the capture after the adoption = %+v, %v; want the orphan's records registered", cp, err)
+	}
 }
 
 // compactorLease is the one compactor's lease, taken at its first use.
@@ -308,18 +345,19 @@ func (w *rotationWorld) compactorLease(t *testing.T) catalog.Lease {
 }
 
 // Rotation between two deliveries of one record: whatever key or policy rotated, at whatever crash point the first process stopped,
-// inline or by claim-check, a fresh process redelivering the records in other batches writes byte-identical records and redaction entries,
-// since the capture keeps its configuration, and the compactor merges every copy without a false conflict.
+// inline or by claim-check, a fresh process redelivering what was not acknowledged, in other batches,
+// writes byte-identical records and redaction entries under the same pack-level redaction policy, classifiers and frame limits,
+// since the capture keeps its configuration;
+// a capture admitted after the rotation is bound to the configuration it staged, and the compactor merges every copy without a false conflict.
 func TestRotationBetweenDeliveries(t *testing.T) {
 	t.Parallel()
 	for rotation, rotate := range rotations {
-		for crash, stop := range crashes {
+		for name, cr := range crashes {
 			for _, claimCheckAll := range []bool{false, true} {
-				name := fmt.Sprintf("%s/%s/claim-check %v", rotation, crash, claimCheckAll)
-				t.Run(name, func(t *testing.T) {
+				t.Run(fmt.Sprintf("%s/%s/claim-check %v", rotation, name, claimCheckAll), func(t *testing.T) {
 					t.Parallel()
 					catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
-						rotationCase(t, c, rotate, stop, claimCheckAll, rotation == "policy")
+						rotationCase(t, c, rotate, cr, claimCheckAll, rotation == "policy")
 					})
 				})
 			}
@@ -327,47 +365,81 @@ func TestRotationBetweenDeliveries(t *testing.T) {
 	}
 }
 
-func rotationCase(t *testing.T, c *catalog.Catalog, rotate func(*testing.T, *rotationWorld), stop func(*testing.T, *rotationWorld, *pipeline, []*msg) [][]byte,
-	claimCheckAll, newPolicy bool,
-) {
+func rotationCase(t *testing.T, c *catalog.Catalog, rotate func(*testing.T, *rotationWorld) int64, cr crash, claimCheckAll, newPolicy bool) {
 	ctx := t.Context()
 	w := newRotationWorld(c)
 	first := w.stage(t, new(policy.Baseline()), "d-1", "m-1")
 	capture := tracepack.UUID{0x71}
 	msgs := maskedTraffic(t, w, capture, claimCheckAll)
 	a := w.process(t)
-	attempted := stop(t, w, a, a.deliver(t, msgs))
-	rotate(t, w)
+	attempted, acked := cr.stop(t, w, a, a.deliver(t, msgs))
+	staged := rotate(t, w)
 	b := w.process(t)
-	// The redelivery comes in other batches: the start and the first records, then the rest.
-	half := len(msgs) / 2
-	b.deliver(t, msgs[:half])
+	// The redelivery carries what was not acknowledged, in other batches: its first records, then the rest.
+	rest := msgs[acked:]
+	half := len(rest) / 2
+	b.deliver(t, rest[:half])
 	b.flushAll(t)
-	b.deliver(t, msgs[half:])
+	b.deliver(t, rest[half:])
 	b.flushAll(t)
+	if cr.after != nil {
+		cr.after(t, w)
+	}
 	if cp, err := c.Capture(ctx, capture); err != nil || cp.ConfigID != first {
 		t.Fatalf("the capture = %+v, %v; want still bound to %d", cp, err, first)
 	}
-	if newPolicy {
-		next := tracepack.UUID{0x72}
-		b.feed(t, inline(t, next, startRecord(t, now), descriptorOf(t, "eqp")))
-		if cp, err := c.Capture(ctx, next); err != nil || cp.ConfigID == first {
-			t.Errorf("a capture admitted after the policy's activation = %+v, %v; want the new configuration", cp, err)
-		}
+	if staged != 0 {
+		newCapture(t, w, b, staged, claimCheckAll, newPolicy)
 	}
-	sameCopies(t, w, capture, attempted)
-	mergeClean(t, w)
+	sameCopies(t, w, capture, attempted, acked)
+	mergeClean(t, w, attempted == nil)
 }
 
-// sameCopies checks that every copy of each of capture's seqs, stored or only attempted, is byte-identical, its redaction entries included,
-// and that each seq has the first delivery's copy and the redelivery's.
-func sameCopies(t *testing.T, w *rotationWorld, capture tracepack.UUID, attempted [][]byte) {
+// newCapture feeds a capture admitted after the rotation its start and the S7F3 carrier:
+// it is bound to the staged configuration, and under a rotated policy its carrier carries the new rule's entry.
+func newCapture(t *testing.T, w *rotationWorld, p *pipeline, staged int64, claimCheckAll, newPolicy bool) {
 	t.Helper()
-	type copyOf struct {
-		rec     tracepack.Record
-		entries []tracepack.RedactionEntry
+	next := tracepack.UUID{0x72}
+	b := policy.Baseline()
+	carriers, err := maskingtest.Carriers(&b)
+	if err != nil {
+		t.Fatal(err)
 	}
-	packs := attempted
+	r := carrierRecord(&carriers[slices.IndexFunc(carriers, func(c maskingtest.Carrier) bool { return c.Name == "S7F3" })], 1)
+	p.feed(t, inline(t, next, startRecord(t, now), descriptorOf(t, "eqp")))
+	if claimCheckAll {
+		p.feed(t, claimCheck(t, w.cl, next, r, nil))
+	} else {
+		p.feed(t, inline(t, next, r, nil))
+	}
+	p.flushAll(t)
+	if cp, err := w.c.Capture(t.Context(), next); err != nil || cp.ConfigID != staged {
+		t.Fatalf("a capture admitted after the rotation = %+v, %v; want bound to %d", cp, err, staged)
+	}
+	if !newPolicy {
+		return
+	}
+	packs := packsOf(t, w, next, nil)
+	if len(packs) != 1 {
+		t.Fatalf("%d packs of the new capture, want one", len(packs))
+	}
+	if es := packs[0].h.Meta.Redaction; !slices.ContainsFunc(es, func(e tracepack.RedactionEntry) bool {
+		return e.Seq == 1 && e.ItemPath != nil && *e.ItemPath == newRule.Path
+	}) {
+		t.Errorf("the new capture's entries %s; want one at the new rule's path", entriesKey(es))
+	}
+}
+
+// pack is one pack read back: its header and its records.
+type pack struct {
+	h    *tracepack.PackHeader
+	recs []tracepack.Record
+}
+
+// packsOf reads every pack of capture: the attempted puts' bytes first, then every stored object.
+func packsOf(t *testing.T, w *rotationWorld, capture tracepack.UUID, attempted [][]byte) []pack {
+	t.Helper()
+	datas := slices.Clone(attempted)
 	for _, k := range storedKeys(t, w.st) {
 		obj, err := w.st.Open(t.Context(), k)
 		if err != nil {
@@ -378,42 +450,76 @@ func sameCopies(t *testing.T, w *rotationWorld, capture tracepack.UUID, attempte
 		if err != nil {
 			t.Fatal(err)
 		}
-		packs = append(packs, b)
+		datas = append(datas, b)
 	}
-	bySeq := map[uint64][]copyOf{}
-	for _, data := range packs {
+	var out []pack
+	for _, data := range datas {
 		rd, err := tracepack.Open(t.Context(), bytes.NewReader(data), int64(len(data)), tracepack.ReaderOptions{})
 		if err != nil {
 			t.Fatal(err)
 		}
-		h := rd.Header()
-		if h.CaptureID != capture {
+		if rd.Header().CaptureID != capture {
 			continue
 		}
-		var recs []tracepack.Record
+		p := pack{h: rd.Header()}
 		collect := func(it *tracepack.Item) error {
-			recs = append(recs, it.Record)
+			p.recs = append(p.recs, it.Record)
 			return nil
 		}
 		if _, err := rd.Iterate(t.Context(), tracepack.Query{Payloads: true}, collect); err != nil {
 			t.Fatal(err)
 		}
-		for _, r := range recs {
+		out = append(out, p)
+	}
+
+	return out
+}
+
+// sameCopies checks that every pack of capture, stored or only attempted, names the first pack's redaction policy, classifiers and frame limits,
+// that every copy of each seq is byte-identical, its redaction entries included and a carrier's never empty,
+// and that each seq has the first delivery's copy and, unless it was among the acked first messages, the redelivery's;
+// the traffic's i-th message holds seq i.
+func sameCopies(t *testing.T, w *rotationWorld, capture tracepack.UUID, attempted [][]byte, acked int) {
+	t.Helper()
+	type copyOf struct {
+		rec     tracepack.Record
+		entries []tracepack.RedactionEntry
+	}
+	packs := packsOf(t, w, capture, attempted)
+	if len(packs) == 0 {
+		t.Fatal("no copy")
+	}
+	m0 := packs[0].h.Meta
+	if m0.RedactionPolicy == nil {
+		t.Fatal("the first pack names no redaction policy")
+	}
+	bySeq := map[uint64][]copyOf{}
+	for _, p := range packs {
+		m := p.h.Meta
+		if !reflect.DeepEqual(m.RedactionPolicy, m0.RedactionPolicy) || !slices.Equal(m.Classifiers, m0.Classifiers) || !slices.Equal(m.MaxFrameLens, m0.MaxFrameLens) {
+			t.Errorf("pack %v: redaction policy %+v, classifiers %v, frame limits %v; want the first pack's %+v, %v, %v",
+				p.h.PackID, m.RedactionPolicy, m.Classifiers, m.MaxFrameLens, m0.RedactionPolicy, m0.Classifiers, m0.MaxFrameLens)
+		}
+		for _, r := range p.recs {
 			var es []tracepack.RedactionEntry
-			for _, e := range h.Meta.Redaction {
+			for _, e := range m.Redaction {
 				if e.Seq == r.Seq {
 					es = append(es, e)
 				}
 			}
+			if r.Seq >= 1 && len(es) == 0 {
+				t.Errorf("pack %v seq %d: no redaction entry, want the carrier masked", p.h.PackID, r.Seq)
+			}
 			bySeq[r.Seq] = append(bySeq[r.Seq], copyOf{r, es})
 		}
 	}
-	if len(bySeq) == 0 {
-		t.Fatal("no copy")
-	}
 	for seq, cs := range bySeq {
-		if len(cs) < 2 {
-			t.Errorf("seq %d: %d copies, want the first delivery's and the redelivery's", seq, len(cs))
+		want := 2
+		if seq < uint64(acked) { //nolint:gosec // a message count
+			want = 1
+		}
+		if len(cs) != want {
+			t.Errorf("seq %d: %d copies, want %d: the first delivery's, and the redelivery's unless acknowledged first", seq, len(cs), want)
 		}
 		for _, c := range cs[1:] {
 			if !sameRecord(&c.rec, &cs[0].rec) || !bytes.Equal(c.rec.Payload, cs[0].rec.Payload) {
@@ -426,8 +532,9 @@ func sameCopies(t *testing.T, w *rotationWorld, capture tracepack.UUID, attempte
 	}
 }
 
-// mergeClean runs the compactor's conflict and merge passes once the hour is quiet: no conflict, and every scope merged.
-func mergeClean(t *testing.T, w *rotationWorld) {
+// mergeClean runs the compactor's conflict and merge passes once the hour is quiet: no conflict, and every scope merged;
+// when the first delivery stored a copy, the redelivery's copies are suspects the conflict pass clears.
+func mergeClean(t *testing.T, w *rotationWorld, stored bool) {
 	t.Helper()
 	r := &compact.Compactor{
 		Catalog: w.c, Store: w.st, HorizonHour: func() int64 { return HourOf(now) - 24 }, Log: slog.New(slog.DiscardHandler),
@@ -435,7 +542,7 @@ func mergeClean(t *testing.T, w *rotationWorld) {
 		Now: func() time.Time { return time.Unix(0, now).Add(3 * time.Hour) },
 	}
 	lease := w.compactorLease(t)
-	if rep, err := r.Conflicts(t.Context(), lease); err != nil || rep.Confirmed+rep.Failed+rep.Changed != 0 {
+	if rep, err := r.Conflicts(t.Context(), lease); err != nil || rep.Confirmed+rep.Failed+rep.Changed != 0 || stored && rep.Cleared == 0 {
 		t.Fatalf("Conflicts = %+v, %v; want every suspect cleared", rep, err)
 	}
 	rep, err := r.Merges(t.Context(), lease)
