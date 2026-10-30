@@ -21,6 +21,10 @@ service MachineService {
   rpc ListScopeChanges(ListScopeChangesRequest) returns (ListScopeChangesResponse);
   // PackURL answers a download URL that expires before the pack can be deleted, or refuses with PackSuperseded.
   rpc PackURL(PackURLRequest) returns (PackURLResponse);
+  // Restore answers one record's original when every copy of it is equal, or refuses with RecordConflict (masking-keys.md §9).
+  rpc Restore(RestoreRequest) returns (RestoreResponse);
+  // Digest answers the digest of each input under one digest key id (masking-keys.md §9, T-44).
+  rpc Digest(DigestRequest) returns (DigestResponse);
 }
 
 // Selector names the connections a read wants (api.md §10.1 *Selector*).
@@ -258,4 +262,44 @@ message PackURLResponse {
 // the pack's deadline is too near, or it is deleted; the client re-lists, and a merged input's archive is listed in its place.
 message PackSuperseded {
   string pack_id = 1;
+}
+
+message RestoreRequest {
+  string capture_id = 1;
+  uint64 seq = 2;
+  // hour is an hour start that holds a copy of the record; the copies of every hour are compared.
+  google.protobuf.Timestamp hour = 3;
+}
+
+message RestoreResponse {
+  // payload is the record's original payload.
+  bytes payload = 1;
+  google.protobuf.Timestamp time = 2;
+  // kind is the record's kind, data for every record a restore answers.
+  string kind = 3;
+}
+
+// RecordConflict is the detail of a Restore refused as failed_precondition because copies of the record differ.
+message RecordConflict {
+  string capture_id = 1;
+  uint64 seq = 2;
+}
+
+message DigestRequest {
+  string digest_key_id = 1;
+  // inputs are at most 1,000, their originals at most 8 MiB together.
+  repeated DigestInput inputs = 2;
+}
+
+// DigestInput is one original to digest: kind is item, text or annotation, and domain a rule's domain of that kind.
+message DigestInput {
+  string domain = 1;
+  string kind = 2;
+  bytes original = 3;
+}
+
+message DigestResponse {
+  string digest_key_id = 1;
+  // digests are the inputs' digests, in order.
+  repeated bytes digests = 2;
 }
