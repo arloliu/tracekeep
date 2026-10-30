@@ -39,7 +39,7 @@ gRPC for Go clients, JSON over HTTP for the browser, one definition.
 | Operation | Answers |
 |---|---|
 | `ListDevices(tool, from, to)` | per device: name, `equipment_endpoint`, `device_id`, how many captures are open, whether any captures overlap (§7.3 *Overlap*), the last record time, whether the window holds a gap |
-| `ListCaptures(selector)` | captures with state, device, `recorder_instance_id`, `previous_capture_id`, unregistered intervals and the `overlap` flag (§7.3), thinning parameters, processing configuration ids |
+| `ListCaptures(selector)` | captures with state, device, `recorder_instance_id`, `previous_capture_id`, unregistered intervals and the `overlap` flag (§7.3), thinning parameters (each entry's stream, function and `source`, with `keep_every_n` and `keep_interval_ms` when its `source` parses as `producer.md` §4.6's convention, T-47), processing configuration ids |
 | `ListPacks(selector)` | per hour and scope: state, revision, packs with their ranges, gaps with time intervals, deferred seqs, declared losses with their action ids, crash gaps, conflicts, unknown tail, `no-data` hours (§7.3) — LS-10 |
 | `ListScopeChanges(after seq, selector)` | `scope_events` (`created`, `settled`, `reopened`, `conflict`, `terminated`, `excluded`, `unmergeable`) after a cursor, paginated, with the epoch — LS-11; one global cursor, returning only the selected tool's and devices' events |
 | `PackURL(pack_id)` | a download URL (expiry clamped to the object's deadline, or `pack-superseded`, *Downloads* below) so the VE reads packs with tracepack's own reader; this makes the VE service a privileged reader of packs that hold ciphertext in place (§13) |

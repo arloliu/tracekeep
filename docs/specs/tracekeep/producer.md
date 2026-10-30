@@ -521,7 +521,7 @@ it also serves §4.4's T3 attribution):
   A `thinning` entry carries only `stream`, `function` and `source` ([FMT §5] nested tags),
   so the SDK writes two entries from the rule, `S1F3` and `S1F4`, with one `source` text in a **key=value convention tracekeep owns**
   (`fdc interval polling by request origin; keep_every_n=60; keep_interval_ms=60000; abnormal=kept`, the defaults' text):
-  the SDK writes it, the catalog parses it at registration, tracepack treats it as text;
+  the SDK writes it, the catalog parses it from the stored descriptor when a capture is read (T-47), tracepack treats it as text;
   the tracepack maintainers advise against a structured nested tag (2026-10-25):
   tracepack never evaluates a sampling rule, each record's `quality.unobserved` is that record's truth,
   and a new nested tag would force every consumer to upgrade first (G5-252) for a field only tracekeep's catalog reads.
