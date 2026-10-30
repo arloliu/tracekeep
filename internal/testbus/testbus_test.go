@@ -1,6 +1,8 @@
 package testbus_test
 
 import (
+	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -100,10 +102,14 @@ func TestStartClusterReplicates(t *testing.T) {
 		t.Fatal(err)
 	}
 	ctx := t.Context()
-	s, err := js.CreateStream(ctx, jetstream.StreamConfig{Name: "R3", Subjects: []string{"r3.>"}, Storage: jetstream.FileStorage, Replicas: 3})
-	if err != nil {
-		t.Fatalf("create stream: %v", err)
-	}
+	cfg := jetstream.StreamConfig{Name: "R3", Subjects: []string{"r3.>"}, Storage: jetstream.FileStorage, Replicas: 3}
+	var s jetstream.Stream
+	testbus.Retry(t, func(ctx context.Context) (err error) {
+		if s, err = js.CreateStream(ctx, cfg); errors.Is(err, jetstream.ErrStreamNameAlreadyInUse) {
+			s, err = js.Stream(ctx, cfg.Name)
+		}
+		return err
+	})
 	testbus.AwaitStream(t, js, s)
 	if _, err := js.Publish(ctx, "r3.one", []byte("x")); err != nil {
 		t.Fatalf("publish: %v", err)

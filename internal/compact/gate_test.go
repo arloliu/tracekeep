@@ -133,7 +133,7 @@ func TestCopiesFromAFollower(t *testing.T) {
 		js := connect(t, strings.Join(urls, ","))
 		cfg := busconfig.ParkedStreamConfig(busconfig.DefaultParkedStream, busconfig.DefaultParkPrefix, 3)
 		var s jetstream.Stream
-		retried(t, func(ctx context.Context) (err error) {
+		testbus.Retry(t, func(ctx context.Context) (err error) {
 			if s, err = js.CreateStream(ctx, cfg); errors.Is(err, jetstream.ErrStreamNameAlreadyInUse) {
 				s, err = js.Stream(ctx, cfg.Name)
 			}
@@ -150,7 +150,7 @@ func TestCopiesFromAFollower(t *testing.T) {
 		}
 		fjs := connect(t, follower)
 		var fs jetstream.Stream
-		retried(t, func(ctx context.Context) (err error) {
+		testbus.Retry(t, func(ctx context.Context) (err error) {
 			fs, err = fjs.Stream(ctx, cfg.Name)
 			return err
 		})
@@ -285,21 +285,4 @@ func watchGets(t *testing.T, url, name string) (api, direct *nats.Subscription) 
 	}
 
 	return api, direct
-}
-
-// retried runs the idempotent step f, each try bounded, again when it timed out.
-// shortcut: a request to a cluster just formed sometimes gets no reply, as the ingest tests found; three tries absorb it.
-func retried(t *testing.T, f func(ctx context.Context) error) {
-	t.Helper()
-	for attempt := 1; ; attempt++ {
-		ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
-		err := f(ctx)
-		cancel()
-		if err == nil {
-			return
-		}
-		if !errors.Is(err, context.DeadlineExceeded) || attempt == 3 {
-			t.Fatal(err)
-		}
-	}
 }

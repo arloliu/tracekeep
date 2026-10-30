@@ -7,6 +7,7 @@ package testbus
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -244,6 +245,24 @@ func AwaitStream(t testing.TB, js jetstream.JetStream, s jetstream.Stream) {
 
 		return errors.As(err, &api) && api.ErrorCode == jetstream.JSErrCodeStreamWrongLastSequence
 	}, nil)
+}
+
+// Retry runs f, an idempotent request, until it succeeds, giving each of three attempts its own 10 s deadline:
+// a request to a cluster just formed may get no reply in time, a new replicated stream's election running or the request lost.
+// An error other than a deadline fails the test at once.
+func Retry(t testing.TB, f func(ctx context.Context) error) {
+	t.Helper()
+	for attempt := 1; ; attempt++ {
+		ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+		err := f(ctx)
+		cancel()
+		if err == nil {
+			return
+		}
+		if !errors.Is(err, context.DeadlineExceeded) || attempt == 3 {
+			t.Fatal(err)
+		}
+	}
 }
 
 // clusterState is each server's routes, meta leadership, known peers and currency,
