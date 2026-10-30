@@ -529,3 +529,11 @@ so an earlier ingest replica can neither register nor renew and an earlier compa
 Every ingest replica and every compactor is upgraded at that migration; the earlier ones fail closed and stop fetching or compacting.
 A content shape earlier parsers reject was considered and not taken: it fences only once a masking configuration exists, and changes the stored content's form.
 
+
+### T-44 — `Digest` takes a list of inputs (2026-10-30)
+
+A scorer comparing one recipe digests many items, and one call and one audit row an item would multiply both by the recipe's size.
+**`Digest` takes one digest key id and a list of inputs**, each a domain, a kind and an original,
+at most 1,000 inputs and 8 MiB of originals a request, answered in order;
+one audit row a request names the count and the distinct domains, and the rate limit counts inputs.
+One input a call, as the earlier signature had it, was considered and not taken.
