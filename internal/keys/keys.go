@@ -235,6 +235,7 @@ func (k *Keys) Accepted(ctx context.Context, kind, keyID string) ([]byte, error)
 }
 
 // Digest returns the digest key of keyID, a declared digest key id: its bound material, unchanged, one key across captures.
+// The slice is the cache's own, shared by every use, which reads it and never changes it.
 func (k *Keys) Digest(ctx context.Context, keyID string) ([]byte, error) {
 	return k.declaredAs(ctx, catalog.KindDigest, keyID)
 }
