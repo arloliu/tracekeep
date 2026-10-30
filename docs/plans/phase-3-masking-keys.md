@@ -1,6 +1,6 @@
 # Phase 3 — masking and keys
 
-Status: active (2026-10-30) — phase 3.3 in progress
+Status: active (2026-10-30) — phase 3.4 in progress
 
 Milestone 3 of the [roadmap](../ROADMAP.md):
 the redaction policy bound to each capture and applied before anything is written,
@@ -77,8 +77,8 @@ typed admin operations for policies and key ids stay phase 4's, the admin comman
 |---|---|---|
 | 3.1 — keys | detailed below: Vault's configuration, credential lifecycle and outage behaviour specified, then the `digest` and `master` purposes, `EncryptionKey`, the `vault` provider, a context-bearing `redact.Keys`, `key verify` and the keys guide | done (#33) |
 | 3.2 — policy and configuration | spec first (`rollouts.md` §6.4, `masking-keys.md` §9, `operations.md` §10.4): the configuration's full identity (classifier, frame limit, policy id, version and content hash, both key ids with their fingerprints, format features) and its reconstruction from stored bytes; policy persistence in the existing `policies` table (an incremental migration only if one is needed); a policy in YAML, compiled once; the default policy as the [SEM §8] baseline transcribed (every row, both paths where a row has two, the `source-text` annotation rules), a test holding it to the table; the refusal to start outside `dev` without the baseline; the `policy` admin commands and `config activate <config_id>`, their words, audit rows and refusals, direct and through `Admin(words)`; a configuration's states (staged: stored and loadable, neither required of members nor bindable; active; retired), membership requiring only active and bound ones, a staged one activated by `config activate` alone, under the membership serialization, and never by a start or by `Executable` loading it; the production-admission guide with the cutover prerequisite of point 8. A masking configuration is staged here, never activated | done (#34) |
-| 3.3 — masking at ingest | spec first (`ingest.md` §6.2, `compactor.md` §8.2, `rollouts.md` §6.4): the cutover of point 8 (activation of a masking configuration waiting for, or ending, the memberships that cannot execute it; admission refusing a configuration without a policy; a fence at the compactor lease that an old binary cannot pass: 3.3's migration moves the lease to a row the old binary does not name, so an old compactor can neither take nor renew it and every lease check of its transactions fails, and no policy-less close of a masked capture becomes durable; the same fence at the membership tables for old ingest replicas, T-43; the guide's prerequisite that every compactor and ingest replica is upgraded at that migration); classify and `Mask` before the `Writer` is built, `PackMeta.Redaction` and the capture's `redaction_policy` set; claim-check bodies masked like inline ones; a key failure deferring every record that needs the key, with its alert; a close's metadata (policy, classifier, frame limit) taken from the capture's bound configuration before its intent is persisted, intents already persisted replaying their bytes; raw delivery identity (receipts, termination evidence) kept on the original bytes; the cutover gate (a capture spanning the cutover, an old leader publishing after its successor, an old compactor holding the lease when the migration lands and an old standby trying to take it after, an upgraded compactor then closing a masked capture with its bound metadata, the migration against a compactor transaction held before and after its lease check, on both engines) | in-progress |
-| 3.4 — `Restore` and `Digest` | spec first (`api.md` §10.1, `masking-keys.md` §9): the record locator of points 3 and 9 (every non-excluded version of the seq compared across hours from one catalog snapshot, record bytes and redaction entries alike; equal copies once; differing versions refused; a candidate that cannot be read refusing the restore; a pack merged, deleted or registered during the lookup); the hour required and naming an hour that holds a copy, otherwise not found, while the conflict check spans every hour whichever hour is named; the whole record authenticated before any original leaves; annotation masks, unobserved records and records without encryption answered as not restorable; the audit row written first, a failed audit returning nothing; `Digest` over §9's three input forms with `kind` checked by the service, its rate limit's scope and bounds; the proto operations wired to the existing `restorer` and `scorer` roles | pending |
+| 3.3 — masking at ingest | spec first (`ingest.md` §6.2, `compactor.md` §8.2, `rollouts.md` §6.4): the cutover of point 8 (activation of a masking configuration waiting for, or ending, the memberships that cannot execute it; admission refusing a configuration without a policy; a fence at the compactor lease that an old binary cannot pass: 3.3's migration moves the lease to a row the old binary does not name, so an old compactor can neither take nor renew it and every lease check of its transactions fails, and no policy-less close of a masked capture becomes durable; the same fence at the membership tables for old ingest replicas, T-43; the guide's prerequisite that every compactor and ingest replica is upgraded at that migration); classify and `Mask` before the `Writer` is built, `PackMeta.Redaction` and the capture's `redaction_policy` set; claim-check bodies masked like inline ones; a key failure deferring every record that needs the key, with its alert; a close's metadata (policy, classifier, frame limit) taken from the capture's bound configuration before its intent is persisted, intents already persisted replaying their bytes; raw delivery identity (receipts, termination evidence) kept on the original bytes; the cutover gate (a capture spanning the cutover, an old leader publishing after its successor, an old compactor holding the lease when the migration lands and an old standby trying to take it after, an upgraded compactor then closing a masked capture with its bound metadata, the migration against a compactor transaction held before and after its lease check, on both engines) | done (#35) |
+| 3.4 — `Restore` and `Digest` | spec first (`api.md` §10.1, `masking-keys.md` §9): the record locator of points 3 and 9 (every non-excluded version of the seq compared across hours from one catalog snapshot, record bytes and redaction entries alike; equal copies once; differing versions refused; a candidate that cannot be read refusing the restore; a pack merged, deleted or registered during the lookup); the hour required and naming an hour that holds a copy, otherwise not found, while the conflict check spans every hour whichever hour is named; the whole record authenticated before any original leaves; annotation masks, unobserved records and records without encryption answered as not restorable; the audit row written first, a failed audit returning nothing; `Digest` over §9's three input forms with `kind` checked by the service, its rate limit's scope and bounds; the proto operations wired to the existing `restorer` and `scorer` roles | in-progress |
 | 3.5 — thinning | spec first (`producer-sdk.md`, `producer.md` §4.6): `Register` taking the origin and the primary's stream and function beside the session and System Bytes, an old caller's registration unmarked, a supplied header that disagrees with the observed one never thinned, every registration in the ambiguity set whatever its mark; the sampling rule's key and parameters (defaults 60 and 60 s) owned by the SDK's configuration; the descriptor's `thinning` entries generated by the SDK from that configuration, never taken from the caller; then the thin decision, the ambiguity set and its cap, the thinned record zero-filled with `quality.unobserved`, rotation on a parameter change, `cmd/tracekeep-sim` driving it, its metrics | pending |
 | 3.6 — gate | the roadmap row's cases and the strengthened ones below, audited against the tests as 2.8 did; the thinned records' path through 3.3's masking and the merge | pending |
 
@@ -189,3 +189,56 @@ The steps settle these points the row leaves open:
 | 8 | the no-clear-text boundary: working-directory files inspected while held at the write and crash barriers; decoded pack payloads and metadata checked for every carrier of step 3; the whole-text fallback; `ErrCannotScreen`; a failure after part of a batch was masked; a failed put; an interrupted merge | done (#35) |
 | 9 | guides and runbook: the production-admission guide's upgrade of every compactor and ingest replica at the migration, the runbook's `key-refused`, `key-binding-mismatch` and `cannot-screen` rows for ingest | done (#35) |
 
+## Phase 3.4 — `Restore` and `Digest`
+
+Work on the branch `feat/api/restore`, one commit per step, test first;
+the branch merges by pull request once the whole phase passes an external post-implementation review.
+The steps settle these points the row leaves open:
+
+- **`Digest` takes a list** (the owner's answer of 2026-10-30, recorded as T-44):
+  `Digest(digest_key_id, inputs)`, each input a domain, a kind and the original, at most 1,000 inputs and 8 MiB of originals a request,
+  since a scorer comparing one recipe digests many items at once.
+  One audit row a request; the rate limit counts inputs.
+- **The copies of a record** are read from one catalog snapshot, a single read:
+  every pack of the capture whose range holds the seq, in any hour, in any state but `excluded` and `deleted`;
+  a merged input is still read, as its archive is.
+  A pack registered after the snapshot is not seen, which answers as of the snapshot;
+  a pack merged after it stays readable for D (`compactor.md` §8.3);
+  a copy whose object cannot be opened or read refuses the restore as unavailable, and the client retries into a fresh snapshot.
+- **The hour names where to look, not what to compare**:
+  it is an hour start, and a request whose hour holds no copy is not found;
+  the comparison spans every copy of the snapshot whatever hour is named.
+- **Copies are compared whole**: the stored record, header and payload, as `MergeIterate` compares versions,
+  and the seq's redaction entries in each pack's metadata, as the compactor's comparison does;
+  equal copies answer once, and differing versions are refused as a conflict, an acknowledged one included.
+- **Not restorable**: an annotation, an unobserved record (`Reader.Unobserved`), an unmasked record, and a pack without encryption;
+  a pack whose `encryption_key_id` is not the capture's bound configuration's is refused too, since the service trusts no value a pack names.
+  The key is `keys.Encryption` for the capture under the bound configuration's key id; `redact.Restore` authenticates every entry before a byte leaves.
+- **The audit row comes after the authentication and before the answer**, as `PackURL`'s does:
+  locate, compare, restore in memory, write the row, answer; a failed audit answers internal and returns nothing.
+  The row holds only an allowlist: the actor, the capture, the seq, the hour, the pack and the encryption key id.
+  A refusal writes no row; it is counted by outcome, and its error and log line name the request and the reason, never a byte of the record.
+- **`Digest`'s checks** run before any key is resolved, and one failed input refuses the whole request:
+  `digest_key_id` is the digest key id of an active or bound configuration,
+  and each input's kind and domain are a rule of that configuration's policy:
+  `item` an item rule's domain, its original exactly one encoded SECS-II item, header included;
+  `text` the domain `message-text`;
+  `annotation` an annotation rule's domain.
+  The audit row holds the actor, the key id, the input count and the distinct domains, never an original or a digest.
+- **The rate limit** is per principal subject and per replica, a token bucket over inputs,
+  `api.digest_rate` (default 200 a second) and `api.digest_burst` (default 2,000), the burst at least 1,000 so that a full request can pass;
+  a request that would exceed it is refused whole as `resource_exhausted`.
+- **Codes**: `not_found` (no copy in the named hour, or an unknown capture); `failed_precondition` (a conflict, not restorable, a key refused);
+  `unavailable` (a key or the catalog unavailable, a copy unreadable); `invalid_argument` (a malformed request or input); `resource_exhausted`; `internal` (a failed audit).
+- **The round trip is tested in `internal/ingest`**, whose tests may import `internal/api` (it imports nothing of ingest):
+  the carriers masked by ingest's pipeline, then restored and digested through the API.
+
+| Step | Scope | State |
+|---|---|---|
+| 1 | spec and T-44: `api.md` §10.1 (the `Restore` and `Digest` rows, their wire, codes and audit rows), `masking-keys.md` §9 (the copies of a record and the snapshot, the hour, the comparison, what is not restorable, the key check, the audit order and allowlist; `Digest`'s list, checks and rate limit), `operations.md` §10.4 (`restores_total{outcome}`, `digests_total{outcome}`, `digest_inputs_total`), the configuration guide (`api.digest_rate`, `api.digest_burst`) | pending |
+| 2 | proto and catalog: `Restore` and `Digest` on `MachineService`, regenerated; the catalog's copies of `(capture, seq)` in one read, on both engines, with a pack registered, merged, deleted and excluded around the read, barrier-controlled | pending |
+| 3 | `Restore`: the copies opened and compared, the hour checked, the not-restorable cases, the key check and `redact.Restore`, the audit row, the codes; refusals with a byte of a carrier's original absent from the error and the log; a failed audit returning nothing | pending |
+| 4 | `Digest`: the checks, the rate limiter per subject, the audit row, the codes; a refused request digesting nothing | pending |
+| 5 | wiring: both operations in the API's operation list and the per-role refusal matrix, `Keys` and the rate limit from configuration, the metrics | pending |
+| 6 | the gate's round trip, on both engines: every carrier masked by ingest restored to the record as received, from a segment and from an archive; `Digest` equal to the entry ingest wrote for each input form; a differing copy in another hour refusing the restore; the audit rows checked against the allowlist | pending |
+| 7 | guides and runbook: the keys guide's restore and digest, the runbook's rows for a refused restore and an exhausted digest rate | pending |
