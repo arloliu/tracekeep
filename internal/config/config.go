@@ -152,6 +152,10 @@ type API struct {
 	// DownloadMargin is kept between a URL's expiry and its object's deadline; a URL that would live less than DownloadFloor is refused (T-33).
 	DownloadMargin time.Duration `yaml:"download_margin" default:"2m" env:"TRACEKEEP_API_DOWNLOAD_MARGIN" validate:"gte=0,lte=24h"`
 	DownloadFloor  time.Duration `yaml:"download_floor" default:"1m" env:"TRACEKEEP_API_DOWNLOAD_FLOOR" validate:"gt=0,lte=24h"`
+	// DigestRate and DigestBurst are Digest's limit per principal on this replica: inputs a second and the bucket,
+	// which holds at least one full request's 1,000 inputs (masking-keys.md §9).
+	DigestRate  float64 `yaml:"digest_rate" default:"200" env:"TRACEKEEP_API_DIGEST_RATE" validate:"gt=0"`
+	DigestBurst int     `yaml:"digest_burst" default:"2000" env:"TRACEKEEP_API_DIGEST_BURST" validate:"gte=1000"`
 }
 
 // Metrics is the metrics and health listener (operations.md §10.4).

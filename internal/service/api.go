@@ -51,6 +51,7 @@ func API(ctx context.Context, e *Env) error {
 			PublicURL: c.API.PublicURL, Lifetime: c.Store.DownloadLifetime, Margin: c.API.DownloadMargin, Floor: c.API.DownloadFloor,
 			DeleteDelay: c.Compact.DeleteDelay, Now: e.Now,
 		},
+		DigestLimit: &api.DigestLimit{Rate: c.API.DigestRate, Burst: c.API.DigestBurst},
 	}
 	// Every handler is counted, so the role returns only once none runs: the catalog and the store outlive them all.
 	var inFlight sync.WaitGroup
@@ -93,8 +94,11 @@ func API(ctx context.Context, e *Env) error {
 	if err := e.downloads(ctx, &s.Downloads, m); err != nil {
 		return err
 	}
-	// The admin commands' keys, after downloads named what a missing download key costs.
+	// The admin commands' keys, after downloads named what a missing download key costs; Restore and Digest share them.
 	if s.Admin, err = e.Admin(""); err != nil {
+		return err
+	}
+	if s.Keys, err = e.Keys(); err != nil {
 		return err
 	}
 	e.ready("api", e.Catalog.Ping)

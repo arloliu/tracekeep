@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -43,6 +44,7 @@ type recorder struct {
 	tracekeepv1connect.UnimplementedMachineServiceHandler
 	mu      sync.Mutex
 	entered map[string]string
+	runs    int
 }
 
 func (r *recorder) enter(ctx context.Context, op string) {
@@ -53,6 +55,15 @@ func (r *recorder) enter(ctx context.Context, op string) {
 	}
 	p, _ := PrincipalFrom(ctx)
 	r.entered[op] = p.Subject
+	r.runs++
+}
+
+// count is how many times any handler ran.
+func (r *recorder) count() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	return r.runs
 }
 
 func (r *recorder) ran(op string) (string, bool) {
@@ -92,6 +103,16 @@ func (r *recorder) ListScopeChanges(ctx context.Context, _ *connect.Request[tkv1
 func (r *recorder) PackURL(ctx context.Context, _ *connect.Request[tkv1.PackURLRequest]) (*connect.Response[tkv1.PackURLResponse], error) {
 	r.enter(ctx, auth.OpPackURL)
 	return connect.NewResponse(&tkv1.PackURLResponse{}), nil
+}
+
+func (r *recorder) Restore(ctx context.Context, _ *connect.Request[tkv1.RestoreRequest]) (*connect.Response[tkv1.RestoreResponse], error) {
+	r.enter(ctx, auth.OpRestore)
+	return connect.NewResponse(&tkv1.RestoreResponse{}), nil
+}
+
+func (r *recorder) Digest(ctx context.Context, _ *connect.Request[tkv1.DigestRequest]) (*connect.Response[tkv1.DigestResponse], error) {
+	r.enter(ctx, auth.OpDigest)
+	return connect.NewResponse(&tkv1.DigestResponse{}), nil
 }
 
 // failures counts the reasons auth refused.
@@ -152,10 +173,12 @@ func calls(c tracekeepv1connect.MachineServiceClient, token string) map[string]c
 	_, e3 := c.ListPacks(ctx, withToken(&tkv1.ListPacksRequest{}, token))
 	_, e4 := c.ListScopeChanges(ctx, withToken(&tkv1.ListScopeChangesRequest{}, token))
 	_, e5 := c.PackURL(ctx, withToken(&tkv1.PackURLRequest{}, token))
+	_, e6 := c.Restore(ctx, withToken(&tkv1.RestoreRequest{}, token))
+	_, e7 := c.Digest(ctx, withToken(&tkv1.DigestRequest{}, token))
 
 	return map[string]connect.Code{
 		auth.OpListDevices: code(e1), auth.OpListCaptures: code(e2), auth.OpListPacks: code(e3),
-		auth.OpListScopeChanges: code(e4), auth.OpPackURL: code(e5),
+		auth.OpListScopeChanges: code(e4), auth.OpPackURL: code(e5), auth.OpRestore: code(e6), auth.OpDigest: code(e7),
 	}
 }
 
@@ -175,37 +198,41 @@ func TestEveryOperationBehindAuth(t *testing.T) {
 			t.Errorf("%s with an unknown token = %v, want unauthenticated", op, code)
 		}
 	}
-	for op, code := range calls(c, scorerToken) {
-		if code != connect.CodePermissionDenied {
-			t.Errorf("%s as a scorer = %v, want permission denied", op, code)
-		}
-	}
-	for _, op := range []string{auth.OpListDevices, auth.OpListCaptures, auth.OpListPacks, auth.OpListScopeChanges, auth.OpPackURL} {
-		if _, ok := rec.ran(op); ok {
-			t.Errorf("%s ran for a refused request", op)
-		}
-	}
-	viewer := calls(c, viewerToken)
-	for op, want := range map[string]connect.Code{
-		auth.OpListDevices: 0, auth.OpListCaptures: 0, auth.OpListScopeChanges: 0,
-		auth.OpListPacks: connect.CodePermissionDenied, auth.OpPackURL: connect.CodePermissionDenied,
+	lists := []string{auth.OpListDevices, auth.OpListCaptures, auth.OpListScopeChanges}
+	for _, p := range []struct {
+		token, subject string
+		admitted       []string
+	}{
+		{scorerToken, "scorer", []string{auth.OpDigest}},
+		{viewerToken, "viewer", lists},
+		{readerToken, "reader", append([]string{auth.OpListPacks, auth.OpPackURL}, lists...)},
+		{restorerToken, "restorer", []string{auth.OpRestore}},
 	} {
-		if viewer[op] != want {
-			t.Errorf("%s as a viewer = %v, want %v", op, viewer[op], want)
+		for op, code := range calls(c, p.token) {
+			want := connect.CodePermissionDenied
+			if slices.Contains(p.admitted, op) {
+				want = 0
+			}
+			if code != want {
+				t.Errorf("%s as a %s = %v, want %v", op, p.subject, code, want)
+			}
 		}
-	}
-	for op, code := range calls(c, readerToken) {
-		if subject, ok := rec.ran(op); code != 0 || !ok || subject != "reader" && subject != "viewer" {
-			t.Errorf("%s as a pack reader = %v, ran %v as %q", op, code, ok, subject)
+		for _, op := range p.admitted {
+			if s, ok := rec.ran(op); !ok || s != p.subject {
+				t.Errorf("%s as a %s ran %v as %q", op, p.subject, ok, s)
+			}
 		}
 	}
 	if s, _ := rec.ran(auth.OpListPacks); s != "reader" {
 		t.Errorf("ListPacks ran as %q, want the reader's principal", s)
 	}
+	if n := rec.count(); n != 1+3+5+1 {
+		t.Errorf("%d handlers ran, want only the admitted ones", n)
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if f.n[auth.ReasonMissing] != 5 || f.n[auth.ReasonStatic] != 5 || f.n[auth.ReasonForbidden] != 7 {
-		t.Errorf("auth failures %v, want 5 missing, 5 static, 7 forbidden", f.n)
+	if f.n[auth.ReasonMissing] != 7 || f.n[auth.ReasonStatic] != 7 || f.n[auth.ReasonForbidden] != 18 {
+		t.Errorf("auth failures %v, want 7 missing, 7 static, 18 forbidden", f.n)
 	}
 }
 
