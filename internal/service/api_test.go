@@ -136,11 +136,15 @@ func TestDevServesTheMachineAPI(t *testing.T) {
 // under a lease of the test's own that lapses at once, which that compactor then takes.
 func seedRetention(t *testing.T, e *Env) {
 	t.Helper()
-	seed, ok, err := e.Catalog.TakeLease(t.Context(), "compactor/2", "test-seed", 50*time.Millisecond)
+	// The lease outlasts a slow catalog's write and is released after it, so the service's compactor takes it at once.
+	seed, ok, err := e.Catalog.TakeLease(t.Context(), "compactor/2", "test-seed", time.Minute)
 	if err != nil || !ok {
 		t.Fatalf("TakeLease = %v, %v", ok, err)
 	}
 	if _, err := e.Catalog.RecordRetention(t.Context(), seed, e.Config.Retention, e.Config.Compact.DeleteDelay, time.Now().UnixNano()); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.Catalog.ReleaseLease(t.Context(), seed); err != nil {
 		t.Fatal(err)
 	}
 }
