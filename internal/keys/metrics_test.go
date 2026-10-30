@@ -1,7 +1,10 @@
 package keys
 
 import (
+	"encoding/base64"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"slices"
@@ -12,6 +15,7 @@ import (
 
 	"github.com/arloliu/tracekeep/internal/catalog"
 	"github.com/arloliu/tracekeep/internal/catalog/catalogtest"
+	"github.com/arloliu/tracekeep/internal/metrics"
 )
 
 // recorder keeps what the module records, each call as its labels joined.
@@ -167,5 +171,58 @@ func TestFileFailuresClassified(t *testing.T) {
 	}
 	if n := strings.Count(strings.Join(r.recorded(), ","), "resolution digest refused"); n != 3 {
 		t.Errorf("refusals counted %d, want 3", n)
+	}
+}
+
+// A key file's text, a key file of the wrong mode and an environment variable's value stay out of the error and the metrics.
+func TestFileAndEnvFailuresHoldNoSecrets(t *testing.T) {
+	const sentinel = "KEY-TEXT-SENTINEL" // a hyphen is outside base64's alphabet
+	text := filepath.Join(t.TempDir(), "text")
+	if err := os.WriteFile(text, []byte(sentinel), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	m := material(0x95, 32)
+	t.Setenv("TK_TEST_ENV_KEY", sentinel)
+	srv := metrics.NewServer()
+	km, err := metrics.NewKeys(srv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := Config{
+		Dev: true,
+		Declared: map[string]Declaration{
+			"d-text": {Provider: ProviderFile, Ref: text, Kind: catalog.KindDigest},
+			"d-open": {Provider: ProviderFile, Ref: keyFile(t, m, 0o644), Kind: catalog.KindDigest},
+			"d-env":  {Provider: ProviderEnv, Ref: "TK_TEST_ENV_KEY", Kind: catalog.KindDigest},
+		},
+		Metrics: km,
+	}
+	k := newKeys(t, cfg, catalogtest.Open(t, catalog.EngineSQLite))
+	for _, id := range []string{"d-text", "d-open", "d-env"} {
+		_, err := k.Digest(t.Context(), id)
+		if !Refused(err) {
+			t.Errorf("%s = %v, want refused", id, err)
+		}
+		if err != nil && strings.Contains(err.Error(), sentinel) {
+			t.Errorf("%s: error %q holds the key's text", id, err)
+		}
+		noMaterial(t, err, m)
+	}
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	scrape := rec.Body.String()
+	for _, want := range []string{
+		`tracekeep_key_provider_errors_total{provider="file",reason="malformed"} 2`,
+		`tracekeep_key_provider_errors_total{provider="env",reason="malformed"} 1`,
+		`tracekeep_key_resolutions_total{kind="digest",outcome="refused"} 3`,
+	} {
+		if !strings.Contains(scrape, want) {
+			t.Errorf("no %s in\n%s", want, scrape)
+		}
+	}
+	for _, s := range []string{sentinel, string(m), base64.StdEncoding.EncodeToString(m)} {
+		if strings.Contains(scrape, s) {
+			t.Errorf("the metrics hold %q", s)
+		}
 	}
 }

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"encoding/pem"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -262,6 +263,90 @@ func TestMaskingFailures(t *testing.T) {
 			}
 		})
 	}
+}
+
+// A failing Vault, through the keys module, nak's the record as key-unavailable,
+// and neither the alert's log line nor the metrics hold the token, the secret id or the server's response body.
+func TestVaultFailureHoldsNoSecrets(t *testing.T) {
+	t.Parallel()
+	const token, secretID, body = "hvs.TOKEN-SENTINEL", "SECRET-ID-SENTINEL", "BODY-SENTINEL"
+	// Logins succeed and every read answers a sealed server's 503 with a sentinel body.
+	vault := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/login") {
+			_, _ = w.Write([]byte(`{"auth":{"client_token":"` + token + `","lease_duration":60,"renewable":true}}`))
+			return
+		}
+		http.Error(w, `{"errors":["`+body+`"]}`, http.StatusServiceUnavailable)
+	}))
+	t.Cleanup(vault.Close)
+	ca := filepath.Join(t.TempDir(), "ca.pem")
+	if err := os.WriteFile(ca, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: vault.Certificate().Raw}), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	b := policy.Baseline()
+	carriers, err := maskingtest.Carriers(&b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
+		srv := metrics.NewServer()
+		km, err := metrics.NewKeys(srv)
+		if err != nil {
+			t.Fatal(err)
+		}
+		v, err := keys.NewVault(keys.VaultConfig{
+			Address: vault.URL, CAFile: ca, Mount: "secret", Timeout: 5 * time.Second,
+			Method: keys.VaultAppRole, RoleID: "role-1", SecretID: secretID, Metrics: km,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		k, err := keys.New(keys.Config{
+			Declared: map[string]keys.Declaration{
+				"d-1": {Provider: keys.ProviderVault, Ref: "tk/d-1", Kind: catalog.KindDigest},
+				"m-1": {Provider: keys.ProviderVault, Ref: "tk/m-1", Kind: catalog.KindMaster},
+			},
+			Providers: map[string]keys.Provider{keys.ProviderVault: v},
+			Metrics:   km,
+		}, c)
+		if err != nil {
+			t.Fatal(err)
+		}
+		p := maskingPipeline(t, c, k)
+		if p.x.Metrics, err = metrics.NewIngest(srv, nil); err != nil {
+			t.Fatal(err)
+		}
+		capture := tracepack.UUID{0x54}
+		p.feed(t, inline(t, capture, startRecord(t, now), descriptorOf(t, "eqp")))
+		d, dec := dispose(t, p.x, inline(t, capture, carrierRecord(&carriers[0], 1), nil))
+		want := Decision{Action: ActNak, Reason: ReasonKeyUnavailable, Alert: true}
+		if dec != want || d.Incident != ReasonKeyUnavailable || d.MaskErr == nil {
+			t.Fatalf("disposed %+v, incident %q, error %v; want %+v", dec, d.Incident, d.MaskErr, want)
+		}
+		var log bytes.Buffer
+		(&Ingester{Log: slog.New(slog.NewTextHandler(&log, nil))}).alert(d, dec)
+		if !strings.Contains(log.String(), "status 503") {
+			t.Errorf("the alert logged %q, want the provider's status", log.String())
+		}
+		scrape := scrapeIngest(t, srv)
+		for _, want := range []string{
+			`tracekeep_key_provider_errors_total{provider="vault",reason="server"}`,
+			`outcome="unavailable"`,
+			`tracekeep_key_credential_expiry_timestamp{provider="vault"}`,
+		} {
+			if !strings.Contains(scrape, want) {
+				t.Errorf("no %s in the metrics", want)
+			}
+		}
+		for _, s := range []string{"TOKEN-SENTINEL", secretID, body} {
+			if strings.Contains(log.String(), s) {
+				t.Errorf("the alert logged %s: %q", s, log.String())
+			}
+			if strings.Contains(scrape, s) {
+				t.Errorf("the metrics hold %s", s)
+			}
+		}
+	})
 }
 
 // scrapeIngest is srv's metrics in the text format.

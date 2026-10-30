@@ -199,6 +199,7 @@ func TestMaskingPurposesStayDistinct(t *testing.T) {
 		"a download key id as digest": func() error { _, err := k.Digest(t.Context(), "dl-1"); return err },
 		"a download key id as master": func() error { _, err := k.Encryption(t.Context(), testCapture, "dl-1"); return err },
 		"a digest key id as download": func() error { _, err := k.Accepted(t.Context(), catalog.KindDownload, "d-1"); return err },
+		"a master key id as download": func() error { _, err := k.Accepted(t.Context(), catalog.KindDownload, "m-1"); return err },
 		"an undeclared key id":        func() error { _, err := k.Digest(t.Context(), "d-9"); return err },
 	} {
 		if err := call(); !errors.Is(err, ErrUnknownKey) {
@@ -336,9 +337,14 @@ func TestFirstUseRaceEqualMaterialOtherVersion(t *testing.T) {
 		pA := &fakeProvider{byVer: map[string][]byte{"3": m}, current: "3", gate: newGate()}
 		pB := &fakeProvider{byVer: map[string][]byte{"3": m, "4": m}, current: "4", gate: newGate()}
 		kA, kB := newKeys(t, maskingKeys(pA), cat), newKeys(t, maskingKeys(pB), cat)
-		errA, errB := make(chan error, 1), make(chan error, 1)
+		errA := make(chan error, 1)
+		type result struct {
+			key []byte
+			err error
+		}
+		resB := make(chan result, 1)
 		go func() { _, err := kA.Digest(t.Context(), "d-1"); errA <- err }()
-		go func() { _, err := kB.Digest(t.Context(), "d-1"); errB <- err }()
+		go func() { key, err := kB.Digest(t.Context(), "d-1"); resB <- result{key, err} }()
 		<-pA.gate.arrived
 		<-pB.gate.arrived
 		close(pA.gate.release)
@@ -346,8 +352,16 @@ func TestFirstUseRaceEqualMaterialOtherVersion(t *testing.T) {
 			t.Fatal(err)
 		}
 		close(pB.gate.release)
-		if err := <-errB; err != nil {
-			t.Fatalf("equal material at another version = %v, want the binding accepted", err)
+		if b := <-resB; b.err != nil || !bytes.Equal(b.key, m) {
+			t.Fatalf("equal material at another version = %x, %v; want the binding accepted and the winner's key", b.key, b.err)
+		}
+		// The loser cached the key: its next use asks its provider nothing.
+		pB.gate = nil
+		if key, err := kB.Digest(t.Context(), "d-1"); err != nil || !bytes.Equal(key, m) {
+			t.Errorf("the loser's next use = %x, %v; want the winner's key", key, err)
+		}
+		if n := pB.callCount(); n != 1 {
+			t.Errorf("the loser's provider calls = %d, want 1: its next use served from the cache", n)
 		}
 		if bnd, _, _ := cat.KeyBinding(t.Context(), "d-1"); bnd.ProviderVersion != "3" {
 			t.Fatalf("bound version = %q, want the winner's 3", bnd.ProviderVersion)
