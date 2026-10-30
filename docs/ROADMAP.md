@@ -57,6 +57,16 @@ Phase 2 is done (#22, #23, #24, #25, #26, #27, #28, #29).
 
 ## Open items
 
+- A capture-hour merge whose archive's metadata would exceed the reader's budget fails with `ErrMergeLimit`, which the compactor does not handle yet;
+  ingest keeps each segment within the budget (`ingest.md` §6.2), but many masked segments of one hour can still merge past it.
+  Its design is open.
+- Masking's cost at ingest, measured on 2026-10-30 (the measurements are kept outside the repository), leaves these improvements:
+  - go-secs: a format-minor accessor, so a flush need not decode a working file's metadata twice (26–53 % of a masked segment's write);
+    the AES-SIV cipher built once per key, not once per masked field (35–45 % of `Mask` on many-field records);
+    no plaintext copy for a single contiguous range, and an HMAC reused across records;
+    fewer allocations in the item walker.
+  - tracekeep: the capture key derived once per fetch batch rather than once per record (0.9 µs and 21 allocations a masked record),
+    which keeps derived key material for the batch and needs `masking-keys.md` §9 and `ingest.md` §6.1–§6.2 amended first.
 - Phase 4 measures connect-go's overhead on a long `QueryRecords` stream again, with real records, before it settles the stream's batching (T-7).
 - Configuration retirement waits for the first release that needs it.
 - The veq branch `docs/ve/log-service-decisions` (commit 7b8a019) carries the LS-row amendments and V-35;
