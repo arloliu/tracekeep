@@ -163,6 +163,12 @@ func NewCapture(p CaptureParams) *Capture {
 	return c
 }
 
+// Declares reports whether the capture's descriptor declares stream and function in thinning:
+// a capture with a sampling rule declares S1F3 and S1F4.
+func (c *Capture) Declares(stream, function uint8) bool {
+	return c.sampler != nil && stream == 1 && (function == 3 || function == 4)
+}
+
 // Allocate gives one observation its seq, epoch and clock decision under the capture's lock (steps 1–4 of the callback).
 // wall and mono are the observation's clock reading, in nanoseconds;
 // socket is go-secs's socket identity, 0 for none.
