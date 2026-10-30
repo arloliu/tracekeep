@@ -391,7 +391,7 @@ func rotationCase(t *testing.T, c *catalog.Catalog, rotate func(*testing.T, *rot
 	if staged != 0 {
 		newCapture(t, w, b, staged, claimCheckAll, newPolicy)
 	}
-	sameCopies(t, w, capture, attempted, acked)
+	sameCopies(t, w, capture, attempted, acked, len(msgs))
 	mergeClean(t, w, attempted == nil)
 }
 
@@ -477,9 +477,9 @@ func packsOf(t *testing.T, w *rotationWorld, capture tracepack.UUID, attempted [
 
 // sameCopies checks that every pack of capture, stored or only attempted, names the first pack's redaction policy, classifiers and frame limits,
 // that every copy of each seq is byte-identical, its redaction entries included and a carrier's never empty,
-// and that each seq has the first delivery's copy and, unless it was among the acked first messages, the redelivery's;
+// and that each of the sent seqs, and no other, has the first delivery's copy and, unless it was among the acked first messages, the redelivery's;
 // the traffic's i-th message holds seq i.
-func sameCopies(t *testing.T, w *rotationWorld, capture tracepack.UUID, attempted [][]byte, acked int) {
+func sameCopies(t *testing.T, w *rotationWorld, capture tracepack.UUID, attempted [][]byte, acked, sent int) {
 	t.Helper()
 	type copyOf struct {
 		rec     tracepack.Record
@@ -513,13 +513,18 @@ func sameCopies(t *testing.T, w *rotationWorld, capture tracepack.UUID, attempte
 			bySeq[r.Seq] = append(bySeq[r.Seq], copyOf{r, es})
 		}
 	}
-	for seq, cs := range bySeq {
+	if len(bySeq) != sent {
+		t.Errorf("%d seqs stored, want the %d sent", len(bySeq), sent)
+	}
+	for i := range sent {
+		seq, cs := uint64(i), bySeq[uint64(i)] //nolint:gosec // a message count
 		want := 2
-		if seq < uint64(acked) { //nolint:gosec // a message count
+		if i < acked {
 			want = 1
 		}
 		if len(cs) != want {
 			t.Errorf("seq %d: %d copies, want %d: the first delivery's, and the redelivery's unless acknowledged first", seq, len(cs), want)
+			continue
 		}
 		for _, c := range cs[1:] {
 			if !sameRecord(&c.rec, &cs[0].rec) || !bytes.Equal(c.rec.Payload, cs[0].rec.Payload) {

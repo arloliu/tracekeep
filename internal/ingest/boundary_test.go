@@ -328,8 +328,9 @@ func TestBoundaryInterruptedMerge(t *testing.T) {
 			ObjectStore: p.st, t: t, secrets: secrets, workDir: work,
 			fail: func(key string) bool { return bytes.HasPrefix([]byte(key), []byte("archive/")) },
 		}
+		var logs bytes.Buffer
 		r := &compact.Compactor{
-			Catalog: c, Store: archive, HorizonHour: func() int64 { return HourOf(now) - 24 }, Log: slog.New(slog.DiscardHandler),
+			Catalog: c, Store: archive, HorizonHour: func() int64 { return HourOf(now) - 24 }, Log: slog.New(slog.NewTextHandler(&logs, nil)),
 			WorkDir: work, Writer: "tracekeep-test", QuietPeriod: 15 * time.Minute, Now: func() time.Time { return time.Unix(0, now).Add(3 * time.Hour) },
 		}
 		if rep, err := r.Conflicts(t.Context(), lease); err != nil || rep.Confirmed != 0 {
@@ -343,6 +344,12 @@ func TestBoundaryInterruptedMerge(t *testing.T) {
 		if n := storeClean(t, p.st, secrets); n != len(carriers)+1 {
 			t.Errorf("%d records stored, want the start and every carrier", n)
 		}
+		// The failed merge is logged, and neither its log line nor the report's errors hold a secret.
+		if logs.Len() == 0 {
+			t.Error("the interrupted merge logged nothing")
+		}
+		textClean(t, "the compactor's log", logs.Bytes(), secrets)
+		textClean(t, "the merge report", fmt.Appendf(nil, "%+v", rep), secrets)
 	})
 }
 

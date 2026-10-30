@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"log/slog"
+	"maps"
 	"testing"
 	"time"
 
@@ -96,32 +97,23 @@ func TestThinnedRecordsThroughMaskingAndTheMerge(t *testing.T) {
 
 		feedInTwoFlushes(t, p, capture, descriptor, recs)
 
-		sent := map[uint64]*tracepack.Record{}
+		sent, data := map[uint64]*tracepack.Record{}, 0
 		for i := range recs {
 			sent[recs[i].Seq] = &recs[i]
+			if recs[i].Kind == tracepack.KindData {
+				data++
+			}
 		}
 		thinned, kept := checkThinnedStorage(t, p, sent)
-		if len(thinned) == 0 || len(kept) == 0 {
-			t.Fatalf("%d thinned and %d kept data records stored, want both", len(thinned), len(kept))
+		if len(thinned) == 0 || len(kept) == 0 || len(thinned)+len(kept) != data {
+			t.Fatalf("%d thinned and %d kept data records stored, want both and every one of the %d sent", len(thinned), len(kept), data)
 		}
 
-		lease, ok, err := c.TakeLease(t.Context(), "compactor/2", "test", time.Hour)
-		if err != nil || !ok {
-			t.Fatal(ok, err)
-		}
 		last := recs[len(recs)-1].TSUTCNs
-		r := &compact.Compactor{
-			Catalog: c, Store: p.st, HorizonHour: func() int64 { return HourOf(last) - 24 }, Log: slog.New(slog.DiscardHandler),
-			WorkDir: t.TempDir(), Writer: "tracekeep-test", QuietPeriod: 15 * time.Minute, DeleteDelay: time.Minute,
-			Now: func() time.Time { return time.Unix(0, last).Add(3 * time.Hour) },
+		mergeToTheArchive(t, c, p, last)
+		if th, kp := checkThinnedStorage(t, p, sent); !maps.Equal(th, thinned) || !maps.Equal(kp, kept) {
+			t.Errorf("the archive holds %d thinned and %d kept data records, want the segments' %d and %d", len(th), len(kp), len(thinned), len(kept))
 		}
-		if rep, err := r.Conflicts(t.Context(), lease); err != nil || rep.Confirmed+rep.Failed+rep.Changed != 0 {
-			t.Fatalf("Conflicts = %+v, %v; want no conflict", rep, err)
-		}
-		if rep, err := r.Merges(t.Context(), lease); err != nil || len(rep.Merged) == 0 || len(rep.Failed)+len(rep.Conflicted)+len(rep.Stale) != 0 {
-			t.Fatalf("Merges = %+v, %v; want the hour merged", rep, err)
-		}
-		checkThinnedStorage(t, p, sent)
 
 		restoreThinned(t, served(t, p, k, slog.New(slog.DiscardHandler)), capture, sent, thinned, kept)
 
@@ -135,6 +127,35 @@ func TestThinnedRecordsThroughMaskingAndTheMerge(t *testing.T) {
 			}
 		}
 	})
+}
+
+// mergeToTheArchive merges the hour of p's segments that last falls in, with no conflict, then deletes the segments,
+// so the archive alone is stored.
+func mergeToTheArchive(t *testing.T, c *catalog.Catalog, p *pipeline, last int64) {
+	t.Helper()
+	lease, ok, err := c.TakeLease(t.Context(), "compactor/2", "test", time.Hour)
+	if err != nil || !ok {
+		t.Fatal(ok, err)
+	}
+	at := time.Unix(0, last).Add(3 * time.Hour)
+	r := &compact.Compactor{
+		Catalog: c, Store: p.st, HorizonHour: func() int64 { return HourOf(last) - 24 }, Log: slog.New(slog.DiscardHandler),
+		WorkDir: t.TempDir(), Writer: "tracekeep-test", QuietPeriod: 15 * time.Minute, DeleteDelay: time.Minute,
+		Now: func() time.Time { return at },
+	}
+	if rep, err := r.Conflicts(t.Context(), lease); err != nil || rep.Confirmed+rep.Failed+rep.Changed != 0 {
+		t.Fatalf("Conflicts = %+v, %v; want no conflict", rep, err)
+	}
+	if rep, err := r.Merges(t.Context(), lease); err != nil || len(rep.Merged) == 0 || len(rep.Failed)+len(rep.Conflicted)+len(rep.Stale) != 0 {
+		t.Fatalf("Merges = %+v, %v; want the hour merged", rep, err)
+	}
+	at = time.Now().Add(time.Hour) // the commit fixes delete_at by the catalog's own clock
+	if err := r.Deletions(t.Context(), lease, &compact.RetentionReport{}); err != nil {
+		t.Fatal(err)
+	}
+	if n := len(storedKeys(t, p.st)); n != 1 {
+		t.Fatalf("%d objects after the deletion, want the archive alone", n)
+	}
 }
 
 // feedInTwoFlushes feeds recs, inline and by claim-check by turns, flushing halfway and at the end,
