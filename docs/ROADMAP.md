@@ -54,6 +54,8 @@ eqp-hub reviews the SDK's API (`Bus`, `Preflight`, the six guarantees, the `secs
 Phase 0 is done (#1, #3, #4, #7, #8).
 Phase 1 is done (#9, #11, #13, #14, #16, #17, #18, #19).
 Phase 2 is done (#22, #23, #24, #25, #26, #27, #28, #29).
+Its closed plan's step tables (last text at e396be1) name commits of the branches before their rebase merge,
+which are not on `main`; each is among the commits of the pull request its phase row names.
 
 ## Open items
 
