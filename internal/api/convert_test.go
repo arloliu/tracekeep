@@ -5,7 +5,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/arloliu/go-secs/tracepack"
 	"google.golang.org/protobuf/types/known/timestamppb"
+
+	"github.com/arloliu/tracekeep/internal/catalog"
 )
 
 // nsPerHour is one hour in nanoseconds, the unit of a catalog hour.
@@ -37,5 +40,19 @@ func TestTimeConversionAtTheLimits(t *testing.T) {
 		if got := hourTS(h).AsTime(); !got.Equal(time.Unix(h*3600, 0)) || !hourTS(h).IsValid() {
 			t.Errorf("hourTS(%d) = %s", h, got)
 		}
+	}
+}
+
+// A listed thinning entry carries its sampling rule when the catalog parsed one, and only its text otherwise.
+func TestCaptureOfCarriesTheSamplingRule(t *testing.T) {
+	t.Parallel()
+	n, ms := uint64(60), uint64(60000)
+	got := captureOf(&catalog.CaptureInfo{Thinning: []catalog.Thinning{
+		{Thinning: tracepack.Thinning{Stream: 1, Function: 3, Source: "rule"}, KeepEveryN: &n, KeepIntervalMs: &ms},
+		{Thinning: tracepack.Thinning{Stream: 6, Function: 11, Source: "fdc"}},
+	}}).GetThinning()
+	if len(got) != 2 || got[0].GetKeepEveryN() != 60 || got[0].GetKeepIntervalMs() != 60000 || got[0].GetSource() != "rule" ||
+		got[1].KeepEveryN != nil || got[1].KeepIntervalMs != nil || got[1].GetStream() != 6 {
+		t.Errorf("thinning %v", got)
 	}
 }

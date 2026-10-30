@@ -194,16 +194,24 @@ func TestListCapturesSelection(t *testing.T) {
 	})
 }
 
-// A capture's listing carries what its descriptor and admission recorded.
+// A capture's listing carries what its descriptor and admission recorded,
+// each thinning entry with the sampling rule its source names, when it names one.
 func TestListCapturesDescriptor(t *testing.T) {
 	t.Parallel()
 	engines(t, func(t *testing.T, c *Catalog) {
-		thin := []tracepack.Thinning{{Stream: 6, Function: 11, Source: "fdc"}}
+		rule := "fdc interval polling by request origin; keep_every_n=60; keep_interval_ms=60000; abnormal=kept"
+		thin := []tracepack.Thinning{{Stream: 1, Function: 3, Source: rule}, {Stream: 6, Function: 11, Source: "fdc"}}
 		r := newID(t)
 		id := described(t, c, spec{instance: r, device: "eqp", origin: 5, thinning: thin})
 		got := listCaptures(t, c, window(0, 10))[id]
-		if got.Device != "eqp" || got.RecorderInstanceID != r || !slices.Equal(got.Thinning, thin) || got.ConfigID == nil || got.State != StateOpen {
-			t.Errorf("listing %+v", got)
+		if got.Device != "eqp" || got.RecorderInstanceID != r || got.ConfigID == nil || got.State != StateOpen || len(got.Thinning) != 2 {
+			t.Fatalf("listing %+v", got)
+		}
+		if p := got.Thinning[0]; p.Thinning != thin[0] || p.KeepEveryN == nil || *p.KeepEveryN != 60 || p.KeepIntervalMs == nil || *p.KeepIntervalMs != 60000 {
+			t.Errorf("the rule's entry %+v", p)
+		}
+		if p := got.Thinning[1]; p.Thinning != thin[1] || p.KeepEveryN != nil || p.KeepIntervalMs != nil {
+			t.Errorf("the free text's entry %+v", p)
 		}
 	})
 }

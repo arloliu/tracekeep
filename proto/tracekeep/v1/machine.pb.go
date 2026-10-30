@@ -519,14 +519,17 @@ func (x *Capture) GetUnregistered() []*UnregisteredInterval {
 	return nil
 }
 
-// Thinning is one thinned stream and function of the start descriptor.
+// Thinning is one thinned stream and function of the start descriptor;
+// keep_every_n and keep_interval_ms are the sampling rule its source names, both absent when the source does not parse (T-47).
 type Thinning struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Stream        uint64                 `protobuf:"varint,1,opt,name=stream,proto3" json:"stream,omitempty"`
-	Function      uint64                 `protobuf:"varint,2,opt,name=function,proto3" json:"function,omitempty"`
-	Source        string                 `protobuf:"bytes,3,opt,name=source,proto3" json:"source,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state          protoimpl.MessageState `protogen:"open.v1"`
+	Stream         uint64                 `protobuf:"varint,1,opt,name=stream,proto3" json:"stream,omitempty"`
+	Function       uint64                 `protobuf:"varint,2,opt,name=function,proto3" json:"function,omitempty"`
+	Source         string                 `protobuf:"bytes,3,opt,name=source,proto3" json:"source,omitempty"`
+	KeepEveryN     *uint64                `protobuf:"varint,4,opt,name=keep_every_n,json=keepEveryN,proto3,oneof" json:"keep_every_n,omitempty"`
+	KeepIntervalMs *uint64                `protobuf:"varint,5,opt,name=keep_interval_ms,json=keepIntervalMs,proto3,oneof" json:"keep_interval_ms,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
 func (x *Thinning) Reset() {
@@ -578,6 +581,20 @@ func (x *Thinning) GetSource() string {
 		return x.Source
 	}
 	return ""
+}
+
+func (x *Thinning) GetKeepEveryN() uint64 {
+	if x != nil && x.KeepEveryN != nil {
+		return *x.KeepEveryN
+	}
+	return 0
+}
+
+func (x *Thinning) GetKeepIntervalMs() uint64 {
+	if x != nil && x.KeepIntervalMs != nil {
+		return *x.KeepIntervalMs
+	}
+	return 0
 }
 
 // UnregisteredInterval is a time no registered capture of the recorder covers; an open start is a never-admitted predecessor's.
@@ -2430,11 +2447,16 @@ const file_tracekeep_v1_machine_proto_rawDesc = "" +
 	"_config_idB\x15\n" +
 	"\x13_equipment_endpointB\f\n" +
 	"\n" +
-	"_device_id\"V\n" +
+	"_device_id\"\xd2\x01\n" +
 	"\bThinning\x12\x16\n" +
 	"\x06stream\x18\x01 \x01(\x04R\x06stream\x12\x1a\n" +
 	"\bfunction\x18\x02 \x01(\x04R\bfunction\x12\x16\n" +
-	"\x06source\x18\x03 \x01(\tR\x06source\"\x85\x01\n" +
+	"\x06source\x18\x03 \x01(\tR\x06source\x12%\n" +
+	"\fkeep_every_n\x18\x04 \x01(\x04H\x00R\n" +
+	"keepEveryN\x88\x01\x01\x12-\n" +
+	"\x10keep_interval_ms\x18\x05 \x01(\x04H\x01R\x0ekeepIntervalMs\x88\x01\x01B\x0f\n" +
+	"\r_keep_every_nB\x13\n" +
+	"\x11_keep_interval_ms\"\x85\x01\n" +
 	"\x14UnregisteredInterval\x125\n" +
 	"\x05start\x18\x01 \x01(\v2\x1a.google.protobuf.TimestampH\x00R\x05start\x88\x01\x01\x12,\n" +
 	"\x03end\x18\x02 \x01(\v2\x1a.google.protobuf.TimestampR\x03endB\b\n" +
@@ -2721,6 +2743,7 @@ func file_tracekeep_v1_machine_proto_init() {
 	file_tracekeep_v1_machine_proto_msgTypes[0].OneofWrappers = []any{}
 	file_tracekeep_v1_machine_proto_msgTypes[3].OneofWrappers = []any{}
 	file_tracekeep_v1_machine_proto_msgTypes[6].OneofWrappers = []any{}
+	file_tracekeep_v1_machine_proto_msgTypes[7].OneofWrappers = []any{}
 	file_tracekeep_v1_machine_proto_msgTypes[8].OneofWrappers = []any{}
 	file_tracekeep_v1_machine_proto_msgTypes[17].OneofWrappers = []any{}
 	file_tracekeep_v1_machine_proto_msgTypes[18].OneofWrappers = []any{}

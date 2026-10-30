@@ -86,11 +86,14 @@ message Capture {
   repeated UnregisteredInterval unregistered = 13;
 }
 
-// Thinning is one thinned stream and function of the start descriptor.
+// Thinning is one thinned stream and function of the start descriptor;
+// keep_every_n and keep_interval_ms are the sampling rule its source names, both absent when the source does not parse (T-47).
 message Thinning {
   uint64 stream = 1;
   uint64 function = 2;
   string source = 3;
+  optional uint64 keep_every_n = 4;
+  optional uint64 keep_interval_ms = 5;
 }
 
 // UnregisteredInterval is a time no registered capture of the recorder covers; an open start is a never-admitted predecessor's.

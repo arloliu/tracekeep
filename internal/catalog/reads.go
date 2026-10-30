@@ -87,8 +87,8 @@ type CaptureInfo struct {
 	LastRecordNS *int64
 	// ConfigID is the processing configuration bound at admission.
 	ConfigID *int64
-	// Thinning, EquipmentEndpoint and DeviceID are the start descriptor's.
-	Thinning          []tracepack.Thinning
+	// Thinning, EquipmentEndpoint and DeviceID are the start descriptor's, each thinning entry with its parsed sampling rule.
+	Thinning          []Thinning
 	EquipmentEndpoint *string
 	DeviceID          *uint64
 	// Overlap is set when the span of another capture of the same tool and recorder instance meets this one's.
@@ -262,7 +262,7 @@ func (c *Catalog) selectCaptures(ctx context.Context, tx *sqlx.Tx, sel Selector,
 			if err != nil {
 				return nil, fmt.Errorf("the descriptor of admitted capture %s: %w", ci.ID, err)
 			}
-			ci.Thinning, ci.EquipmentEndpoint, ci.DeviceID = m.Thinning, m.EquipmentEndpoint, m.DeviceID
+			ci.Thinning, ci.EquipmentEndpoint, ci.DeviceID = thinningOf(m.Thinning), m.EquipmentEndpoint, m.DeviceID
 		}
 		out = append(out, ci)
 		spans = append(spans, span{id: ci.ID, instance: ci.RecorderInstanceID, origin: ci.OriginNS, last: r.Last})
