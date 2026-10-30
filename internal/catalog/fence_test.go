@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"errors"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -18,8 +19,8 @@ import (
 // The lease row an earlier release's compactor names, before the masking migration moved it (T-43).
 const oldLease = "compactor"
 
-// preFence is a catalog migrated to every migration but the fence, as an earlier release left it,
-// and fence applies the fence to it through a connection of its own, as tracekeep migrate does.
+// preFence is a catalog migrated to every migration before the fence, as an earlier release left it,
+// and fence applies the fence and every later migration to it through a connection of its own, as tracekeep migrate does.
 func preFence(t *testing.T, engine string) (c *Catalog, fence func() error) {
 	t.Helper()
 	cfg := Config{Engine: engine}
@@ -50,12 +51,12 @@ func preFence(t *testing.T, engine string) (c *Catalog, fence func() error) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	last := files[len(files)-1]
-	if !strings.HasSuffix(last.Name(), "_fence.sql") {
-		t.Fatalf("the newest migration is %s, not the fence", last.Name())
+	at := slices.IndexFunc(files, func(f atlasmigrate.File) bool { return strings.HasSuffix(f.Name(), "_fence.sql") })
+	if at < 0 {
+		t.Fatal("no fence migration")
 	}
 	earlier := &atlasmigrate.MemDir{}
-	if err := earlier.CopyFiles(files[:len(files)-1]); err != nil {
+	if err := earlier.CopyFiles(files[:at]); err != nil {
 		t.Fatal(err)
 	}
 	if err := migrations.ApplyDir(t.Context(), db, engine, earlier); err != nil {

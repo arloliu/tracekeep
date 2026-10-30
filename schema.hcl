@@ -536,7 +536,7 @@ table "scopes" {
     columns = [column.capture_id, column.hour]
   }
   check "scopes_state" {
-    expr = "state IN ('open', 'settled', 'reopened')"
+    expr = "state IN ('open', 'settled', 'reopened', 'unmergeable')"
   }
 }
 
@@ -565,7 +565,7 @@ table "scope_events" {
     columns = [column.seq]
   }
   check "scope_events_event" {
-    expr = "event IN ('created', 'settled', 'reopened', 'conflict', 'terminated', 'excluded')"
+    expr = "event IN ('created', 'settled', 'reopened', 'conflict', 'terminated', 'excluded', 'unmergeable')"
   }
 }
 
