@@ -279,9 +279,9 @@ The steps settle these points the row leaves open:
 
 | Step | Scope | State |
 |---|---|---|
-| 1 | spec and T-46: `producer.md` §4.6 (the request a registration takes, the header check, the decision's scope and its place on the entry, the publisher's order of checks), `producer-sdk.md` (`RegisterRequest`, `Request`, `Origin`, the sampling rule in the descriptor, its configuration keys), `operations.md` §10.4 (the header disagreement's counter) | pending |
-| 2 | descriptor: the sampling rule in place of the entries, its defaults and validation, the generated `S1F3` and `S1F4` entries and `source` text, a parameter change rotating and an equal descriptor not | pending |
-| 3 | pending table: `RegisterRequest` and `Origin`, `Register` unmarked, the decision under the capture's count and last kept time, the header check at the binding, every registration in the ambiguity set | pending |
-| 4 | thin path: the entry attached by the wire callback, the publisher's conditions, the abnormal `S1F4`, the zero-fill offset's regression test, the cap read at dequeue, a rotation between the send and the reply, a reconnect, a reused key | pending |
-| 5 | metrics and the SDK's documentation; `producertest` registering through `RegisterRequest` | pending |
+| 1 | spec and T-46: `producer.md` §4.6 (the request a registration takes, the header check, the decision's scope and its place on the entry, the publisher's order of checks), `producer-sdk.md` (`RegisterRequest`, `Request`, `Origin`, the sampling rule in the descriptor, its configuration keys), `operations.md` §10.4 (the header disagreement's counter) | done (#39) |
+| 2 | descriptor: the sampling rule in place of the entries, its defaults and validation, the generated `S1F3` and `S1F4` entries and `source` text, a parameter change rotating and an equal descriptor not | done (#39) |
+| 3 | pending table: `RegisterRequest` and `Origin`, `Register` unmarked, the decision under the capture's count and last kept time, the header check at the binding, every registration in the ambiguity set | done (#39) |
+| 4 | thin path: the entry attached by the wire callback, the publisher's conditions, the abnormal `S1F4`, the zero-fill offset's regression test, the cap read at dequeue, a rotation between the send and the reply, a reconnect, a reused key | done (#39) |
+| 5 | metrics and the SDK's documentation; `producertest` registering through `RegisterRequest` | done (#39) |
 | 6 | second pull request: the service's requirement raised to `producer/v0.3.0`, `cmd/tracekeep-sim` marking its interval polls and a test reading the thinned records back | pending |
