@@ -90,7 +90,8 @@ Contract changes go through proposals, which the subject [README.md](README.md) 
     An entry never expires, since a binding is immutable and so is the material it pins,
     so a warm cache serves every bound key id through a provider outage, and a restart is the only thing that empties it.
     A cold key id is resolved at its first use, never at start, so a start never waits on a provider,
-    except the download purpose's issuing key id, which the `api` role resolves at start so that a bad key fails the start rather than the first URL;
+    except the download purpose's issuing key id, which the `api` role resolves at start so that a bad key fails the start rather than the first URL,
+    and every accepted session key id, which it resolves at start too, a failure failing the start, so a started replica validates every session cookie without the provider (T-48);
     one resolution of a key id is in flight at a time, and concurrent uses wait on it and share its outcome, failure included, which nothing caches.
   - **Failures** are of two classes, which every caller tells apart:
     *unavailable* (the provider unreachable, its deadline passed, its credential refused or expired) may succeed when retried,

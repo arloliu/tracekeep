@@ -181,7 +181,7 @@ and taking the row of a capture the catalog does not know would create a `pendin
 The one retention decision therefore governs packs, receipts and claim objects alike, from the record's own `ts_utc_ns`, never from an object store clock.
 Seq order and hour order differ after a clock step, so evicted seqs are a set of ranges, not a prefix (§7.3).
 The same pass prunes the change cursor's events by seq prefix with the configured retention period (`catalog.md` §7.3), under the lease.
-Holds for LS-13 (a), if the owner chooses them, exempt an hour from retention.
+tracekeep keeps no holds: the VE copies what it promotes (LS-13 (b), T-4).
 
 ### 8.4 Claim-check objects
 
@@ -201,7 +201,7 @@ no proof about acceptance times, drained subjects or object incarnations is need
 - **Objects without a receipt** are governed by the same decision from the same clock:
   the SDK writes the record's `ts_utc_ns` into the object's `Metadata`,
   so retention deletes a receipt-less object
-  when the **hour of that timestamp** is evicted, exactly as it would a record, holds included,
+  when the **hour of that timestamp** is evicted, exactly as it would a record,
   **and only if its capture is known** (admitted);
   an object of a `rejected` capture, or of a capture the catalog does not know (a `pending` row or none: admission unresolved), is kept
   until the capture is resolved,
