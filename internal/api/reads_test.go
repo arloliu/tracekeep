@@ -57,13 +57,29 @@ func newWorld(t *testing.T, c *catalog.Catalog) *world {
 // admit admits a fresh capture of device eqp begun at hour's start, as ingest's admission of its start would.
 func (w *world) admit(t *testing.T) tracepack.UUID {
 	t.Helper()
+	if _, err := w.c.ActivateConfig(t.Context(), []byte("config")); err != nil {
+		t.Fatal(err)
+	}
+
+	return w.admitActive(t)
+}
+
+// admitActive is admit under the configurations already active, the capture binding the newest.
+func (w *world) admitActive(t *testing.T) tracepack.UUID {
+	t.Helper()
 	origin := hour * nsPerHour
 	ctx := t.Context()
-	cfg, err := w.c.ActivateConfig(ctx, []byte("config"))
+	infos, err := w.c.Configs(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := w.c.Register(ctx, "r", []int64{cfg}, time.Hour); err != nil {
+	var active []int64
+	for _, ci := range infos {
+		if ci.ActivatedAt.Valid && !ci.RetiredAt.Valid {
+			active = append(active, ci.ID)
+		}
+	}
+	if _, err := w.c.Register(ctx, "r", active, time.Hour); err != nil {
 		t.Fatal(err)
 	}
 	name, instance := "eqp", newID(t)

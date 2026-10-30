@@ -11,9 +11,9 @@ import (
 // requests by operation and code with their durations, and auth's refusals.
 // Every method records nothing on a nil *API.
 type API struct {
-	authFailures, requests, downloadURLs *prometheus.CounterVec
-	downloadsRefused                     prometheus.Counter
-	duration                             *prometheus.HistogramVec
+	authFailures, requests, downloadURLs, restores *prometheus.CounterVec
+	downloadsRefused                               prometheus.Counter
+	duration                                       *prometheus.HistogramVec
 }
 
 // NewAPI registers the api role's collectors on s.
@@ -30,7 +30,9 @@ func NewAPI(s *Server) (*API, error) {
 		Help: "Download URLs issued, by kind: presigned by the store, or served by the API."}, []string{"kind"})
 	m.downloadsRefused = prometheus.NewCounter(prometheus.CounterOpts{Namespace: "tracekeep", Subsystem: "api", Name: "download_urls_refused_total",
 		Help: "Download URLs refused as pack-superseded: the object's deadline too near, or the pack deleted."})
-	for _, c := range []prometheus.Collector{m.authFailures, m.requests, m.duration, m.downloadURLs, m.downloadsRefused} {
+	m.restores = prometheus.NewCounterVec(prometheus.CounterOpts{Namespace: "tracekeep", Subsystem: "api", Name: "restores_total",
+		Help: "Restores by outcome: ok, or the reason it was refused (masking-keys.md §9)."}, []string{"outcome"})
+	for _, c := range []prometheus.Collector{m.authFailures, m.requests, m.duration, m.downloadURLs, m.downloadsRefused, m.restores} {
 		if err := s.Registry().Register(c); err != nil {
 			return nil, fmt.Errorf("metrics: api: %w", err)
 		}
@@ -70,4 +72,12 @@ func (m *API) DownloadRefused() {
 		return
 	}
 	m.downloadsRefused.Inc()
+}
+
+// Restore counts one restore of outcome.
+func (m *API) Restore(outcome string) {
+	if m == nil {
+		return
+	}
+	m.restores.WithLabelValues(outcome).Inc()
 }

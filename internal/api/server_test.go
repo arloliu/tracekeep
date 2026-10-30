@@ -21,10 +21,11 @@ import (
 
 // Static tokens of the tests' principals, each at least 32 characters.
 const (
-	readerToken = "a-static-token-of-a-pack-reader-0001"
-	viewerToken = "a-static-token-of-a-viewer-000000001"
-	scorerToken = "a-static-token-of-a-scorer-000000001"
-	adminToken  = "a-static-token-of-an-operator-000001"
+	readerToken   = "a-static-token-of-a-pack-reader-0001"
+	viewerToken   = "a-static-token-of-a-viewer-000000001"
+	scorerToken   = "a-static-token-of-a-scorer-000000001"
+	adminToken    = "a-static-token-of-an-operator-000001"
+	restorerToken = "a-static-token-of-a-restorer-0000001"
 )
 
 func testAuthenticator(f auth.Failures) *auth.Authenticator {
@@ -33,6 +34,7 @@ func testAuthenticator(f auth.Failures) *auth.Authenticator {
 		{Token: viewerToken, Subject: "viewer", Roles: []string{auth.RoleViewer}},
 		{Token: scorerToken, Subject: "scorer", Roles: []string{auth.RoleScorer}},
 		{Token: adminToken, Subject: "operator", Roles: []string{auth.RoleAdmin}},
+		{Token: restorerToken, Subject: "restorer", Roles: []string{auth.RoleRestorer}},
 	}})
 }
 
