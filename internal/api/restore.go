@@ -12,6 +12,7 @@ import (
 	"connectrpc.com/connect"
 	"github.com/arloliu/go-secs/tracepack"
 	"github.com/arloliu/go-secs/tracepack/redact"
+	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"github.com/arloliu/tracekeep/internal/catalog"
 	"github.com/arloliu/tracekeep/internal/keys"
@@ -53,19 +54,19 @@ func (s *Server) Restore(ctx context.Context, req *connect.Request[tkv1.RestoreR
 }
 
 func (s *Server) restoreRecord(ctx context.Context, m *tkv1.RestoreRequest) (*connect.Response[tkv1.RestoreResponse], string, error) {
+	seq, h := m.GetSeq(), m.GetHour()
 	capture, err := tracepack.ParseUUID(m.GetCaptureId())
 	if err != nil {
-		return nil, restoreInvalidRequest, invalid("capture_id %q: %v", m.GetCaptureId(), err)
+		return nil, restoreInvalidRequest, invalid("restore capture_id %q seq %d: %v", m.GetCaptureId(), seq, err)
 	}
-	seq, h := m.GetSeq(), m.GetHour()
+	at := fmt.Sprintf("%s seq %d", capture, seq)
 	if seq >= closeSentinel {
-		return nil, restoreInvalidRequest, invalid("seq %d is no record's", seq)
+		return nil, restoreInvalidRequest, invalid("restore %s: the seq is no record's", at)
 	}
 	if h == nil || h.CheckValid() != nil || h.GetNanos() != 0 || h.GetSeconds()%int64(time.Hour/time.Second) != 0 {
-		return nil, restoreInvalidRequest, invalid("hour is not an hour start")
+		return nil, restoreInvalidRequest, invalid("restore %s: hour %s is not an hour start", at, hourText(h))
 	}
 	hour := h.GetSeconds() / int64(time.Hour/time.Second)
-	at := fmt.Sprintf("%s seq %d", capture, seq)
 
 	// Whether the named hour holds a copy is answered first, whatever the capture's configuration.
 	copies, err := s.Catalog.RecordCopies(ctx, capture, seq)
@@ -326,4 +327,13 @@ func conflict(capture tracepack.UUID, seq uint64) error {
 	}
 
 	return err
+}
+
+// hourText names a request's hour in an error, as given.
+func hourText(h *timestamppb.Timestamp) string {
+	if h == nil {
+		return "absent"
+	}
+
+	return fmt.Sprintf("%d.%09ds", h.GetSeconds(), h.GetNanos())
 }

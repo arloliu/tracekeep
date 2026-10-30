@@ -401,6 +401,8 @@ func TestRestoreRefusals(t *testing.T) {
 
 	var errs []string
 	logged := 0
+	// The request as an error names it: the capture, or the capture id given when it does not parse, and the seq.
+	locator := regexp.MustCompile(`restore ([0-9a-f-]{36}|capture_id \\?"[^"\\]*\\?") seq \d+`)
 	refused := func(name string, code connect.Code, err error) {
 		t.Helper()
 		if connect.CodeOf(err) != code {
@@ -409,11 +411,12 @@ func TestRestoreRefusals(t *testing.T) {
 		if err != nil {
 			errs = append(errs, err.Error())
 		}
-		// Each refusal the handler answers leaves one line naming the operation and the reason; auth logs its own.
+		// Each refusal the handler answers leaves one line naming the operation, the request and the reason; auth logs its own.
 		line := m.logs.String()[logged:]
 		if code != connect.CodePermissionDenied &&
-			(strings.Count(line, "\n") != 1 || !strings.Contains(line, "operation=Restore") || !strings.Contains(line, code.String())) {
-			t.Errorf("%s logged %q, want one line naming Restore and %v", name, line, code)
+			(strings.Count(line, "\n") != 1 || !strings.Contains(line, "operation=Restore") || !strings.Contains(line, code.String()) ||
+				!locator.MatchString(err.Error()) || !locator.MatchString(line)) {
+			t.Errorf("%s: error %v logged %q, want one line naming Restore, the request and %v", name, err, line, code)
 		}
 		logged = m.logs.Len()
 	}
