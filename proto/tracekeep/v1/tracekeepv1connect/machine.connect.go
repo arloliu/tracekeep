@@ -51,6 +51,10 @@ const (
 	MachineServiceListScopeChangesProcedure = "/tracekeep.v1.MachineService/ListScopeChanges"
 	// MachineServicePackURLProcedure is the fully-qualified name of the MachineService's PackURL RPC.
 	MachineServicePackURLProcedure = "/tracekeep.v1.MachineService/PackURL"
+	// MachineServiceRestoreProcedure is the fully-qualified name of the MachineService's Restore RPC.
+	MachineServiceRestoreProcedure = "/tracekeep.v1.MachineService/Restore"
+	// MachineServiceDigestProcedure is the fully-qualified name of the MachineService's Digest RPC.
+	MachineServiceDigestProcedure = "/tracekeep.v1.MachineService/Digest"
 )
 
 // MachineServiceClient is a client for the tracekeep.v1.MachineService service.
@@ -65,6 +69,10 @@ type MachineServiceClient interface {
 	ListScopeChanges(context.Context, *connect.Request[v1.ListScopeChangesRequest]) (*connect.Response[v1.ListScopeChangesResponse], error)
 	// PackURL answers a download URL that expires before the pack can be deleted, or refuses with PackSuperseded.
 	PackURL(context.Context, *connect.Request[v1.PackURLRequest]) (*connect.Response[v1.PackURLResponse], error)
+	// Restore answers one record's original when every copy of it is equal, or refuses with RecordConflict (masking-keys.md §9).
+	Restore(context.Context, *connect.Request[v1.RestoreRequest]) (*connect.Response[v1.RestoreResponse], error)
+	// Digest answers the digest of each input under one digest key id (masking-keys.md §9, T-44).
+	Digest(context.Context, *connect.Request[v1.DigestRequest]) (*connect.Response[v1.DigestResponse], error)
 }
 
 // NewMachineServiceClient constructs a client for the tracekeep.v1.MachineService service. By
@@ -108,6 +116,18 @@ func NewMachineServiceClient(httpClient connect.HTTPClient, baseURL string, opts
 			connect.WithSchema(machineServiceMethods.ByName("PackURL")),
 			connect.WithClientOptions(opts...),
 		),
+		restore: connect.NewClient[v1.RestoreRequest, v1.RestoreResponse](
+			httpClient,
+			baseURL+MachineServiceRestoreProcedure,
+			connect.WithSchema(machineServiceMethods.ByName("Restore")),
+			connect.WithClientOptions(opts...),
+		),
+		digest: connect.NewClient[v1.DigestRequest, v1.DigestResponse](
+			httpClient,
+			baseURL+MachineServiceDigestProcedure,
+			connect.WithSchema(machineServiceMethods.ByName("Digest")),
+			connect.WithClientOptions(opts...),
+		),
 	}
 }
 
@@ -118,6 +138,8 @@ type machineServiceClient struct {
 	listPacks        *connect.Client[v1.ListPacksRequest, v1.ListPacksResponse]
 	listScopeChanges *connect.Client[v1.ListScopeChangesRequest, v1.ListScopeChangesResponse]
 	packURL          *connect.Client[v1.PackURLRequest, v1.PackURLResponse]
+	restore          *connect.Client[v1.RestoreRequest, v1.RestoreResponse]
+	digest           *connect.Client[v1.DigestRequest, v1.DigestResponse]
 }
 
 // ListDevices calls tracekeep.v1.MachineService.ListDevices.
@@ -145,6 +167,16 @@ func (c *machineServiceClient) PackURL(ctx context.Context, req *connect.Request
 	return c.packURL.CallUnary(ctx, req)
 }
 
+// Restore calls tracekeep.v1.MachineService.Restore.
+func (c *machineServiceClient) Restore(ctx context.Context, req *connect.Request[v1.RestoreRequest]) (*connect.Response[v1.RestoreResponse], error) {
+	return c.restore.CallUnary(ctx, req)
+}
+
+// Digest calls tracekeep.v1.MachineService.Digest.
+func (c *machineServiceClient) Digest(ctx context.Context, req *connect.Request[v1.DigestRequest]) (*connect.Response[v1.DigestResponse], error) {
+	return c.digest.CallUnary(ctx, req)
+}
+
 // MachineServiceHandler is an implementation of the tracekeep.v1.MachineService service.
 type MachineServiceHandler interface {
 	// ListDevices answers, per device of the tool, its latest endpoint, open captures, overlap, last record and whether the window holds a gap.
@@ -157,6 +189,10 @@ type MachineServiceHandler interface {
 	ListScopeChanges(context.Context, *connect.Request[v1.ListScopeChangesRequest]) (*connect.Response[v1.ListScopeChangesResponse], error)
 	// PackURL answers a download URL that expires before the pack can be deleted, or refuses with PackSuperseded.
 	PackURL(context.Context, *connect.Request[v1.PackURLRequest]) (*connect.Response[v1.PackURLResponse], error)
+	// Restore answers one record's original when every copy of it is equal, or refuses with RecordConflict (masking-keys.md §9).
+	Restore(context.Context, *connect.Request[v1.RestoreRequest]) (*connect.Response[v1.RestoreResponse], error)
+	// Digest answers the digest of each input under one digest key id (masking-keys.md §9, T-44).
+	Digest(context.Context, *connect.Request[v1.DigestRequest]) (*connect.Response[v1.DigestResponse], error)
 }
 
 // NewMachineServiceHandler builds an HTTP handler from the service implementation. It returns the
@@ -196,6 +232,18 @@ func NewMachineServiceHandler(svc MachineServiceHandler, opts ...connect.Handler
 		connect.WithSchema(machineServiceMethods.ByName("PackURL")),
 		connect.WithHandlerOptions(opts...),
 	)
+	machineServiceRestoreHandler := connect.NewUnaryHandler(
+		MachineServiceRestoreProcedure,
+		svc.Restore,
+		connect.WithSchema(machineServiceMethods.ByName("Restore")),
+		connect.WithHandlerOptions(opts...),
+	)
+	machineServiceDigestHandler := connect.NewUnaryHandler(
+		MachineServiceDigestProcedure,
+		svc.Digest,
+		connect.WithSchema(machineServiceMethods.ByName("Digest")),
+		connect.WithHandlerOptions(opts...),
+	)
 	return "/tracekeep.v1.MachineService/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case MachineServiceListDevicesProcedure:
@@ -208,6 +256,10 @@ func NewMachineServiceHandler(svc MachineServiceHandler, opts ...connect.Handler
 			machineServiceListScopeChangesHandler.ServeHTTP(w, r)
 		case MachineServicePackURLProcedure:
 			machineServicePackURLHandler.ServeHTTP(w, r)
+		case MachineServiceRestoreProcedure:
+			machineServiceRestoreHandler.ServeHTTP(w, r)
+		case MachineServiceDigestProcedure:
+			machineServiceDigestHandler.ServeHTTP(w, r)
 		default:
 			http.NotFound(w, r)
 		}
@@ -235,4 +287,12 @@ func (UnimplementedMachineServiceHandler) ListScopeChanges(context.Context, *con
 
 func (UnimplementedMachineServiceHandler) PackURL(context.Context, *connect.Request[v1.PackURLRequest]) (*connect.Response[v1.PackURLResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("tracekeep.v1.MachineService.PackURL is not implemented"))
+}
+
+func (UnimplementedMachineServiceHandler) Restore(context.Context, *connect.Request[v1.RestoreRequest]) (*connect.Response[v1.RestoreResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("tracekeep.v1.MachineService.Restore is not implemented"))
+}
+
+func (UnimplementedMachineServiceHandler) Digest(context.Context, *connect.Request[v1.DigestRequest]) (*connect.Response[v1.DigestResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("tracekeep.v1.MachineService.Digest is not implemented"))
 }
