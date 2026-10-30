@@ -89,7 +89,7 @@ func TestParkedConsumerStages(t *testing.T) {
 		r.step(t)
 		for _, b := range r.g.Batcher.batches {
 			for range writeFailureLimit - 1 {
-				r.g.refused(batchName(b))
+				r.g.refused(b.Entries)
 			}
 		}
 		r.clk.flushInterval()
@@ -446,7 +446,7 @@ func TestConsumersProcessAtOnce(t *testing.T) {
 		r.step(t)
 		for _, b := range r.g.Batcher.batches {
 			for range writeFailureLimit - 1 {
-				r.g.refused(batchName(b))
+				r.g.refused(b.Entries)
 			}
 		}
 		r.clk.flushInterval()
