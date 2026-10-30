@@ -211,7 +211,8 @@ func checkThinnedStorage(t *testing.T, p *pipeline, sent map[uint64]*tracepack.R
 	return thinned, kept
 }
 
-// activeMaskingOf is activeMasking under policy pol instead of the baseline.
+// activeMaskingOf stages and activates the masking configuration of policy pol in p's catalog, under d-1 and m-1,
+// beside the pipeline's policy-less one, so the captures admitted after bind it; it returns the keys p masks with.
 func activeMaskingOf(t *testing.T, p *pipeline, pol *policy.Policy) *keys.Keys {
 	t.Helper()
 	var plain int64

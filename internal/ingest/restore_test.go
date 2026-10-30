@@ -20,6 +20,7 @@ import (
 	"github.com/arloliu/tracekeep/internal/compact"
 	"github.com/arloliu/tracekeep/internal/keys"
 	"github.com/arloliu/tracekeep/internal/maskingtest"
+	"github.com/arloliu/tracekeep/internal/policy"
 	tkv1 "github.com/arloliu/tracekeep/proto/tracekeep/v1"
 	"github.com/arloliu/tracekeep/proto/tracekeep/v1/tracekeepv1connect"
 )
@@ -57,23 +58,9 @@ func bearer[T any](msg *T, token string) *connect.Request[T] {
 // beside the pipeline's policy-less one, so the captures admitted after bind it; it returns the keys p masks with.
 func activeMasking(t *testing.T, p *pipeline) *keys.Keys {
 	t.Helper()
-	var plain int64
-	for id := range p.x.Configs {
-		plain = id
-	}
-	mcfg := maskingConfig(t)
-	id := stageMasking(t, p.cat, &mcfg)
-	p.x.Configs[id], p.f.Configs[id] = mcfg, mcfg
-	k := maskingKeys(t, p.cat)
-	p.x.Keys = k
-	if _, err := p.cat.Register(t.Context(), "r", []int64{plain, id}, time.Minute); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := p.cat.ActivateStaged(t.Context(), id, nil, nil); err != nil {
-		t.Fatal(err)
-	}
+	b := policy.Baseline()
 
-	return k
+	return activeMaskingOf(t, p, &b)
 }
 
 // restoreAll restores every carrier's record and checks it is the record as received; an annotation is not restorable.
