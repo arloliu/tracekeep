@@ -119,7 +119,7 @@ so an expired `start` that admission has just admitted terminates as beyond-rete
 | `ErrCannotScreen`, or masking fails for the record | nak with delay, alert `cannot-screen`; counted per capture; other captures unaffected | open incident |
 | a key the record's masking needs is refused (`keys.Refused`: a binding mismatch, a key id undeclared or of another kind, material malformed, short or missing at its pinned version, `masking-keys.md` §9) | deferred indefinitely, so parked; alert `key-binding-mismatch` or `key-refused`; the key's other records follow it | parked count, `deferred_messages{reason=key-refused}` |
 | a key the record's masking needs is unavailable (the provider unreachable, its deadline passed, its credential refused) | nak with delay; the key resolves at a later delivery | `deferred_messages{reason=key-unavailable}` |
-| write or put fails | no ack; the batch is retried by redelivery; the same batch failing the `Writer`'s validation three times is deterministic: alert `write-failure`, the batch's messages stay deferred, operator | open incident |
+| write or put fails | no ack; the batch is retried by redelivery; a record whose batch fails the `Writer`'s validation, or the reader's metadata budget at the reopen (§6.2), three times, whichever batch held it, is deterministic: alert `write-failure`, the batch's messages stay deferred, operator | open incident |
 
 Nothing is auto-terminated after N deliveries; every terminal action is one of the rows above or an operator's.
 A deferred delivery is therefore **bounded per capture, never per service**:
@@ -140,6 +140,10 @@ the cases prove the decision, the schedules prove the re-reads under the capture
   the hour is the record's, never the delivery's ([STO §4] *Scope and order*).
 - At flush (interval F, size threshold, or hour change) the batch is **sorted by seq**;
   equal seq with equal bytes keeps one.
+- **The metadata budget**: a segment's redaction entries are its metadata, which every reader opens within a budget (tracepack's default, 64 MiB),
+  so a batch closes, due at once, before the record whose entries would take their estimated encoded size past half of it,
+  and that record opens the next batch of its key;
+  a segment whose metadata still exceeds the budget when its working file is reopened is the `Writer`'s refusal (§6.1 *write or put fails*), never a transient failure.
 - **Conflicts**: equal seq with different bytes are both kept,
   as [FMT I-12] and [STO §4] *Merge* require of every component:
   the first version goes into the batch's segment, each further version into a **conflict segment** of its own for the same scope,
