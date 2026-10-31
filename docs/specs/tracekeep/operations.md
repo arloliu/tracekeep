@@ -92,8 +92,9 @@ a rule reads their maximum, never their sum, over the replicas whose own `tracek
 so one replica's stale snapshot neither fires a rule nor is vouched for by another's fresh one.
 The deferred messages (`deferred_messages`, `deferred_oldest_age_seconds`) are each replica's own, computed at each scrape from the deliveries it holds,
 so a rule reads their maximum across replicas with no freshness condition; a deferral moving to another replica restarts its observed age.
-A counter is read by its increase, which a restart's reset does not count,
-or, created by its first event and so never seen at zero, by its being positive where it did not exist a window ago.
+A counter is read by its increase, which a restart's reset does not count;
+tracekeep exposes the counters these rules read from zero (each key kind's outcomes, each merge outcome, a tool's declared losses once it writes), so a first event is an increase,
+while the SDK reports a drop reason's counter from its first drop, so a reason's first drop after a producer starts counts from the second.
 `TracekeepDeferredOld` keeps the deferral's `reason`, which its runbook section starts from.
 
 | Alert | Fires when | Runbook section |
