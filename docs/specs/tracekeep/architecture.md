@@ -148,8 +148,9 @@ on a push to `main`, on a daily schedule and when dispatched, never on a pull re
   kind with NATS, MariaDB, MinIO (over HTTP inside the cluster), Vault (over TLS, the `kubernetes` method bound to the chart's service account) and Dex in the cluster,
   the image built and loaded, the chart installed with two `api` replicas and `ingest` at zero replicas until the configuration is active.
   Each endpoint's host name (`tracekeep.test`, `dex.test`) resolves to the same service inside the cluster and on the runner, so the issuer and `api.public_url` are one URL from both sides.
-  The login starts on one `api` replica and its callback is answered by the other, each reached on its own port, the cookies being the one host's;
-  the test records which pod answered each, and restarts the first before the callback.
+  The login starts on one `api` replica and its callback is answered by the other, the browser on the public URL throughout, as a person's is:
+  the Service selects the first replica for the login; with the callback request held, the first is deleted and the Service selects the second,
+  whose log then records the sign-in.
   It runs a fresh install of the commit under test; then an upgrade from a baseline:
   the newest strict ancestor of the commit under test, on `main`, that has `deploy/helm/` and whose packaging run passed, never the commit itself or a descendant,
   its chart and image installed fresh and upgraded to the commit under test, the browser run again on its data;
