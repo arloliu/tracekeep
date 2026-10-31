@@ -8,6 +8,8 @@ import (
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/rsa"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"io"
@@ -60,6 +62,19 @@ type idp struct {
 	// down refuses every request; failJWKS refuses the JWKS once a blocked fetch is released.
 	down, failJWKS     atomic.Bool
 	block, jwksEntered chan struct{}
+	// endpoints, when set, replace what discovery names for the authorization and token endpoints ("-" names none).
+	authEndpoint, tokenEndpoint string
+	// grants are the codes the token endpoint exchanges, each once; tokenEntered and tokenBlock hold an exchange.
+	grants                   map[string]grant
+	tokens                   atomic.Int32
+	tokenEntered, tokenBlock chan struct{}
+	tokenBody                string
+}
+
+// grant is what a code was issued for: the PKCE challenge and the ID token's claims.
+type grant struct {
+	challenge string
+	idToken   string
 }
 
 func newIDP(t *testing.T) *idp {
@@ -72,12 +87,22 @@ func newIDP(t *testing.T) *idp {
 		}
 		p.mu.Lock()
 		iss, uri, body, to := cmp.Or(p.issuer, p.srv.URL), cmp.Or(p.jwksURI, p.srv.URL+"/jwks"), p.jwksBody, p.redirectTo
+		authz, token := cmp.Or(p.authEndpoint, p.srv.URL+"/authorize"), cmp.Or(p.tokenEndpoint, p.srv.URL+"/token")
 		set := jose.JSONWebKeySet{Keys: slices.Clone(p.keys)}
 		p.mu.Unlock()
 		switch r.URL.Path {
 		case "/.well-known/openid-configuration":
 			p.discovery.Add(1)
-			_ = json.NewEncoder(w).Encode(map[string]string{"issuer": iss, "jwks_uri": uri})
+			doc := map[string]string{"issuer": iss, "jwks_uri": uri}
+			if authz != "-" {
+				doc["authorization_endpoint"] = authz
+			}
+			if token != "-" {
+				doc["token_endpoint"] = token
+			}
+			_ = json.NewEncoder(w).Encode(doc)
+		case "/token":
+			p.token(w, r)
 		case "/redirect":
 			http.Redirect(w, r, to, http.StatusFound)
 		case "/jwks":
@@ -580,4 +605,50 @@ func TestPanickingFetchEnds(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("Verify after the panicking fetch waits forever on it")
 	}
+}
+
+// token is the token endpoint: a POST of an authorization code grant from the client, its code exchanged once,
+// its verifier matching the code's S256 challenge.
+func (p *idp) token(w http.ResponseWriter, r *http.Request) {
+	p.tokens.Add(1)
+	if p.tokenEntered != nil {
+		p.tokenEntered <- struct{}{}
+	}
+	if p.tokenBlock != nil {
+		<-p.tokenBlock
+	}
+	id, secret, ok := r.BasicAuth()
+	if r.Method != http.MethodPost || !ok || id != peopleClient || secret != peopleSecret || r.PostFormValue("grant_type") != "authorization_code" {
+		http.Error(w, `{"error":"invalid_client"}`, http.StatusUnauthorized)
+		return
+	}
+	p.mu.Lock()
+	g, found := p.grants[r.PostFormValue("code")]
+	delete(p.grants, r.PostFormValue("code"))
+	body := p.tokenBody
+	p.mu.Unlock()
+	sum := sha256.Sum256([]byte(r.PostFormValue("code_verifier")))
+	if !found || base64.RawURLEncoding.EncodeToString(sum[:]) != g.challenge {
+		http.Error(w, `{"error":"invalid_grant"}`, http.StatusBadRequest)
+		return
+	}
+	if body != "" {
+		_, _ = io.WriteString(w, body)
+		return
+	}
+	_ = json.NewEncoder(w).Encode(map[string]string{"access_token": "at-sentinel", "id_token": g.idToken, "token_type": "Bearer"})
+}
+
+// grantCode issues a code for verifier's challenge, which exchanges once for idToken.
+func (p *idp) grantCode(verifier, idToken string) string {
+	sum := sha256.Sum256([]byte(verifier))
+	code := "code-" + rand.Text()
+	p.mu.Lock()
+	if p.grants == nil {
+		p.grants = map[string]grant{}
+	}
+	p.grants[code] = grant{challenge: base64.RawURLEncoding.EncodeToString(sum[:]), idToken: idToken}
+	p.mu.Unlock()
+
+	return code
 }
