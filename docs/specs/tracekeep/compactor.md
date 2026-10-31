@@ -122,7 +122,8 @@ and a read whose range meets the gap reports `incomplete` ([STO §4]).
 A pack is deletable when it is an input of a successful merge
 whose output pack is in state `staged` or `merged`, or `deleted`, which only a merged pack becomes, its records living on in a later merge's output (the relation in `merges`/`merge_inputs`, never a flag or lineage tag),
 so a chain of merges is deleted in any order and a refused input stays a candidate;
-it is deleted a delay D (default 1 hour) after its own merge, at the `merges.delete_at` its commit fixed (`merges.at` + D), D exceeding the lifetime of any download URL, presigned or served by the API (§5.2 *Downloads*, §10.1), by more than twice two minutes of clock skew (below), and any read in flight;
+it is deleted a delay D (default 1 hour) after its own merge, at the `merges.delete_at` its commit fixed (`merges.at` + D), D exceeding the lifetime of any download URL, presigned or served by the API (§5.2 *Downloads*, §10.1), by more than twice two minutes of clock skew (below);
+a record read that outlives D re-reads its hour instead (`api.md` §10.1 *Records*);
 a URL issued after the merge is clamped to that time instead (§10.1 *Downloads*, T-33),
 and a `tombstones` row is written in the same transaction as the `deleted` state.
 Every deletion, by this rule or by retention, runs a transaction

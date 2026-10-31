@@ -30,6 +30,7 @@ Contract changes go through proposals, which the subject [README.md](README.md) 
   a tombstone commits before its object is deleted (§7.2; `compactor.md` §8.1, §8.3).
 - **Reads**: domain results;
   `ListPacks` returns completeness and the watermark read before the listing, and the module owns cursor recovery (§7.3).
+- **Read set**: a human read reads an hour's `staged` and `excluded` packs from one snapshot, never a `merged` input, and a capture whose configuration has no policy is withheld outside `tracekeep dev` (§7.3).
 - **Completeness**: producer coverage is the union of `pack_ranges` and `evicted_ranges`;
   a seq of an unresolved parked version is deferred, one of a terminated version a declared loss;
   a hole is a gap, evicted, or the unknown tail;
@@ -179,6 +180,14 @@ and the caller acts on it: the merge and the close at the next cycle (§8.1, §8
   It selects the admitted captures (`open`, `stopped` or `closed`) of that tool and those devices whose span meets the window:
   a capture's **span** runs from `capture_origin_utc_ns` to `highest_seq_ts`, or is the origin alone before any record,
   and for the window only, a capture still `open` has a span without end, since it may yet record.
+- **Read set** (T-48): the packs a human read reads for a capture and an hour, which `QueryRecords`, `FindTransaction` and `Export` share (`api.md` §10.1):
+  the hour's `staged` packs (its last merge's archive and the segments registered after it, or every segment before a merge) and its `excluded` packs, which are read and marked;
+  never a `merged` input, which its archive holds, nor a `deleted` pack.
+  It is read from one snapshot, each pack with its object key, size, role, state and ranges,
+  together with whether the hour has a scope and whether retention evicted ranges of it.
+  The read set names the capture's configuration (`captures.config_id`), and outside `tracekeep dev` a capture whose configuration has no policy is **withheld**:
+  the read checks every read set it reads and reads none of a withheld capture's packs, naming it withheld instead,
+  so a capture admitted before the cutover never shows a clear body (`rollouts.md`, T-42).
 - `ListPacks(tool, from, to)` iterates the requested hours, at most a leap year's 8,784:
   for each, the scopes of every selected capture overlapping it, with packs, ranges, state and revision;
   an hour with no scope is reported as `no-data` together with whether a selected capture's span, unbounded while `open`, meets that hour,
