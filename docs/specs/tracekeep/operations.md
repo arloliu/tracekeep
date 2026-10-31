@@ -88,7 +88,8 @@ The Helm chart ships alert rules (`architecture.md` §3.3), each with its runboo
 the thresholds are the chart's values, the defaults below.
 The ingest gauges of shared state are observed by every ingest replica alike from a snapshot it refreshes:
 the stream's backlog from the bus (`source="bus"`), a tool's open gaps and the parked messages from the catalog (`source="catalog"`);
-a rule reads their maximum across replicas, never their sum, and only while `tracekeep_ingest_refreshed_timestamp_seconds` of that source is less than ten minutes old.
+a rule reads their maximum, never their sum, over the replicas whose own `tracekeep_ingest_refreshed_timestamp_seconds` of that source is less than ten minutes old,
+so one replica's stale snapshot neither fires a rule nor is vouched for by another's fresh one.
 The deferred messages (`deferred_messages`, `deferred_oldest_age_seconds`) are each replica's own, computed at each scrape from the deliveries it holds,
 so a rule reads their maximum across replicas with no freshness condition; a deferral moving to another replica restarts its observed age.
 A counter is read by its increase, which a restart's reset does not count.
@@ -98,7 +99,7 @@ A counter is read by its increase, which a restart's reset does not count.
 | `TracekeepDeferredOld` | `tracekeep_ingest_deferred_oldest_age_seconds` above an hour on any replica, for any reason | `parked` |
 | `TracekeepBacklogHigh` | `tracekeep_ingest_stream_backlog_bytes` above a threshold (default 10 GiB) for 15 min | `backlog` |
 | `TracekeepCompactLeaseLost` | no `compact` replica holds the lease (`tracekeep_compact_lease_held`) for 5 min | `lease-lost` |
-| `TracekeepMergeStalled` | the lease holder's merge task has completed no cycle (`tracekeep_compact_last_success_timestamp{task="merge"}`) for two hours, or none since it took the lease two hours ago; a cycle that merged nothing counts as completed, and a scope left unmerged shows as `tracekeep_compact_oldest_unmerged_scope_age_seconds` instead | `merge-stalled` |
+| `TracekeepMergeStalled` | the lease holder's merge task (`tracekeep_compact_last_success_timestamp{task="merge"}` of the replica whose `tracekeep_compact_lease_held` is 1, never a standby's) has completed no cycle for two hours, or none since it took the lease two hours ago, each its own rule labelled by `cause`; a cycle that merged nothing counts as completed, and a scope left unmerged shows as `tracekeep_compact_oldest_unmerged_scope_age_seconds` instead | `merge-stalled` |
 | `TracekeepMergeRefused` | a merge refused over the metadata budget (`tracekeep_compact_merges_total{outcome="refused"}`) | `merge-over-budget` |
 | `TracekeepGapsGrowing` | `tracekeep_ingest_open_gaps` or `tracekeep_ingest_declared_losses_total` increasing on a tool over 30 min | `gaps-and-losses` |
 | `TracekeepKeyRefused` | a key resolution refused (`tracekeep_key_resolutions_total{outcome="refused"}`) | `key-refused` |
@@ -109,7 +110,7 @@ the chart ships them in a group of their own, off unless the values enable it fo
 
 | Alert | Fires when | Runbook section |
 |---|---|---|
-| `TracepubToolSilent` | a producer connected to the bus (`bus_connected` 1) for ten minutes with no record published (`records_published_total` unchanged, or absent for a producer that never published) | `tool-silent` |
+| `TracepubToolSilent` | a producer connected to the bus (`bus_connected` 1) through the last ten minutes with no record published in them (`records_published_total` unchanged, or absent for a producer that never published) | `tool-silent` |
 | `TracepubDropping` | a producer dropping records (`records_dropped_total`, any reason) | `producer-drops` |
 
 The Metrics table's `preflight_ok` is not reported by the SDK yet, so no rule reads it; its alert joins when the SDK reports it.
