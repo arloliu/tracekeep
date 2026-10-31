@@ -15,4 +15,6 @@ After modifying any `.go` file:
 4. **Re-run:** until clean.
 
 `go fix` modernizers can introduce new lint findings, so always lint after it.
+
+After modifying anything under `web/` but its Go files and fallback page, run `make web-check` (ESLint, the TypeScript check and the tests) and fix what it reports.
 Fix `goimports` / formatting findings with `make fmt`.

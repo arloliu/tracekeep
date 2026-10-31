@@ -43,6 +43,13 @@ a test-only module that imports both and runs, like the SDK, with `GOWORK=off` (
 The packaging jobs are the exception (T-48): the Helm chart on kind and the systemd unit on the runner,
 each a CI job of its own that drives the built image or binary against real services and a browser, never part of `make test`.
 
+## Frontend
+
+`web/`'s tests are Vitest with Testing Library on jsdom (`make web-check`).
+The API is faked by connect's router transport implementing `MachineService`, and `/auth/` by a stubbed `fetch`;
+no test reaches the Go server or a network.
+The browser end to end (Playwright) runs only in the packaging jobs above.
+
 ## Patterns
 
 Table-driven only when there are multiple cases; a single case is a plain function.

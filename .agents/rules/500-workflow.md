@@ -2,7 +2,8 @@
 
 ## Setup
 
-1. `mise install` — Go, golangci-lint and Atlas at the versions `mise.toml` pins.
+1. `mise install` — Go, golangci-lint, Atlas and Node at the versions `mise.toml` pins.
+   `cd web && npm ci` installs the frontend's packages, for `make web`, `make web-check` and `make proto`.
 2. `make hooks` — run `data-check` before every commit; once per clone.
 
 ## Before commit
@@ -13,11 +14,14 @@
    `make docs-check` must pass.
 4. Touched a parser of external input?
    Run its fuzz target.
-5. Touched `producer/`, `internal/ingest/` or `internal/compact/`?
+5. Touched `web/` beyond its Go files and fallback page?
+   `make web-check` must pass.
+6. Touched `producer/`, `internal/ingest/` or `internal/compact/`?
    Check the change against `600-invariants.md`.
-6. Search the diff for sensitive data (`100-overview.md`, prime directive 1) before staging.
+7. Search the diff for sensitive data (`100-overview.md`, prime directive 1) before staging.
 
-`make ci` runs every gate.
+`make ci` runs the Go and documentation gates, needing no Node;
+CI's `web` job runs `make web-check` and `make build`.
 
 ## Before a release
 
@@ -55,7 +59,10 @@ make test-vault     # the vault key provider against a dev-mode Vault server in 
 make test-catalog   # the catalog's tests on MariaDB in a container (needs docker; with migrate-check, its own CI job)
 make migrate-diff NAME=<change>  # both engines' migration from schema.hcl (needs docker and atlas)
 make migrate-check  # validate the migrations and check schema.hcl for drift
-make proto          # regenerate proto/'s Go after a .proto change (needs protoc; the plugins are pinned and built under tmp/bin); commit the result
+make proto          # regenerate proto/'s Go and web/src/gen's TypeScript after a .proto change (needs protoc and web's npm ci; the Go plugins are pinned and built under tmp/bin); commit the result
+make web            # build web/dist (needs Node and web's npm ci)
+make web-check      # web/'s lint, type check and tests
+make build          # make web, then the binary with -tags webdist under dist/; how a release is built
 make bench
 make ci             # check + docs-check + data-check + test + the service built with GOWORK=off
 ```
