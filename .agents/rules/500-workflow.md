@@ -18,10 +18,12 @@
    `make web-check` must pass.
 6. Touched `producer/`, `internal/ingest/` or `internal/compact/`?
    Check the change against `600-invariants.md`.
-7. Search the diff for sensitive data (`100-overview.md`, prime directive 1) before staging.
+7. Touched `deploy/` or `scripts/packaging/`?
+   `make chart-check`, `make alerts-check` and `make unit-check` must pass, and `make packaging-cluster` before the merge.
+8. Search the diff for sensitive data (`100-overview.md`, prime directive 1) before staging.
 
 `make ci` runs the Go and documentation gates, needing no Node;
-CI's `web` job runs `make web-check` and `make build`.
+CI's `web` job runs `make web-check` and `make build`, and its packaging checks run `make image-check`, `make chart-check`, `make alerts-check` and `make unit-check`.
 
 ## Before a release
 
@@ -63,6 +65,13 @@ make proto          # regenerate proto/'s Go and web/src/gen's TypeScript after 
 make web            # build web/dist (needs Node and web's npm ci)
 make web-check      # web/'s lint, type check and tests
 make build          # make web, then the binary with -tags webdist under dist/; how a release is built
+make image          # the image for the host's platform, loaded as tracekeep:dev (needs docker)
+make image-check    # the image built for amd64 and arm64, neither loaded nor pushed (needs docker; a PR CI job)
+make chart-check    # the Helm chart linted, rendered with the tests' values and validated (needs helm)
+make alerts-check   # the alert rules' tests and their runbook anchors
+make unit-check     # the systemd unit verified (needs systemd-analyze)
+make packaging-cluster     # the cluster leg: kind, the chart, a browser (needs docker; its own CI job)
+make packaging-standalone  # the standalone leg: installs the unit on the host; refuses outside a GitHub-hosted runner
 make bench
 make ci             # check + docs-check + data-check + test + the service built with GOWORK=off
 ```

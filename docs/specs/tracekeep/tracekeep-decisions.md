@@ -609,7 +609,7 @@ as CI jobs of their own, the testing rule's one exception to "no test reaches a 
 **Human reads see masked packs only, from one read set**:
 outside `tracekeep dev`, a pack whose capture's configuration has no policy is withheld from `QueryRecords`, `FindTransaction` and `Export` and named as withheld;
 the three read an hour's `staged` packs (its archive and the segments registered after a reopen) and its `excluded` packs, never a `merged` input.
-**The image** is a static, distroless build for amd64 and arm64, published as `ghcr.io/arloliu/tracekeep`.
+**The image** is a static, distroless build for amd64 and arm64, published as `ghcr.io/arloliu/tracekeep` (its publication deferred by T-50).
 The plan splits the phase into six sub-phases.
 
 ### T-49 — the frontend's stack and `tracekeep dev`'s sign-in (2026-10-31)
@@ -618,10 +618,23 @@ Phase 4.4 asked how a developer's browser signs in to `tracekeep dev`, which ser
 when people's sign-in needs TLS and an IdP and the static token is a service credential (T-48),
 and which components and styling the frontend uses.
 **`tracekeep dev` serves the API over TLS with a self-signed certificate and runs a test IdP of its own**, `internal/devidp`,
-so people sign in under it by the same authorization code flow as in production, and the gate's standalone leg can reuse it;
+so people sign in under it by the same authorization code flow as in production, and the gate's standalone leg can reuse it (superseded by T-50: both legs sign in at Dex);
 the service trusts it through a new `auth.oidc.ca_file`, which a private IdP in production needs as well.
 **The frontend is Vite, React and TypeScript with shadcn/ui on Tailwind CSS v4, TanStack Router, Query and Virtual**,
 and no framework that needs a server, since the build ships embedded in the one binary (`api.md` §10.3).
 Considered and not taken: a loopback principal that `dev` admits without a credential, which leaves the sign-in flow untested locally and loosens dev;
 an external IdP each developer runs, which every developer must set up;
 plain CSS without a component library, and Mantine, for the owner's preference of a current React stack whose components the repository owns.
+
+### T-50 — the packaging's IdP, dependencies, publication and test triggers (2026-10-31)
+
+Phase 4.5 asked which IdP the packaging tests sign in at, what the Helm chart installs beside tracekeep, whether the image is published, and when the browser-driven packaging tests run.
+**Both packaging tests sign in at Dex**, its mock connector signing a fixed person in with a `groups` claim,
+a real OIDC provider that needs no password form; this replaces T-49's remark that the standalone leg could reuse `tracekeep dev`'s test IdP, which stays dev's and tests'.
+**The chart deploys tracekeep alone**: the bus, MariaDB, the object store, Vault and the IdP are the cluster's own, named by values, never subcharts.
+**The image is built, not published, in phase 4.5**: its shape and name stay T-48 point 11's (`ghcr.io/arloliu/tracekeep`, static, distroless, amd64 and arm64),
+and a release workflow that pushes it waits for a later phase; a deployment builds it meanwhile.
+**The packaging tests run on `main`, daily and when dispatched**, not on pull requests, which build the image for both platforms instead;
+a packaging fault a pull request introduces is found on `main` and fixed forward.
+Considered and not taken: tracekeep's own test IdP packaged as a binary, which is no real IdP and would widen what may start it; Keycloak, whose size and start time cost every run;
+optional subcharts, which pin versions the clusters already own; an `edge` image on every merge; the packaging tests on every pull request.

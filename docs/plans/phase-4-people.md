@@ -1,6 +1,6 @@
 # Phase 4 — people
 
-Status: active (2026-10-31) — 4.1 to 4.4 done; 4.5 next
+Status: active (2026-10-31) — 4.1 to 4.4 done; 4.5 in progress
 
 Milestone 4 of the [roadmap](../ROADMAP.md):
 people's sign-in through the API, the first pages, `QueryRecords` and `FindTransaction`, `Export` bundles, and the packaging a standalone host and a cluster run.
@@ -57,7 +57,7 @@ The owner's answers, recorded as T-48; the phases below cite them by number.
    an hour's `staged` packs (its archive and the segments registered after a reopen) and its `excluded` packs, which are read and marked,
    never a `merged` input during the deletion delay.
 10. **Typed admin operations wait** (answered 2026-10-31), with the admin page: `Admin(words)` serves policies, configurations and key ids meanwhile.
-11. **The image** (answered 2026-10-31) is a static, distroless build of the one binary, for amd64 and arm64, published as `ghcr.io/arloliu/tracekeep`.
+11. **The image** (answered 2026-10-31) is a static, distroless build of the one binary, for amd64 and arm64, published as `ghcr.io/arloliu/tracekeep` (its publication deferred by T-50).
 12. **The split below** into six sub-phases (answered 2026-10-31).
 
 The commit that activated this plan amended:
@@ -81,7 +81,7 @@ payload-content predicates of `QueryRecords` (`api.md` §10.1), and the eqp-hub 
 | 4.2 — `QueryRecords` and `FindTransaction` | spec first (`api.md` §10.1–§10.2, `catalog.md` §7.3): connect-go's overhead on a long stream measured again with real-shaped synthetic records, which settles the batching (T-7), each batch capped in encoded bytes and holding copies, never callback-owned data; the read set of point 9 with its snapshot, a pack merged or evicted between the selection and its read, and the withheld packs; overlapping captures answered side by side, which neither of tracepack's merge orders gives, so one merge per capture; `SxF*` and seq ranges, which tracepack's filter lacks, applied in tracekeep; capture boundaries, gaps and the unknown tail in the stream, and its terminal incompleteness after partial output; the limit, its default and a cursor stable across a merge and a late registration; memory bounds beyond `MaxHeldBytes` (readers open at once, metadata-heavy unmergeable hours of T-45, concurrent streams); the roles of both operations, and a completeness view for `viewer` that grants no `PackURL`; streaming requests observed by the request metrics; SML beside each record (point 4); `FindTransaction` across an hour boundary, a conflict in the second hour and a backward clock step | done (#48) |
 | 4.3 — `Export` | spec first (`api.md` §10.1, `catalog.md` §7.1–§7.2, `compactor.md` §8.3): the jobs table and its migration on both engines, its transactions and locks; start, get and cancel, each checking `exporter`, which jobs a principal sees, and their audit rows; job ownership by a fenced worker, an upload intent persisted before the put, an attempt key never reused, completion by compare-and-set, cancel against completion; partial and orphaned objects deleted by a durable step that survives a crash and a late put; the bundle's deletion deadline persisted at completion and shared by the URL and the compactor (T-33), the URL's margin and floor; the read set and withheld packs of point 9; the manifest's conflicts (suspect, confirmed, acknowledged) across two hours; `export_jobs{state}` and the cleanup's failures; no clear recipe body in a bundle, checked on the unpacked JSONL (payloads, annotation bodies, header and redaction entries) against every baseline carrier, with an unmasked negative control | done (#49) |
 | 4.4 — frontend | detailed below | done (#52) |
-| 4.5 — packaging | spec first (`architecture.md`, `operations.md` §10.4): the image (point 11) built after `make web`; the Helm chart under `deploy/helm/` (a Deployment per role, `migrate` as a hook ordered after the bus and the catalog are reachable, probes, alert rules with their runbook links, `work_dir` as a sized `emptyDir`); the systemd unit for `all`, its credentials and directories, and its install and upgrade order (stop, migrate, start, since SQLite has one writer); the CI jobs of point 8 with HTTPS endpoints the browser and the service trust, two `api` replicas with a callback crossing them, a fresh install and an upgrade; the deployment guides | pending |
+| 4.5 — packaging | detailed below | in-progress |
 | 4.6 — gate | audit every gate case against the test bodies, then one step per gap, as phase 3.6 did | pending |
 
 ## Phase 4.1 — people's sign-in
@@ -151,6 +151,28 @@ Playwright waits for the gate's packaging jobs (point 8); this phase tests the p
 | 7 | the records: the filter bar, the stream into a virtualized list, the markers, the record's panel with SML and its transaction, the end and the next page, an interrupted stream continued from its last cursor, cancellation, a truncated completeness | done (#52) |
 | 8 | exports: the list, a job's page with polling, cancel, the bundle's URL asked for when the download is chosen, `expired`, a new job from a selector | done (#52) |
 | 9 | the guides: frontend development under `tracekeep dev` and Vite, the configuration guide's dev notes and the runbook | done (#52) |
+
+## Phase 4.5 — packaging
+
+Work on the branch `feat/deploy/packaging`, one commit per step, test first;
+the branch merges by pull request once the whole phase passes an external post-implementation review.
+The owner settled the packaging's IdP, the chart's dependencies, the image's publication and the packaging tests' triggers before it started (T-50).
+The packaging tests run on `main`, daily and when dispatched, not on the pull request:
+the cluster leg is a script a developer runs where Docker is, run locally before the merge;
+the standalone leg installs a system unit and refuses to run outside a GitHub-hosted runner, so it first runs on `main` after the merge,
+and the gate (4.6) counts neither leg proven until a run on `main` passed for a recorded commit.
+
+| Step | Scope | State |
+|---|---|---|
+| 1 | spec, `architecture.md` §3.3, `operations.md` §10.4, T-50, the rules (`100`, `300`, `500`): the image, the chart (a Deployment per role, one configuration and its secret files, the migrate hook, probes, work directories, the Service, the security context, the alert rules), the unit (its user, directories, credentials, migration before every start, hardening), the packaging tests (Dex, the CA, the simulator under an active masking configuration, two `api` replicas and a crossing callback, fresh install and upgrade) | in-progress |
+| 2 | the image: `deploy/image/Dockerfile`, its ignore file, `make image` and `make image-check`, a PR CI job building both platforms; the binary static and the frontend embedded, the user non-root, nothing written outside mounted directories | pending |
+| 3 | the chart: the Deployments, the ConfigMap and the secret mounts (no key material, no credential rendered), the migrate hook Job with its configuration snapshot, retries and deadline, probes, `emptyDir` work directories and `TMPDIR`, the Service, the security context; `make chart-check` (lint, render with the tests' values, the rendered manifests validated) in PR CI; helm, kind and kubectl pinned in `mise.toml` | pending |
+| 4 | the alert rules and their runbook sections: the `PrometheusRule` and the gateway's group, each rule's expression tested against sample series, every `runbook_url` an anchor that exists | pending |
+| 5 | the unit: `tracekeep.service` and `tracekeep.sysusers`, migration before every start and its timeout, restarts without a start limit, the credentials' and keys' modes, hardening; checked by `systemd-analyze verify` in PR CI | pending |
+| 6 | the browser tests: Playwright in `web/e2e/`, signing in at Dex, the browser, the records and a transaction, an export to its download and its manifest, an unmapped person denied; a CA the browser trusts, no certificate error ignored | pending |
+| 7 | the cluster leg: `scripts/packaging/cluster.sh` and its CI job: kind, NATS, MariaDB, MinIO, Vault and Dex, the CA, the host names resolved alike inside and outside, API-served downloads, a masking configuration active before any ingest member starts, the tool's capture admitted before the browser, two `api` replicas with the callback crossing them after the first restarts, a fresh install, then the baseline's chart and image upgraded to this one's (skipped, and said, while no baseline exists) | pending |
+| 8 | the standalone leg: `scripts/packaging/standalone.sh` and its CI job: its refusal outside a GitHub-hosted runner or over an installation, the unit installed on the runner, NATS and Dex in containers, SQLite and an `fs` store, the configuration staged and active with the unit stopped, a fresh install, then the baseline's binary upgraded in the unit's order | pending |
+| 9 | the guides: deploying on Kubernetes and on a standalone host (build or push the image, values, secrets, install and upgrade order, alerts), the configuration and repository guides' notes | pending |
 
 ## Gate cases and their owners
 

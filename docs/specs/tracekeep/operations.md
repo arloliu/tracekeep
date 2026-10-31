@@ -1,6 +1,6 @@
 # tracekeep — operations
 
-Status: draft (2026-10-25) — split from seed v21
+Status: draft (2026-10-31) — split from seed v21; §10.4 gained the shipped alert rules and their runbook sections (phase 4.5)
 
 Covers the admin commands, the runbook's shape, the tunables, metrics, health and logs;
 the source the runbook and configuration guides are written from.
@@ -20,6 +20,7 @@ Contract changes go through proposals, which the subject [README.md](README.md) 
 - **Metrics**: `tracekeep_` and `tracepub_` prefixes;
   `tool_id` is a label, `capture_id` never is, except on one info gauge per producer.
 - **Health**: `/healthz`, `/readyz`, and `tracekeep status` per tool.
+- **Alerts**: the Helm chart's rules, each linked to its runbook section (§10.4).
 - **Logs**: one structured line per state change, never one per record.
 
 ### 10.4 Operations: admin commands, runbook, metrics
@@ -81,6 +82,33 @@ Health: `/healthz` (process) and `/readyz` (catalog reachable, lease state for `
 Deferred messages are the tool's unresolved parked versions, as `deferred list` counts them;
 backlog is the traffic stream's messages on the tool's subjects, whose token after the prefix is the tool's (tracepack's `bus.Subject`),
 and the stream's bytes, which no subject divides, once for all tools.
-The Helm chart ships alert rules:
-deferred age above an hour, backlog bytes above a threshold, a tool with a connected gateway and no records for ten minutes, producer drop rate, lease lost, no successful merge for two hours, a merge refused over the metadata budget, `open_gaps` or `declared_losses_total` increasing on a tool, `preflight_ok` false, a key refused, keys unavailable for five minutes.
+The probes of the Helm chart and the systemd unit's checks read these on the metrics listener (`metrics.listen`, default `:9090`), never on the API's port.
+
+The Helm chart ships alert rules (`architecture.md` §3.3), each with its runbook section in `docs/guides/runbook.md` as its `runbook_url` and the metric it reads;
+the thresholds are the chart's values, the defaults below.
+The ingest gauges of shared state (the stream's backlog, a tool's open gaps, the deferred messages) are observed by every ingest replica alike,
+so a rule reads their maximum across replicas, never their sum, and only while `tracekeep_ingest_refreshed_timestamp_seconds` is less than ten minutes old;
+a counter is read by its increase, which a restart's reset does not count.
+
+| Alert | Fires when | Runbook section |
+|---|---|---|
+| `TracekeepDeferredOld` | `tracekeep_ingest_deferred_oldest_age_seconds` above an hour, for any reason | `parked` |
+| `TracekeepBacklogHigh` | `tracekeep_ingest_stream_backlog_bytes` above a threshold (default 10 GiB) for 15 min | `backlog` |
+| `TracekeepCompactLeaseLost` | no `compact` replica holds the lease (`tracekeep_compact_lease_held`) for 5 min | `lease-lost` |
+| `TracekeepMergeStalled` | the lease holder's merge task has completed no cycle (`tracekeep_compact_last_success_timestamp{task="merge"}`) for two hours, or none since it took the lease two hours ago; a cycle that merged nothing counts as completed, and a scope left unmerged shows as `tracekeep_compact_oldest_unmerged_scope_age_seconds` instead | `merge-stalled` |
+| `TracekeepMergeRefused` | a merge refused over the metadata budget (`tracekeep_compact_merges_total{outcome="refused"}`) | `merge-over-budget` |
+| `TracekeepGapsGrowing` | `tracekeep_ingest_open_gaps` or `tracekeep_ingest_declared_losses_total` increasing on a tool over 30 min | `gaps-and-losses` |
+| `TracekeepKeyRefused` | a key resolution refused (`tracekeep_key_resolutions_total{outcome="refused"}`) | `key-refused` |
+| `TracekeepKeysUnavailable` | key resolutions unavailable (`tracekeep_key_resolutions_total{outcome="unavailable"}`) for five minutes | `keys-unavailable` |
+
+The gateway's rules read the producer's metrics (`tracepub_`), which the gateway serves, not tracekeep;
+the chart ships them in a group of their own, off unless the values enable it for a Prometheus that scrapes the gateways too:
+
+| Alert | Fires when | Runbook section |
+|---|---|---|
+| `TracepubToolSilent` | a producer connected to the bus (`bus_connected` 1) for ten minutes with no record published (`records_published_total` unchanged, or absent for a producer that never published) | `tool-silent` |
+| `TracepubDropping` | a producer dropping records (`records_dropped_total`, any reason) | `producer-drops` |
+
+The Metrics table's `preflight_ok` is not reported by the SDK yet, so no rule reads it; its alert joins when the SDK reports it.
+
 Logs are structured, one line per state change with `capture_id`, `tool_id` and `seq` where they apply, never one line per record.
