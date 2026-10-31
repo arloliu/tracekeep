@@ -158,6 +158,8 @@ func (m *Ingest) Registered(d time.Duration, tool string, bytes int64, conflict 
 	m.registration.Observe(d.Seconds())
 	m.segments.WithLabelValues(tool).Inc()
 	m.segmentBytes.WithLabelValues(tool).Add(float64(bytes))
+	// A tool's losses are exposed from zero once it writes, so an alert reads its first declared loss as an increase.
+	m.losses.WithLabelValues(tool)
 	if conflict {
 		m.conflicts.WithLabelValues(tool).Inc()
 	}
