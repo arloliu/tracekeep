@@ -83,25 +83,30 @@ the bus, the catalog's MariaDB, the object store, Vault and the IdP are the clus
   The API's certificate and key, and the CA files (`auth.oidc.ca_file`, the Vault provider's), are such files.
 - **Key material comes from Vault**, never from a mounted file (§9, `masking-keys.md` §9):
   every `keys.declared` id uses the `vault` provider with the `kubernetes` method, logging in with the pod's service account token, of the chart's service account.
-  The `file` provider refuses a file that is not its process's own with mode 0600, and the kubelet owns a Secret volume's files as root, so a mounted key would be refused at start.
+  The `file` provider requires a regular file of mode exactly 0600, and the kubelet writes a Secret volume's files as root with the modes it chooses,
+  so a mounted key would be unreadable by the non-root process or refused at start.
 - **`migrate` is a Job**, a `pre-install` and `pre-upgrade` hook, so the roles' Deployments change only after it succeeds, and a failed migration leaves them as they were.
   It reads a snapshot of the release's configuration: the same `config.yaml` in a ConfigMap of its own, a hook of a lower weight,
   so a fresh install has it before any ordinary resource and an upgrade migrates with the new release's configuration, never the running one's.
   Both hooks are deleted before their next creation and once they succeed; a failed Job stays for its logs.
   The Job mounts the same Secrets and no service account token, since migrate resolves no key.
-  An attempt ends when its first connection does, against a bus or a catalog that does not answer:
-  the bus client's connect timeout (2 s) and, for MariaDB, the DSN's `timeout`, which the deployment guide sets;
+  An attempt against a bus that does not answer ends at the bus client's connect timeout (2 s, with no retry of a failed first connection);
+  against MariaDB, the DSN's `timeout` bounds the dial only, which the deployment guide sets,
+  so a server that accepts the connection and never answers holds the attempt until the Job's deadline;
   a held migration lock waits up to its 10 min (`catalog.md` §7.4).
   The Job retries a failed attempt with the cluster's backoff until `backoffLimit` attempts or `activeDeadlineSeconds` pass, whichever comes first,
   defaults 20 attempts and 15 min, so the deadline ends it; Helm's `--timeout` must exceed the deadline.
   An install whose dependencies never answer fails then, its Deployments never changed, and is run again once they do.
 - **Probes** on the metrics port (`metrics.listen`, 9090): liveness `/healthz`, readiness `/readyz` (operations.md §10.4 *Health*).
-- **Work directories**: every role mounts an `emptyDir` at `/work`, its size limit and ephemeral-storage request the values' per role,
+- **Work directories**: every role mounts an `emptyDir` at `/work`, its size limit, ephemeral-storage request and limit the values' per role,
   with `ingest.work_dir` `/work` (read by `ingest` and by `compact`, which builds its archives there), `exports.work_dir` `/work/exports` and `TMPDIR` `/work`.
-  The deployment guide sizes each: `ingest`, the scopes a replica holds open at `ingest.batch_max_bytes` each, for the traffic and the parking batchers, plus one fetched batch;
+  The deployment guide sizes each with a margin: `ingest`, the scopes a replica holds open at `ingest.batch_max_bytes` each,
+  for the traffic and the parking batchers, plus one fetched batch, each with its records' encoded headers and the pack's own metadata beside the payload bytes the bound counts;
   `compact`, the largest merged pack of an hour, which it writes before the put; `api`, `exports.max_running` bundles of `exports.max_bundle_bytes`.
-  A directory past its limit fails its writes with no space, which fails that flush, merge or export attempt to be retried,
-  and the kubelet evicts the pod at its next check; each role clears its work directory when it starts again, and nothing acknowledged depends on it.
+  Neither the size limit nor the ephemeral-storage limit stops a write: the kubelet evicts a pod past either at its next check, asynchronously,
+  and a write fails with no space only when the node's disk itself is full.
+  A failed flush or merge is retried; an export whose pack cannot be written leaves it out of the bundle, named in the manifest's `left_out` (`api.md` §10.1 *Exports*), and completes.
+  Each role clears its work directory when it starts again, and nothing acknowledged depends on it.
 - **The API** behind a Service on port 443 to the pods' 8443, over the API's own TLS (`api.tls_cert_file`);
   `api.public_url` is the URL people and services reach it at, through whatever the cluster routes to that Service.
   Every `api` replica resolves the same session and download keys (`api.md` §10.2), so a login one replica starts another can finish.
@@ -146,13 +151,17 @@ on a push to `main`, on a daily schedule and when dispatched, never on a pull re
   The login starts on one `api` replica and its callback is answered by the other, each reached on its own port, the cookies being the one host's;
   the test records which pod answered each, and restarts the first before the callback.
   It runs a fresh install of the commit under test; then an upgrade from a baseline:
-  the newest commit on `main` that has `deploy/helm/` and whose packaging run passed, its chart and image installed fresh and upgraded to the commit under test, the browser run again on its data;
+  the newest strict ancestor of the commit under test, on `main`, that has `deploy/helm/` and whose packaging run passed, never the commit itself or a descendant,
+  its chart and image installed fresh and upgraded to the commit under test, the browser run again on its data;
   while no such commit exists, as for the first run after this phase merges, the upgrade step is skipped and the job says so, never replaced by a same-version upgrade.
   The job records both commits.
-- **Standalone** (`standalone.sh`, CI only): it refuses to run unless `GITHUB_ACTIONS` is set and the host has no `tracekeep` user, unit or `/etc/tracekeep`,
-  so it never writes on a workstation or over an installation; on a GitHub-hosted runner, discarded after the job, it needs no cleanup.
-  It installs the binary `make build` builds with the unit, NATS and Dex in containers, SQLite and an `fs` store,
-  stages and activates the configuration with the unit stopped, then starts it; then upgrades from the same baseline as the cluster's, in the unit's order (stop, replace, start).
+- **Standalone** (`standalone.sh`, CI only): it refuses to run unless `GITHUB_ACTIONS` is `true` and `RUNNER_ENVIRONMENT` is `github-hosted`,
+  and refuses a host that has any of the `tracekeep` user, the unit, `/etc/tracekeep`, `/var/lib/tracekeep` or `/usr/local/bin/tracekeep`,
+  so it never writes on a workstation, a self-hosted runner or over an installation; its job runs on a GitHub-hosted runner, discarded after it, so it needs no cleanup.
+  It installs the binary `make build` builds with the unit, NATS and Dex in containers, SQLite and an `fs` store:
+  the user, the directories and the credentials first, then, with the unit stopped and as `tracekeep`, `tracekeep migrate`, which creates the catalog,
+  and the configuration staged and activated; then it starts the unit, whose own migration before the start then changes nothing.
+  It then upgrades from the same baseline as the cluster's, in the unit's order (stop, replace, start).
 
 ### 3.4 Transport scope
 
