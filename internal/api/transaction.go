@@ -44,7 +44,7 @@ func (s *Server) FindTransaction(ctx context.Context, req *connect.Request[tkv1.
 	}
 	src := &hourSource{s: s, capture: capture, limit: cmp.Or(s.Records.MaxLookupPacks, 64), sets: map[int64]*catalog.ReadSet{}, readers: map[tracepack.UUID]*tracepack.Reader{}}
 	defer src.close()
-	key := tracepack.TxKey{Capture: capture, Seq: req.Msg.GetSeq(), Hour: floorHour(nanos(h))}
+	key := tracepack.TxKey{CaptureID: capture, Seq: req.Msg.GetSeq(), Hour: floorHour(nanos(h))}
 	res, err := tracepack.FindTransaction(ctx, src, key, tracepack.TxOptions{MaxHeldBytes: cmp.Or(s.Records.HeldBytes, 64<<20)})
 	if err != nil {
 		return nil, lookupFailed(capture, req.Msg.GetSeq(), err)
@@ -203,7 +203,7 @@ func (src *hourSource) record(tr *tracepack.TxRecord) *tkv1.TransactionRecord {
 	}
 	out := &tkv1.TransactionRecord{Record: recordOf(&rec), InWindow: tr.InWindow, Valid: tr.Valid}
 	for _, b := range roleBits {
-		if tr.Class.Has(b.bit) {
+		if tr.Class.HasAny(b.bit) {
 			out.Roles = append(out.Roles, b.name)
 		}
 	}

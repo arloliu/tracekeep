@@ -15,7 +15,7 @@ const now = int64(100 * time.Hour)
 const maxFrameLen = 1 << 20
 
 func testConfig() Config {
-	return Config{Classifier: classify.NewNamed(classify.Name, maxFrameLen), Name: classify.Name, MaxFrameLen: maxFrameLen}
+	return Config{Classifier: classify.NewNamed(classify.Name(), maxFrameLen), Name: classify.Name(), MaxFrameLen: maxFrameLen}
 }
 
 // executor runs on c with one configuration, executed by a leased member, so admissions bind it.

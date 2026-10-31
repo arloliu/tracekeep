@@ -72,11 +72,11 @@ func TestCutoverToMasking(t *testing.T) {
 			inClear := bytes.Contains(recs[1].Payload, ppbody.Secrets[0])
 			switch header(t, p, k).CaptureID {
 			case old:
-				if !inClear || recs[1].Quality.Has(tracepack.QualityRedacted) {
+				if !inClear || recs[1].Quality.HasAny(tracepack.QualityRedacted) {
 					t.Error("the earlier capture's record was masked: its configuration changed")
 				}
 			case successor:
-				if inClear || !recs[1].Quality.Has(tracepack.QualityRedacted) {
+				if inClear || !recs[1].Quality.HasAny(tracepack.QualityRedacted) {
 					t.Error("the successor's record was not masked")
 				}
 			default:

@@ -5,25 +5,26 @@ import (
 	"testing"
 
 	"github.com/arloliu/go-secs/tracepack"
+	tpbus "github.com/arloliu/go-secs/tracepack/bus"
 )
 
 // message builds an inline bus message of capture's record seq at ts, as a producer publishes it.
-func message(t *testing.T, capture tracepack.UUID, seq uint64, ts int64, payload []byte) (tracepack.BusEnvelope, []byte) {
+func message(t *testing.T, capture tracepack.UUID, seq uint64, ts int64, payload []byte) (tpbus.Envelope, []byte) {
 	t.Helper()
-	br := tracepack.NewBusRecord(&tracepack.Record{
+	br := tpbus.NewRecord(&tracepack.Record{
 		Seq: seq, TSUTCNs: ts, Kind: tracepack.KindData, Dir: tracepack.DirEquipmentToHost, Fidelity: tracepack.FidelityWireExact, Payload: payload,
 	})
 	br.CaptureID = capture
-	body, err := tracepack.EncodeBusBody(&br)
+	body, err := tpbus.EncodeBody(&br)
 	if err != nil {
 		t.Fatal(err)
 	}
-	id, err := tracepack.BusMsgID(capture, seq)
+	id, err := tpbus.MsgID(capture, seq)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	return tracepack.BusEnvelope{Layout: "1", MsgID: id}, body
+	return tpbus.Envelope{Layout: "1", MsgID: id}, body
 }
 
 func TestReadRawInline(t *testing.T) {
@@ -51,7 +52,7 @@ func TestReadRawClaimCheck(t *testing.T) {
 	payload := []byte("a large frame")
 	env, body := message(t, tracepack.UUID{2}, 3, 5000, payload)
 	env.PayloadRef = "claims/" + env.MsgID
-	env.PayloadDigest = tracepack.BusPayloadDigest(payload)
+	env.PayloadDigest = tpbus.PayloadDigest(payload)
 	r, f := ReadRaw(&env, body[:headerLen], 0)
 	if !f.MsgIDOK || !f.ClaimCheck || r.Version.Digest != sha256.Sum256(payload) {
 		t.Errorf("facts %+v, digest %x", f, r.Version.Digest)
@@ -62,11 +63,11 @@ func TestReadRawClaimCheck(t *testing.T) {
 func TestReadRawMalformed(t *testing.T) {
 	t.Parallel()
 	env, body := message(t, tracepack.UUID{3}, 1, 5000, []byte("x"))
-	cases := map[string]func(e *tracepack.BusEnvelope, b []byte) []byte{
-		"layout":     func(e *tracepack.BusEnvelope, b []byte) []byte { e.Layout = "2"; return b },
-		"short body": func(_ *tracepack.BusEnvelope, b []byte) []byte { return b[:headerLen-1] },
-		"message id": func(e *tracepack.BusEnvelope, b []byte) []byte { e.MsgID = "nonsense"; return b },
-		"claim digest": func(e *tracepack.BusEnvelope, b []byte) []byte {
+	cases := map[string]func(e *tpbus.Envelope, b []byte) []byte{
+		"layout":     func(e *tpbus.Envelope, b []byte) []byte { e.Layout = "2"; return b },
+		"short body": func(_ *tpbus.Envelope, b []byte) []byte { return b[:headerLen-1] },
+		"message id": func(e *tpbus.Envelope, b []byte) []byte { e.MsgID = "nonsense"; return b },
+		"claim digest": func(e *tpbus.Envelope, b []byte) []byte {
 			e.PayloadRef, e.PayloadDigest = "claims/"+e.MsgID, "MD5=abc"
 			return b
 		},

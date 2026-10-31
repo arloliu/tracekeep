@@ -35,7 +35,7 @@ func writePack(t *testing.T, frames []tracepack.Dir, payloads [][]byte) string {
 	t.Helper()
 	ctx := t.Context()
 	root := t.TempDir()
-	sink, err := tracepack.NewDirSink(root, "")
+	sink, err := tracepack.NewDirSink(root, "", tracepack.DirSinkOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -54,11 +54,14 @@ func writePack(t *testing.T, frames []tracepack.Dir, payloads [][]byte) string {
 		t.Fatal(err)
 	}
 	for i, f := range payloads {
-		if err := w.AppendFrame(ctx, origin.Add(time.Duration(i+1)*10*time.Millisecond), frames[i], 1, f); err != nil {
+		if err := w.AppendFrame(ctx, origin.Add(time.Duration(i+1)*10*time.Millisecond), frames[i], 1, f, 0); err != nil {
 			t.Fatal(err)
 		}
 	}
 	if err := w.Close(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := sink.Close(); err != nil {
 		t.Fatal(err)
 	}
 	var paths []string

@@ -501,7 +501,7 @@ func TestDefectReasons(t *testing.T) {
 	hr := &hourRead{hour: hour, sink: &o}
 	c := cluster{packs: []catalog.ReadPack{{ID: tracepack.UUID{7}}}}
 	res := &tracepack.Result{Incomplete: []tracepack.Defect{
-		{Reason: tracepack.ReasonLimit}, {Reason: tracepack.ReasonCoverage}, {Reason: tracepack.ReasonCrashGap}, {Reason: tracepack.ReasonCorruptBlock},
+		{Reason: tracepack.IncompleteReasonLimit}, {Reason: tracepack.IncompleteReasonCoverage}, {Reason: tracepack.IncompleteReasonCrashGap}, {Reason: tracepack.IncompleteReasonCorruptBlock},
 	}}
 	if err := hr.defects(res, c); err != nil {
 		t.Fatal(err)

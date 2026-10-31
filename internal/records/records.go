@@ -301,11 +301,11 @@ func (hr *hourRead) merge(ctx context.Context, rs *catalog.ReadSet, c cluster) (
 func (hr *hourRead) defects(res *tracepack.Result, c cluster) error {
 	for _, d := range res.Incomplete {
 		reason := ReasonCorrupt // a damaged block, an unknown codec, a truncated pack, an index mismatch
-		if d.Reason == tracepack.ReasonCoverage {
+		if d.Reason == tracepack.IncompleteReasonCoverage {
 			continue
-		} else if d.Reason == tracepack.ReasonCrashGap {
+		} else if d.Reason == tracepack.IncompleteReasonCrashGap {
 			reason = ReasonCrashGap
-		} else if d.Reason == tracepack.ReasonLimit {
+		} else if d.Reason == tracepack.IncompleteReasonLimit {
 			reason = ReasonReadLimit
 		}
 		in := Incomplete{Hour: hr.hour, Reason: reason, Detail: d.Reason.String(), Packs: []tracepack.UUID{c.packs[d.Pack].ID}}
@@ -359,7 +359,7 @@ func (g *group) add(it *tracepack.Item) error {
 	}
 	rec := Record{Hour: g.hr.hour, Record: it.Record, Extra: slices.Clone(it.HeaderExtra), Conflict: it.Conflict}
 	rec.Payload = slices.Clone(it.Record.Payload)
-	rec.Unobserved = g.readers[it.Pack].Unobserved(&it.Record)
+	rec.Unobserved = g.readers[it.Input].Unobserved(&it.Record)
 	if rec.Kind == tracepack.KindData || rec.Kind == tracepack.KindControl {
 		rec.Header = it.Record.HSMSHeader()
 		rec.HasHeader = rec.Header.Available != 0

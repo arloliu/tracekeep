@@ -349,10 +349,8 @@ func (e *refusalError) Unwrap() []error { return []error{errWrite, e.err} }
 
 // refusals are the Writer's validation errors; any other error, such as the working file's, is transient.
 var refusals = []error{
-	tracepack.ErrSeqOrder, tracepack.ErrPayloadTooLarge, tracepack.ErrFieldValidity, tracepack.ErrMetadataCommitment,
-	tracepack.ErrValidation, tracepack.ErrScopeBreach, tracepack.ErrInvalidRecord, tracepack.ErrMergeLimit,
-	tracepack.ErrRequiredTag, tracepack.ErrFieldValue, tracepack.ErrFieldLength, tracepack.ErrAnnotationText, tracepack.ErrReservedTag,
-	tracepack.ErrReadLimit,
+	// Every input refusal of the Writer carries ErrRefused (tracepack G5-286), and the reopen's budget ErrReadLimit.
+	tracepack.ErrRefused, tracepack.ErrReadLimit,
 }
 
 // refusal returns err as a refusal of b when it is one of the Writer's validation errors, and as a plain error otherwise.
@@ -394,7 +392,7 @@ func facts(entries []Entry) tracepack.PackFacts {
 		if ds == tracepack.DecodeStatusOversized {
 			f.AnyOversized = true
 		}
-		if e.D.Record.Record.Quality.Has(tracepack.QualityRedacted) {
+		if e.D.Record.Record.Quality.HasAny(tracepack.QualityRedacted) {
 			f.AnyRedacted = true
 		}
 	}

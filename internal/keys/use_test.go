@@ -12,23 +12,23 @@ import (
 )
 
 // The adapter redact.Mask is given answers as the module does, for the use's context.
-func TestForUseServesRedactKeys(t *testing.T) {
+func TestKeysServeRedact(t *testing.T) {
 	t.Parallel()
 	cat := catalogtest.Open(t, catalog.EngineSQLite)
 	m := material(0x61, 32)
 	k := newKeys(t, maskingKeys(oneVersion(m)), cat)
-	keys := k.ForUse(t.Context())
-	if got, err := keys.DigestKey("d-1"); err != nil || !bytes.Equal(got, m) {
+	keys := k
+	if got, err := keys.DigestKey(t.Context(), "d-1"); err != nil || !bytes.Equal(got, m) {
 		t.Errorf("DigestKey = %x, %v", got, err)
 	}
 	want, err := k.Encryption(t.Context(), testCapture, "m-1")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got, err := keys.EncryptionKey(testCapture, "m-1"); err != nil || !bytes.Equal(got, want) {
+	if got, err := keys.EncryptionKey(t.Context(), testCapture, "m-1"); err != nil || !bytes.Equal(got, want) {
 		t.Errorf("EncryptionKey = %x, %v; want %x", got, err, want)
 	}
-	if _, err := keys.DigestKey("m-1"); !errors.Is(err, ErrUnknownKey) {
+	if _, err := keys.DigestKey(t.Context(), "m-1"); !errors.Is(err, ErrUnknownKey) {
 		t.Errorf("DigestKey of a master key id = %v, want ErrUnknownKey", err)
 	}
 }
@@ -46,14 +46,14 @@ func TestOutageWarmAndCold(t *testing.T) {
 	p.mu.Lock()
 	p.fail = 1 << 20
 	p.mu.Unlock()
-	if got, err := warm.ForUse(t.Context()).DigestKey("d-1"); err != nil || !bytes.Equal(got, m) {
+	if got, err := warm.DigestKey(t.Context(), "d-1"); err != nil || !bytes.Equal(got, m) {
 		t.Errorf("a warm cache during the outage = %x, %v; want the bound material", got, err)
 	}
 	if n := p.callCount(); n != 1 {
 		t.Errorf("provider calls = %d, want 1: the warm cache asked nothing", n)
 	}
 	cold := newKeys(t, maskingKeys(p), cat)
-	if got, err := cold.ForUse(t.Context()).DigestKey("d-1"); !errors.Is(err, errProviderDown) || got != nil {
+	if got, err := cold.DigestKey(t.Context(), "d-1"); !errors.Is(err, errProviderDown) || got != nil {
 		t.Errorf("a cold cache during the outage = %x, %v; want no key and the provider's failure", got, err)
 	}
 }
@@ -65,7 +65,7 @@ func TestCancelledUseGetsNothing(t *testing.T) {
 	k := newKeys(t, maskingKeys(oneVersion(material(0x63, 32))), cat)
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
-	if got, err := k.ForUse(ctx).EncryptionKey(testCapture, "m-1"); !errors.Is(err, context.Canceled) || got != nil {
+	if got, err := k.EncryptionKey(ctx, testCapture, "m-1"); !errors.Is(err, context.Canceled) || got != nil {
 		t.Errorf("EncryptionKey under a cancelled context = %x, %v", got, err)
 	}
 }
@@ -86,10 +86,10 @@ func TestConcurrentUsesShareOneResolution(t *testing.T) {
 		err error
 	}
 	resA, resB := make(chan result, 1), make(chan result, 1)
-	go func() { key, err := k.ForUse(ctxA).DigestKey("d-1"); resA <- result{key, err} }()
+	go func() { key, err := k.DigestKey(ctxA, "d-1"); resA <- result{key, err} }()
 	<-p.gate.arrived
 	// B asks while A's resolution is held at the provider.
-	go func() { key, err := k.ForUse(t.Context()).DigestKey("d-1"); resB <- result{key, err} }()
+	go func() { key, err := k.DigestKey(t.Context(), "d-1"); resB <- result{key, err} }()
 	<-joined
 	cancelA()
 	if a := <-resA; !errors.Is(a.err, context.Canceled) || a.key != nil {
@@ -159,11 +159,11 @@ func TestCancelledUseGetsNothingWarm(t *testing.T) {
 	}
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
-	use := k.ForUse(ctx)
-	if got, err := use.DigestKey("d-1"); !errors.Is(err, context.Canceled) || got != nil {
+	use := k
+	if got, err := use.DigestKey(ctx, "d-1"); !errors.Is(err, context.Canceled) || got != nil {
 		t.Errorf("DigestKey from a warm cache, cancelled = %x, %v", got, err)
 	}
-	if got, err := use.EncryptionKey(testCapture, "m-1"); !errors.Is(err, context.Canceled) || got != nil {
+	if got, err := use.EncryptionKey(ctx, testCapture, "m-1"); !errors.Is(err, context.Canceled) || got != nil {
 		t.Errorf("EncryptionKey from a warm cache, cancelled = %x, %v", got, err)
 	}
 }
@@ -180,8 +180,8 @@ func TestCancelledWhileWaitingForTheCache(t *testing.T) {
 		t.Fatal(err)
 	}
 	for name, use := range map[string]func(ctx context.Context) ([]byte, error){
-		"DigestKey":     func(ctx context.Context) ([]byte, error) { return k.ForUse(ctx).DigestKey("d-1") },
-		"EncryptionKey": func(ctx context.Context) ([]byte, error) { return k.ForUse(ctx).EncryptionKey(testCapture, "m-1") },
+		"DigestKey":     func(ctx context.Context) ([]byte, error) { return k.DigestKey(ctx, "d-1") },
+		"EncryptionKey": func(ctx context.Context) ([]byte, error) { return k.EncryptionKey(ctx, testCapture, "m-1") },
 	} {
 		locking := make(chan struct{})
 		k.locking = func() { close(locking) }

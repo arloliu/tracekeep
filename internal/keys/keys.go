@@ -409,23 +409,16 @@ func Fingerprint(material []byte) string {
 	return hex.EncodeToString(h.Sum(nil))
 }
 
-// ForUse returns the redact.Keys of one use, a batch's masking or one API request, over that use's context;
-// redact.Keys takes no context, so the adapter is built for the use and never kept beyond it (masking-keys.md §9).
-func (k *Keys) ForUse(ctx context.Context) redact.Keys {
-	return useKeys{k: k, ctx: ctx}
+var _ redact.Keys = (*Keys)(nil)
+
+// DigestKey implements redact.Keys: Digest, for the masking of one record.
+func (k *Keys) DigestKey(ctx context.Context, keyID string) ([]byte, error) {
+	return k.Digest(ctx, keyID)
 }
 
-var _ redact.Keys = useKeys{}
-
-type useKeys struct {
-	k   *Keys
-	ctx context.Context //nolint:containedctx // the adapter lives for one use, the context's own
-}
-
-func (u useKeys) DigestKey(keyID string) ([]byte, error) { return u.k.Digest(u.ctx, keyID) }
-
-func (u useKeys) EncryptionKey(capture tracepack.UUID, keyID string) ([]byte, error) {
-	return u.k.Encryption(u.ctx, capture, keyID)
+// EncryptionKey implements redact.Keys: Encryption, for the masking of one record.
+func (k *Keys) EncryptionKey(ctx context.Context, capture tracepack.UUID, keyID string) ([]byte, error) {
+	return k.Encryption(ctx, capture, keyID)
 }
 
 // ErrNotBound marks a key id without a binding: nothing to verify against.

@@ -15,6 +15,7 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 
 	"github.com/arloliu/go-secs/tracepack"
+	tpbus "github.com/arloliu/go-secs/tracepack/bus"
 	"github.com/arloliu/tracekeep/internal/admin"
 	"github.com/arloliu/tracekeep/internal/bus"
 	"github.com/arloliu/tracekeep/internal/catalog"
@@ -462,11 +463,11 @@ func TestStatusAndDeferredList(t *testing.T) {
 		if _, err := c.BeginParking(ctx, identity(pending, 1, 1, 2), "unknown-capture", "", 0); err != nil {
 			t.Fatal(err)
 		}
-		t1, err := tracepack.BusSubject("tk", "T1", admittedCapture)
+		t1, err := tpbus.Subject("tk", "T1", admittedCapture)
 		if err != nil {
 			t.Fatal(err)
 		}
-		t2, err := tracepack.BusSubject("tk", "T2", tracepack.UUID{7})
+		t2, err := tpbus.Subject("tk", "T2", tracepack.UUID{7})
 		if err != nil {
 			t.Fatal(err)
 		}

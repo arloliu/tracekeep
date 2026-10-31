@@ -8,7 +8,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/arloliu/go-secs/tracepack"
+	tpbus "github.com/arloliu/go-secs/tracepack/bus"
 	"github.com/nats-io/nats.go/jetstream"
 
 	"github.com/arloliu/tracekeep/internal/catalog"
@@ -66,7 +66,7 @@ const headerLen = 44
 // the record's 44-byte header, whose seq and time must match the name and the time metadata, and the hour of that time.
 // It returns nil for an object the SDK did not write, which only an operator deletes (compactor.md §8.4).
 func attribute(info ClaimInfo) *catalog.ClaimObject {
-	capture, seq, err := tracepack.ParseBusMsgID(info.Name)
+	capture, seq, err := tpbus.ParseMsgID(info.Name)
 	if err != nil {
 		return nil
 	}

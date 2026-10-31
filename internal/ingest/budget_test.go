@@ -145,7 +145,7 @@ func refuseSeq(f *Flusher, seq uint64) {
 	f.check = func(s *segment) error {
 		for _, e := range s.entries {
 			if e.D.Raw.Version.Seq == seq {
-				return fmt.Errorf("refused: %w", tracepack.ErrInvalidRecord)
+				return fmt.Errorf("refused: %w: %w", tracepack.ErrRefused, tracepack.ErrInvalidRecord)
 			}
 		}
 
@@ -208,7 +208,9 @@ func TestSiblingRefusalsInOneFlush(t *testing.T) {
 	t.Parallel()
 	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
 		p := newPipeline(t, c)
-		p.f.check = func(*segment) error { return fmt.Errorf("refused: %w", tracepack.ErrInvalidRecord) }
+		p.f.check = func(*segment) error {
+			return fmt.Errorf("refused: %w: %w", tracepack.ErrRefused, tracepack.ErrInvalidRecord)
+		}
 		var logged bytes.Buffer
 		g := p.ingester(slog.New(slog.NewTextHandler(&logged, nil)))
 		p.deliver(t, traffic(t, tracepack.UUID{0x64}))
@@ -284,7 +286,7 @@ func TestSiblingVersionsKeepTheirDeferrals(t *testing.T) {
 				p.f.check = func(seg *segment) error {
 					for _, e := range seg.entries {
 						if e.D.Raw.Version == refusedVersion {
-							return fmt.Errorf("refused: %w", tracepack.ErrInvalidRecord)
+							return fmt.Errorf("refused: %w: %w", tracepack.ErrRefused, tracepack.ErrInvalidRecord)
 						}
 					}
 

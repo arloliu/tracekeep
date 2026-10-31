@@ -10,7 +10,7 @@ import (
 
 	"github.com/nats-io/nats.go/jetstream"
 
-	"github.com/arloliu/go-secs/tracepack"
+	tpbus "github.com/arloliu/go-secs/tracepack/bus"
 	"github.com/arloliu/tracekeep/internal/bus"
 	"github.com/arloliu/tracekeep/internal/catalog"
 	"github.com/arloliu/tracekeep/internal/metrics"
@@ -534,9 +534,9 @@ func readMessage(m jetstream.Msg) (Message, error) {
 		return Message{}, err
 	}
 	h := m.Headers()
-	env := tracepack.BusEnvelope{
-		Layout: h.Get(tracepack.BusHeaderLayout), MsgID: h.Get(tracepack.BusHeaderMsgID), Descriptor: h.Get(tracepack.BusHeaderDescriptor),
-		PayloadRef: h.Get(tracepack.BusHeaderPayloadRef), PayloadDigest: h.Get(tracepack.BusHeaderPayloadDigest),
+	env := tpbus.Envelope{
+		Layout: h.Get(tpbus.HeaderLayout), MsgID: h.Get(tpbus.HeaderMsgID), Descriptor: h.Get(tpbus.HeaderDescriptor),
+		PayloadRef: h.Get(tpbus.HeaderPayloadRef), PayloadDigest: h.Get(tpbus.HeaderPayloadDigest),
 	}
 
 	msg := Message{Env: env, Body: m.Data(), StreamSeq: int64(md.Sequence.Stream), Delivered: md.NumDelivered, Subject: m.Subject(), Header: h} //nolint:gosec // a stream sequence fits

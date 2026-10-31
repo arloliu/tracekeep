@@ -103,7 +103,7 @@ func (w *rotationWorld) stage(t *testing.T, p *policy.Policy, digest, encryption
 	t.Helper()
 	ctx := t.Context()
 	k := w.keys(t)
-	cfg := Config{Name: classify.Name, MaxFrameLen: maxFrameLen, Policy: p}
+	cfg := Config{Name: classify.Name(), MaxFrameLen: maxFrameLen, Policy: p}
 	for _, ref := range []struct {
 		to   *KeyRef
 		id   string
@@ -133,7 +133,7 @@ func (w *rotationWorld) stage(t *testing.T, p *policy.Policy, digest, encryption
 func (w *rotationWorld) process(t *testing.T) *pipeline {
 	t.Helper()
 	ctx := t.Context()
-	b, err := namedConfig(classify.Name, maxFrameLen, true)
+	b, err := namedConfig(classify.Name(), maxFrameLen, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -463,7 +463,7 @@ func packsOf(t *testing.T, w *rotationWorld, capture tracepack.UUID, attempted [
 		}
 		p := pack{h: rd.Header()}
 		collect := func(it *tracepack.Item) error {
-			p.recs = append(p.recs, it.Record)
+			p.recs = append(p.recs, it.Record.Clone()) // the payload lives in the block buffer only during the callback
 			return nil
 		}
 		if _, err := rd.Iterate(t.Context(), tracepack.Query{Payloads: true}, collect); err != nil {

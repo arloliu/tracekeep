@@ -9,7 +9,7 @@ import (
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 
-	"github.com/arloliu/go-secs/tracepack"
+	tpbus "github.com/arloliu/go-secs/tracepack/bus"
 
 	"github.com/arloliu/tracekeep/internal/catalog"
 	"github.com/arloliu/tracekeep/internal/catalog/catalogtest"
@@ -19,13 +19,13 @@ import (
 	"github.com/arloliu/tracekeep/producer"
 )
 
-// The gate's initial claim-check start at max_payload 4140 (tracepack.BusMinMaxPayload): on a bus that small every record,
+// The gate's initial claim-check start at max_payload 4140 (tpbus.MinMaxPayload): on a bus that small every record,
 // the start included, travels by claim-check, and ingest still admits the capture and stages its start.
 func TestClaimCheckStartAtTheMinimumMaxPayload(t *testing.T) {
 	t.Parallel()
 	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
 		ctx := t.Context()
-		srv := testbus.StartServer(t, testbus.Options{MaxPayload: tracepack.BusMinMaxPayload})
+		srv := testbus.StartServer(t, testbus.Options{MaxPayload: tpbus.MinMaxPayload})
 		nc, err := nats.Connect(srv.URL())
 		if err != nil {
 			t.Fatal(err)
@@ -90,7 +90,7 @@ func TestClaimCheckStartAtTheMinimumMaxPayload(t *testing.T) {
 			t.Fatal(err)
 		}
 		for id := range got.captures {
-			name, _ := tracepack.BusMsgID(id, 0)
+			name, _ := tpbus.MsgID(id, 0)
 			if _, err := claims.GetInfo(ctx, name); err != nil {
 				t.Errorf("the start's claim object %s: %v; want the start sent by claim-check", name, err)
 			}

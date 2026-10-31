@@ -2,6 +2,7 @@ package maskingtest
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"testing"
 
@@ -13,8 +14,10 @@ import (
 
 type keys struct{}
 
-func (keys) DigestKey(string) ([]byte, error) { return bytes.Repeat([]byte{1}, 32), nil }
-func (keys) EncryptionKey(tracepack.UUID, string) ([]byte, error) {
+func (keys) DigestKey(context.Context, string) ([]byte, error) {
+	return bytes.Repeat([]byte{1}, 32), nil
+}
+func (keys) EncryptionKey(context.Context, tracepack.UUID, string) ([]byte, error) {
 	return bytes.Repeat([]byte{2}, 64), nil
 }
 
@@ -49,7 +52,7 @@ func TestBaselineCarriersMask(t *testing.T) {
 		}
 		for i := range cs {
 			c := &cs[i]
-			masked, entries, err := compiled.Mask(tracepack.UUID{1}, record(uint64(i), c), false, keys{})
+			masked, entries, err := compiled.Mask(t.Context(), tracepack.UUID{1}, record(uint64(i), c), false, keys{})
 			if err != nil {
 				t.Fatalf("%s: %v", c.Name, err)
 			}
@@ -83,12 +86,12 @@ func TestFallbackCarriers(t *testing.T) {
 		t.Fatal(err)
 	}
 	w := WholeText()
-	masked, entries, err := compiled.Mask(tracepack.UUID{1}, record(1, &w), false, keys{})
+	masked, entries, err := compiled.Mask(t.Context(), tracepack.UUID{1}, record(1, &w), false, keys{})
 	if err != nil || len(entries) != 1 || entries[0].ItemPath != nil || bytes.Contains(masked.Payload, w.Secrets[0]) {
 		t.Errorf("the whole-text carrier = %d entries, %v", len(entries), err)
 	}
 	d := TooDeep()
-	if _, _, err := compiled.Mask(tracepack.UUID{1}, record(2, &d), false, keys{}); !errors.Is(err, redact.ErrCannotScreen) {
+	if _, _, err := compiled.Mask(t.Context(), tracepack.UUID{1}, record(2, &d), false, keys{}); !errors.Is(err, redact.ErrCannotScreen) {
 		t.Errorf("the too-deep carrier = %v, want ErrCannotScreen", err)
 	}
 }

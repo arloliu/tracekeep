@@ -3,6 +3,7 @@ package ingest
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"slices"
 	"testing"
@@ -12,6 +13,7 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 
 	"github.com/arloliu/go-secs/tracepack"
+	tpbus "github.com/arloliu/go-secs/tracepack/bus"
 	"github.com/arloliu/tracekeep/internal/catalog"
 	"github.com/arloliu/tracekeep/internal/catalog/catalogtest"
 	"github.com/arloliu/tracekeep/producer/busconfig"
@@ -154,7 +156,7 @@ func TestIngesterParksAWriteFailure(t *testing.T) {
 	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
 		ctx := t.Context()
 		r := newReplica(t, c)
-		r.g.Flusher.hooks[hookWrite] = func() error { return tracepack.ErrInvalidRecord }
+		r.g.Flusher.hooks[hookWrite] = func() error { return fmt.Errorf("%w: %w", tracepack.ErrRefused, tracepack.ErrInvalidRecord) }
 		capture := tracepack.UUID{23}
 		for _, m := range traffic(t, capture) {
 			r.publish(t, m, nil)
@@ -339,7 +341,7 @@ func terminatedStartThenAnotherVersion(t *testing.T, claim bool) {
 		}
 		later := func(m Message) {
 			time.Sleep(2 * cfg.Duplicates) // the scenario's delay
-			subject, err := tracepack.BusSubject(prefix, "T1", m.Raw().Version.Capture)
+			subject, err := tpbus.Subject(prefix, "T1", m.Raw().Version.Capture)
 			if err != nil {
 				t.Fatal(err)
 			}

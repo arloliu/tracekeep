@@ -205,7 +205,7 @@ func (s *Server) version(ctx context.Context, capture tracepack.UUID, seq uint64
 		return nil, fmt.Errorf("compare the copies: %w", err)
 	}
 	for _, d := range res.Incomplete {
-		if d.Reason != tracepack.ReasonCoverage && d.Reason != tracepack.ReasonCrashGap {
+		if d.Reason != tracepack.IncompleteReasonCoverage && d.Reason != tracepack.IncompleteReasonCrashGap {
 			return nil, fmt.Errorf("compare the copies: incomplete: %v", d.Reason)
 		}
 	}
@@ -303,7 +303,7 @@ func (v *copyOf) restorable(keyID string) error {
 		return fmt.Errorf("%w: a %v record is never masked", errNotRestorable, v.record.Kind)
 	case v.unobserved:
 		return fmt.Errorf("%w: the record is unobserved", errNotRestorable)
-	case !v.record.Quality.Has(tracepack.QualityRedacted) && len(v.marking.Entries) == 0:
+	case !v.record.Quality.HasAny(tracepack.QualityRedacted) && len(v.marking.Entries) == 0:
 		return fmt.Errorf("%w: the record is not masked", errNotRestorable)
 	case v.policy == nil || v.policy.EncryptionKeyID == nil:
 		return fmt.Errorf("%w: the pack carries no encryption", errNotRestorable)

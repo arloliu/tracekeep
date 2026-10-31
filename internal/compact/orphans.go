@@ -290,7 +290,7 @@ func (o reading) ReadAt(b []byte, off int64) (int, error) {
 // judge is the quarantine rule of storage.md §5.4 on a verification: anything but finalized-consistent, or any writer defect.
 func judge(vr *tracepack.VerifyReport) string {
 	switch {
-	case vr.Outcome != tracepack.OutcomeFinalizedConsistent:
+	case vr.Outcome != tracepack.VerifyOutcomeFinalizedConsistent:
 		return fmt.Sprintf("verification outcome %v", vr.Outcome)
 	case len(vr.WriterDefects) > 0:
 		return fmt.Sprintf("%d writer defects", len(vr.WriterDefects))
@@ -379,7 +379,7 @@ func records(ctx context.Context, rd *tracepack.Reader, p *catalog.Pack) error {
 	for _, d := range res.Incomplete {
 		// The pack's own coverage entries and crash gaps say what it never held; any other defect is a fault of this read,
 		// since Verify validated every block, and the next pass reads again.
-		if d.Reason != tracepack.ReasonCoverage && d.Reason != tracepack.ReasonCrashGap {
+		if d.Reason != tracepack.IncompleteReasonCoverage && d.Reason != tracepack.IncompleteReasonCrashGap {
 			return fmt.Errorf("compact: read of %s incomplete: %v", p.Key, d.Reason)
 		}
 	}

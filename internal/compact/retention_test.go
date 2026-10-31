@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/arloliu/go-secs/tracepack"
+	tpbus "github.com/arloliu/go-secs/tracepack/bus"
 	"github.com/nats-io/nats.go/jetstream"
 
 	"github.com/arloliu/tracekeep/internal/bus"
@@ -76,9 +77,9 @@ func (b *memBucket) names() []string {
 // sdkObject is the claim object the SDK writes for capture's seq at ts: its name and the metadata of its record header and time.
 func sdkObject(t *testing.T, capture tracepack.UUID, seq uint64, ts int64) ClaimInfo {
 	t.Helper()
-	br := tracepack.NewBusRecord(&tracepack.Record{Seq: seq, TSUTCNs: ts, Kind: tracepack.KindData, Payload: bytes.Repeat([]byte{1}, 64)})
+	br := tpbus.NewRecord(&tracepack.Record{Seq: seq, TSUTCNs: ts, Kind: tracepack.KindData, Payload: bytes.Repeat([]byte{1}, 64)})
 	br.ClaimCheck, br.Bucket = true, "claims"
-	body, err := tracepack.EncodeBusBody(&br)
+	body, err := tpbus.EncodeBody(&br)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -86,7 +87,7 @@ func sdkObject(t *testing.T, capture tracepack.UUID, seq uint64, ts int64) Claim
 		t.Fatalf("a claim-check body is %d bytes, want the header alone", len(body))
 	}
 
-	name, err := tracepack.BusMsgID(capture, seq)
+	name, err := tpbus.MsgID(capture, seq)
 	if err != nil {
 		t.Fatal(err)
 	}
