@@ -1,6 +1,7 @@
 package service
 
 import (
+	"cmp"
 	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
@@ -20,6 +21,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/arloliu/tracekeep/internal/auth"
@@ -74,10 +76,11 @@ func (d *Dev) devSignIn(cfg *config.Config, apiAddr string, idpLn net.Listener, 
 	public := "https://" + apiAddr
 	if d.opts.PublicURL != "" {
 		u, err := url.Parse(d.opts.PublicURL)
-		if err != nil || u.Scheme != "https" || !slices.Contains(devHosts, u.Hostname()) {
-			return fmt.Errorf("dev: --public-url %q must be an https URL on localhost, 127.0.0.1 or ::1", d.opts.PublicURL)
+		if err != nil || u.Scheme != "https" || !slices.Contains(devHosts, u.Hostname()) || strings.Trim(u.Path, "/") != "" || u.RawQuery != "" || u.Fragment != "" {
+			return fmt.Errorf("dev: --public-url %q must be an https URL on localhost, 127.0.0.1 or ::1, without a path", d.opts.PublicURL)
 		}
-		public = d.opts.PublicURL
+		// One form for the IdP's redirect URL and the service's, which exact matching compares.
+		public = "https://" + u.Host
 	}
 	secretFile := filepath.Join(dir, devSecretFile)
 	if err := generate(secretFile, func() []byte { return []byte(rand.Text() + rand.Text()) }); err != nil {
@@ -104,7 +107,7 @@ func (d *Dev) devSignIn(cfg *config.Config, apiAddr string, idpLn net.Listener, 
 		return fmt.Errorf("dev: %w", err)
 	}
 	d.idp = &http.Server{
-		Handler: idp.Handler(), ReadHeaderTimeout: 10 * time.Second,
+		Handler: idp.Handler(), ReadHeaderTimeout: 10 * time.Second, ReadTimeout: 30 * time.Second, WriteTimeout: 30 * time.Second,
 		TLSConfig: &tls.Config{Certificates: []tls.Certificate{pair}, MinVersion: tls.VersionTLS12},
 		ErrorLog:  slog.NewLogLogger(d.opts.Log.Handler(), slog.LevelWarn),
 	}
@@ -126,15 +129,18 @@ func (d *Dev) devSignIn(cfg *config.Config, apiAddr string, idpLn net.Listener, 
 	return nil
 }
 
-// closeIDP shuts the test IdP down.
+// closeIDP shuts the test IdP down within d.idpShutdown, then closes the connections left, which ends their requests.
 func (d *Dev) closeIDP() error {
 	if d.idp == nil {
 		return nil
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), cmp.Or(d.idpShutdown, 5*time.Second))
 	defer cancel()
+	if err := d.idp.Shutdown(ctx); err != nil {
+		return errors.Join(fmt.Errorf("dev: idp: shutdown: %w", err), d.idp.Close())
+	}
 
-	return d.idp.Shutdown(ctx)
+	return nil
 }
 
 // devCertificate writes a self-signed ECDSA P-256 certificate for devHosts and its key, mode 0600,

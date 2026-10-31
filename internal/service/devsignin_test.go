@@ -3,10 +3,13 @@ package service
 import (
 	"context"
 	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
+	"errors"
 	"html"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/cookiejar"
 	"net/url"
@@ -131,6 +134,7 @@ func TestDevServesOnlyLoopback(t *testing.T) {
 		"the IdP on another host":  {API: "127.0.0.1:0", IDP: "127.0.0.2:0"},
 		"a public URL elsewhere":   {API: "127.0.0.1:0", IDP: "127.0.0.1:0", PublicURL: "https://tk.example.invalid"},
 		"a plain-http public URL":  {API: "127.0.0.1:0", IDP: "127.0.0.1:0", PublicURL: "http://localhost:5173"},
+		"a public URL with a path": {API: "127.0.0.1:0", IDP: "127.0.0.1:0", PublicURL: "https://localhost:5173/app"},
 	} {
 		o.Dir, o.Flush, o.Log = t.TempDir(), time.Second, slog.New(slog.DiscardHandler)
 		d, err := NewDev(t.Context(), o)
@@ -141,6 +145,94 @@ func TestDevServesOnlyLoopback(t *testing.T) {
 			t.Errorf("%s: NewDev = %v, want refused naming the hosts", name, err)
 		}
 	}
+}
+
+// A public URL ending in a slash is the same origin: the IdP's redirect URL and the service's, compared exactly, agree.
+func TestDevPublicURLWithASlash(t *testing.T) {
+	t.Parallel()
+	d, err := NewDev(t.Context(), DevOptions{
+		Dir: t.TempDir(), Flush: time.Second, API: "127.0.0.1:0", IDP: "127.0.0.1:0", PublicURL: "https://localhost:5173/", Log: slog.New(slog.DiscardHandler),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = d.Close() })
+	if got := d.Env.Config.API.PublicURL; got != "https://localhost:5173" {
+		t.Errorf("api.public_url = %q, want https://localhost:5173", got)
+	}
+}
+
+// A start that fails after dev bound its listeners releases them: the addresses are free again at once.
+func TestDevFailedStartReleasesItsListeners(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	// The token's path is a directory, so reading the token fails after both listeners are bound.
+	if err := os.Mkdir(filepath.Join(dir, DevTokenFile), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	api, idp := freeAddr(t), freeAddr(t)
+	if _, err := NewDev(t.Context(), DevOptions{Dir: dir, Flush: time.Second, API: api, IDP: idp, Log: slog.New(slog.DiscardHandler)}); err == nil {
+		t.Fatal("NewDev started with an unreadable token")
+	}
+	for _, addr := range []string{api, idp} {
+		ln, err := net.Listen("tcp", addr)
+		if err != nil {
+			t.Errorf("%s after the failed start: %v, want free", addr, err)
+			continue
+		}
+		_ = ln.Close()
+	}
+}
+
+// Closing dev ends a request stalled in its body once the IdP's graceful shutdown is past its bound.
+func TestDevCloseEndsAStalledIdPRequest(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	d, err := NewDev(t.Context(), DevOptions{Dir: dir, Flush: time.Second, API: "127.0.0.1:0", IDP: "127.0.0.1:0", Log: slog.New(slog.DiscardHandler)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	d.idpShutdown = 50 * time.Millisecond
+	issuer, err := url.Parse(d.Env.Config.Auth.OIDC.Issuer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pem, err := os.ReadFile(filepath.Join(dir, DevCertFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	roots := x509.NewCertPool()
+	roots.AppendCertsFromPEM(pem)
+	// The handshake done, the server holds the connection; the request then stalls in its body.
+	conn, err := tls.Dial("tcp", issuer.Host, &tls.Config{RootCAs: roots, MinVersion: tls.VersionTLS12})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+	if _, err := io.WriteString(conn, "POST /authorize HTTP/1.1\r\nHost: "+issuer.Host+"\r\nContent-Type: application/x-www-form-urlencoded\r\nContent-Length: 100\r\n\r\nsubject="); err != nil {
+		t.Fatal(err)
+	}
+	_ = d.Close()
+	if err := conn.SetReadDeadline(time.Now().Add(5 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	var ne net.Error
+	if _, err := io.ReadAll(conn); errors.As(err, &ne) && ne.Timeout() {
+		t.Fatalf("the stalled connection outlived Close: %v", err)
+	}
+}
+
+// freeAddr is a loopback address no listener holds now.
+func freeAddr(t *testing.T) string {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr := ln.Addr().String()
+	_ = ln.Close()
+
+	return addr
 }
 
 // Dev's certificate is kept across runs while valid, and made again once it has expired.

@@ -59,6 +59,8 @@ type Dev struct {
 	// api is the API's listener, bound before the configuration; idp serves the test IdP.
 	api net.Listener
 	idp *http.Server
+	// idpShutdown bounds the IdP's graceful shutdown, 5 s when zero.
+	idpShutdown time.Duration
 }
 
 // NewDev starts the embedded bus, creates the catalog when the directory has none, opens the environment and migrates the bus.
@@ -105,20 +107,25 @@ const (
 
 // devAPI configures dev's machine API in cfg: TLS on o.API, people's sign-in at the test IdP on o.IDP, both bound first,
 // a static token admitting pack reads for machine clients, and a download key, each generated once under o.Dir with mode 0600 and kept across runs.
-func (d *Dev) devAPI(cfg *config.Config) error {
+func (d *Dev) devAPI(cfg *config.Config) (err error) {
 	o := d.opts
 	var apiAddr, idpAddr string
 	var idpLn net.Listener
-	var err error
 	if d.api, apiAddr, err = devListen("api", cmp.Or(o.API, "127.0.0.1:8080")); err != nil {
 		return err
 	}
 	if idpLn, idpAddr, err = devListen("idp", cmp.Or(o.IDP, "127.0.0.1:8444")); err != nil {
 		return err
 	}
+	// The IdP's listener is dev's to close until its server serves it, which Close then shuts down.
+	defer func() {
+		if err != nil && d.idp == nil {
+			err = errors.Join(err, idpLn.Close())
+		}
+	}()
 	cfg.API.Listen = d.api.Addr().String()
 	token := filepath.Join(o.Dir, DevTokenFile)
-	if err := generate(token, func() []byte { return []byte(rand.Text() + rand.Text()) }); err != nil {
+	if err = generate(token, func() []byte { return []byte(rand.Text() + rand.Text()) }); err != nil {
 		return err
 	}
 	b, err := os.ReadFile(token)
@@ -129,18 +136,15 @@ func (d *Dev) devAPI(cfg *config.Config) error {
 		{Subject: "dev", TokenRef: "file://" + token, Token: string(b), Roles: []string{auth.RolePackReader, auth.RoleViewer}},
 	}}
 	key := filepath.Join(o.Dir, devKeyFile)
-	if err := generate(key, func() []byte { return []byte(base64.StdEncoding.EncodeToString([]byte(rand.Text() + rand.Text()))) }); err != nil {
+	if err = generate(key, func() []byte { return []byte(base64.StdEncoding.EncodeToString([]byte(rand.Text() + rand.Text()))) }); err != nil {
 		return err
 	}
 	cfg.Keys = config.Keys{
 		Declared: map[string]config.KeyDeclaration{devKeyID: {Provider: keys.ProviderFile, Ref: key}},
 		Download: config.KeyPurpose{Issuing: devKeyID, Accepted: []string{devKeyID}},
 	}
-	if err := d.devSignIn(cfg, apiAddr, idpLn, idpAddr); err != nil {
-		return errors.Join(err, idpLn.Close())
-	}
 
-	return nil
+	return d.devSignIn(cfg, apiAddr, idpLn, idpAddr)
 }
 
 // generate writes what content returns to a new file at path, mode 0600, unless one is there.
