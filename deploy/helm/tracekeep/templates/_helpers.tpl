@@ -51,11 +51,11 @@ and refused when it writes a credential the configuration could take by referenc
 {{- fail (printf "config.%s is a credential: name a file under /run/secrets/ by %s_ref instead" $path $path) -}}
 {{- end -}}
 {{- end -}}
-{{- /* A URL's userinfo is a credential too: the bus's (a list), the S3 endpoint's, Vault's and the issuer's. */ -}}
+{{- /* A URL's userinfo is a credential too, with a scheme or without (the bus client takes nats:// as the default): any "@" in these addresses is refused. */ -}}
 {{- $keys := default dict $c.keys -}}
 {{- $oidc := default dict (default dict $c.auth).oidc -}}
 {{- range $path, $url := dict "bus.url" $bus.url "store.s3.endpoint" $s3.endpoint "keys.vault.address" (default dict $keys.vault).address "auth.oidc.issuer" $oidc.issuer -}}
-{{- if and $url (regexMatch "://[^/,]*@" (toString $url)) -}}
+{{- if and $url (contains "@" (toString $url)) -}}
 {{- fail (printf "config.%s carries a credential in its URL: name it by reference instead (docs/guides/configuration.md)" $path) -}}
 {{- end -}}
 {{- end -}}
