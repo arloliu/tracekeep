@@ -36,7 +36,10 @@ jobs:
     - name: The upgrade's baseline
       env:
         GH_TOKEN: ${{ github.token }}
-      run: echo "TRACEKEEP_BASELINE=$(scripts/packaging/baseline.sh)" >> "$GITHUB_ENV"
+      # A failed lookup fails the job, never passing for a missing baseline.
+      run: |
+        baseline=$(scripts/packaging/baseline.sh)
+        echo "TRACEKEEP_BASELINE=$baseline" >> "$GITHUB_ENV"
     - name: make packaging-cluster
       run: make packaging-cluster
 
@@ -58,6 +61,9 @@ jobs:
     - name: The upgrade's baseline
       env:
         GH_TOKEN: ${{ github.token }}
-      run: echo "TRACEKEEP_BASELINE=$(scripts/packaging/baseline.sh)" >> "$GITHUB_ENV"
+      # A failed lookup fails the job, never passing for a missing baseline.
+      run: |
+        baseline=$(scripts/packaging/baseline.sh)
+        echo "TRACEKEEP_BASELINE=$baseline" >> "$GITHUB_ENV"
     - name: make packaging-standalone
       run: make packaging-standalone

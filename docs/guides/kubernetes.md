@@ -72,7 +72,7 @@ config:
 - **For MariaDB**, give the DSN a `timeout` (`…?timeout=5s`): it bounds the dial of each `migrate` attempt.
 - **Key material comes from Vault** with the `kubernetes` method: the `file` provider needs a regular file of mode 0600 that its process reads,
   which a Secret volume does not give a non-root process (`docs/guides/keys.md`).
-  Bind the Vault role to the chart's service account (`<release>-tracekeep` unless `serviceAccount.name` says otherwise) and its namespace.
+  Bind the Vault role to the chart's service account and its namespace: the release's full name, which is the release name when it holds `tracekeep` and `<release>-tracekeep` otherwise, unless `serviceAccount.name` says otherwise.
 - **`workDirSize`** is each role's `/work`: its `emptyDir` size limit and its ephemeral-storage request and limit, unless `resources` gives them.
   Size `ingest`'s for the scopes a replica holds open at `ingest.batch_max_bytes` each, for the traffic and the parking batchers, plus one fetched batch,
   with the records' encoded headers and the packs' metadata beside the payload bytes the bound counts, and a margin;
@@ -95,11 +95,11 @@ a capture is admitted only under one, and an `ingest` replica executes the confi
 On a first install, install with `ingest.replicas: 0`, then
 
 ```
-kubectl -n tracekeep exec deploy/tracekeep-tracekeep-api -- /tracekeep admin --config /etc/tracekeep/config.yaml --actor <you> config stage digest-2026a master-2026a
-kubectl -n tracekeep exec deploy/tracekeep-tracekeep-api -- /tracekeep admin --config /etc/tracekeep/config.yaml --actor <you> config activate <config id>
+kubectl -n tracekeep exec deploy/tracekeep-api -- /tracekeep admin --config /etc/tracekeep/config.yaml --actor <you> config stage digest-2026a master-2026a
+kubectl -n tracekeep exec deploy/tracekeep-api -- /tracekeep admin --config /etc/tracekeep/config.yaml --actor <you> config activate <config id>
 ```
 
-and upgrade with the `ingest` replicas wanted. With `ingest` already running, restart it after staging, before activating.
+and upgrade with the `ingest` replicas wanted (the release `tracekeep` names its objects `tracekeep-<role>`). With `ingest` already running, restart it after staging, before activating.
 
 ## Probes and alerts
 

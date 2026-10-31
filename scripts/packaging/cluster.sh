@@ -335,7 +335,8 @@ sys.exit(0 if ok and not s.get("pending") else 1)' $TOOL; then
 }
 
 # browse: the browser tests through the public URL; then the login crossing the two api replicas:
-# the Service selects the first for the login, then, the callback held, the first is restarted and the Service selects the second.
+# the Service selects the first for the login; with the callback held, the first's own metrics must show it started the login,
+# the first is deleted (its connections ending with it) and the Service selects the second; the second's log must then record the sign-in.
 browse() {
 	local pods a b svc=$FULL-api before after
 	playwright "$PUBLIC"
@@ -344,17 +345,61 @@ browse() {
 	a=${pods[0]} b=${pods[1]}
 	kubectl -n $NS label pod "$a" tracekeep-packaging=a --overwrite >/dev/null
 	kubectl -n $NS label pod "$b" tracekeep-packaging=b --overwrite >/dev/null
-	select_replica() { echo "kubectl -n $NS patch service $svc --type merge -p '{\"spec\":{\"selector\":{\"tracekeep-packaging\":\"$1\"}}}' >/dev/null && sleep 2"; }
+	cat > "$WORK/crossing.sh" <<SH
+#!/usr/bin/env bash
+# crossing.sh route a|b: the Service selects that replica alone, settled once its ready endpoints are that pod's address alone.
+# crossing.sh started: the first replica's successful login starts, from its own metrics through the API server's proxy.
+set -euo pipefail
+case "\$1" in
+route)
+	pod=\$(kubectl -n $NS get pods -l tracekeep-packaging=\$2 -o jsonpath='{.items[0].metadata.name}')
+	ip=\$(kubectl -n $NS get pod "\$pod" -o jsonpath='{.status.podIP}')
+	kubectl -n $NS patch service $svc --type merge -p "{\"spec\":{\"selector\":{\"tracekeep-packaging\":\"\$2\"}}}" >/dev/null
+	for _ in \$(seq 60); do
+		got=\$(kubectl -n $NS get endpointslices -l kubernetes.io/service-name=$svc -o jsonpath='{.items[*].endpoints[?(@.conditions.ready==true)].addresses[*]}')
+		[ "\$got" = "\$ip" ] && break
+		sleep 1
+	done
+	[ "\$got" = "\$ip" ] || { echo "crossing: the Service did not settle on \$pod" >&2; exit 1; }
+	# The endpoints settle before kube-proxy programs them: wait until the public port answers three times running.
+	ok=0
+	for _ in \$(seq 60); do
+		if curl -sk -o /dev/null --max-time 2 --resolve tracekeep.test:8443:127.0.0.1 https://tracekeep.test:8443/auth/me; then
+			ok=\$((ok + 1)); [ \$ok -ge 3 ] && exit 0
+		else
+			ok=0
+		fi
+		sleep 1
+	done
+	echo "crossing: the public port did not answer after the Service settled on \$pod" >&2
+	exit 1 ;;
+started)
+	kubectl get --raw "/api/v1/namespaces/$NS/pods/$a:9090/proxy/metrics" |
+		awk '/^tracekeep_api_logins_total\{outcome="ok",step="start"\}/ { n = \$2 } END { print n + 0 }' ;;
+esac
+SH
+	chmod +x "$WORK/crossing.sh"
+	local started
+	started=$("$WORK/crossing.sh" started)
 	before=$(kubectl -n $NS logs "$b" | grep -c '"auth: signed in"' || true)
-	log "crossing: the login on $a, the callback on $b after $a restarts"
-	TRACEKEEP_BEFORE_LOGIN=$(select_replica a) \
-		TRACEKEEP_BEFORE_CALLBACK="kubectl -n $NS delete pod $a --wait=true >/dev/null && $(select_replica b)" \
+	log "crossing: the login on $a, the callback on $b after $a is deleted"
+	TRACEKEEP_BEFORE_LOGIN="$WORK/crossing.sh route a" \
+		TRACEKEEP_BEFORE_CALLBACK="[ \"\$($WORK/crossing.sh started)\" -gt $started ] || { echo 'crossing: $a did not start the login' >&2; exit 1; }; kubectl -n $NS delete pod $a --wait=true >/dev/null && $WORK/crossing.sh route b" \
 		playwright "$PUBLIC" -g "finished by another"
 	after=$(kubectl -n $NS logs "$b" | grep -c '"auth: signed in"' || true)
 	kubectl -n $NS patch service $svc --type json -p '[{"op":"remove","path":"/spec/selector/tracekeep-packaging"}]' >/dev/null
 	kubectl -n $NS rollout status deploy/$svc --timeout=180s >/dev/null
 	[ "$after" -gt "$before" ] || die "the callback was not answered by $b"
-	log "crossing: $b signed the person in"
+	log "crossing: $a started the login, $b signed the person in"
+}
+
+# stop_traffic stops the simulator and waits for it to end.
+stop_traffic() {
+	for p in "${pids[@]}"; do
+		kill "$p" 2>/dev/null || true
+		wait "$p" 2>/dev/null || true
+	done
+	pids=()
 }
 
 log "fresh install of $(git rev-parse --short HEAD)"
@@ -371,8 +416,7 @@ if [ -z "${TRACEKEEP_BASELINE:-}" ]; then
 	exit 0
 fi
 log "upgrade from $TRACEKEEP_BASELINE to $(git rev-parse --short HEAD)"
-for p in "${pids[@]}"; do kill "$p" 2>/dev/null || true; done
-pids=()
+stop_traffic
 kubectl delete namespace $NS --wait=true >/dev/null
 build_image "$TRACEKEEP_BASELINE" baseline
 dependencies
@@ -380,7 +424,10 @@ install "$WORK/src-baseline/deploy/helm/tracekeep" baseline 0
 admit
 install "$WORK/src-baseline/deploy/helm/tracekeep" baseline 2
 traffic
-browse
+# The producer stopped and its last records flushed, so the records read now are all there will be in their window.
+stop_traffic
+sleep 30
+TRACEKEEP_EVIDENCE=$WORK/evidence.json browse
 install deploy/helm/tracekeep candidate 2
-browse
-log "upgrade from $TRACEKEEP_BASELINE passed"
+TRACEKEEP_EVIDENCE=$WORK/evidence.json TRACEKEEP_AFTER_UPGRADE=1 browse
+log "upgrade from $TRACEKEEP_BASELINE passed, the records read before it read the same after it"

@@ -143,7 +143,14 @@ sys.exit(0 if ok and not s.get("pending") else 1)' $TOOL; then
 	die "the simulator's capture was not admitted"
 }
 
-stop_traffic() { for p in "${pids[@]}"; do kill "$p" 2>/dev/null || true; done; pids=(); }
+# stop_traffic stops the simulator and waits for it to end.
+stop_traffic() {
+	for p in "${pids[@]}"; do
+		kill "$p" 2>/dev/null || true
+		wait "$p" 2>/dev/null || true
+	done
+	pids=()
+}
 
 log "fresh install of $(git rev-parse --short HEAD)"
 make build >/dev/null
@@ -169,11 +176,13 @@ git worktree add -f --detach "$WORK/src-baseline" "$TRACEKEEP_BASELINE" >/dev/nu
 (cd "$WORK/src-baseline" && make build >/dev/null)
 fresh "$WORK/src-baseline/dist/tracekeep"
 traffic
-playwright "$PUBLIC"
+# The producer stopped and its last records flushed, so the records read now are all there will be in their window.
+stop_traffic
+sleep 30
+TRACEKEEP_EVIDENCE=$WORK/evidence.json playwright "$PUBLIC"
 # The unit's order: stop, replace the binary, start; the migration before the start upgrades the catalog.
 sudo systemctl stop tracekeep
 install_unit "$WORK/tracekeep-candidate"
 start
-playwright "$PUBLIC"
-stop_traffic
-log "upgrade from $TRACEKEEP_BASELINE passed"
+TRACEKEEP_EVIDENCE=$WORK/evidence.json TRACEKEEP_AFTER_UPGRADE=1 playwright "$PUBLIC"
+log "upgrade from $TRACEKEEP_BASELINE passed, the records read before it read the same after it"

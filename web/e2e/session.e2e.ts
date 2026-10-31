@@ -1,5 +1,5 @@
 import { execSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 
 import { expect, test, type Page } from "@playwright/test";
 
@@ -17,17 +17,26 @@ async function signIn(page: Page) {
   await expect(page.getByRole("button", { name: "Sign out" })).toBeVisible();
 }
 
-// tarFile is the content of the file named name in a tar archive.
-function tarFile(tar: Buffer, name: string): Buffer | undefined {
+// tarFiles are a tar archive's files by name.
+function tarFiles(tar: Buffer): Map<string, Buffer> {
+  const files = new Map<string, Buffer>();
   for (let at = 0; at + 512 <= tar.length; ) {
     const header = tar.subarray(at, at + 512);
     const entry = header.subarray(0, 100).toString("utf8").replace(/\0.*$/s, "");
-    if (entry === "") return undefined;
+    if (entry === "") break;
     const size = parseInt(header.subarray(124, 136).toString("utf8").replace(/\0.*$/s, "").trim() || "0", 8);
-    if (entry === name || entry.endsWith(`/${name}`)) return tar.subarray(at + 512, at + 512 + size);
+    files.set(entry, tar.subarray(at + 512, at + 512 + size));
     at += 512 + Math.ceil(size / 512) * 512;
   }
-  return undefined;
+  return files;
+}
+
+// evidence is where a run before an upgrade keeps what it read (TRACEKEEP_EVIDENCE), for the run after it to read again.
+const evidence = process.env.TRACEKEEP_EVIDENCE;
+interface Evidence {
+  url: string;
+  end: string;
+  first: string;
 }
 
 test("a person browses a tool, reads its records and a transaction, and exports them", async ({ page }) => {
@@ -41,7 +50,12 @@ test("a person browses a tool, reads its records and a transaction, and exports 
   await expect(page.getByRole("table", { name: "Hours" })).toBeVisible();
 
   await records.click();
-  await expect(page.getByText(/^\d+ records? in the list;/)).toBeVisible({ timeout: 60_000 });
+  const end = page.getByText(/^\d+ records? in the list;/);
+  await expect(end).toBeVisible({ timeout: 60_000 });
+  if (evidence && !existsSync(evidence)) {
+    const first = (await page.getByRole("button", { name: /^Seq \d+$/ }).first().getAttribute("aria-label")) ?? "";
+    writeFileSync(evidence, JSON.stringify({ url: page.url(), end: await end.innerText(), first } satisfies Evidence));
+  }
   // A primary of the simulator's (S1F3 W), whose transaction the lookup matches with its reply.
   await page.getByRole("button", { name: /^Seq \d+$/ }).filter({ hasText: "S1F3 W" }).first().click();
   const panel = page.getByRole("complementary", { name: "Selected" });
@@ -52,12 +66,31 @@ test("a person browses a tool, reads its records and a transaction, and exports 
   const download = page.getByRole("button", { name: "Download" });
   await expect(download).toBeVisible({ timeout: 120_000 });
   const [bundle] = await Promise.all([page.waitForEvent("download"), download.click()]);
-  const path = await bundle.path();
-  const manifest = tarFile(readFileSync(path), "manifest.json");
+  const files = tarFiles(readFileSync(await bundle.path()));
+  const manifest = [...files].find(([name]) => name.endsWith("manifest.json"))?.[1];
   expect(manifest, "the bundle holds manifest.json").toBeDefined();
-  const m = JSON.parse(manifest?.toString("utf8") ?? "{}") as { kind?: string; captures?: unknown[] };
+  const m = JSON.parse(manifest?.toString("utf8") ?? "{}") as { kind?: string; captures?: { hours?: { left_out?: unknown[] }[] }[] };
   expect(m.kind).toBe("canonical");
   expect(m.captures?.length ?? 0).toBeGreaterThan(0);
+  // Every pack was exported, none left out, and the records are in the bundle: JSONL whose lines parse.
+  expect(m.captures?.flatMap((c) => c.hours ?? []).flatMap((h) => h.left_out ?? [])).toEqual([]);
+  const jsonl = [...files].filter(([name, body]) => name.endsWith(".jsonl") && body.length > 0);
+  expect(jsonl.length, "the bundle holds a pack's records").toBeGreaterThan(0);
+  const lines = jsonl[0]?.[1].toString("utf8").split("\n").filter((l) => l !== "") ?? [];
+  expect(lines.length).toBeGreaterThan(0);
+  for (const line of lines.slice(0, 50)) JSON.parse(line);
+});
+
+// The records read before an upgrade (TRACEKEEP_EVIDENCE, written by the run before it) are read the same after it.
+test("the records read before an upgrade are read the same after it", async ({ page }) => {
+  test.skip(!evidence || !existsSync(evidence) || !process.env.TRACEKEEP_AFTER_UPGRADE, "needs the evidence of a run before an upgrade");
+  const before = JSON.parse(readFileSync(evidence ?? "", "utf8")) as Evidence;
+  await signIn(page);
+  await page.goto(before.url);
+  const end = page.getByText(/^\d+ records? in the list;/);
+  await expect(end).toBeVisible({ timeout: 60_000 });
+  expect(await end.innerText()).toBe(before.end);
+  expect(await page.getByRole("button", { name: /^Seq \d+$/ }).first().getAttribute("aria-label")).toBe(before.first);
 });
 
 test("a person no group maps is signed in and admitted to nothing", async ({ page }) => {
