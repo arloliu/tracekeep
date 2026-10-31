@@ -31,6 +31,9 @@ var operationRoles = map[string][]string{
 	OpDigest: {RoleScorer}, OpRestore: {RoleRestorer}, OpExport: {RoleExporter}, OpAdmin: {RoleAdmin},
 }
 
+// cookieOperations are the operations a session cookie admits: those the browser uses (api.md §10.2 *People's sign-in*).
+var cookieOperations = []string{OpListDevices, OpListCaptures, OpListPacks, OpListScopeChanges}
+
 // Authorize admits p to op when p holds one of the roles the table names for op, and refuses it as forbidden otherwise.
 func Authorize(p Principal, op string) error {
 	for _, r := range operationRoles[op] {
@@ -62,6 +65,9 @@ type AuthenticatorConfig struct {
 	// StaticEnabled is the explicit flag that alone admits Static's tokens, whatever the IdP's state.
 	StaticEnabled bool
 	Static        []StaticToken
+	// People validates a person's session cookie, chosen only without a client certificate or an Authorization header;
+	// nil when people do not sign in, and no cookie is read.
+	People *People
 	// Failures counts refusals and Log logs them, each with its reason and subject, never the credential; nil for neither.
 	Failures Failures
 	Log      *slog.Logger
@@ -89,6 +95,9 @@ func NewAuthenticator(cfg AuthenticatorConfig) *Authenticator {
 // Check authenticates r and authorizes it for op, counting and logging a refusal.
 func (a *Authenticator) Check(r *http.Request, op string) (Principal, error) {
 	p, err := a.Authenticate(r)
+	if err == nil && p.Via == ViaSession && !slices.Contains(cookieOperations, op) {
+		err = &Error{Reason: ReasonSessionScope, Subject: p.Subject, Err: errors.New("a session cookie does not admit " + op)}
+	}
 	if err == nil {
 		err = Authorize(p, op)
 	}
@@ -113,15 +122,20 @@ func (a *Authenticator) refused(err error, op string) {
 	}
 }
 
-// Authenticate returns the principal of r's one credential:
-// the client certificate the TLS handshake verified, when mTLS is configured, and otherwise its bearer token,
-// matched against the static tokens under their flag and else validated against the IdP.
+// Authenticate returns the principal of r's one credential, chosen before any is checked, with no other tried once it is refused:
+// the client certificate the TLS handshake verified, when mTLS is configured;
+// otherwise its Authorization header, a bearer token matched against the static tokens under their flag and else validated against the IdP;
+// otherwise its session cookie, when people sign in, admitted only on a POST from the API's own origin.
 func (a *Authenticator) Authenticate(r *http.Request) (Principal, error) {
 	if a.cfg.MTLS != nil && r.TLS != nil && len(r.TLS.VerifiedChains) > 0 && len(r.TLS.VerifiedChains[0]) > 0 {
 		return a.certificate(r)
 	}
 	h := r.Header.Get("Authorization")
 	if h == "" {
+		if _, err := r.Cookie(SessionCookie); err == nil && a.cfg.People != nil {
+			return a.session(r)
+		}
+
 		return Principal{}, refuse(ReasonMissing, errors.New("no credential"))
 	}
 	scheme, token, ok := strings.Cut(h, " ")
@@ -136,6 +150,20 @@ func (a *Authenticator) Authenticate(r *http.Request) (Principal, error) {
 	}
 
 	return a.cfg.OIDC.Verify(r.Context(), token)
+}
+
+// session is the principal of r's session cookie, refused as csrf unless r is a POST whose Origin is the API's own,
+// which is checked before the cookie is opened.
+func (a *Authenticator) session(r *http.Request) (Principal, error) {
+	if r.Method != http.MethodPost || !SameOrigin(r, a.cfg.People.cfg.PublicURL) {
+		return Principal{}, refuse(ReasonCSRF, errors.New("a cookie-borne request that is not a POST from the API's own origin"))
+	}
+	s, err := a.cfg.People.Session(r)
+	if err != nil {
+		return Principal{}, err
+	}
+
+	return Principal{Subject: s.Subject, Roles: slices.Clone(s.Roles), Via: ViaSession}, nil
 }
 
 // certificate is the principal of r's verified client certificate: its first URI name, else its first DNS name.

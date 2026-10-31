@@ -47,7 +47,7 @@ func API(ctx context.Context, e *Env) error {
 	idp := verifier(&c.Auth)
 	s := &api.Server{
 		Catalog: e.Catalog, QuietPeriod: c.Compact.QuietPeriod, Store: e.Store, Metrics: m, Log: log,
-		Auth: authenticator(&c.Auth, idp, m, log),
+		Auth: authenticator(&c.Auth, idp, nil, m, log),
 		Downloads: api.Downloads{
 			PublicURL: c.API.PublicURL, Lifetime: c.Store.DownloadLifetime, Margin: c.API.DownloadMargin, Floor: c.API.DownloadFloor,
 			DeleteDelay: c.Compact.DeleteDelay, Now: e.Now,
@@ -102,6 +102,8 @@ func API(ctx context.Context, e *Env) error {
 		if s.People, err = e.people(idp, m, log); err != nil {
 			return err
 		}
+		// The handler reads s.Auth only once the server serves, after this.
+		s.Auth = authenticator(&c.Auth, idp, s.People, m, log)
 	}
 	// The admin commands' keys, after downloads named what a missing download key costs; Restore and Digest share them.
 	if s.Admin, err = e.Admin(""); err != nil {
@@ -176,9 +178,9 @@ func (e *Env) people(idp *auth.Verifier, m *metrics.API, log *slog.Logger) (*aut
 	return auth.NewPeople(cfg, idp, &auth.Cookies{Keys: k, Leeway: e.Config.Auth.OIDC.Leeway, Now: e.Now}), nil
 }
 
-// authenticator builds the checks of a over idp, counting refusals in m.
-func authenticator(a *config.Auth, idp *auth.Verifier, m *metrics.API, log *slog.Logger) *auth.Authenticator {
-	cfg := auth.AuthenticatorConfig{MTLS: a.MTLS.Subjects, StaticEnabled: a.Static.Enabled, Log: log}
+// authenticator builds the checks of a over idp and people's sign-in, nil for none, counting refusals in m.
+func authenticator(a *config.Auth, idp *auth.Verifier, people *auth.People, m *metrics.API, log *slog.Logger) *auth.Authenticator {
+	cfg := auth.AuthenticatorConfig{MTLS: a.MTLS.Subjects, StaticEnabled: a.Static.Enabled, People: people, Log: log}
 	if m != nil {
 		cfg.Failures = m
 	}
