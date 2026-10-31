@@ -113,9 +113,21 @@ build: web ## The release binary: make web, then tracekeep with -tags webdist un
 	@GOWORK=off go test -tags webdist ./web/
 	@GOWORK=off go build -tags webdist -o dist/tracekeep ./cmd/tracekeep
 
+##@ Packaging
+
+# The image's Go is mise.toml's, so the image and a local build agree.
+GO_VERSION   := $(shell awk -F'"' '/^go *=/ {print $$2}' mise.toml)
+IMAGE_BUILD   = docker buildx build -f deploy/image/Dockerfile --build-arg GO_VERSION=$(GO_VERSION)
+
+image: ## The image for the host's platform, loaded as tracekeep:dev (needs docker)
+	@$(IMAGE_BUILD) --load -t tracekeep:dev .
+
+image-check: ## The image built for amd64 and arm64, neither loaded nor pushed (needs docker)
+	@$(IMAGE_BUILD) --platform linux/amd64,linux/arm64 --output type=cacheonly .
+
 ##@ CI
 
 ci: check docs-check data-check test ## Every gate, plus the service built without the workspace
 	@GOWORK=off go build ./...
 
-.PHONY: help lint fmt vet check docs-check data-check work hooks test test-latest test-s3 test-vault test-catalog migrate-diff migrate-check proto web web-check build bench ci
+.PHONY: help lint fmt vet check docs-check data-check work hooks test test-latest test-s3 test-vault test-catalog migrate-diff migrate-check proto web web-check build image image-check bench ci

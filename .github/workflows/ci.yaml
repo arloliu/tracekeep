@@ -101,3 +101,15 @@ jobs:
       run: make web-check
     - name: make build
       run: make build
+
+  # The packaging's checks a pull request can run (architecture.md §3.3): the image for both platforms, neither loaded nor pushed;
+  # the browser-driven packaging tests run on main instead (T-50).
+  packaging-checks:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v7
+    # A docker-container builder, since the docker driver builds no second platform.
+    - name: Set up Buildx
+      uses: docker/setup-buildx-action@v3
+    - name: make image-check
+      run: make image-check
