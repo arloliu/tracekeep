@@ -1,0 +1,115 @@
+{{- /*
+The alert rules of operations.md §10.4, each linked to its runbook section.
+Ingest's gauges of shared state are observed by every ingest replica alike: a rule reads their maximum, never their sum,
+and only while their source was refreshed within ten minutes; a counter is read by its increase, which a reset does not count.
+*/ -}}
+{{- if .Values.alerts.enabled }}
+{{- $runbook := .Values.alerts.runbookURL }}
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: {{ include "tracekeep.fullname" . }}
+  labels:
+    {{- include "tracekeep.labels" . | nindent 4 }}
+    {{- with .Values.alerts.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  groups:
+  - name: tracekeep
+    rules:
+    - alert: TracekeepDeferredOld
+      expr: max(tracekeep_ingest_deferred_oldest_age_seconds) > 3600
+      for: 5m
+      labels:
+        severity: warning
+      annotations:
+        summary: A message has been deferred for more than an hour.
+        runbook_url: {{ $runbook }}#parked
+    - alert: TracekeepBacklogHigh
+      expr: |
+        max(tracekeep_ingest_stream_backlog_bytes) > {{ .Values.alerts.backlogBytes | int64 }}
+        and on() (time() - max(tracekeep_ingest_refreshed_timestamp_seconds{source="bus"})) < 600
+      for: 15m
+      labels:
+        severity: warning
+      annotations:
+        summary: The traffic stream holds more than {{ .Values.alerts.backlogBytes | int64 }} bytes.
+        runbook_url: {{ $runbook }}#backlog
+    - alert: TracekeepCompactLeaseLost
+      expr: (max(tracekeep_compact_lease_held) or on() vector(0)) < 1
+      for: 5m
+      labels:
+        severity: critical
+      annotations:
+        summary: No compact replica holds the lease.
+        runbook_url: {{ $runbook }}#lease-lost
+    - alert: TracekeepMergeStalled
+      # A merge cycle that merged nothing counts as completed; a lease holder that never completed one counts as stalled after the same two hours.
+      expr: |
+        (time() - max(tracekeep_compact_last_success_timestamp{task="merge"})) > 7200
+        or on() (max(tracekeep_compact_lease_held) == 1 unless on() max(tracekeep_compact_last_success_timestamp{task="merge"}))
+      for: 2h
+      labels:
+        severity: warning
+      annotations:
+        summary: The merge task has completed no cycle for two hours.
+        runbook_url: {{ $runbook }}#merge-stalled
+    - alert: TracekeepMergeRefused
+      expr: sum(increase(tracekeep_compact_merges_total{outcome="refused"}[1h])) > 0
+      labels:
+        severity: warning
+      annotations:
+        summary: A merge was refused over the reader's metadata budget.
+        runbook_url: {{ $runbook }}#merge-over-budget
+    - alert: TracekeepGapsGrowing
+      expr: |
+        (
+          (max by (tool_id) (tracekeep_ingest_open_gaps) - max by (tool_id) (tracekeep_ingest_open_gaps offset 30m)) > 0
+          and on() (time() - max(tracekeep_ingest_refreshed_timestamp_seconds{source="catalog"})) < 600
+        )
+        or sum by (tool_id) (increase(tracekeep_ingest_declared_losses_total[30m])) > 0
+      labels:
+        severity: warning
+      annotations:
+        summary: "Tool {{ "{{" }} $labels.tool_id {{ "}}" }}: open gaps or declared losses increasing."
+        runbook_url: {{ $runbook }}#gaps-and-losses
+    - alert: TracekeepKeyRefused
+      expr: sum(increase(tracekeep_key_resolutions_total{outcome="refused"}[10m])) > 0
+      labels:
+        severity: critical
+      annotations:
+        summary: A key resolution was refused.
+        runbook_url: {{ $runbook }}#key-refused
+    - alert: TracekeepKeysUnavailable
+      expr: sum(increase(tracekeep_key_resolutions_total{outcome="unavailable"}[5m])) > 0
+      for: 5m
+      labels:
+        severity: critical
+      annotations:
+        summary: Key resolutions have been unavailable for five minutes.
+        runbook_url: {{ $runbook }}#keys-unavailable
+  {{- if .Values.alerts.gateway.enabled }}
+  # The gateway's rules: the producer's metrics, which the gateways serve.
+  - name: tracepub
+    rules:
+    - alert: TracepubToolSilent
+      # A producer that never published has no published counter, which counts as unchanged.
+      expr: |
+        tracepub_bus_connected == 1
+        unless on(job, instance) (increase(tracepub_records_published_total[10m]) > 0)
+      for: 10m
+      labels:
+        severity: warning
+      annotations:
+        summary: "Producer {{ "{{" }} $labels.instance {{ "}}" }} is connected and has published nothing for ten minutes."
+        runbook_url: {{ $runbook }}#tool-silent
+    - alert: TracepubDropping
+      expr: sum by (job, instance) (increase(tracepub_records_dropped_total[5m])) > 0
+      labels:
+        severity: warning
+      annotations:
+        summary: "Producer {{ "{{" }} $labels.instance {{ "}}" }} is dropping records."
+        runbook_url: {{ $runbook }}#producer-drops
+  {{- end }}
+{{- end }}

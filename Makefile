@@ -128,9 +128,12 @@ image-check: ## The image built for amd64 and arm64, neither loaded nor pushed (
 chart-check: ## The Helm chart linted, rendered with the tests' values and validated (needs helm and kubeconform, pinned in mise.toml)
 	@scripts/chart-check.sh
 
+alerts-check: ## The alert rules tested with promtool and their runbook sections checked (needs helm and promtool, pinned in mise.toml)
+	@scripts/alerts-check.sh
+
 ##@ CI
 
 ci: check docs-check data-check test ## Every gate, plus the service built without the workspace
 	@GOWORK=off go build ./...
 
-.PHONY: help lint fmt vet check docs-check data-check work hooks test test-latest test-s3 test-vault test-catalog migrate-diff migrate-check proto web web-check build image image-check chart-check bench ci
+.PHONY: help lint fmt vet check docs-check data-check work hooks test test-latest test-s3 test-vault test-catalog migrate-diff migrate-check proto web web-check build image image-check chart-check alerts-check bench ci
