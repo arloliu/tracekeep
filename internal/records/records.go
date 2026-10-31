@@ -8,7 +8,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"math"
+	"net"
 	"slices"
 
 	"github.com/arloliu/go-secs/tracepack"
@@ -33,6 +35,9 @@ const (
 	ReasonEvicted      = "evicted"
 )
 
+// ErrWithheld refuses a read of a withheld capture: outside tracekeep dev, one whose configuration has no policy (T-48).
+var ErrWithheld = errors.New("records: the capture is withheld")
+
 // ReadSets reads an hour's read set; *catalog.Catalog is one.
 type ReadSets interface {
 	ReadSet(ctx context.Context, capture tracepack.UUID, hour int64) (catalog.ReadSet, error)
@@ -46,6 +51,10 @@ type Reader struct {
 	MaxReaders int
 	// HeldBytes is tracepack's MaxHeldBytes for each merge; zero is tracepack's default.
 	HeldBytes int64
+	// Withholds tells whether a capture bound to a configuration is withheld;
+	// it is asked of every read set, so no read, a resumed one included, reads a withheld capture's packs.
+	// Nil withholds none.
+	Withholds func(ctx context.Context, config *int64) (bool, error)
 }
 
 // Message selects records by their HSMS stream and function, any function when AnyFunction is set.
@@ -88,13 +97,18 @@ type Record struct {
 	Holders []catalog.ReadPack
 }
 
+// MaxNamedPacks bounds the packs an Incomplete names, so a marker stays far below a message's size; MorePacks counts the rest.
+const MaxNamedPacks = 100
+
 // Incomplete names what a read could not read.
 type Incomplete struct {
 	Hour   int64
 	Reason string
 	// Detail is tracepack's or the store's description, never a key.
 	Detail string
-	Packs  []tracepack.UUID
+	// Packs are at most MaxNamedPacks of the packs concerned; MorePacks counts those left out.
+	Packs     []tracepack.UUID
+	MorePacks int
 	// SeqFrom and SeqTo bound the seqs the stream lacks, when known.
 	SeqFrom, SeqTo *uint64
 }
@@ -127,30 +141,50 @@ func (r *Reader) Read(ctx context.Context, q *Query, sink Sink) error {
 
 // hour reads one hour, re-reading its read set once when an object is found gone.
 func (r *Reader) hour(ctx context.Context, q *Query, h int64, after *uint64, sink Sink) error {
-	rs, err := r.Catalog.ReadSet(ctx, q.Capture, h)
+	rs, err := r.readSet(ctx, q.Capture, h)
 	if err != nil {
 		return err
 	}
+	hr := &hourRead{r: r, q: q, hour: h, last: after, sink: sink}
 	if !rs.Scoped {
+		if rs.Evicted {
+			// Evicted after the capture's completeness was read, or before: either way the hour holds no record now.
+			return hr.rest(ReasonEvicted, "retention evicted the hour", nil)
+		}
+
 		return nil // an hour without a scope holds no record; completeness reports why
 	}
-	hr := &hourRead{r: r, q: q, hour: h, last: after, sink: sink}
 	gone, err := hr.read(ctx, &rs)
 	if err != nil || gone == nil {
 		return err
 	}
-	if rs, err = r.Catalog.ReadSet(ctx, q.Capture, h); err != nil {
+	if rs, err = r.readSet(ctx, q.Capture, h); err != nil {
 		return err
 	}
 	if !rs.Scoped {
-		return hr.rest(ReasonEvicted, "the hour was evicted during the read", nil)
+		return hr.rest(ReasonEvicted, "retention evicted the hour during the read", nil)
 	}
 	gone2, err := hr.read(ctx, &rs)
 	if err != nil || gone2 == nil {
 		return err
 	}
 
-	return hr.rest(ReasonGone, gone2.Error(), nil)
+	return hr.rest(ReasonGone, "a pack's object is gone, again after the hour's read set was read again", nil)
+}
+
+// readSet reads an hour's read set, refusing a withheld capture's.
+func (r *Reader) readSet(ctx context.Context, capture tracepack.UUID, h int64) (catalog.ReadSet, error) {
+	rs, err := r.Catalog.ReadSet(ctx, capture, h)
+	if err != nil || r.Withholds == nil {
+		return rs, err
+	}
+	if withheld, err := r.Withholds(ctx, rs.ConfigID); err != nil {
+		return catalog.ReadSet{}, err
+	} else if withheld {
+		return catalog.ReadSet{}, ErrWithheld
+	}
+
+	return rs, nil
 }
 
 // hourRead is one hour's read in progress: last is the hour's last seq yielded, every version included.
@@ -173,6 +207,17 @@ func (hr *hourRead) rest(reason, detail string, packs []tracepack.UUID) error {
 	return hr.sink.Incomplete(in)
 }
 
+// lacks reports a cluster, above the last seq yielded, as incomplete.
+func (hr *hourRead) lacks(reason, detail string, c cluster, packs []catalog.ReadPack) error {
+	from := c.lo
+	if hr.last != nil && *hr.last >= from {
+		from = *hr.last + 1
+	}
+	named, more := namedIDs(packs)
+
+	return hr.sink.Incomplete(Incomplete{Hour: hr.hour, Reason: reason, Detail: detail, Packs: named, MorePacks: more, SeqFrom: &from, SeqTo: &c.hi})
+}
+
 // read reads rs's clusters in order; it returns the store's error of an object found gone, ending the read there.
 func (hr *hourRead) read(ctx context.Context, rs *catalog.ReadSet) (gone, err error) {
 	for _, c := range clusters(rs.Packs) {
@@ -180,9 +225,10 @@ func (hr *hourRead) read(ctx context.Context, rs *catalog.ReadSet) (gone, err er
 			continue
 		}
 		if len(c.packs) > hr.r.MaxReaders {
+			named, more := namedIDs(c.packs)
 			in := Incomplete{
 				Hour: hr.hour, Reason: ReasonTooManyPacks, Detail: fmt.Sprintf("%d packs overlap, at most %d are read together", len(c.packs), hr.r.MaxReaders),
-				Packs: ids(c.packs), SeqFrom: &c.lo, SeqTo: &c.hi,
+				Packs: named, MorePacks: more, SeqFrom: &c.lo, SeqTo: &c.hi,
 			}
 			if err := hr.sink.Incomplete(in); err != nil {
 				return nil, err
@@ -207,7 +253,7 @@ func (hr *hourRead) merge(ctx context.Context, rs *catalog.ReadSet, c cluster) (
 		}
 	}()
 	for _, p := range c.packs {
-		obj, err := hr.r.Store.Open(ctx, p.Key)
+		obj, err := Open(ctx, hr.r.Store, p.Key)
 		if errors.Is(err, store.ErrNotFound) {
 			return err, nil
 		} else if err != nil {
@@ -216,14 +262,20 @@ func (hr *hourRead) merge(ctx context.Context, rs *catalog.ReadSet, c cluster) (
 		c.objs = append(c.objs, obj)
 		rd, err := tracepack.Open(ctx, obj, obj.Size(), tracepack.ReaderOptions{})
 		if err == nil && rd.Header().CaptureID != hr.q.Capture {
-			err = errors.New("of another capture")
+			err = errors.New("the pack is of another capture")
 		}
-		if err != nil {
-			if err := hr.sink.Incomplete(Incomplete{Hour: hr.hour, Reason: ReasonCorrupt, Detail: err.Error(), Packs: []tracepack.UUID{p.ID}, SeqFrom: &c.lo, SeqTo: &c.hi}); err != nil {
-				return nil, err
-			}
-
-			return nil, nil
+		switch {
+		case errors.Is(err, store.ErrNotFound):
+			return err, nil
+		case errors.Is(err, tracepack.ErrReadLimit):
+			return nil, hr.lacks(ReasonReadLimit, err.Error(), c, []catalog.ReadPack{p})
+		case ctx.Err() != nil:
+			return nil, ctx.Err()
+		case errors.Is(err, errStore):
+			// A store that fails a read is unavailable, not the pack corrupt: the client retries.
+			return nil, fmt.Errorf("records: open pack %s: %w", p.ID, err)
+		case err != nil:
+			return nil, hr.lacks(ReasonCorrupt, err.Error(), c, []catalog.ReadPack{p})
 		}
 		readers = append(readers, rd)
 	}
@@ -236,7 +288,7 @@ func (hr *hourRead) merge(ctx context.Context, rs *catalog.ReadSet, c cluster) (
 	case errors.Is(err, store.ErrNotFound):
 		return err, nil
 	case errors.Is(err, tracepack.ErrReadLimit):
-		return nil, hr.rest(ReasonReadLimit, err.Error(), ids(c.packs))
+		return nil, hr.lacks(ReasonReadLimit, err.Error(), c, c.packs)
 	case err != nil:
 		return nil, err
 	}
@@ -248,11 +300,13 @@ func (hr *hourRead) merge(ctx context.Context, rs *catalog.ReadSet, c cluster) (
 // A coverage entry is a declared loss, which the capture's completeness already reports.
 func (hr *hourRead) defects(res *tracepack.Result, c cluster) error {
 	for _, d := range res.Incomplete {
-		reason := ReasonCorrupt
+		reason := ReasonCorrupt // a damaged block, an unknown codec, a truncated pack, an index mismatch
 		if d.Reason == tracepack.ReasonCoverage {
 			continue
 		} else if d.Reason == tracepack.ReasonCrashGap {
 			reason = ReasonCrashGap
+		} else if d.Reason == tracepack.ReasonLimit {
+			reason = ReasonReadLimit
 		}
 		in := Incomplete{Hour: hr.hour, Reason: reason, Detail: d.Reason.String(), Packs: []tracepack.UUID{c.packs[d.Pack].ID}}
 		if err := hr.sink.Incomplete(in); err != nil {
@@ -270,7 +324,7 @@ func (hr *hourRead) defects(res *tracepack.Result, c cluster) error {
 
 // filter is the part of the query tracepack's filter can express (api.md §10.1 *Filters*).
 func (hr *hourRead) filter() tracepack.Query {
-	from, to := max(hr.q.From, hr.hour*nsPerHour), min(hr.q.To, (hr.hour+1)*nsPerHour)
+	from, to := max(hr.q.From, hourStart(hr.hour)), min(hr.q.To, hourStart(hr.hour+1))
 	f := tracepack.Filter{TimeFrom: &from, TimeTo: &to, Kinds: hr.q.Kinds, Dirs: hr.q.Dirs}
 	exact := len(hr.q.Messages) > 0
 	for _, m := range hr.q.Messages {
@@ -315,7 +369,7 @@ func (g *group) add(it *tracepack.Item) error {
 	}
 	rec.Excluded = Excluded(g.rs, seq)
 	if rec.Conflict {
-		rec.Holders = holders(g.rs, seq)
+		rec.Holders = Holders(g.rs, seq)
 	}
 	g.seq = seq
 	g.held = append(g.held, rec)
@@ -347,11 +401,13 @@ func (q *Query) admits(rec *Record) bool {
 	if len(q.Messages) == 0 {
 		return true
 	}
-	if rec.Unobserved || !rec.HasHeader {
+	if rec.Unobserved {
 		return false
 	}
+	stream := rec.Header.Available&tracepack.FieldValidityStreamAndW != 0
+	function := rec.Header.Available&tracepack.FieldValidityFunction != 0
 	for _, m := range q.Messages {
-		if m.Stream == rec.Header.Stream && (m.AnyFunction || m.Function == rec.Header.Function) {
+		if stream && m.Stream == rec.Header.Stream && (m.AnyFunction || function && m.Function == rec.Header.Function) {
 			return true
 		}
 	}
@@ -383,8 +439,8 @@ func Excluded(rs *catalog.ReadSet, seq uint64) bool {
 	return true
 }
 
-// holders are rs's packs whose ranges hold seq, without their ranges.
-func holders(rs *catalog.ReadSet, seq uint64) []catalog.ReadPack {
+// Holders are rs's packs whose ranges hold seq, without their ranges.
+func Holders(rs *catalog.ReadSet, seq uint64) []catalog.ReadPack {
 	var out []catalog.ReadPack
 	for _, p := range rs.Packs {
 		if slices.ContainsFunc(p.Ranges, func(rg catalog.Range) bool { return rg.SeqFrom <= seq && seq <= rg.SeqTo }) {
@@ -437,13 +493,27 @@ func clusters(packs []catalog.ReadPack) []cluster {
 	return out
 }
 
-func ids(packs []catalog.ReadPack) []tracepack.UUID {
-	out := make([]tracepack.UUID, 0, len(packs))
-	for _, p := range packs {
+// namedIDs are the packs' ids, at most MaxNamedPacks of them, and how many it left out.
+func namedIDs(packs []catalog.ReadPack) ([]tracepack.UUID, int) {
+	n := min(len(packs), MaxNamedPacks)
+	out := make([]tracepack.UUID, 0, n)
+	for _, p := range packs[:n] {
 		out = append(out, p.ID)
 	}
 
-	return out
+	return out, len(packs) - n
+}
+
+// hourStart is the start of hour h in nanoseconds, saturated at int64's bounds.
+func hourStart(h int64) int64 {
+	switch {
+	case h > math.MaxInt64/nsPerHour:
+		return math.MaxInt64
+	case h < math.MinInt64/nsPerHour:
+		return math.MinInt64
+	default:
+		return h * nsPerHour
+	}
 }
 
 func floorHour(ns int64) int64 {
@@ -453,4 +523,47 @@ func floorHour(ns int64) int64 {
 	}
 
 	return q
+}
+
+// Open opens key's object, whose errors, its own and its reads', name no key: a store's errors quote it,
+// and what a read reports reaches a person's answer and the logs.
+func Open(ctx context.Context, st store.ObjectStore, key string) (store.Object, error) {
+	obj, err := st.Open(ctx, key)
+	if err != nil {
+		return nil, Keyless(err)
+	}
+
+	return keyless{obj}, nil
+}
+
+type keyless struct{ store.Object }
+
+func (o keyless) ReadAt(p []byte, off int64) (int, error) {
+	n, err := o.Object.ReadAt(p, off)
+	if err != nil && !errors.Is(err, io.EOF) {
+		err = Keyless(err)
+	}
+
+	return n, err
+}
+
+// errStore is a store failure other than a missing object, without the store's text.
+var errStore = errors.New("records: the store failed to read an object")
+
+// Keyless is a store's err without its text, which names the object's key:
+// store.ErrNotFound for a missing object, the context's error, or a store failure, a timeout said so.
+func Keyless(err error) error {
+	var nerr net.Error
+	switch {
+	case errors.Is(err, store.ErrNotFound):
+		return store.ErrNotFound
+	case errors.Is(err, context.Canceled):
+		return context.Canceled
+	case errors.Is(err, context.DeadlineExceeded):
+		return context.DeadlineExceeded
+	case errors.As(err, &nerr) && nerr.Timeout():
+		return fmt.Errorf("%w: timed out", errStore)
+	default:
+		return errStore
+	}
 }

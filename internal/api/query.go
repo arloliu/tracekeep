@@ -12,10 +12,12 @@ import (
 	"regexp"
 	"slices"
 	"strconv"
+	"strings"
 	"sync"
 
 	"connectrpc.com/connect"
 	"github.com/arloliu/go-secs/tracepack"
+	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/encoding/protowire"
 	"google.golang.org/protobuf/proto"
 
@@ -67,6 +69,7 @@ func (s *Server) reader() *records.Reader {
 	return &records.Reader{
 		Catalog: s.Catalog, Store: s.Store,
 		MaxReaders: cmp.Or(s.Records.MaxReaders, 16), HeldBytes: cmp.Or(s.Records.HeldBytes, 64<<20),
+		Withholds: s.withholds,
 	}
 }
 
@@ -88,7 +91,7 @@ func (s *Server) QueryRecords(ctx context.Context, req *connect.Request[tkv1.Que
 	slices.SortFunc(caps, func(a, b catalog.CaptureInfo) int {
 		return cmp.Or(cmp.Compare(a.OriginNS, b.OriginNS), bytes.Compare(a.ID[:], b.ID[:]))
 	})
-	w := &recordWriter{s: s, stream: stream, q: q}
+	w := &recordWriter{s: s, stream: stream, q: q, json: strings.Contains(req.Header().Get("Content-Type"), "json")}
 	for i := range caps {
 		c := &caps[i]
 		if q.after != nil && before(c, q.after) {
@@ -260,8 +263,12 @@ type recordWriter struct {
 	size    int
 	cursor  recordCursor
 	records int
+	// pending are the batch's records, counted as streamed once it is sent.
+	pending int
 	lacking bool
 	limited bool
+	// json is set when the stream's codec is JSON, whose encoding sizes the batches.
+	json bool
 	// configs caches whether a configuration withholds its captures.
 	configs map[int64]bool
 }
@@ -281,25 +288,21 @@ func (w *recordWriter) capture(ctx context.Context, c *catalog.CaptureInfo) erro
 	if err != nil {
 		return failed(err)
 	}
+	withheld, err := w.withheld(ctx, c)
+	if err != nil {
+		return err
+	}
 	if !resuming {
-		start := &tkv1.CaptureStart{Capture: captureOf(c), Completeness: completenessOf(w.window(&comp))}
-		if err := w.add(&tkv1.RecordItem{Item: &tkv1.RecordItem_Capture{Capture: start}}); err != nil {
+		if err := w.add(w.start(c, &comp)); err != nil {
 			return err
-		}
-		withheld, err := w.withheld(ctx, c)
-		if err != nil {
-			return err
-		}
-		if withheld {
-			return w.add(&tkv1.RecordItem{Item: &tkv1.RecordItem_Withheld{Withheld: &tkv1.Withheld{}}})
 		}
 	}
-	if err := w.s.reader().Read(ctx, &rq, w); err != nil {
-		if errors.Is(err, errLimit) || connect.CodeOf(err) != connect.CodeUnknown {
+	if withheld {
+		if err := w.add(&tkv1.RecordItem{Item: &tkv1.RecordItem_Withheld{Withheld: &tkv1.Withheld{}}}); err != nil {
 			return err
 		}
-
-		return connect.NewError(connect.CodeUnavailable, err)
+	} else if err := w.s.reader().Read(ctx, &rq, w); err != nil {
+		return readFailed(err)
 	}
 	tail := &tkv1.UnknownTail{Open: c.State == catalog.StateOpen}
 	if comp.UnknownTailFrom != 0 {
@@ -307,6 +310,56 @@ func (w *recordWriter) capture(ctx context.Context, c *catalog.CaptureInfo) erro
 	}
 
 	return w.add(&tkv1.RecordItem{Item: &tkv1.RecordItem_UnknownTail{UnknownTail: tail}})
+}
+
+// readFailed maps a read's error to its Connect code: the limit passes through, a withheld capture is a failed precondition,
+// anything else not already a Connect error is unavailable, which the client retries.
+func readFailed(err error) error {
+	switch {
+	case errors.Is(err, errLimit) || connect.CodeOf(err) != connect.CodeUnknown:
+		return err
+	case errors.Is(err, records.ErrWithheld):
+		return connect.NewError(connect.CodeFailedPrecondition, err)
+	default:
+		return connect.NewError(connect.CodeUnavailable, err)
+	}
+}
+
+// start is c's start marker with its completeness in the window, cut to fit a message when it would not.
+func (w *recordWriter) start(c *catalog.CaptureInfo, comp *catalog.Completeness) *tkv1.RecordItem {
+	start := &tkv1.CaptureStart{Capture: captureOf(c), Completeness: completenessOf(w.window(comp))}
+	it := &tkv1.RecordItem{Item: &tkv1.RecordItem_Capture{Capture: start}}
+	for w.itemSize(it) > w.budget() {
+		start.CompletenessTruncated = true
+		if !cut(start.Completeness) {
+			break
+		}
+	}
+
+	return it
+}
+
+// cut drops the last half of comp's longest list of entries, reporting whether anything was left to drop.
+func cut(comp *tkv1.Completeness) bool {
+	n := max(len(comp.Gaps), len(comp.Evicted), len(comp.Deferred), len(comp.Losses), len(comp.CrashGaps), len(comp.Conflicts))
+	switch {
+	case n == 0:
+		return false
+	case len(comp.Gaps) == n:
+		comp.Gaps = comp.Gaps[:n/2]
+	case len(comp.Evicted) == n:
+		comp.Evicted = comp.Evicted[:n/2]
+	case len(comp.Deferred) == n:
+		comp.Deferred = comp.Deferred[:n/2]
+	case len(comp.Losses) == n:
+		comp.Losses = comp.Losses[:n/2]
+	case len(comp.CrashGaps) == n:
+		comp.CrashGaps = comp.CrashGaps[:n/2]
+	default:
+		comp.Conflicts = comp.Conflicts[:n/2]
+	}
+
+	return true
 }
 
 // withheld tells whether c is withheld (T-48), each configuration decided once a stream.
@@ -358,9 +411,14 @@ func (w *recordWriter) window(comp *catalog.Completeness) *catalog.Completeness 
 	out.Losses = keep(comp.Losses, func(l catalog.DeclaredLoss) bool {
 		return m.times(l.TSFrom, l.TSTo) && m.seqs(deref(l.SeqFrom, 0), deref(l.SeqTo, records.Sentinel))
 	})
+	// In seq order, a loss without a seq last.
+	slices.SortStableFunc(out.Losses, func(a, b catalog.DeclaredLoss) int {
+		return cmp.Or(cmp.Compare(deref(a.SeqFrom, records.Sentinel), deref(b.SeqFrom, records.Sentinel)),
+			cmp.Compare(deref(a.SeqTo, records.Sentinel), deref(b.SeqTo, records.Sentinel)))
+	})
 	out.CrashGaps = keep(comp.CrashGaps, func(g catalog.CrashGap) bool { return m.times(g.Start, g.End) })
 	out.Conflicts = keep(comp.Conflicts, func(k catalog.ConflictRange) bool { return m.seqs(k.SeqFrom, k.SeqTo) })
-	w.lacking = w.lacking || len(out.Gaps)+len(out.Evicted)+len(out.Deferred)+len(out.Losses)+len(out.CrashGaps) > 0
+	w.lacking = w.lacking || len(out.Gaps)+len(out.Evicted)+len(out.Deferred)+len(out.Losses)+len(out.CrashGaps)+len(out.Conflicts) > 0
 
 	return out
 }
@@ -371,8 +429,13 @@ type meeting struct {
 	seqFrom, seqTo *uint64
 }
 
-// times tells whether [a, b] meets the window, an unknown bound meeting it.
+// times tells whether the interval between a and b meets the window, an unknown bound meeting it;
+// after a backward clock step b may lie before a, and the interval is the same.
 func (m meeting) times(a, b *int64) bool {
+	if a != nil && b != nil && *b < *a {
+		a, b = b, a
+	}
+
 	return (a == nil || *a < m.to) && (b == nil || *b >= m.from)
 }
 
@@ -411,16 +474,16 @@ func (w *recordWriter) Versions(rs []records.Record) error {
 	for i := range rs {
 		it := &tkv1.RecordItem{Item: &tkv1.RecordItem_Record{Record: recordOf(&rs[i])}}
 		items = append(items, it)
-		size += itemSize(it)
+		size += w.itemSize(it)
 	}
-	if len(w.batch) > 0 && w.size+size > batchBytes {
+	if len(w.batch) > 0 && w.size+size > w.budget() {
 		if err := w.flush(); err != nil {
 			return err
 		}
 	}
 	w.batch, w.size = append(w.batch, items...), w.size+size
 	w.records += len(rs)
-	w.s.Metrics.RecordsStreamed(len(rs))
+	w.pending += len(rs)
 	w.cursor.Start, w.cursor.Hour, w.cursor.Seq = false, rs[0].Hour, rs[0].Seq
 
 	return nil
@@ -430,15 +493,17 @@ func (w *recordWriter) Versions(rs []records.Record) error {
 func (w *recordWriter) Incomplete(in records.Incomplete) error {
 	w.lacking = true
 	w.s.Metrics.ReadIncomplete(in.Reason)
-	m := &tkv1.Incomplete{Hour: hourTS(in.Hour), Reason: in.Reason, Detail: in.Detail, Packs: ids(in.Packs), SeqFrom: in.SeqFrom, SeqTo: in.SeqTo}
+	m := &tkv1.Incomplete{
+		Hour: hourTS(in.Hour), Reason: in.Reason, Detail: in.Detail, Packs: ids(in.Packs), MorePacks: uint32(in.MorePacks), SeqFrom: in.SeqFrom, SeqTo: in.SeqTo, //nolint:gosec // a count of packs
+	}
 
 	return w.add(&tkv1.RecordItem{Item: &tkv1.RecordItem_Incomplete{Incomplete: m}})
 }
 
 // add adds a marker to the batch, sending the batch first when the marker would take it past its size.
 func (w *recordWriter) add(it *tkv1.RecordItem) error {
-	size := itemSize(it)
-	if len(w.batch) > 0 && w.size+size > batchBytes {
+	size := w.itemSize(it)
+	if len(w.batch) > 0 && w.size+size > w.budget() {
 		if err := w.flush(); err != nil {
 			return err
 		}
@@ -448,15 +513,42 @@ func (w *recordWriter) add(it *tkv1.RecordItem) error {
 	return nil
 }
 
-// itemSize is it's encoding as an element of a message's items: its tag, its length and its bytes.
-func itemSize(it *tkv1.RecordItem) int { return 1 + protowire.SizeBytes(proto.Size(it)) }
+// envelope is what a message carries besides its items, its cursor and its end, with room to spare.
+const envelope = 1 << 10
+
+// budget is the bytes of items a message holds: 128 KiB less its envelope.
+func (w *recordWriter) budget() int { return batchBytes - envelope }
+
+// itemSize is it's encoding as an element of a message's items in the stream's codec:
+// in binary its tag, length and bytes; in JSON its text and a separating comma, payloads in base64.
+func (w *recordWriter) itemSize(it *tkv1.RecordItem) int {
+	if w.json {
+		b, err := protojson.Marshal(it)
+		if err != nil {
+			return batchBytes // an item that does not encode travels alone, and fails there
+		}
+
+		return len(b) + 1
+	}
+
+	return 1 + protowire.SizeBytes(proto.Size(it))
+}
 
 func (w *recordWriter) flush() error {
 	if len(w.batch) == 0 {
 		return nil
 	}
-	err := w.stream.Send(&tkv1.QueryRecordsResponse{Items: w.batch, Cursor: w.cursor.text()})
-	w.batch, w.size = nil, 0
+
+	return w.send(&tkv1.QueryRecordsResponse{Items: w.batch, Cursor: w.cursor.text()})
+}
+
+// send sends m, the batch, and counts its records as streamed once sent.
+func (w *recordWriter) send(m *tkv1.QueryRecordsResponse) error {
+	err := w.stream.Send(m)
+	if err == nil {
+		w.s.Metrics.RecordsStreamed(w.pending)
+	}
+	w.batch, w.size, w.pending = nil, 0, 0
 
 	return err
 }
@@ -467,10 +559,7 @@ func (w *recordWriter) end() error {
 	if w.limited {
 		end.Cursor = w.cursor.text()
 	}
-	err := w.stream.Send(&tkv1.QueryRecordsResponse{Items: w.batch, Cursor: w.cursor.text(), End: end})
-	w.batch = nil
-
-	return err
+	return w.send(&tkv1.QueryRecordsResponse{Items: w.batch, Cursor: w.cursor.text(), End: end})
 }
 
 var recordKindText = map[tracepack.Kind]string{

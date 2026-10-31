@@ -42,14 +42,15 @@ type world struct {
 	lease catalog.Lease
 	cl    tracekeepv1connect.MachineServiceClient
 	srv   *Server
+	hs    *httptest.Server
 }
 
 func newWorld(t *testing.T, c *catalog.Catalog) *world {
 	t.Helper()
 	w := &world{c: c, srv: &Server{Catalog: c, QuietPeriod: 15 * time.Minute, Auth: testAuthenticator(nil)}}
-	hs := httptest.NewServer(w.srv.Handler())
-	t.Cleanup(hs.Close)
-	w.cl = tracekeepv1connect.NewMachineServiceClient(hs.Client(), hs.URL)
+	w.hs = httptest.NewServer(w.srv.Handler())
+	t.Cleanup(w.hs.Close)
+	w.cl = tracekeepv1connect.NewMachineServiceClient(w.hs.Client(), w.hs.URL)
 
 	return w
 }
