@@ -47,7 +47,8 @@ a header or convention both sides need goes into the SDK, never into the service
 | `producer/` | the SDK: `producer`, `secsobs`, `busconfig`, `producertest` |
 | `web/` | the frontend: Vite, React, TypeScript (`api.md` §10.3); its Go package embeds the build, or the fallback page without `-tags webdist` |
 | `internal/devidp` | `tracekeep dev`'s test IdP; imported by `dev` and tests only |
-| `deploy/` | Helm, systemd and compose packaging |
+| `deploy/` | the image (`deploy/image/`), the Helm chart (`deploy/helm/tracekeep/`) and the systemd unit (`deploy/systemd/`), `architecture.md` §3.3 |
+| `scripts/packaging/` | the packaging tests' legs, one script each, run by their CI jobs and by a developer where Docker is |
 | `docs/` | specs, plans and guides under `450-doc-lifecycle.md` |
 | `scripts/` | repository checks (`docs-check.py`, `data-check.py`) and git hooks (`hooks/`) |
 | `data/` | sensitive inputs, owner-only; only its `README.md` and `.gitignore` are tracked (`make data-check`) |
