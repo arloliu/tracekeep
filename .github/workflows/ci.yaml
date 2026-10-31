@@ -102,7 +102,7 @@ jobs:
     - name: make build
       run: make build
 
-  # The packaging's checks a pull request can run (architecture.md §3.3): the image for both platforms, neither loaded nor pushed, and the chart;
+  # The packaging's checks a pull request can run (architecture.md §3.3): the image for both platforms, neither loaded nor pushed, the chart, its alert rules and the systemd unit;
   # the browser-driven packaging tests run on main instead (T-50).
   packaging-checks:
     runs-on: ubuntu-latest
@@ -121,3 +121,5 @@ jobs:
       run: make chart-check
     - name: make alerts-check
       run: make alerts-check
+    - name: make unit-check
+      run: make unit-check

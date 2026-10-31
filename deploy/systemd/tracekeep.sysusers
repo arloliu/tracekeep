@@ -1,0 +1,2 @@
+# The system user tracekeep.service runs as (architecture.md §3.3); install under /usr/lib/sysusers.d/tracekeep.conf.
+u tracekeep - "tracekeep traffic-log service" /var/lib/tracekeep /usr/sbin/nologin
