@@ -29,6 +29,8 @@ const (
 	ViaOIDC   = "oidc"
 	ViaMTLS   = "mtls"
 	ViaStatic = "static"
+	// ViaSession is a person's session cookie (api.md §10.2 *People's sign-in*).
+	ViaSession = "session"
 )
 
 // Reasons of a refused request, the label of auth_failures_total (api.md §10.2 *Failures*).
@@ -47,6 +49,13 @@ const (
 	ReasonStatic         = "static"
 	ReasonForbidden      = "forbidden"
 	ReasonDownload       = "download"
+	// People's sign-in's reasons (api.md §10.2 *People's sign-in*).
+	ReasonSession      = "session"
+	ReasonSessionScope = "session-scope"
+	ReasonCSRF         = "csrf"
+	ReasonLogin        = "login"
+	ReasonExchange     = "exchange"
+	ReasonNonce        = "nonce"
 )
 
 // Principal is an authenticated caller: its subject, its roles and how it was authenticated.

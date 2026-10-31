@@ -4,11 +4,13 @@ import (
 	"context"
 	"crypto/ecdsa"
 	"crypto/rsa"
+	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"slices"
 	"strings"
 	"sync"
@@ -35,6 +37,9 @@ const (
 // OIDCConfig is the IdP a service token is validated against (api.md §10.2).
 type OIDCConfig struct {
 	Issuer, Audience string
+	// PeopleClient is people's client id, when they sign in: a service token whose aud holds it is refused,
+	// so an ID token never passes as a service token.
+	PeopleClient string
 	// RolesClaim names the claim holding the token's role values, a string or a list of strings; empty is "roles".
 	RolesClaim string
 	// Roles maps a role value to the roles it grants; a value it does not name grants none.
@@ -56,6 +61,7 @@ type Verifier struct {
 	mu sync.Mutex
 	// keys verify until until; inflight, while a fetch runs, is closed when it ends.
 	keys      []jose.JSONWebKey
+	endpoints Endpoints
 	until     time.Time
 	attempted time.Time
 	tried     bool
@@ -102,44 +108,87 @@ func NewVerifier(cfg OIDCConfig) *Verifier {
 
 // Verify validates the service token raw and returns its principal, or an *Error naming the reason.
 func (v *Verifier) Verify(ctx context.Context, raw string) (Principal, error) {
-	tok, err := jwt.ParseSigned(raw, parseAlgs)
-	if err != nil {
-		return Principal{}, refuse(ReasonMalformed, errors.New("not a compact JWS"))
-	}
-	if len(tok.Headers) != 1 {
-		return Principal{}, refuse(ReasonMalformed, errors.New("not one signature"))
-	}
-	h := tok.Headers[0]
-	if !slices.Contains(signatureAlgs, jose.SignatureAlgorithm(h.Algorithm)) {
-		return Principal{}, refuse(ReasonAlg, fmt.Errorf("alg %q", h.Algorithm))
-	}
-	if h.KeyID == "" {
-		return Principal{}, refuse(ReasonMalformed, errors.New("no kid"))
-	}
-	key, err := v.key(ctx, h.KeyID)
+	claims, extra, err := v.verifyJWS(ctx, raw, v.cfg.Audience)
 	if err != nil {
 		return Principal{}, err
 	}
+	if v.cfg.PeopleClient != "" && slices.Contains(claims.Audience, v.cfg.PeopleClient) {
+		return Principal{}, &Error{Reason: ReasonAudience, Subject: claims.Subject, Err: errors.New("an audience of people's client")}
+	}
+
+	return Principal{Subject: claims.Subject, Roles: mapRoles(extra[v.cfg.RolesClaim], v.cfg.Roles), Via: ViaOIDC}, nil
+}
+
+// IDToken is a verified ID token's subject and claims.
+type IDToken struct {
+	Subject string
+	Claims  map[string]any
+}
+
+// VerifyIDToken validates the ID token raw of a login (api.md §10.2 *People's sign-in*):
+// signed as a service token is, by the same cached keys, with the issuer and times checked alike,
+// its aud holding clientID, its azp clientID (required when aud holds more than one value), its nonce the login's and its sub not empty.
+func (v *Verifier) VerifyIDToken(ctx context.Context, raw, clientID, nonce string) (IDToken, error) {
+	claims, extra, err := v.verifyJWS(ctx, raw, clientID)
+	if err != nil {
+		return IDToken{}, err
+	}
+	azp, hasAZP := extra["azp"].(string)
+	switch {
+	case (hasAZP || len(claims.Audience) > 1) && azp != clientID:
+		return IDToken{}, &Error{Reason: ReasonAudience, Subject: claims.Subject, Err: fmt.Errorf("azp %q", azp)}
+	case claims.Subject == "":
+		return IDToken{}, refuse(ReasonMalformed, errors.New("no sub"))
+	}
+	got, _ := extra["nonce"].(string)
+	if nonce == "" || subtle.ConstantTimeCompare([]byte(got), []byte(nonce)) != 1 {
+		return IDToken{}, &Error{Reason: ReasonNonce, Subject: claims.Subject, Err: errors.New("not the login's nonce")}
+	}
+
+	return IDToken{Subject: claims.Subject, Claims: extra}, nil
+}
+
+// verifyJWS checks raw's form, algorithm, key and signature, then its issuer, its audience holding audience, and its times,
+// and returns its claims.
+func (v *Verifier) verifyJWS(ctx context.Context, raw, audience string) (jwt.Claims, map[string]any, error) {
+	tok, err := jwt.ParseSigned(raw, parseAlgs)
+	if err != nil {
+		return jwt.Claims{}, nil, refuse(ReasonMalformed, errors.New("not a compact JWS"))
+	}
+	if len(tok.Headers) != 1 {
+		return jwt.Claims{}, nil, refuse(ReasonMalformed, errors.New("not one signature"))
+	}
+	h := tok.Headers[0]
+	if !slices.Contains(signatureAlgs, jose.SignatureAlgorithm(h.Algorithm)) {
+		return jwt.Claims{}, nil, refuse(ReasonAlg, fmt.Errorf("alg %q", h.Algorithm))
+	}
+	if h.KeyID == "" {
+		return jwt.Claims{}, nil, refuse(ReasonMalformed, errors.New("no kid"))
+	}
+	key, err := v.key(ctx, h.KeyID)
+	if err != nil {
+		return jwt.Claims{}, nil, err
+	}
 	if key.Algorithm != "" && key.Algorithm != h.Algorithm {
-		return Principal{}, refuse(ReasonSignature, fmt.Errorf("kid %s is a %s key, the token names %s", h.KeyID, key.Algorithm, h.Algorithm))
+		return jwt.Claims{}, nil, refuse(ReasonSignature, fmt.Errorf("kid %s is a %s key, the token names %s", h.KeyID, key.Algorithm, h.Algorithm))
 	}
 	if err := tok.Claims(key.Key); err != nil {
-		return Principal{}, refuse(ReasonSignature, fmt.Errorf("kid %s: the signature does not verify", h.KeyID))
+		return jwt.Claims{}, nil, refuse(ReasonSignature, fmt.Errorf("kid %s: the signature does not verify", h.KeyID))
 	}
 	var claims jwt.Claims
 	var extra map[string]any
 	if err := tok.UnsafeClaimsWithoutVerification(&claims, &extra); err != nil { // verified just above
-		return Principal{}, refuse(ReasonMalformed, errors.New("claims"))
+		return jwt.Claims{}, nil, refuse(ReasonMalformed, errors.New("claims"))
 	}
 	if claims.Expiry == nil {
-		return Principal{}, &Error{Reason: ReasonMalformed, Subject: claims.Subject, Err: errors.New("no exp")}
+		return jwt.Claims{}, nil, &Error{Reason: ReasonMalformed, Subject: claims.Subject, Err: errors.New("no exp")}
 	}
-	err = claims.ValidateWithLeeway(jwt.Expected{Issuer: v.cfg.Issuer, AnyAudience: jwt.Audience{v.cfg.Audience}, Time: v.cfg.Now()}, v.cfg.Leeway)
+	err = claims.ValidateWithLeeway(jwt.Expected{Issuer: v.cfg.Issuer, AnyAudience: jwt.Audience{audience}, Time: v.cfg.Now()}, v.cfg.Leeway)
 	if err != nil {
-		return Principal{}, &Error{Reason: claimReason(err), Subject: claims.Subject, Err: err}
+		return jwt.Claims{}, nil, &Error{Reason: claimReason(err), Subject: claims.Subject, Err: err}
 	}
 
-	return Principal{Subject: claims.Subject, Roles: v.roles(extra[v.cfg.RolesClaim]), Via: ViaOIDC}, nil
+	return claims, extra, nil
 }
 
 func claimReason(err error) string {
@@ -157,8 +206,8 @@ func claimReason(err error) string {
 	}
 }
 
-// roles maps the role claim's values, a string or a list of strings, to the roles they grant, each once.
-func (v *Verifier) roles(claim any) []string {
+// mapRoles maps a role claim's values, a string or a list of strings, to the roles roles grants them, each once.
+func mapRoles(claim any, roles map[string][]string) []string {
 	var values []string
 	switch c := claim.(type) {
 	case string:
@@ -173,7 +222,7 @@ func (v *Verifier) roles(claim any) []string {
 	}
 	var out []string
 	for _, val := range values {
-		for _, r := range v.cfg.Roles[val] {
+		for _, r := range roles[val] {
 			if !slices.Contains(out, r) {
 				out = append(out, r)
 			}
@@ -183,22 +232,60 @@ func (v *Verifier) roles(claim any) []string {
 	return out
 }
 
-// key returns kid's key: from the cache while its TTL lasts, else after one fetch, started by this request or waited on;
-// a fetch is started only MinInterval after the previous one started.
+// key returns kid's key: from the cache while its TTL lasts, else after one fetch, started by this request or waited on.
 func (v *Verifier) key(ctx context.Context, kid string) (jose.JSONWebKey, error) {
+	var k jose.JSONWebKey
+	err := v.await(ctx, func() bool {
+		var ok bool
+		k, ok = v.cached(kid)
+
+		return ok
+	}, func() error { return v.miss(kid) })
+
+	return k, err
+}
+
+// Endpoints are the authorization and token endpoints a login uses, from the discovery document.
+type Endpoints struct {
+	Authorization, Token string
+}
+
+// Endpoints returns the IdP's authorization and token endpoints: from the cache while its TTL lasts, else after one fetch,
+// under the same rules as a key; a discovery document naming no https endpoint for either refuses a login as idp-unavailable.
+func (v *Verifier) Endpoints(ctx context.Context) (Endpoints, error) {
+	var e Endpoints
+	err := v.await(ctx, func() bool {
+		e = v.endpoints
+
+		return v.cfg.Now().Before(v.until) && e.Authorization != "" && e.Token != ""
+	}, func() error {
+		err := v.lastErr
+		if err == nil {
+			err = errors.New("discovery names no authorization or token endpoint")
+		}
+
+		return refuse(ReasonIDPUnavailable, err)
+	})
+
+	return e, err
+}
+
+// await returns once have holds under v.mu: at once, or after one fetch, started by this request or waited on,
+// and otherwise with miss's refusal; a fetch is started only MinInterval after the previous one started.
+func (v *Verifier) await(ctx context.Context, have func() bool, miss func() error) error {
 	v.mu.Lock()
-	if k, ok := v.cached(kid); ok {
+	if have() {
 		v.mu.Unlock()
-		return k, nil
+		return nil
 	}
 	wait := v.inflight
 	if wait == nil {
 		now := v.cfg.Now()
 		if v.tried && now.Sub(v.attempted) < v.cfg.MinInterval {
-			err := v.miss(kid)
+			err := miss()
 			v.mu.Unlock()
 
-			return jose.JSONWebKey{}, err
+			return err
 		}
 		v.tried, v.attempted = true, now
 		wait = make(chan struct{})
@@ -213,16 +300,16 @@ func (v *Verifier) key(ctx context.Context, kid string) (jose.JSONWebKey, error)
 		select {
 		case <-wait:
 		case <-ctx.Done():
-			return jose.JSONWebKey{}, refuse(ReasonIDPUnavailable, ctx.Err())
+			return refuse(ReasonIDPUnavailable, ctx.Err())
 		}
 	}
 	v.mu.Lock()
 	defer v.mu.Unlock()
-	if k, ok := v.cached(kid); ok {
-		return k, nil
+	if have() {
+		return nil
 	}
 
-	return jose.JSONWebKey{}, v.miss(kid)
+	return miss()
 }
 
 // cached returns kid's key while the cache's TTL lasts; v.mu is held.
@@ -256,41 +343,45 @@ func (v *Verifier) miss(kid string) error {
 // The fetch outlives the request that started it, since others wait on it.
 func (v *Verifier) refresh(ctx context.Context, done chan struct{}) {
 	var keys []jose.JSONWebKey
+	var endpoints Endpoints
 	err := errors.New("the fetch did not complete")
 	// The fetch in flight ends, and its waiters wake, however the fetch returns.
 	defer func() {
 		v.mu.Lock()
 		defer v.mu.Unlock()
 		if err == nil {
-			v.keys, v.until, v.lastErr = keys, v.cfg.Now().Add(v.cfg.TTL), nil
+			v.keys, v.endpoints, v.until, v.lastErr = keys, endpoints, v.cfg.Now().Add(v.cfg.TTL), nil
 		} else {
 			v.lastErr = err
 		}
 		v.inflight = nil
 		close(done)
 	}()
-	keys, err = v.fetch(context.WithoutCancel(ctx))
+	keys, endpoints, err = v.fetch(context.WithoutCancel(ctx))
 }
 
 // fetch reads the issuer's discovery document, which must name the configured issuer, and the public signing keys of its JWKS,
-// both over https; a key of a type it cannot read is skipped, and a JWKS without a usable key is a failed fetch,
-// which keeps the keys cached before it.
-func (v *Verifier) fetch(ctx context.Context) ([]jose.JSONWebKey, error) {
+// both over https, with the authorization and token endpoints the document names over https;
+// a key of a type it cannot read is skipped, and a JWKS without a usable key is a failed fetch,
+// which keeps the keys and endpoints cached before it.
+func (v *Verifier) fetch(ctx context.Context) ([]jose.JSONWebKey, Endpoints, error) {
 	var doc struct {
-		Issuer  string `json:"issuer"`
-		JWKSURI string `json:"jwks_uri"`
+		Issuer        string `json:"issuer"`
+		JWKSURI       string `json:"jwks_uri"`
+		Authorization string `json:"authorization_endpoint"`
+		Token         string `json:"token_endpoint"`
 	}
 	if err := v.get(ctx, strings.TrimSuffix(v.cfg.Issuer, "/")+"/.well-known/openid-configuration", &doc); err != nil {
-		return nil, fmt.Errorf("discovery: %w", err)
+		return nil, Endpoints{}, fmt.Errorf("discovery: %w", err)
 	}
 	if doc.Issuer != v.cfg.Issuer || doc.JWKSURI == "" {
-		return nil, fmt.Errorf("discovery names issuer %q and jwks_uri %q", doc.Issuer, doc.JWKSURI)
+		return nil, Endpoints{}, fmt.Errorf("discovery names issuer %q and jwks_uri %q", doc.Issuer, doc.JWKSURI)
 	}
 	var set struct {
 		Keys []json.RawMessage `json:"keys"`
 	}
 	if err := v.get(ctx, doc.JWKSURI, &set); err != nil {
-		return nil, fmt.Errorf("jwks: %w", err)
+		return nil, Endpoints{}, fmt.Errorf("jwks: %w", err)
 	}
 	var keys []jose.JSONWebKey
 	for _, raw := range set.Keys {
@@ -302,10 +393,20 @@ func (v *Verifier) fetch(ctx context.Context) ([]jose.JSONWebKey, error) {
 	}
 
 	if len(keys) == 0 {
-		return nil, errors.New("jwks: no usable signing key")
+		return nil, Endpoints{}, errors.New("jwks: no usable signing key")
 	}
 
-	return keys, nil
+	return keys, Endpoints{Authorization: httpsOnly(doc.Authorization), Token: httpsOnly(doc.Token)}, nil
+}
+
+// httpsOnly is u when it is an https URL with a host, and empty otherwise.
+func httpsOnly(u string) string {
+	p, err := url.Parse(u)
+	if err != nil || p.Scheme != "https" || p.Host == "" {
+		return ""
+	}
+
+	return u
 }
 
 // usable reports whether k can verify a service token: a valid public RSA or EC signing key with a kid,
@@ -327,8 +428,8 @@ func usable(k jose.JSONWebKey) bool {
 	return k.Algorithm == "" || slices.Contains(algs, jose.SignatureAlgorithm(k.Algorithm))
 }
 
-func (v *Verifier) get(ctx context.Context, url string, dst any) error {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, http.NoBody)
+func (v *Verifier) get(ctx context.Context, target string, dst any) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, target, http.NoBody)
 	if err != nil {
 		return err
 	}
@@ -341,7 +442,7 @@ func (v *Verifier) get(ctx context.Context, url string, dst any) error {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("%s: %s", url, resp.Status)
+		return fmt.Errorf("%s: %s", target, resp.Status)
 	}
 
 	return json.NewDecoder(io.LimitReader(resp.Body, maxDocument)).Decode(dst)
