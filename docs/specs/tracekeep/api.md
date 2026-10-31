@@ -279,6 +279,9 @@ otherwise it is a URL on the API itself carrying a download token, and the API s
   - An **mTLS principal** is the client certificate verified against the configured client CA:
     its identity is the certificate's first URI name, else its first DNS name,
     mapped to roles by configuration, an unmapped identity granting none.
+    The client CA, like the API's own certificate and key, is read again when its file changes,
+    so a renewal needs no restart;
+    a change that does not load keeps the previous material.
 - **IdP outage**: discovery and JWKS are fetched lazily with retry and cached with a TTL;
   startup never blocks on the IdP;
   an unknown `kid` triggers one refresh, then rejection;

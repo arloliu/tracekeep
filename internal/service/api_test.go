@@ -292,7 +292,7 @@ func selfSigned(t *testing.T) (string, string) {
 	return cert, keyFile
 }
 
-// clientCA issues client certificates naming uri, and writes its own certificate to a file.
+// clientCA issues client certificates, and writes its own certificate to a file.
 type clientCA struct {
 	cert *x509.Certificate
 	key  *ecdsa.PrivateKey
@@ -325,13 +325,17 @@ func newClientCA(t *testing.T) clientCA {
 	return clientCA{cert: cert, key: key, file: file}
 }
 
-func (c clientCA) issue(t *testing.T, uri string) tls.Certificate {
+// generator is the identity the client certificates of these tests name.
+const generator = "spiffe://cluster.example/ns/ve/sa/generator"
+
+// issue is a client certificate naming generator.
+func (c clientCA) issue(t *testing.T) tls.Certificate {
 	t.Helper()
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		t.Fatal(err)
 	}
-	u, err := url.Parse(uri)
+	u, err := url.Parse(generator)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -353,7 +357,6 @@ func (c clientCA) issue(t *testing.T, uri string) tls.Certificate {
 func TestAPIRoleOverTLSWithAClientCertificate(t *testing.T) {
 	t.Parallel()
 	e := devEnv(t)
-	const generator = "spiffe://cluster.example/ns/ve/sa/generator"
 	ca := newClientCA(t)
 	cert, key := selfSigned(t)
 	c := e.Config
@@ -382,7 +385,7 @@ func TestAPIRoleOverTLSWithAClientCertificate(t *testing.T) {
 	}
 	now := time.Now()
 	sel := &tkv1.Selector{ToolId: "SIM-TOOL", From: timestamppb.New(now.Add(-time.Hour)), To: timestamppb.New(now)}
-	withCert := client(ca.issue(t, generator))
+	withCert := client(ca.issue(t))
 	if _, err := withCert.ListPacks(t.Context(), connectrpc.NewRequest(&tkv1.ListPacksRequest{Selector: sel})); err != nil {
 		t.Fatalf("ListPacks with the client certificate = %v", err)
 	}
@@ -400,7 +403,7 @@ func TestAPIRoleOverTLSWithAClientCertificate(t *testing.T) {
 	if _, err := bare.ListPacks(t.Context(), connectrpc.NewRequest(&tkv1.ListPacksRequest{Selector: sel})); connectrpc.CodeOf(err) != connectrpc.CodeUnauthenticated {
 		t.Errorf("ListPacks with no credential = %v, want unauthenticated", err)
 	}
-	stranger := client(newClientCA(t).issue(t, generator))
+	stranger := client(newClientCA(t).issue(t))
 	if _, err := stranger.ListPacks(t.Context(), connectrpc.NewRequest(&tkv1.ListPacksRequest{Selector: sel})); err == nil {
 		t.Error("ListPacks with a certificate of another authority succeeded")
 	}
@@ -586,5 +589,115 @@ func TestAPIRoleServesSignIn(t *testing.T) {
 		case <-time.After(30 * time.Second):
 			t.Fatalf("configured %t: the api role did not stop", configured)
 		}
+	}
+}
+
+// The api role re-reads its certificate, key and client CA when their files change, without a restart,
+// and keeps serving the previous ones while a change does not load.
+func TestAPIRoleReloadsItsTLSFiles(t *testing.T) {
+	t.Parallel()
+	e := devEnv(t)
+	oldCA, newCA := newClientCA(t), newClientCA(t)
+	oldCert, oldKey := selfSigned(t)
+	newCert, newKey := selfSigned(t)
+	dir := t.TempDir()
+	certFile, keyFile, caFile := filepath.Join(dir, "api.crt"), filepath.Join(dir, "api.key"), filepath.Join(dir, "ca.pem")
+	// install replaces each file by a rename, as a mounted secret's update does.
+	install := func(pairs ...string) {
+		t.Helper()
+		for i := 0; i < len(pairs); i += 2 {
+			b, err := os.ReadFile(pairs[i])
+			if err != nil {
+				t.Fatal(err)
+			}
+			tmp := pairs[i+1] + ".new"
+			if err := os.WriteFile(tmp, b, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Rename(tmp, pairs[i+1]); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	install(oldCert, certFile, oldKey, keyFile, oldCA.file, caFile)
+	c := e.Config
+	c.API.Plaintext, c.API.Listen, c.API.TLSCertFile, c.API.TLSKeyFile = false, "127.0.0.1:0", certFile, keyFile
+	c.API.PublicURL = "https://127.0.0.1"
+	c.Auth.MTLS.ClientCAFile, c.Auth.MTLS.Subjects = caFile, map[string][]string{generator: {"pack-reader"}}
+	bound := make(chan struct{})
+	e.apiBound = func() { close(bound) }
+	run, stop := context.WithCancel(t.Context())
+	done := make(chan error, 1)
+	go func() { done <- API(run, e) }()
+	t.Cleanup(func() {
+		stop()
+		<-done //nolint:errcheck // the role's end, its error the cancellation's
+	})
+	<-bound
+	// read lists packs over a new connection that trusts only server's certificate and presents cert.
+	read := func(server string, cert tls.Certificate) error {
+		pemCert, err := os.ReadFile(server)
+		if err != nil {
+			t.Fatal(err)
+		}
+		roots := x509.NewCertPool()
+		roots.AppendCertsFromPEM(pemCert)
+		tr := &http.Transport{TLSClientConfig: &tls.Config{RootCAs: roots, Certificates: []tls.Certificate{cert}, MinVersion: tls.VersionTLS12}, ForceAttemptHTTP2: true}
+		defer tr.CloseIdleConnections()
+		client := tracekeepv1connect.NewMachineServiceClient(&http.Client{Transport: tr}, "https://"+e.APIAddr())
+		now := time.Now()
+		sel := &tkv1.Selector{ToolId: "SIM-TOOL", From: timestamppb.New(now.Add(-time.Hour)), To: timestamppb.New(now)}
+		_, err = client.ListPacks(t.Context(), connectrpc.NewRequest(&tkv1.ListPacksRequest{Selector: sel}))
+
+		return err
+	}
+	if err := read(oldCert, oldCA.issue(t)); err != nil {
+		t.Fatalf("before the renewal: %v", err)
+	}
+	install(newCert, certFile, newKey, keyFile, newCA.file, caFile)
+	if err := read(newCert, newCA.issue(t)); err != nil {
+		t.Errorf("after the renewal, the new certificate and client CA: %v", err)
+	}
+	if err := read(oldCert, newCA.issue(t)); err == nil {
+		t.Error("after the renewal the API still presents its old certificate")
+	}
+	if err := read(newCert, oldCA.issue(t)); err == nil {
+		t.Error("after the renewal a certificate of the old client CA is still admitted")
+	}
+	// A key that does not match the certificate, as when only one of them has been replaced, keeps the previous pair.
+	install(oldKey, keyFile)
+	if err := read(newCert, newCA.issue(t)); err != nil {
+		t.Errorf("with a mismatched key: %v, want the previous pair served", err)
+	}
+	install(newKey, keyFile)
+	if err := read(newCert, newCA.issue(t)); err != nil {
+		t.Fatalf("with the key replaced too: %v", err)
+	}
+	// A client CA file holding no certificate keeps the previous CA, with the certificate and key matching,
+	// so only the CA's check refuses the change.
+	if err := os.WriteFile(caFile+".new", []byte("not a certificate"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(caFile+".new", caFile); err != nil {
+		t.Fatal(err)
+	}
+	if err := read(newCert, newCA.issue(t)); err != nil {
+		t.Errorf("with a client CA file holding no certificate: %v, want the previous CA kept", err)
+	}
+	// A third CA loads once its file holds it, and replaces the kept one.
+	thirdCA := newClientCA(t)
+	install(thirdCA.file, caFile)
+	if err := read(newCert, thirdCA.issue(t)); err != nil {
+		t.Errorf("after the CA file was repaired: %v", err)
+	}
+	if err := read(newCert, newCA.issue(t)); err == nil {
+		t.Error("after the CA file was repaired the kept CA is still admitted")
+	}
+	// A deleted file keeps the previous material.
+	if err := os.Remove(caFile); err != nil {
+		t.Fatal(err)
+	}
+	if err := read(newCert, thirdCA.issue(t)); err != nil {
+		t.Errorf("with the client CA file deleted: %v, want the previous CA kept", err)
 	}
 }
