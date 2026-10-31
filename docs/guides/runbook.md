@@ -1,6 +1,6 @@
 # Runbook
 
-Status: current (2026-10-30) — key, masking and sign-in incidents, refused restores and digests, merges over budget; the others join with their alerts
+Status: current (2026-10-31) — key, masking and sign-in incidents, refused restores and digests, merges over budget, the pages; the others join with their alerts
 
 One section per named incident of `docs/specs/tracekeep/operations.md` §10.4:
 the alert that raises it, the metric to look at, the command that resolves it, and what is lost if it is ignored.
@@ -93,6 +93,18 @@ Neither a log line nor the error page holds a code, a token, a secret or a cooki
 | reason `session` | a session cookie past its expiry or under a dropped key id: the person signs in again; many at once after a rotation mean the old key id was dropped too soon |
 | reason `csrf`, `session-scope` | a cookie-borne request from another origin or on an operation the browser does not use: a misconfigured `api.public_url` or a page that should not be calling |
 | a person signed in and refused every operation (`forbidden`) | the ID token's `auth.people.roles_claim` holds no value `auth.people.roles` maps: map the person's group |
+
+## The pages
+
+The pages raise no alert; what they show says why (`api.md` §10.3).
+
+| Signal | Meaning and action |
+|---|---|
+| a page saying the frontend was not built | the binary was built without `-tags webdist`: build it with `make build`, as releases are |
+| the sign-in page again while a page was open | the session expired or its key id was dropped: sign in again; see *People cannot sign in* |
+| "Your roles do not admit this" where a result would be | the person's roles lack `viewer`, or `exporter` for exports: map their group in `auth.people.roles` |
+| a record list marked interrupted with `unavailable` | the store or the catalog failed mid-stream: the items that came stay, and *Continue* reads on from the last batch |
+| a capture's start saying its completeness was cut to fit | the completeness is longer than a stream message: the browser's link lists it whole by `ListPacks` |
 
 ## Refused restores and digests
 

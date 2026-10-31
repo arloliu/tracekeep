@@ -1,6 +1,6 @@
 # Configuration guide
 
-Status: current (2026-10-29) — the keys phases 1 to 4.1 read
+Status: current (2026-10-31) — the keys phases 1 to 4.4 read
 
 Every key the service reads, its default, its environment override, and what moving it costs.
 Read when deploying a role, tuning one, or adding a key.
@@ -15,6 +15,14 @@ The tunables of later phases join this file with the code that reads them.
 `api.tls_cert_file` and `api.tls_key_file`, without which it fails at start and stops the other roles with it;
 a way for services to authenticate, `auth.oidc`, `auth.mtls` or, without an IdP, `auth.static`, without which every request is refused;
 and where the API serves downloads itself (an `fs` store, or `store.presign` off) `api.public_url` and a `keys.download` key, without which it fails at start.
+
+**Under `tracekeep dev`** the file is dev's own, and people sign in as in production (`api.md` §10.3 *Development*):
+dev serves the API over TLS on a self-signed certificate for `localhost`, `127.0.0.1` and `::1` under its `--data` directory (`tls/cert.pem`),
+runs a test IdP at `--idp` (default `127.0.0.1:8444`) trusted through `auth.oidc.ca_file`,
+and generates the people client's secret and a `keys.session` key beside it;
+`--public-url` (an `https` URL on one of those hosts, such as Vite's server) replaces the API's own address as `api.public_url`.
+Every address it serves must be one of those hosts, or it refuses to start: its IdP signs in whoever asks, with the roles they choose.
+The static token for services stays in `<data>/api-token`.
 
 ## Keys
 
