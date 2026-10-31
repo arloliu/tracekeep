@@ -40,3 +40,21 @@ func TestAPIKeys(t *testing.T) {
 		}
 	}
 }
+
+func TestExportsDefaults(t *testing.T) {
+	t.Parallel()
+	c, err := Load(write(t, minimal))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := Exports{
+		Retention: 24 * time.Hour, Lease: time.Minute, PutTimeout: 10 * time.Minute, MaxAttempts: 3, MaxRunning: 1,
+		MaxHours: 744, MaxPacks: 10000, MaxBytes: 10 << 30, MaxBundleBytes: 32 << 30,
+	}
+	if c.Exports != want {
+		t.Errorf("exports = %+v, want %+v", c.Exports, want)
+	}
+	if _, err := Load(write(t, minimal+"exports:\n  max_hours: 9000\n")); err == nil || !strings.Contains(err.Error(), "MaxHours") {
+		t.Errorf("a window past a leap year = %v, want refused", err)
+	}
+}

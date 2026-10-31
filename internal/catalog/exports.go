@@ -422,3 +422,20 @@ func (c *Catalog) ExportObjects(ctx context.Context, job tracepack.UUID) ([]Expo
 
 	return out, nil
 }
+
+// ExportJobCounts counts the export jobs by state.
+func (c *Catalog) ExportJobCounts(ctx context.Context) (map[string]int, error) {
+	var rows []struct {
+		State string `db:"state"`
+		N     int    `db:"n"`
+	}
+	if err := sqlx.SelectContext(ctx, c.read, &rows, `SELECT state, COUNT(*) AS n FROM export_jobs GROUP BY state`); err != nil {
+		return nil, fmt.Errorf("catalog: export job counts: %w", err)
+	}
+	out := make(map[string]int, len(rows))
+	for _, r := range rows {
+		out[r.State] = r.N
+	}
+
+	return out, nil
+}

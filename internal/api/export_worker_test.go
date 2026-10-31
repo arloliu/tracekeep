@@ -36,7 +36,16 @@ func startExport(t *testing.T, c *catalog.Catalog, capture tracepack.UUID) trace
 func workers(t *testing.T, m *masked) string {
 	t.Helper()
 	dir := t.TempDir()
-	stale := filepath.Join(dir, "stale-1")
+	stale := filepath.Join(dir, "0192f7a4-f5c1-7d3a-9b2e-4f6a8c0d1e2f-f1") // a job id with an f after one of its hyphens
+	other := filepath.Join(dir, "not-an-attempt")
+	if err := os.Mkdir(other, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if _, err := os.Stat(other); err != nil {
+			t.Errorf("a directory not named as an attempt was removed: %v", err)
+		}
+	})
 	if err := os.Mkdir(stale, 0o700); err != nil {
 		t.Fatal(err)
 	}
