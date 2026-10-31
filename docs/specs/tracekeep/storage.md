@@ -84,7 +84,7 @@ a returned error means nothing is visible, or the caller treats the key as unkno
 - `mem` (tests).
 
 Keys of packs are exactly [STO §3];
-export bundles are tracekeep's own and live under `exports/` (`api.md` §10.1), outside [STO §3]'s key space;
+export bundles are tracekeep's own and live under `exports/`, one key per attempt, `exports/<job_id>/<fence>.tar` (`api.md` §10.1 *Exports*), outside [STO §3]'s key space;
 bucket lifecycle rules may change the storage class under `archive/` and must never expire anything.
 The claim bucket is a NATS object store on the traffic cluster, not this interface.
 
