@@ -90,17 +90,32 @@ migrate-check: ## Validate both engines' migrations and check schema.hcl for dri
 PROTOC_GEN_GO_VERSION         := v1.36.12
 PROTOC_GEN_CONNECT_GO_VERSION := v1.21.1
 
-proto: ## Regenerate proto/'s Go (needs protoc; builds the pinned plugins under tmp/bin)
+proto: ## Regenerate proto/'s Go and web/src/gen's TypeScript (needs protoc and web's npm ci; builds the pinned Go plugins under tmp/bin)
 	@GOBIN=$(CURDIR)/tmp/bin go install google.golang.org/protobuf/cmd/protoc-gen-go@$(PROTOC_GEN_GO_VERSION)
 	@GOBIN=$(CURDIR)/tmp/bin go install connectrpc.com/connect/cmd/protoc-gen-connect-go@$(PROTOC_GEN_CONNECT_GO_VERSION)
 	@PATH="$(CURDIR)/tmp/bin:$$PATH" protoc -I proto \
 		--go_out=proto --go_opt=paths=source_relative \
 		--connect-go_out=proto --connect-go_opt=paths=source_relative \
 		proto/tracekeep/v1/*.proto
+	@rm -rf web/src/gen && mkdir -p web/src/gen && protoc -I proto \
+		--plugin=protoc-gen-es=web/node_modules/.bin/protoc-gen-es --es_out=web/src/gen --es_opt=target=ts \
+		proto/tracekeep/v1/*.proto
+
+##@ Frontend
+
+web: ## Build web/dist from a clean install (needs Node, pinned in mise.toml)
+	@cd web && npm ci --no-audit --no-fund && npm run build
+
+web-check: ## Lint, type-check and test web/ (after cd web && npm ci)
+	@cd web && npm run lint && npm run typecheck && npm test
+
+build: web ## The release binary: make web, then tracekeep with -tags webdist under dist/, its embedded build checked
+	@GOWORK=off go test -tags webdist ./web/
+	@GOWORK=off go build -tags webdist -o dist/tracekeep ./cmd/tracekeep
 
 ##@ CI
 
 ci: check docs-check data-check test ## Every gate, plus the service built without the workspace
 	@GOWORK=off go build ./...
 
-.PHONY: help lint fmt vet check docs-check data-check work hooks test test-latest test-s3 test-vault test-catalog migrate-diff migrate-check proto bench ci
+.PHONY: help lint fmt vet check docs-check data-check work hooks test test-latest test-s3 test-vault test-catalog migrate-diff migrate-check proto web web-check build bench ci

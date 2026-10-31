@@ -84,3 +84,20 @@ jobs:
       run: make migrate-check
     - name: make test-catalog
       run: make test-catalog
+
+  # The frontend: its lint, type check and tests, then the release binary with the build embedded (api.md §10.3);
+  # make ci needs no Node, so this job is the frontend's gate.
+  web:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v7
+    - name: Setup Go and Node from mise.toml
+      uses: jdx/mise-action@v4
+      with:
+        install_args: go node
+    - name: npm ci
+      run: cd web && npm ci --no-audit --no-fund
+    - name: make web-check
+      run: make web-check
+    - name: make build
+      run: make build
