@@ -765,6 +765,108 @@ table "compact_requests" {
     expr = "state IN ('pending', 'done', 'failed')"
   }
 }
+# An export job (api.md §10.1 *Exports*): its owner, request and state, the attempt holding it by fence and lease, and its bundle.
+table "export_jobs" {
+  schema = schema.main
+  column "job_id" {
+    type = sql(var.uuid)
+  }
+  # The owner: the principal's Via and subject.
+  column "owner" {
+    type = varchar(512)
+  }
+  # The request, its selector and kind, as JSON.
+  column "request" {
+    type = text
+  }
+  column "state" {
+    type = varchar(16)
+  }
+  column "fence" {
+    type = bigint
+  }
+  column "holder" {
+    type = varchar(128)
+    null = true
+  }
+  # The attempt's lease, by the catalog's clock.
+  column "lease_until" {
+    type = bigint
+  }
+  column "attempts" {
+    type = bigint
+  }
+  column "object_key" {
+    type = varchar(512)
+    null = true
+  }
+  column "size" {
+    type = bigint
+    null = true
+  }
+  column "created_at" {
+    type = bigint
+  }
+  column "ended_at" {
+    type = bigint
+    null = true
+  }
+  # The bundle's deadline, fixed at completion.
+  column "delete_at" {
+    type = bigint
+    null = true
+  }
+  column "reason" {
+    type = text
+    null = true
+  }
+  primary_key {
+    columns = [column.job_id]
+  }
+  index "export_jobs_claim" {
+    columns = [column.state, column.lease_until]
+  }
+  index "export_jobs_owner" {
+    columns = [column.owner, column.created_at]
+  }
+  check "export_jobs_state" {
+    expr = "state IN ('queued', 'running', 'done', 'failed', 'cancelled')"
+  }
+}
+
+# An attempt's object, written before its put and deleted after its object by the compactor (api.md §10.1 *Exports*).
+table "export_objects" {
+  schema = schema.main
+  column "object_key" {
+    type = varchar(512)
+  }
+  column "job_id" {
+    type = sql(var.uuid)
+  }
+  column "fence" {
+    type = bigint
+  }
+  # The put's deadline, by the catalog's clock.
+  column "put_deadline" {
+    type = bigint
+  }
+  column "state" {
+    type = varchar(16)
+  }
+  primary_key {
+    columns = [column.object_key]
+  }
+  index "export_objects_job" {
+    columns = [column.job_id]
+  }
+  index "export_objects_state" {
+    columns = [column.state, column.put_deadline]
+  }
+  check "export_objects_state" {
+    expr = "state IN ('intended', 'bundle', 'deleting')"
+  }
+}
+
 table "audit_log" {
   schema = schema.main
   column "audit_id" {
