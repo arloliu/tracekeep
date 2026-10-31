@@ -1,0 +1,12 @@
+# The context is the repository; the image needs the service's sources and the frontend's, nothing local.
+*
+!go.mod
+!go.sum
+!cmd/
+!internal/
+!migrations/
+!proto/
+!web/
+web/node_modules/
+web/dist/
+**/*_test.go
