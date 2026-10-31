@@ -106,7 +106,7 @@ type ObjectMeta struct {
 type ObjectInfo struct {
 	Name string
 	Size uint64
-	// Digest is "SHA-256=<padded base64url>", as tracepack.BusPayloadDigest writes it.
+	// Digest is "SHA-256=<padded base64url>", as tpbus.PayloadDigest writes it.
 	Digest   string
 	Metadata map[string]string
 }

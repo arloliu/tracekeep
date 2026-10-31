@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/arloliu/go-secs/tracepack"
+	tpbus "github.com/arloliu/go-secs/tracepack/bus"
 	"github.com/arloliu/tracekeep/producer"
 	"github.com/arloliu/tracekeep/producer/busconfig"
 	"github.com/arloliu/tracekeep/producer/internal/core"
@@ -118,16 +119,16 @@ func (h *harness) wait(n int) []producer.Msg {
 }
 
 // check decodes a message as a consumer does.
-func check(t *testing.T, m *producer.Msg) tracepack.BusRecord {
+func check(t *testing.T, m *producer.Msg) tpbus.Record {
 	t.Helper()
-	env := tracepack.BusEnvelope{
-		Layout:        m.Header[tracepack.BusHeaderLayout],
+	env := tpbus.Envelope{
+		Layout:        m.Header[tpbus.HeaderLayout],
 		MsgID:         m.MsgID,
-		Descriptor:    m.Header[tracepack.BusHeaderDescriptor],
-		PayloadRef:    m.Header[tracepack.BusHeaderPayloadRef],
-		PayloadDigest: m.Header[tracepack.BusHeaderPayloadDigest],
+		Descriptor:    m.Header[tpbus.HeaderDescriptor],
+		PayloadRef:    m.Header[tpbus.HeaderPayloadRef],
+		PayloadDigest: m.Header[tpbus.HeaderPayloadDigest],
 	}
-	br, err := tracepack.CheckBusMessage(env, m.Data)
+	br, err := tpbus.CheckMessage(env, m.Data)
 	if err != nil {
 		t.Fatalf("CheckBusMessage(%s): %v", m.MsgID, err)
 	}
@@ -156,7 +157,7 @@ func TestStartAndRecordsArePublished(t *testing.T) {
 	if msgs[0].MsgID != c.ID.String()+".0" || start.Descriptor == nil {
 		t.Fatalf("first message %s, descriptor %v; want the start", msgs[0].MsgID, start.Descriptor)
 	}
-	if want, _ := tracepack.BusSubject("tpk", "T1", c.ID); msgs[0].Subject != want {
+	if want, _ := tpbus.Subject("tpk", "T1", c.ID); msgs[0].Subject != want {
 		t.Errorf("subject %q, want %q", msgs[0].Subject, want)
 	}
 	if msgs[0].ExpectStream != busconfig.DefaultTrafficStream {
@@ -165,7 +166,7 @@ func TestStartAndRecordsArePublished(t *testing.T) {
 	if m, err := tracepack.DecodeDescriptor(start.Descriptor); err != nil || m.ToolID != "T1" {
 		t.Errorf("start descriptor: %v, %v", m, err)
 	}
-	if desc, _ := base64.StdEncoding.DecodeString(msgs[0].Header[tracepack.BusHeaderDescriptor]); !bytes.Equal(desc, start.Descriptor) {
+	if desc, _ := base64.StdEncoding.DecodeString(msgs[0].Header[tpbus.HeaderDescriptor]); !bytes.Equal(desc, start.Descriptor) {
 		t.Errorf("descriptor header does not round-trip")
 	}
 
@@ -233,7 +234,7 @@ func TestClockStepPrecedesItsRecord(t *testing.T) {
 func TestLargeRecordGoesByClaimCheck(t *testing.T) {
 	t.Parallel()
 	h := newHarness(t, producer.Tunables{})
-	h.bus.SetMaxPayload(tracepack.BusMinMaxPayload + 100)
+	h.bus.SetMaxPayload(tpbus.MinMaxPayload + 100)
 	c := h.begin()
 	payload := frame(1000) // above max_payload − 4096 = 144
 	h.observe(payload)
@@ -247,7 +248,7 @@ func TestLargeRecordGoesByClaimCheck(t *testing.T) {
 	if !ok || info.Metadata[producer.ObjectMetaRecordHeader] == "" {
 		t.Fatalf("claim object missing or without its record header: %v %+v", ok, info)
 	}
-	if err := tracepack.CheckBusPayload(&br, data); err != nil || !bytes.Equal(br.Record.Payload, payload) {
+	if err := tpbus.CheckPayload(&br, data); err != nil || !bytes.Equal(br.Record.Payload, payload) {
 		t.Errorf("CheckBusPayload: %v", err)
 	}
 }
@@ -255,10 +256,10 @@ func TestLargeRecordGoesByClaimCheck(t *testing.T) {
 func TestClaimConflictDropsTheRecord(t *testing.T) {
 	t.Parallel()
 	h := newHarness(t, producer.Tunables{})
-	h.bus.SetMaxPayload(tracepack.BusMinMaxPayload + 100)
+	h.bus.SetMaxPayload(tpbus.MinMaxPayload + 100)
 	c := h.begin()
 	h.bus.PutRawObject(bucket, []byte("another record"), producer.ObjectInfo{
-		Name: c.ID.String() + ".1", Digest: tracepack.BusPayloadDigest([]byte("another record")),
+		Name: c.ID.String() + ".1", Digest: tpbus.PayloadDigest([]byte("another record")),
 	})
 	h.observe(frame(1000)) // seq 1 conflicts
 	h.observe(frame(1000)) // seq 2 does not
@@ -281,7 +282,7 @@ func TestClaimConflictDropsTheRecord(t *testing.T) {
 func TestUncertainClaimIsReadBackAndReplaced(t *testing.T) {
 	t.Parallel()
 	h := newHarness(t, producer.Tunables{})
-	h.bus.SetMaxPayload(tracepack.BusMinMaxPayload + 100)
+	h.bus.SetMaxPayload(tpbus.MinMaxPayload + 100)
 	c := h.begin()
 	payload := frame(1000)
 	var once sync.Once
@@ -299,7 +300,7 @@ func TestUncertainClaimIsReadBackAndReplaced(t *testing.T) {
 		t.Fatalf("object holds %d bytes after the retry, want the whole %d", len(data), len(payload))
 	}
 	br := check(t, &msgs[1])
-	if err := tracepack.CheckBusPayload(&br, data); err != nil {
+	if err := tpbus.CheckPayload(&br, data); err != nil {
 		t.Errorf("CheckBusPayload: %v", err)
 	}
 	_ = h.p.Close()
@@ -309,7 +310,7 @@ func TestUncertainClaimIsReadBackAndReplaced(t *testing.T) {
 
 	// The candidate is read back and deleted before the put that completes, and only that put is referenced.
 	name := c.ID.String() + ".1"
-	id, _ := tracepack.BusMsgID(c.ID, 1)
+	id, _ := tpbus.MsgID(c.ID, 1)
 	var got []string
 	for _, op := range h.bus.Ops() {
 		if strings.HasSuffix(op, " "+name) || strings.HasSuffix(op, " "+id) {
@@ -329,8 +330,8 @@ func TestStartIsPublishedSynchronously(t *testing.T) {
 	h.observe(frame(4))
 	h.wait(2)
 
-	start, _ := tracepack.BusMsgID(c.ID, 0)
-	record, _ := tracepack.BusMsgID(c.ID, 1)
+	start, _ := tpbus.MsgID(c.ID, 0)
+	record, _ := tpbus.MsgID(c.ID, 1)
 	ops := h.bus.Ops()
 	if !slices.Contains(ops, "publish "+start) || slices.Contains(ops, "publish-async "+start) {
 		t.Errorf("the start's publishes = %v, want the synchronous one only", ops)
@@ -380,7 +381,7 @@ func TestEndDrainsAndPublishesTheStop(t *testing.T) {
 		t.Fatalf("%d messages after End, want start, record and stop", len(msgs))
 	}
 	// The barrier orders reserved records only: the stop may be accepted before an ordinary record below it.
-	var stop *tracepack.BusRecord
+	var stop *tpbus.Record
 	for i := range msgs {
 		if br := check(t, &msgs[i]); br.Record.Seq == 2 {
 			stop = &br

@@ -71,7 +71,7 @@ func TestStartDescriptorRoundTrip(t *testing.T) {
 		DeviceID:             &devID,
 		EquipmentEndpoint:    &endpoint,
 		EquipmentConnectMode: &mode,
-		HSMSTimers:           &tracepack.HSMSTimers{T3: &t3},
+		HSMSTimers:           &tracepack.HSMSTimers{T3Ms: &t3},
 	}
 	prev := tracepack.UUID{1}
 	origin := time.Unix(1_800_000_000, 5)
@@ -105,7 +105,7 @@ func TestStartDescriptorRoundTrip(t *testing.T) {
 		RecorderInstanceName: &name,
 		PreviousCaptureID:    &prev,
 		DeviceID:             &devID,
-		HSMSTimers:           &tracepack.HSMSTimers{T3: &t3},
+		HSMSTimers:           &tracepack.HSMSTimers{T3Ms: &t3},
 		EquipmentConnectMode: &mode,
 		EquipmentEndpoint:    &endpoint,
 	}

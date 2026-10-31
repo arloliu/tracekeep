@@ -9,7 +9,7 @@ import (
 
 	"github.com/nats-io/nats.go"
 
-	"github.com/arloliu/go-secs/tracepack"
+	tpbus "github.com/arloliu/go-secs/tracepack/bus"
 	"github.com/arloliu/tracekeep/internal/testbus"
 	"github.com/arloliu/tracekeep/producer"
 	"github.com/arloliu/tracekeep/producer/internal/link"
@@ -57,7 +57,7 @@ func TestDefaultConnectionRecoversFromAFailedFirstDial(t *testing.T) {
 	b.srv.Restart()
 	msgs := b.fetch(t, 2)
 	for i, m := range msgs {
-		if want, _ := tracepack.BusMsgID(c.ID, uint64(i)); m.Headers().Get("Nats-Msg-Id") != want {
+		if want, _ := tpbus.MsgID(c.ID, uint64(i)); m.Headers().Get("Nats-Msg-Id") != want {
 			t.Errorf("message %d is %q, want %q", i, m.Headers().Get("Nats-Msg-Id"), want)
 		}
 	}
@@ -99,7 +99,7 @@ func TestDefaultConnectionOutlivesRepeatedAuthErrors(t *testing.T) {
 
 	observe(rec, frame(64))
 	msgs := b.fetch(t, 1)
-	if want, _ := tracepack.BusMsgID(c.ID, 1); msgs[0].Headers().Get("Nats-Msg-Id") != want {
+	if want, _ := tpbus.MsgID(c.ID, 1); msgs[0].Headers().Get("Nats-Msg-Id") != want {
 		t.Fatalf("after the credentials returned got %q, want %q", msgs[0].Headers().Get("Nats-Msg-Id"), want)
 	}
 }

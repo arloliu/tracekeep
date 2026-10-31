@@ -35,7 +35,7 @@ Section numbers are those of the specs in `docs/specs/tracekeep/`, whose `README
 - **Resolution before framing and admission**: a delivery's version is read from the raw message and looked up first;
   a `staged` version is acknowledged as already staged,
   a `terminated` one, or one an active termination order covers, is acknowledged under the termination,
-  with no admission side effect, before `CheckBusMessage` or the admission transaction can see it.
+  with no admission side effect, before `bus.CheckMessage` or the admission transaction can see it.
   `ingest.md` §6.1 (the order of checks, G5-269).
 - **States move forward only**, by compare-and-set:
   a parked version `parking → parked → staged | terminated`, with `evicted-hour` between `parked` and `terminated`;

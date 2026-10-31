@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/arloliu/go-secs/tracepack"
+	tpbus "github.com/arloliu/go-secs/tracepack/bus"
 
 	"github.com/arloliu/tracekeep/producer/internal/core"
 )
@@ -167,7 +168,7 @@ func encodeStartDescriptor(d *CaptureDescriptor, previous *tracepack.UUID, origi
 // Returns:
 //   - error: nil, or an error wrapping ErrInvalidDescriptor naming the first value it refuses.
 func (d *CaptureDescriptor) Validate() error {
-	if _, err := tracepack.BusToolToken(d.ToolID); err != nil {
+	if _, err := tpbus.ToolToken(d.ToolID); err != nil {
 		return fmt.Errorf("%w: tool_id: %w", ErrInvalidDescriptor, err)
 	}
 	if d.DeviceName == "" {

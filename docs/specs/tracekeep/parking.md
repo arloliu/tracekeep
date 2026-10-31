@@ -55,11 +55,11 @@ so nak-with-delay alone cannot keep one bad capture from stalling the rest.
 Such a message is therefore **parked**:
 `ingest` publishes a copy to the **parking stream** of the same traffic cluster (`TRACEKEEP_PARKED`, work-queue, file storage, no age, size or count limit, the same TLS and at-rest protection),
 body unchanged, the tracepack headers (`Tpk-*`) unchanged, **`Nats-Msg-Id` unchanged**
-(`<capture_id>.<seq>` is the logical identity `CheckBusMessage` parses and the name a claim reference must equal;
+(`<capture_id>.<seq>` is the logical identity `bus.CheckMessage` parses and the name a claim reference must equal;
 the parking stream has its own duplicate window,
 so the same id is legal there), on the **version's own subject** `<park prefix>.<tool token>.<capture_id>.<seq>.<version token>`
 (a **version** is what [STO §4] *Termination* and G5-269 define:
-`capture_id`, `seq`, the 44 record-header bytes **as the message's body carries them, before `DeriveBusRecord`**, and one payload digest, the `Tpk-Payload-Digest` value of a claim-check record or the SHA-256 of an inline payload;
+`capture_id`, `seq`, the 44 record-header bytes **as the message's body carries them, before `bus.DeriveRecord`**, and one payload digest, the `Tpk-Payload-Digest` value of a claim-check record or the SHA-256 of an inline payload;
 the version token is the full lowercase hex, 64 characters, of SHA-256 over those 44 bytes followed by the 32 digest bytes,
 so two versions of one seq never share a subject under the digest assumption the design already makes,
 and a subject stays under 160 bytes),

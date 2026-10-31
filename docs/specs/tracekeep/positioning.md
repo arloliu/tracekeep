@@ -37,7 +37,7 @@ and serves it back for VE learning and for troubleshooting.
 
 | Topic | Settled by | tracekeep's obligation |
 |---|---|---|
-| Producer, bus record, subject, `Nats-Msg-Id`, descriptor header; `seq` starts at 0 and is assigned in capture order | G5-200, G5-216, [FMT I-12], [STO §4] *Bus message* | consume with `tracepack.CheckBusMessage`, `DeriveBusRecord`; never reassign anything; completeness counts from seq 0 |
+| Producer, bus record, subject, `Nats-Msg-Id`, descriptor header; `seq` starts at 0 and is assigned in capture order | G5-200, G5-216, [FMT I-12], [STO §4] *Bus message* | consume with `bus.CheckMessage`, `bus.DeriveRecord`; never reassign anything; completeness counts from seq 0 |
 | Records above the inline limit travel by claim-check, never dropped as policy | G5-217, [STO §4] *Large records* | producer puts then publishes; consumer fetches, checks, writes; the service sweeps objects under the lifetime invariant |
 | Durability point is the bus ack after the segment is durable | [STO §4] *Durability* | ack a message only after the put and the catalog insert of a segment holding it |
 | Stream: work-queue, file storage, no age, size or count limit, TLS, encryption at rest; the same for the claim bucket | G5-213, [STO §4] *Clear-text protection* | own the stream and bucket configuration; size the bus disk for the outage budget |

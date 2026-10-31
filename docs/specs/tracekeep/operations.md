@@ -79,7 +79,7 @@ Health: `/healthz` (process) and `/readyz` (catalog reachable, lease state for `
 `tracekeep status` lists `pending` captures by capture id first, outside any per-tool grouping
 (they have no tool yet), then prints per tool the last record time, open captures, deferred messages and backlog.
 Deferred messages are the tool's unresolved parked versions, as `deferred list` counts them;
-backlog is the traffic stream's messages on the tool's subjects, whose token after the prefix is the tool's (tracepack's `BusSubject`),
+backlog is the traffic stream's messages on the tool's subjects, whose token after the prefix is the tool's (tracepack's `bus.Subject`),
 and the stream's bytes, which no subject divides, once for all tools.
 The Helm chart ships alert rules:
 deferred age above an hour, backlog bytes above a threshold, a tool with a connected gateway and no records for ten minutes, producer drop rate, lease lost, no successful merge for two hours, a merge refused over the metadata budget, `open_gaps` or `declared_losses_total` increasing on a tool, `preflight_ok` false, a key refused, keys unavailable for five minutes.

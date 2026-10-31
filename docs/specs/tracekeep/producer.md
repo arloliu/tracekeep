@@ -219,10 +219,10 @@ and this section is the contract between them.
   `Close` during an `End` stops the publisher, and the `End` still returns by its deadline, counting what is left as dropped.
   `Stop` **never returns a trace error**: eqp-hub's manager treats any non-nil `Stop` as an unsafe demotion.
 - **Publisher goroutine** (the only place that waits):
-  pops, encodes with `tracepack.NewBusRecord` and `EncodeBusBody`, publishes on the dedicated connection under the barrier above.
+  pops, encodes with `bus.NewRecord` and `bus.EncodeBody`, publishes on the dedicated connection under the barrier above.
   Its synchronous points:
   the `start` (below), the acceptance of a reserved record before anything above it, and claim-check puts.
-- **`start` publication**: preflight with `CheckBusStart`;
+- **`start` publication**: preflight with `bus.CheckStart`;
   publish synchronously (`PublishMsg` with a context deadline and the synchronous option set of §4.7) with retry and backoff until acked;
   ordinary records of the capture queue meanwhile and overflow as usual.
   A capture whose `start` the bus never accepted is never admitted by tracekeep (§6.1);

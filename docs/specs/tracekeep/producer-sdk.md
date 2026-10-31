@@ -53,7 +53,7 @@ because importing a package of the service module would pull the service's depen
 
 **No import cycle.**
 The bus payload is not tracekeep's:
-`tracepack.BusRecord`, `EncodeBusBody`, `BusSubject`, `BusMsgID`, `EncodeDescriptor` and `CheckBusStart` live in `github.com/arloliu/go-secs/tracepack`,
+`bus.Record`, `bus.EncodeBody`, `bus.Subject`, `bus.MsgID` and `bus.CheckStart` live in `github.com/arloliu/go-secs/tracepack/bus` and `EncodeDescriptor` in `github.com/arloliu/go-secs/tracepack`,
 already a separate module that imports no NATS client.
 The dependency direction is fixed and one-way:
 
@@ -165,7 +165,8 @@ The raise carries more with it:
 nats.go v1.55.0's `go.mod` declares `go 1.26.0`, so a producer builds with Go 1.26 or later, the line the gateway is on (T-14),
 and its own requirements rise (nkeys, `klauspost/compress`, `golang.org/x/crypto`).
 The SDK's go-secs requirement is a floor the same way:
-`producer/v0.1.0` requires go-secs v2.8.0 (its HSMS observers) and tracepack v0.9.0, so importing it also raises the gateway's go-secs from v2.6.0 to v2.8.0 (phase G).
+`producer/v0.1.0` requires go-secs v2.8.0 (its HSMS observers) and tracepack v0.9.0, so importing it also raises the gateway's go-secs from v2.6.0 to v2.8.0 (phase G);
+`producer/v0.4.0` requires tracepack v0.12.0, its API frozen before v1.0, the bus codec in `tracepack/bus`.
 nats-server is required by the service module (`internal/testbus`) and the SDK's test-only bus module (T-35), never by the SDK, so no producer pulls it in.
 CI runs a sample producer's **resolved** graph (`go list -m all`) at that minimum and at the latest nats.go,
 since producers will usually be newer than the floor;
@@ -254,7 +255,7 @@ which the device's `Start`, `HotReload` and `Stop` map onto (`producer.md` §4.2
   it calls `TimedOut` only from its timer branch, with the timeout the wait was opened with,
   so a HotReload's new timeout applies to new waits only (`producer.md` §4.4).
 
-- **Observers**, from `secsobs` (go-secs v2.8.0, the version tracepack v0.9.0 requires):
+- **Observers**, from `secsobs` (go-secs v2.8.0, the version tracepack requires):
   `ConnOptions() []hsms.ConnOption` returns the wire, socket and transaction observers
   (`hsms.WithWireObserver`, `WithSocketObserver`, `WithTransactionObserver`),
   which an HSMS-SS integrator passes through `hsmsss.WithConnectionOption` when it builds the connection;
@@ -272,7 +273,7 @@ which the device's `Start`, `HotReload` and `Stop` map onto (`producer.md` §4.2
   the parking stream with the traffic stream's retention, storage and limits, no subject either stream's filter could share with the other's and no fewer replicas, `parking.md` *Parking*;
   encryption at rest is a deployment assurance no client can see, so it is left out rather than reported on every run), `max_payload ≥ 4140`, TLS, the reconnect buffer disabled,
   the capture's `start` message within the header-block and `max_payload` limits
-  (through `CheckBusStart` with the real header block), `tool_id` and `recorder_instance_name` set in the descriptor;
+  (through `bus.CheckStart` with the real header block), `tool_id` and `recorder_instance_name` set in the descriptor;
   it returns a readable list of what is wrong.
   At startup it runs in the background after the connection is up and never delays the device's `Start` (§4.3);
   it is also an admin-triggered check.
