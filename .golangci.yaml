@@ -232,11 +232,6 @@ linters:
       - linters:
           - gomoddirectives
         path: cmd/tracekeep-sim/go\.mod
-      # The service replaces the SDK with its own tree until producer/v0.4.0 is tagged on it: tracepack v0.12.0 changed both (T-46).
-      - linters:
-          - gomoddirectives
-        path: ^go\.mod$
-        text: "local replacement are not allowed: github.com/arloliu/tracekeep/producer$"
     paths:
       - third_party$
       - builtin$
