@@ -1,6 +1,8 @@
 import { createRootRoute, createRoute, createRouter, type RouterHistory } from "@tanstack/react-router";
 
+import { Browser } from "@/browser";
 import { Allowed } from "@/me";
+import { validateSelector } from "@/selector";
 import { Shell } from "@/shell";
 
 const rootRoute = createRootRoute({ component: Shell });
@@ -8,9 +10,10 @@ const rootRoute = createRootRoute({ component: Shell });
 const browserRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/",
+  validateSearch: validateSelector,
   component: () => (
     <Allowed role="viewer">
-      <p className="text-muted-foreground">The browser comes next.</p>
+      <Browser />
     </Allowed>
   ),
 });
@@ -18,6 +21,7 @@ const browserRoute = createRoute({
 const recordsRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/records",
+  validateSearch: validateSelector,
   component: () => (
     <Allowed role="viewer">
       <p className="text-muted-foreground">The records come next.</p>
