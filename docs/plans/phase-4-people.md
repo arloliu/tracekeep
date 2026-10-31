@@ -86,33 +86,19 @@ payload-content predicates of `QueryRecords` (`api.md` §10.1), and the eqp-hub 
 
 ## Phase 4.1 — people's sign-in
 
-Spec first (`api.md` §10.2, `masking-keys.md` §9, `operations.md` §10.4), then the code.
+Work on the branch `feat/auth/people-sign-in`, one commit per step, test first;
+the branch merges by pull request once the whole phase passes an external post-implementation review.
+`internal/auth` already holds the service-token verifier with its lazy discovery and key cache, the authenticator and the download token;
+`internal/keys` already knows the `session` kind, which the catalog's bindings accept.
 
-- The `session` key purpose: its configuration, issuing and accepted ids, minimum material and rotation; every accepted id resolved at start (point 6).
-- The backend-for-frontend:
-  authorization code with PKCE (S256) against the configured IdP, its client id and secret by reference, the redirect URL under `api.public_url`;
-  the verifier, state, nonce and return path in a short-lived login cookie under the session key, so any replica answers the callback,
-  consumed once and refused after its expiry;
-  the ID token's checks of its own (issuer, the client id as audience and authorized party, the login's nonce, expiry with the leeway),
-  sharing the service-token verifier's lazy discovery and key cache, which never block startup;
-  the token exchange bounded by a deadline, an IdP down answering `idp-unavailable` without hanging;
-  routes for login, callback, logout and the signed-in principal.
-- The session cookie: its form (version, purpose, key id, subject, roles, expiry, authenticated and encrypted together, so a login cookie never passes as a session), lifetime, flags, path and size bound;
-  re-login at expiry, no refresh token kept.
-- Roles from a configured claim of the ID token, mapped by configuration, as service tokens map theirs.
-- The authenticator's cookie branch:
-  one credential chosen by precedence (a verified client certificate, else a bearer token, else the session cookie), with no fallback once the chosen one fails;
-  the operations a cookie admits, named;
-  CSRF: a cookie admitted only on a Connect POST whose `Origin` is `api.public_url`'s, no state-changing GET but the callback, which state and nonce protect;
-  `/download/` stays token-only whatever cookie comes with it;
-  the new `auth_failures_total` reasons.
-- IdP down before start and after start: existing sessions keep working until expiry, a login answers `idp-unavailable`.
-- The configuration guide and the runbook for a session key's rotation and an IdP outage.
-- Tests: a login on one replica with its callback on another; a wrong audience, nonce or state; swapped login cookies; a replayed callback; a rotation during a login;
-  two callbacks of one login racing on two replicas; a rotation between a login and its callback;
-  a bad bearer token beside a valid cookie; cross-origin and absent-`Origin` requests; a download token beside an absent, invalid or expired cookie;
-  a start with the key provider down, and an old accepted cookie first used after a good start and a provider outage;
-  the IdP down cold and warm, and a stalled token exchange.
+| Step | Scope | State |
+|---|---|---|
+| 1 | spec, `api.md` §10.2–§10.3, `masking-keys.md` §9, `operations.md` §10.4, the configuration guide and the runbook: people's sign-in optional, on the IdP of `auth.oidc`, with a client of its own (client id, secret by reference, roles claim and map); discovery read lazily for the authorization and token endpoints too; the token exchange a request of tracekeep's own, bounded by a deadline; the login cookie (PKCE S256 verifier, state, nonce, a same-origin return path) and the session cookie, their form, lifetimes, flags and names, and sign-in needing TLS, so none under `tracekeep dev`; the callback consumed once by clearing the login cookie and the IdP's single-use code; the ID token's checks; the routes; one credential by precedence, no fallback; the operations a cookie admits; CSRF by `Origin`; the new failure reasons and `Via`; the `session` key's material minimum, rotation interval and resolution at start; nothing of a code, token, secret or cookie in a log or an error page | pending |
+| 2 | the `session` purpose: its configuration, issuing and accepted ids, every accepted id resolved at start and a failure failing it; a wrong-purpose request failing closed | pending |
+| 3 | the cookie codec: login and session cookies encrypted and authenticated under the session key, the purpose and key id bound, the key id checked against the accepted ones before its key is resolved, a size bound before decoding; a fuzz target | pending |
+| 4 | discovery's endpoints and the ID token's verification beside the service token's, sharing its key cache; the token exchange with its deadline; an `httptest` IdP with single-use codes, a stall and an outage | pending |
+| 5 | the routes: login, callback, logout and the signed-in principal; a callback crossing replicas, two callbacks of one login racing, a replayed one, a rotation between a login and its callback, the IdP down cold and warm | pending |
+| 6 | the authenticator's cookie branch: precedence without fallback, the admitted operations, the `Origin` check, `/download/` token-only, the new reasons counted; nothing of a code, token, secret or cookie in the log, scanned with sentinels | pending |
 
 ## Gate cases and their owners
 
