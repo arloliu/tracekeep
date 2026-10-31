@@ -9,7 +9,7 @@ import (
 
 	"github.com/nats-io/nats.go/jetstream"
 
-	"github.com/arloliu/go-secs/tracepack"
+	tpbus "github.com/arloliu/go-secs/tracepack/bus"
 	"github.com/arloliu/tracekeep/producer"
 )
 
@@ -407,7 +407,7 @@ func (o objects) Put(_ context.Context, meta producer.ObjectMeta, data []byte) (
 	info := producer.ObjectInfo{
 		Name:     meta.Name,
 		Size:     uint64(len(data)),
-		Digest:   tracepack.BusPayloadDigest(data),
+		Digest:   tpbus.PayloadDigest(data),
 		Metadata: maps.Clone(meta.Metadata),
 	}
 	if o.b.uncertain != nil && o.b.uncertain(meta.Name) {

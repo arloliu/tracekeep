@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/arloliu/go-secs/tracepack"
+	tpbus "github.com/arloliu/go-secs/tracepack/bus"
 	"github.com/arloliu/tracekeep/producer/internal/core"
 )
 
@@ -510,7 +511,7 @@ func (pb *publisher) putClaim(c *claimObject, cp *core.Capture, horizon time.Tim
 			return errClaimConflict
 		}
 		data, err := pb.objects.Get(ctx, c.meta.Name)
-		if err == nil && len(data) == len(c.payload) && tracepack.BusPayloadDigest(data) == c.digest {
+		if err == nil && len(data) == len(c.payload) && tpbus.PayloadDigest(data) == c.digest {
 			pb.claimPuts["reused"]++
 			return nil
 		}

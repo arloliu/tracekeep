@@ -8,6 +8,7 @@ import (
 	"strconv"
 
 	"github.com/arloliu/go-secs/tracepack"
+	tpbus "github.com/arloliu/go-secs/tracepack/bus"
 	"github.com/arloliu/tracekeep/producer/internal/core"
 )
 
@@ -115,33 +116,33 @@ func (p *Producer) buildMessage(e *core.Entry, subject string, maxPayload int) (
 	if err != nil {
 		return nil, err
 	}
-	msgID, err := tracepack.BusMsgID(e.Cap.ID, e.Seq)
+	msgID, err := tpbus.MsgID(e.Cap.ID, e.Seq)
 	if err != nil {
 		return nil, err
 	}
 	m := &message{msg: Msg{
 		Subject:      subject,
-		Header:       map[string]string{tracepack.BusHeaderLayout: strconv.Itoa(tracepack.BusLayout1)},
+		Header:       map[string]string{tpbus.HeaderLayout: tpbus.Layout1},
 		MsgID:        msgID,
 		ExpectStream: p.stream,
 	}}
 	if e.Kind == core.EntryStart {
-		m.msg.Header[tracepack.BusHeaderDescriptor] = e.Cap.Descriptor
+		m.msg.Header[tpbus.HeaderDescriptor] = e.Cap.Descriptor
 	}
 
-	br := tracepack.NewBusRecord(&r)
-	if !tracepack.BusInline(44+len(r.Payload), maxPayload) {
+	br := tpbus.NewRecord(&r)
+	if !tpbus.Inline(44+len(r.Payload), maxPayload) {
 		br.ClaimCheck, br.Bucket, br.Digest = true, p.bucket, sha256.Sum256(r.Payload)
 	}
-	body, err := tracepack.EncodeBusBody(&br)
+	body, err := tpbus.EncodeBody(&br)
 	if err != nil {
 		return nil, err
 	}
 	m.msg.Data = body
 	if br.ClaimCheck {
-		digest := tracepack.BusPayloadDigest(r.Payload)
-		m.msg.Header[tracepack.BusHeaderPayloadRef] = p.bucket + "/" + msgID
-		m.msg.Header[tracepack.BusHeaderPayloadDigest] = digest
+		digest := tpbus.PayloadDigest(r.Payload)
+		m.msg.Header[tpbus.HeaderPayloadRef] = p.bucket + "/" + msgID
+		m.msg.Header[tpbus.HeaderPayloadDigest] = digest
 		m.claim = &claimObject{
 			meta: ObjectMeta{
 				Name: msgID,
@@ -155,7 +156,7 @@ func (p *Producer) buildMessage(e *core.Entry, subject string, maxPayload int) (
 			digest:  digest,
 		}
 	}
-	if err := tracepack.CheckBusStart(headerBlockLen(&m.msg), len(body), maxPayload); err != nil {
+	if err := tpbus.CheckStart(headerBlockLen(&m.msg), len(body), maxPayload); err != nil {
 		return nil, err
 	}
 
@@ -164,5 +165,5 @@ func (p *Producer) buildMessage(e *core.Entry, subject string, maxPayload int) (
 
 // chunkSize keeps every object chunk, with its headers, within max_payload.
 func chunkSize(maxPayload int) uint32 {
-	return uint32(max(maxPayload-tracepack.BusHeaderBlockLimit, 1)) //nolint:gosec // max_payload fits in 32 bits
+	return uint32(max(maxPayload-tpbus.HeaderBlockLimit, 1)) //nolint:gosec // max_payload fits in 32 bits
 }

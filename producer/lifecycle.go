@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/arloliu/go-secs/tracepack"
+	tpbus "github.com/arloliu/go-secs/tracepack/bus"
 	"github.com/arloliu/tracekeep/producer/internal/core"
 )
 
@@ -230,7 +231,7 @@ func (p *Producer) rotateLocked(ctx context.Context, d *CaptureDescriptor, previ
 		Sampling:    sampling(d.Thinning),
 	})
 	c.Descriptor = base64.StdEncoding.EncodeToString(desc)
-	if c.Subject, err = tracepack.BusSubject(p.prefix, d.ToolID, id); err != nil {
+	if c.Subject, err = tpbus.Subject(p.prefix, d.ToolID, id); err != nil {
 		return fmt.Errorf("%w: %w", ErrInvalidDescriptor, err)
 	}
 	if err := p.checkStartFits(c); err != nil {
@@ -259,20 +260,20 @@ func (p *Producer) rotateLocked(ctx context.Context, d *CaptureDescriptor, previ
 // checkStartFits refuses a descriptor whose start message's header block exceeds tracepack's 4096-byte bound,
 // which no max_payload lifts.
 func (p *Producer) checkStartFits(c *core.Capture) error {
-	msgID, err := tracepack.BusMsgID(c.ID, 0)
+	msgID, err := tpbus.MsgID(c.ID, 0)
 	if err != nil {
 		return err
 	}
 	m := Msg{
 		Header: map[string]string{
-			tracepack.BusHeaderLayout:     "1",
-			tracepack.BusHeaderDescriptor: c.Descriptor,
+			tpbus.HeaderLayout:     "1",
+			tpbus.HeaderDescriptor: c.Descriptor,
 		},
 		MsgID:        msgID,
 		ExpectStream: p.stream,
 	}
-	if n := headerBlockLen(&m); n > tracepack.BusHeaderBlockLimit {
-		return fmt.Errorf("%w: the start's header block is %d bytes, above %d", ErrInvalidDescriptor, n, tracepack.BusHeaderBlockLimit)
+	if n := headerBlockLen(&m); n > tpbus.HeaderBlockLimit {
+		return fmt.Errorf("%w: the start's header block is %d bytes, above %d", ErrInvalidDescriptor, n, tpbus.HeaderBlockLimit)
 	}
 
 	return nil

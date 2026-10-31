@@ -14,7 +14,7 @@ The sections below are authoritative; a disagreement is a defect in this summary
 Contract changes go through proposals, which the subject [README.md](README.md) lists.
 
 - **Order of checks** for every delivery:
-  layout and length, retention candidate, resolution of the version against `parked` rows and termination orders, framing (`CheckBusMessage`), admission before any age decision, then waits on catalog state or a claim object (§6.1).
+  layout and length, retention candidate, resolution of the version against `parked` rows and termination orders, framing (`bus.CheckMessage`), admission before any age decision, then waits on catalog state or a claim object (§6.1).
 - **Resolution first**: a version already `staged` or `terminated`, or covered by an active termination order, is acknowledged with no admission side effect,
   before framing or admission can see it (§6.1, G5-269; the version is defined in `parking.md`).
 - **Dispositions are per message** and are the rows of the §6.1 table or an operator's action;
@@ -41,14 +41,14 @@ Contract changes go through proposals, which the subject [README.md](README.md) 
 Checks run in this order for every delivery:
 **layout and length** (`Tpk-Layout` = 1 and a body of at least 44 bytes, else malformed) → **retention candidate**, from `ts_utc_ns` read directly at body offset 8 (signed little-endian, bytes 8–15) → **resolution before framing and admission**:
 the delivery's **version** is read from the raw message,
-before `CheckBusMessage` sees it (body bytes 0–43 are the carried header, the payload digest is `Tpk-Payload-Digest` for a claim-check message, present with `Tpk-Payload-Ref`, and SHA-256 over body bytes 44 onward otherwise;
+before `bus.CheckMessage` sees it (body bytes 0–43 are the carried header, the payload digest is `Tpk-Payload-Digest` for a claim-check message, present with `Tpk-Payload-Ref`, and SHA-256 over body bytes 44 onward otherwise;
 `capture_id` and `seq` come from `Nats-Msg-Id`), and is looked up in `parked`,
 and an active **termination order** of its capture and incarnation covering its stream sequence is looked up too;
 a version `staged` is acknowledged as already staged, a version `terminated`, or one an order covers, is acknowledged under the termination (G5-269; [STO §4] allows it for a `start` and for a record without descriptor) with **no admission side effect**,
 whatever else the delivery is (a `start`, a claim-check message whose object is missing, a descriptor the service rejects):
 the capture's row is untouched, a later `start` of another version admits normally, a later `start` of the same version is acknowledged again under the termination;
-`CheckBusMessage` and its `ErrBusNotAccepted` (a `start` whose descriptor does not decode) are reached only by an **unresolved** message,
-so a terminated `start` with a missing or invalid descriptor is acknowledged, as [STO §4] allows, instead of deferred → framing (`CheckBusMessage`) → **admission before any age decision**:
+`bus.CheckMessage` and its `bus.ErrNotAccepted` (a `start` whose descriptor does not decode) are reached only by an **unresolved** message,
+so a terminated `start` with a missing or invalid descriptor is acknowledged, as [STO §4] allows, instead of deferred → framing (`bus.CheckMessage`) → **admission before any age decision**:
 a delivery that may be a `start` (an inline `start`, or any claim-check delivery of a capture that is unknown or `rejected`, whose object is fetched and checked first, G5-257) completes start recognition and descriptor validation now;
 an accepted descriptor runs the **admission transaction**:
 no row or `pending` → `open` (the prologue of §6.3 inserts the `pending` row if none exists and locks it; then `pending → open`, bind the processing configuration), `rejected` → `open` when a fixed consumer now accepts the retained descriptor bytes (re-validated against the delivery's), equal bytes on an already admitted capture → nothing, different bytes → `descriptor-conflict`;
@@ -67,7 +67,7 @@ an expired non-start record of a capture the catalog does **not** know is **neve
 it is deferred and, being indefinite, parked (below), until its capture becomes known or an operator decides.
 Only after this does any wait on catalog state or on a claim object begin → **admission** (a `start` of an unknown capture registers it;
 a claim-check message of an unknown capture is fetched first,
-because `CheckBusMessage` recognizes a claim-check `start` only in `CheckBusPayload`) → capture known → claim payload → processing configuration executable → classify → mask → batch.
+because `bus.CheckMessage` recognizes a claim-check `start` only in `bus.CheckPayload`) → capture known → claim payload → processing configuration executable → classify → mask → batch.
 
 **The disposition classifier.**
 The order of checks and the table below are one decision procedure, kept apart from its effects.
@@ -75,12 +75,12 @@ A **disposition classifier**, a pure function that performs no I/O and holds no 
 (not the record classifier of the capture's processing configuration),
 takes the facts gathered so far for one delivery and returns either a **final disposition**, a row of the table,
 or the **next step** it needs:
-more **evidence**, gathered without a durable effect (framing by `CheckBusMessage`, the fetch and check of a claim object, start recognition and descriptor validation),
+more **evidence**, gathered without a durable effect (framing by `bus.CheckMessage`, the fetch and check of a claim object, start recognition and descriptor validation),
 or a **transactional operation**: the admission transaction, the durable write of `rejected`, step (1) of the parking protocol, or the termination of an unresolved version under an active order (`parking.md`).
 The step runs, what it returns joins the facts, and the classifier decides again, until it returns a final disposition.
 Before resolution the facts are only those read from the raw message (layout and length, `ts_utc_ns`, the version)
 and the lookups of the version in `parked` and of an active termination order;
-nothing calls `CheckBusMessage`, fetches an object or validates a descriptor before the classifier has found the version unresolved,
+nothing calls `bus.CheckMessage`, fetches an object or validates a descriptor before the classifier has found the version unresolved,
 so a resolved or order-covered delivery reaches its disposition from the raw message alone.
 A transactional operation starts with the prologue of §6.3, **re-reads under the capture row** the mutable facts its outcome depends on, and returns the **actual outcome**,
 which may differ from the one the classifier expected from its snapshot.
@@ -104,17 +104,17 @@ so an expired `start` that admission has just admitted terminates as beyond-rete
 
 | Condition | Disposition | Visible as |
 |---|---|---|
-| `ErrBusMalformed` (unknown layout, body length, bad `Nats-Msg-Id`, bad claim headers) | terminate on the bus, alert, count | seq gap |
-| `ErrBusNotAccepted` (a `start` whose descriptor does not decode or names an unserved method) | nak with delay, alert `capture-rejected`; later records of the capture stay deferred until an operator terminates or a fixed consumer accepts (G5-251) | open incident |
+| `bus.ErrMalformed` (unknown layout, body length, bad `Nats-Msg-Id`, bad claim headers, a transport-event or annotation payload that does not decode in any minor, tracepack G5-294) | terminate on the bus, alert, count | seq gap |
+| `bus.ErrNotAccepted` (a `start` whose descriptor does not decode or names an unserved method) | nak with delay, alert `capture-rejected`; later records of the capture stay deferred until an operator terminates or a fixed consumer accepts (G5-251) | open incident |
 | `start` of an unknown or `rejected` capture, inline or claim-check (fetched first) | the admission transaction above, then normal ingestion; acked only when a segment holding the `start` is registered; an expired `start` of a now-admitted capture terminates as beyond-retention after admission | — |
 | claim-check message of an unknown capture whose object is missing | nak with delay, alert; parked once its nak delay has reached the last step (T-40) | pending / parked count |
 | other record of a capture the catalog has not registered | nak with delay (5 s, backing off to 60 s); never terminate | pending count |
 | `start` of a registered capture (a redelivery or a duplicate) | descriptor bytes equal → **normal ingestion**: the record is batched and acked only when a segment holding it is registered; bytes differ → alert `descriptor-conflict`, nak; never overwrite | — / open incident |
-| claim-check object missing or `ErrBusPayloadMismatch` | a **receipt** for (capture, seq) exists (§6.3) whose 44-byte header and payload digest equal this delivery's → ack as already staged; so does a `parked` row of this version (capture, seq, header, digest) in state `staged`, and one in state `terminated` acknowledges it under the termination (G5-269, *Parking*, resolution); a receipt with other bytes → the delivery is a conflicting version: nak with delay, alert `claim-conflict`, operator; no receipt and no resolved row → nak with delay, alert | pending count / open incident |
+| claim-check object missing or `bus.ErrPayloadMismatch` | a **receipt** for (capture, seq) exists (§6.3) whose 44-byte header and payload digest equal this delivery's → ack as already staged; so does a `parked` row of this version (capture, seq, header, digest) in state `staged`, and one in state `terminated` acknowledges it under the termination (G5-269, *Parking*, resolution); a receipt with other bytes → the delivery is a conflicting version: nak with delay, alert `claim-conflict`, operator; no receipt and no resolved row → nak with delay, alert | pending count / open incident |
 | expired record (`ts_utc_ns` older than the retention horizon) of an admitted capture | terminate, alert `beyond-retention`, audit row; intentional and visible | audit |
 | expired record of a `rejected` or unknown capture | deferred (G5-251), never terminated by age; parked | parked count |
-| `DeriveBusRecord` → `ErrInvalidRecord` for a kind outside the four | terminate, alert (a producer fault; the record cannot be stored) | seq gap |
-| `DeriveBusRecord` → `ErrInvalidRecord` for a classifier result out of range; `CheckBusPayload` called for a non-claim record | internal invariant failure: nak with delay, alert, never terminate | open incident |
+| `bus.DeriveRecord` → `ErrInvalidRecord` for a kind outside the four | terminate, alert (a producer fault; the record cannot be stored) | seq gap |
+| `bus.DeriveRecord` → `ErrInvalidRecord` for a classifier result out of range; `bus.CheckPayload` called for a non-claim record | internal invariant failure: nak with delay, alert, never terminate | open incident |
 | processing configuration this consumer cannot execute (§6.4) | nak with delay, alert `incompatible-configuration` | pending count |
 | `ErrCannotScreen`, or masking fails for the record | nak with delay, alert `cannot-screen`; counted per capture; other captures unaffected | open incident |
 | a key the record's masking needs is refused (`keys.Refused`: a binding mismatch, a key id undeclared or of another kind, material malformed, short or missing at its pinned version, `masking-keys.md` §9) | deferred indefinitely, so parked; alert `key-binding-mismatch` or `key-refused`; the key's other records follow it | parked count, `deferred_messages{reason=key-refused}` |
@@ -169,7 +169,7 @@ the cases prove the decision, the schedules prove the re-reads under the capture
   `Writer` accepts strictly increasing seqs with gaps, which a sorted batch is;
   a record delivered later with a lower seq starts the next segment, which [STO §4] allows and the merge normalizes.
   No segment is reopened.
-- **Masking, per delivery** (§6.1): each record is classified from its payload as received (`DeriveBusRecord` with the capture's classifier),
+- **Masking, per delivery** (§6.1): each record is classified from its payload as received (`bus.DeriveRecord` with the capture's classifier),
   then masked with its capture's configuration (`redact.Compiled.Mask`, the keys of `masking-keys.md` §9 given for that delivery),
   `unobserved` being the bus record's quality bit 7, before it joins a batch;
   inline and claim-check records alike, so a batch, a working file and a pack hold masked records only.

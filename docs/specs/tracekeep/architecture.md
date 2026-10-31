@@ -35,7 +35,7 @@ eqp-hub (eqp-hsms plugin process)                                    producer SD
   go-secs observers → seq under the capture lock → capacity reservation → copy frame → bounded ring → publisher goroutine
     → NATS JetStream traffic stream (+ claim bucket for large payloads)
 tracekeep ingest                                                     §6
-  CheckBusMessage → descriptor registration (start) → per-scope batch
+  bus.CheckMessage → descriptor registration (start) → per-scope batch
     → sort, dedupe equal copies, split conflicting copies → classify + redact.Mask → tracepack.Writer → temp file
     → ObjectStore.Put (staging/) → catalog registration (pack, ranges with times, losses) → ack each message
 tracekeep compact                                                    §8

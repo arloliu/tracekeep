@@ -3,7 +3,7 @@ module github.com/arloliu/tracekeep/producer/internal/bustest
 go 1.26.4
 
 require (
-	github.com/arloliu/go-secs/tracepack v0.9.0
+	github.com/arloliu/go-secs/tracepack v0.12.0
 	github.com/arloliu/tracekeep v0.0.0
 	github.com/arloliu/tracekeep/producer v0.3.0
 	github.com/nats-io/nats.go v1.55.0

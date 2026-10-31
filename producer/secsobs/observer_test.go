@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/arloliu/go-secs/tracepack"
+	tpbus "github.com/arloliu/go-secs/tracepack/bus"
 	"github.com/arloliu/go-secs/v2/hsms"
 	"github.com/arloliu/tracekeep/producer"
 	"github.com/arloliu/tracekeep/producer/internal/core"
@@ -52,7 +53,7 @@ func (h *harness) records(n int) []tracepack.Record {
 	recs := make([]tracepack.Record, 0, n)
 	for i := range msgs[1:] {
 		m := &msgs[i+1]
-		br, err := tracepack.CheckBusMessage(tracepack.BusEnvelope{Layout: m.Header[tracepack.BusHeaderLayout], MsgID: m.MsgID}, m.Data)
+		br, err := tpbus.CheckMessage(tpbus.Envelope{Layout: m.Header[tpbus.HeaderLayout], MsgID: m.MsgID}, m.Data)
 		if err != nil {
 			h.t.Fatalf("CheckBusMessage(%s): %v", m.MsgID, err)
 		}
@@ -276,7 +277,7 @@ func TestNoSocketIsEpochZero(t *testing.T) {
 	h := newHarness(t)
 	h.obs.tx(hsms.TxEvent{Stream: 1, Function: 1, Outcome: hsms.TxT3Timeout})
 
-	if r := h.records(1)[0]; r.Epoch != 0 || !r.Quality.Has(tracepack.QualityCorrelationIncomplete) {
+	if r := h.records(1)[0]; r.Epoch != 0 || !r.Quality.HasAny(tracepack.QualityCorrelationIncomplete) {
 		t.Errorf("record = %+v, want epoch 0 and correlation-incomplete", r)
 	}
 }

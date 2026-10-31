@@ -12,7 +12,7 @@ import (
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 
-	"github.com/arloliu/go-secs/tracepack"
+	tpbus "github.com/arloliu/go-secs/tracepack/bus"
 	"github.com/arloliu/tracekeep/internal/testbus"
 	"github.com/arloliu/tracekeep/producer"
 	"github.com/arloliu/tracekeep/producer/busconfig"
@@ -101,7 +101,7 @@ func TestPublishWhileDisconnectedFailsAtOnce(t *testing.T) {
 	b.srv.Restart()
 	waitStatus(t, up, "connected")
 	msgs := b.fetch(t, 1)
-	if want, _ := tracepack.BusMsgID(c.ID, 1); msgs[0].Headers().Get(jetstream.MsgIDHeader) != want {
+	if want, _ := tpbus.MsgID(c.ID, 1); msgs[0].Headers().Get(jetstream.MsgIDHeader) != want {
 		t.Fatalf("after the restart got %q, want %q", msgs[0].Headers().Get(jetstream.MsgIDHeader), want)
 	}
 }
@@ -111,7 +111,7 @@ func TestPublishWhileDisconnectedFailsAtOnce(t *testing.T) {
 func TestClaimObjectAtTheMinimumMaxPayload(t *testing.T) {
 	t.Parallel()
 
-	b := newBusWith(t, testbus.Options{MaxPayload: tracepack.BusMinMaxPayload}, nil, false)
+	b := newBusWith(t, testbus.Options{MaxPayload: tpbus.MinMaxPayload}, nil, false)
 	p, err := producer.New(producer.Config{Servers: []string{b.url}, SubjectPrefix: prefix, ClaimBucket: bucket})
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -133,11 +133,11 @@ func TestClaimObjectAtTheMinimumMaxPayload(t *testing.T) {
 		t.Fatalf("bucket: %v", err)
 	}
 	for i, m := range msgs {
-		if m.Headers().Get(tracepack.BusHeaderPayloadRef) == "" {
-			t.Errorf("message %d travelled inline at max_payload %d", i, tracepack.BusMinMaxPayload)
+		if m.Headers().Get(tpbus.HeaderPayloadRef) == "" {
+			t.Errorf("message %d travelled inline at max_payload %d", i, tpbus.MinMaxPayload)
 		}
 	}
-	name, _ := tracepack.BusMsgID(c.ID, 1)
+	name, _ := tpbus.MsgID(c.ID, 1)
 	info, err := os.GetInfo(ctx, name)
 	if err != nil || info.Chunks < 2 {
 		t.Fatalf("claim object %+v, %v; want many chunks", info, err)
@@ -234,7 +234,7 @@ func TestPreflightRunsOnceConnected(t *testing.T) {
 func TestClaimBucketWithDirectReadsIsRefused(t *testing.T) {
 	t.Parallel()
 
-	b := newBusWith(t, testbus.Options{MaxPayload: tracepack.BusMinMaxPayload}, nil, true)
+	b := newBusWith(t, testbus.Options{MaxPayload: tpbus.MinMaxPayload}, nil, true)
 	log := newLog()
 	p, err := producer.New(producer.Config{Servers: []string{b.url}, SubjectPrefix: prefix, ClaimBucket: bucket}, producer.WithLogger(log))
 	if err != nil {

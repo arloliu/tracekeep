@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/arloliu/go-secs/tracepack"
+	tpbus "github.com/arloliu/go-secs/tracepack/bus"
 )
 
 // Defaults of the tunables (docs/specs/tracekeep/tracekeep-decisions.md T-12, T-29, producer-sdk.md §4.7).
@@ -113,7 +114,7 @@ type Tunables struct {
 }
 
 func (c *Config) validate() error {
-	if _, err := tracepack.BusSubject(c.SubjectPrefix, "t", tracepack.UUID{}); err != nil {
+	if _, err := tpbus.Subject(c.SubjectPrefix, "t", tracepack.UUID{}); err != nil {
 		return fmt.Errorf("%w: subject prefix %q: %w", ErrInvalidConfig, c.SubjectPrefix, err)
 	}
 	if c.ClaimBucket == "" {

@@ -8,7 +8,7 @@ import (
 
 	"github.com/nats-io/nats.go/jetstream"
 
-	"github.com/arloliu/go-secs/tracepack"
+	tpbus "github.com/arloliu/go-secs/tracepack/bus"
 	"github.com/arloliu/tracekeep/producer/busconfig"
 	"github.com/arloliu/tracekeep/producer/internal/core"
 )
@@ -68,13 +68,13 @@ func (p *Producer) Preflight(ctx context.Context) ([]Problem, error) {
 	add("parking", parked)
 
 	maxPayload := bus.MaxPayload()
-	if maxPayload < tracepack.BusMinMaxPayload {
-		add("max_payload", []string{fmt.Sprintf("max_payload %d is below %d", maxPayload, tracepack.BusMinMaxPayload)})
+	if maxPayload < tpbus.MinMaxPayload {
+		add("max_payload", []string{fmt.Sprintf("max_payload %d is below %d", maxPayload, tpbus.MinMaxPayload)})
 	}
 	problems = append(problems, bus.CheckConn()...)
 
 	// A max_payload below the minimum admits no start, which the check above already names.
-	if cur := p.rec.Current(); cur != nil && maxPayload >= tracepack.BusMinMaxPayload {
+	if cur := p.rec.Current(); cur != nil && maxPayload >= tpbus.MinMaxPayload {
 		start := core.Entry{Cap: cur, Kind: core.EntryStart, Wall: cur.OriginWall, Mono: cur.OriginMono}
 		if _, err := p.buildMessage(&start, cur.Subject, maxPayload); err != nil {
 			add("start", []string{fmt.Sprintf("capture %s: %v", cur.ID, err)})

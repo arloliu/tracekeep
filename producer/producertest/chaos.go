@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/arloliu/go-secs/tracepack"
+	tpbus "github.com/arloliu/go-secs/tracepack/bus"
 	"github.com/arloliu/tracekeep/producer"
 )
 
@@ -362,12 +363,12 @@ func decode(msgs []producer.Msg) (map[tracepack.UUID]*capture, error) {
 	caps := make(map[tracepack.UUID]*capture)
 	for i := range msgs {
 		m := &msgs[i]
-		br, err := tracepack.CheckBusMessage(tracepack.BusEnvelope{
-			Layout:        m.Header[tracepack.BusHeaderLayout],
+		br, err := tpbus.CheckMessage(tpbus.Envelope{
+			Layout:        m.Header[tpbus.HeaderLayout],
 			MsgID:         m.MsgID,
-			Descriptor:    m.Header[tracepack.BusHeaderDescriptor],
-			PayloadRef:    m.Header[tracepack.BusHeaderPayloadRef],
-			PayloadDigest: m.Header[tracepack.BusHeaderPayloadDigest],
+			Descriptor:    m.Header[tpbus.HeaderDescriptor],
+			PayloadRef:    m.Header[tpbus.HeaderPayloadRef],
+			PayloadDigest: m.Header[tpbus.HeaderPayloadDigest],
 		}, m.Data)
 		if err != nil {
 			return nil, fmt.Errorf("message %s: %w", m.MsgID, err)
@@ -387,9 +388,9 @@ func decode(msgs []producer.Msg) (map[tracepack.UUID]*capture, error) {
 			c.frames++
 		}
 		desc := br.Descriptor
-		if desc == nil && br.ClaimCheck && m.Header[tracepack.BusHeaderDescriptor] != "" {
+		if desc == nil && br.ClaimCheck && m.Header[tpbus.HeaderDescriptor] != "" {
 			// A claim-check start's descriptor is checked with its payload, which the check does not fetch.
-			if desc, err = base64.StdEncoding.DecodeString(m.Header[tracepack.BusHeaderDescriptor]); err != nil {
+			if desc, err = base64.StdEncoding.DecodeString(m.Header[tpbus.HeaderDescriptor]); err != nil {
 				return nil, fmt.Errorf("message %s: descriptor header: %w", m.MsgID, err)
 			}
 		}

@@ -10,6 +10,7 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 
 	"github.com/arloliu/go-secs/tracepack"
+	tpbus "github.com/arloliu/go-secs/tracepack/bus"
 	"github.com/arloliu/tracekeep/internal/testbus"
 	"github.com/arloliu/tracekeep/producer"
 	"github.com/arloliu/tracekeep/producer/busconfig"
@@ -157,20 +158,20 @@ func TestDefaultConnectionPublishes(t *testing.T) {
 	msgs := b.fetch(t, 3)
 	for i, m := range msgs {
 		h := m.Headers()
-		if want, _ := tracepack.BusMsgID(c.ID, uint64(i)); h.Get(jetstream.MsgIDHeader) != want {
+		if want, _ := tpbus.MsgID(c.ID, uint64(i)); h.Get(jetstream.MsgIDHeader) != want {
 			t.Errorf("message %d id %q, want %q", i, h.Get(jetstream.MsgIDHeader), want)
 		}
 		if got := h.Get(jetstream.ExpectedStreamHeader); got != busconfig.DefaultTrafficStream {
 			t.Errorf("message %d expects stream %q", i, got)
 		}
-		env := tracepack.BusEnvelope{
-			Layout:        h.Get(tracepack.BusHeaderLayout),
+		env := tpbus.Envelope{
+			Layout:        h.Get(tpbus.HeaderLayout),
 			MsgID:         h.Get(jetstream.MsgIDHeader),
-			Descriptor:    h.Get(tracepack.BusHeaderDescriptor),
-			PayloadRef:    h.Get(tracepack.BusHeaderPayloadRef),
-			PayloadDigest: h.Get(tracepack.BusHeaderPayloadDigest),
+			Descriptor:    h.Get(tpbus.HeaderDescriptor),
+			PayloadRef:    h.Get(tpbus.HeaderPayloadRef),
+			PayloadDigest: h.Get(tpbus.HeaderPayloadDigest),
 		}
-		br, err := tracepack.CheckBusMessage(env, m.Data())
+		br, err := tpbus.CheckMessage(env, m.Data())
 		if err != nil {
 			t.Fatalf("message %d: CheckBusMessage: %v", i, err)
 		}
@@ -187,7 +188,7 @@ func TestDefaultConnectionPublishes(t *testing.T) {
 			if err != nil {
 				t.Fatalf("bucket: %v", err)
 			}
-			name, _ := tracepack.BusMsgID(c.ID, 2)
+			name, _ := tpbus.MsgID(c.ID, 2)
 			data, err := os.GetBytes(ctx, name)
 			if err != nil || !bytes.Equal(data, large) {
 				t.Fatalf("claim object: %d bytes, %v", len(data), err)
