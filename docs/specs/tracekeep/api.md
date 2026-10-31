@@ -21,8 +21,8 @@ Contract changes go through proposals, which the subject [README.md](README.md) 
   either is issued only after the role check, expires before its object's deletion deadline minus a margin, and serves ranged reads (§10.1 *Downloads*).
 - **Exports**: an asynchronous job producing a bundle with one JSONL file per source pack, by that pack's `format_minor`;
   a filtered `.tpk` is not offered (§10.1).
-- **People**: OIDC authorization code with PKCE in a backend-for-frontend;
-  a signed, encrypted session cookie any replica validates (§10.2).
+- **People**: OIDC authorization code with PKCE in a backend-for-frontend, on the IdP of `auth.oidc`, optional;
+  an encrypted session cookie any replica validates, admitted on the browser's operations only, behind an `Origin` check (§10.2 *People's sign-in*).
 - **Services**: OAuth2 client credentials validated against the IdP's JWKS, or mTLS in the cluster;
   startup never blocks on the IdP (§10.2).
 - **Roles**: `pack-reader`, `scorer`, `viewer`, `exporter`, `restorer`, `admin`, granted separately (§10.2).
@@ -172,14 +172,17 @@ otherwise it is a URL on the API itself carrying a download token, and the API s
 
 ### 10.2 Auth
 
-- **People**: OIDC authorization code with PKCE, handled by the Go backend as a backend-for-frontend (`coreos/go-oidc`, `golang.org/x/oauth2`).
-  The session is a **signed, encrypted cookie** (a `session` key from the `keys` module, `masking-keys.md` §9, rotated by its rule there) holding subject, roles and expiry,
+- **People**: OIDC authorization code with PKCE, handled by the `api` role as a backend-for-frontend (*People's sign-in* below).
+  The session is an **encrypted, authenticated cookie** (a `session` key from the `keys` module, `masking-keys.md` §9, rotated by its rule there) holding subject, roles and expiry,
   so any replica validates it without shared state;
-  roles map from IdP groups or claims in configuration.
+  roles map from an ID token claim in configuration.
 - **Services** (the VE generation service, the scorer): OAuth2 client credentials from the same IdP, validated against its JWKS;
   mTLS is the in-cluster alternative.
-  A request is authenticated by one credential:
-  a client certificate the TLS handshake verified, when mTLS is configured, and otherwise its `Authorization: Bearer` token.
+  A request is authenticated by one credential, chosen before any is checked:
+  a client certificate the TLS handshake verified, when mTLS is configured;
+  otherwise its `Authorization` header, when it has one;
+  otherwise its session cookie, when people's sign-in is configured.
+  A chosen credential that is refused refuses the request: no other credential is tried.
   - A **service token** is a compact JWS whose header names a `kid` and an `alg` among RS256, RS384, RS512, PS256, PS384, PS512, ES256, ES384 and ES512;
     `none`, a symmetric `alg` and a missing `kid` are refused.
     Its `iss` is the configured issuer, its `aud` holds the configured audience, and its `exp` is required;
@@ -214,15 +217,88 @@ otherwise it is a URL on the API itself carrying a download token, and the API s
 - **Failures** count in `auth_failures_total{reason}` (`operations.md` §10.4), one reason per refused request:
   `missing` (no credential), `malformed`, `alg`, `unknown-kid`, `signature`, `issuer`, `audience`, `expired`, `not-yet-valid`,
   `idp-unavailable`, `certificate` (an mTLS identity the configuration does not name), `static` (a bearer token that matches no static token while no IdP is configured),
-  `forbidden`, and `download` (a download token refused).
+  `forbidden`, `download` (a download token refused),
+  and for people: `session` (a session cookie that does not decode, names a key id not accepted, does not verify or has expired),
+  `session-scope` (a session cookie on an operation a cookie does not admit), `csrf` (a cookie-borne request whose method or `Origin` the check refuses),
+  `login` (a callback without a valid login cookie, with another state, or with the IdP's error), `exchange` (the token endpoint's refusal or no answer within its deadline)
+  and `nonce` (an ID token whose nonce is not the login's);
+  an ID token's other refusals take the service token's reasons.
   The reason is logged with the subject when one is known, never with the credential.
+
+**People's sign-in.**
+It is configured by `auth.people.client_id` and needs `auth.oidc.issuer`, `api.public_url` (https) and a `keys.session` key: people sign in at the IdP that issues service tokens, with a client of their own.
+An ID token never passes as a service token: the client id differs from `auth.oidc.audience`, which the configuration refuses otherwise,
+and a service token whose `aud` holds the client id is refused as `audience`.
+Its cookies are `Secure`, so it needs the API served over TLS; `tracekeep dev`, which serves plain HTTP, offers none.
+Without a client id, the routes below answer not found, no cookie is read, and people have no way in.
+Every answer under `/auth/` carries `Cache-Control: no-store`, and the callback's also `Referrer-Policy: no-referrer`, since its URL holds the code and the state.
+
+- **Discovery** is the service-token verifier's (*IdP outage* above), which reads `authorization_endpoint` and `token_endpoint` beside `jwks_uri`,
+  each https, under the same fetch rules and cache;
+  a document without either is a failed fetch for a login,
+  and a login or a callback with neither cached and no fetch allowed or succeeding answers `idp-unavailable`.
+  An ID token is verified against the same cached keys, an unknown `kid` refreshing them under the same rules.
+- **`GET /auth/login?return=<path>`** starts a login and changes no server state:
+  it draws a PKCE verifier, a state and a nonce, 32 random bytes each, base64url;
+  sets the login cookie holding them, the return path and its expiry (`auth.people.login_lifetime`, default 10 min);
+  and redirects (302) to the authorization endpoint with `response_type=code`, the client id, the redirect URL `<api.public_url>/auth/callback`,
+  the scopes (`auth.people.scopes`, default `openid`, which is always sent), the state, the nonce and the S256 challenge.
+  The return path, once decoded from the query, is kept only when it is a path on this origin:
+  printable ASCII without a space, a `\` or any control, starting with one `/` not followed by another, and parsing as a URL with no scheme and no host;
+  otherwise it is `/`, and the `Location` the callback sends is that checked path, never a value rebuilt from it.
+  If discovery cannot be had (above), the login answers 503 with a fixed page, refused as `idp-unavailable`.
+  A forged login cannot sign a browser in: the callback needs that browser's own login cookie and state.
+- **`GET /auth/callback?code=…&state=…`** finishes it.
+  Every answer clears the login cookie.
+  It refuses as `login` a request without a valid login cookie (absent, refused like a session cookie, or expired), with a state other than the cookie's (compared in constant time), or carrying the IdP's `error`;
+  then it exchanges the code at the token endpoint, a POST of `grant_type=authorization_code`, the code, the redirect URL and the verifier,
+  the client authenticated by HTTP Basic with its id and its secret (`auth.people.client_secret_ref`, read by reference),
+  over https, bounded by `auth.people.exchange_timeout` (default 10 s), its refusal, non-JSON answer or timeout refused as `exchange`;
+  then it verifies the answer's `id_token`, sets the session cookie and redirects (303) to the return path.
+  A refusal answers a fixed page: 400 for `login` and the ID token's refusals, 502 for `exchange`, 503 for `idp-unavailable`.
+  A code is consumed once: the callback clears the login cookie, and the IdP refuses a second exchange of its code,
+  so of two callbacks carrying one code, on one replica or two, at most one signs in.
+  An authorization request the browser repeats (two tabs of one login) can bring two codes for the one login cookie, each a sign-in of the same person and nobody else's.
+  The access and refresh tokens are discarded: nothing tracekeep serves needs them, and a session ends at its expiry, when the person signs in again.
+- **The ID token** is a compact JWS checked as a service token is (`alg`, `kid`, signature, `iss`, `exp` required, `nbf` and `iat`, the leeway),
+  except that its `aud` must hold the client id, an `azp` must be the client id and is required when `aud` holds more than one value,
+  its `nonce` must be the login cookie's, and its `sub` must not be empty.
+  Its roles are the values of `auth.people.roles_claim` (default `groups`, a string or a list of strings), each mapped by `auth.people.roles`, an unmapped value granting none;
+  a person with no role signs in and is refused every operation as `forbidden`.
+- **`POST /auth/logout`** clears the session cookie (204) after the `Origin` check below; it ends nothing at the IdP.
+  A cookie cannot be revoked before its expiry, so `auth.people.session_lifetime` (default 8 h) bounds what a stolen one is worth.
+- **`GET /auth/me`** answers the signed-in principal (subject, roles, the session's expiry) as JSON, or 401 without a valid session cookie; it is how the frontend learns who is signed in.
+- **Cookies**: `__Host-tk_login` and `__Host-tk_session`, each `Secure`, `HttpOnly`, `SameSite=Lax`, `Path=/` and without `Domain`;
+  `Lax` lets the IdP's top-level redirect back carry the login cookie, and keeps the session cookie off every cross-site subrequest.
+  A value is base64url (no padding) of a form version, the purpose (login or session), the key id, a 12-byte nonce and the AES-256-GCM sealing of the payload,
+  the nonce drawn afresh from the system's cryptographic randomness at every sealing, never a counter, so replicas sharing a key never repeat one;
+  random 12-byte nonces keep GCM within its bound for 2^32 sealings under one key, far above the logins and sign-ins a session key id issues before its rotation,
+  the version, purpose and key id being the additional data, so a login cookie never passes as a session cookie, nor one key id's cookie as another's.
+  The AES key is derived from the session key id's material by HKDF-SHA-256 with the purpose in its info, one key per purpose.
+  A session's payload holds the subject, roles, issue time and expiry; a login's, the verifier, state, nonce, return path and expiry.
+  A value longer than 4,096 bytes is refused before it is decoded;
+  a sign-in whose cookie would be longer is refused as `login`, which a role claim with too many values causes.
+  A validator checks the form version, the purpose, then the key id against the accepted ones before it resolves the key,
+  then opens the sealing, then the expiry, allowing the clock tolerance of `auth.oidc.leeway`.
+- **What a cookie admits**: a request authenticated by its session cookie is admitted only
+  as a `POST` whose `Origin` is `api.public_url`'s origin (scheme, host and port), so a cross-site page can neither send it nor read its answer, else `csrf`;
+  and only on the operations the browser uses: `ListDevices`, `ListCaptures`, `ListPacks` and `ListScopeChanges` now,
+  and `QueryRecords`, `FindTransaction` and the export job's operations when they land (phases 4.2 and 4.3), else `session-scope`.
+  `PackURL`, `Restore`, `Digest` and `Admin` never admit a cookie.
+  The role check follows, as for every principal; the principal's `Via` is `session`.
+  `/download/` checks its token and never reads a cookie (§10.1 *Downloads*);
+  `/auth/login`, `/auth/callback` and `/auth/me` are GETs that change no server state, and `/auth/logout` is a POST under the `Origin` check.
+- **Nothing secret is written**: no code, verifier, state, nonce, token, client secret or cookie value appears in a log line, a metric label or an error;
+  the state, the nonce and the challenge leave only in the authorization redirect, and a cookie value only in its `Set-Cookie`.
+  The callback's error page is fixed text naming the reason, never the IdP's `error_description`.
+- **Counting**: `logins_total{step=start,callback,outcome=ok,refused,unavailable}` counts every login started and every callback answered (`operations.md` §10.4); a refusal also counts its reason in `auth_failures_total`.
 
 ### 10.3 Frontend
 
 `web/` is Vite + React + TypeScript with a connect-web client generated from the same protos;
 `make web` builds `web/dist`, which the binary embeds with `go:embed` and `api` serves at `/`,
 so a standalone host ships one file;
-in development Vite proxies `/api` to the Go server.
+in development Vite, served over https, proxies `/auth/`, `/download/` (ranged `GET` and `HEAD` included) and the services' paths to the Go server, and `api.public_url` names the Vite server, so the cookies, the `Origin` check and the download URLs hold unchanged.
 The embedding package embeds a tracked fallback page beside `web/dist`,
 so the Go build needs no Node, and a binary built without `make web` serves the fallback, which says the frontend was not built;
 a release binary and the image are built after `make web` and never ship the fallback (T-48).

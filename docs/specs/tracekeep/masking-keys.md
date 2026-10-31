@@ -115,14 +115,16 @@ Contract changes go through proposals, which the subject [README.md](README.md) 
     every cookie and token carries its key id in its authenticated part, and an unknown or wrong-purpose id fails closed.
     Rotation is three steps:
     add the new id to the accepted list on every replica, then switch issuance to it,
-    then drop the old id once no replica issues under it and the longest credential lifetime plus the clock tolerance has passed.
+    then drop the old id once no replica issues under it and the longest credential lifetime plus the clock tolerance has passed:
+    for a session key, the longest session and login lifetimes in force while the old id issued, plus `auth.oidc.leeway`, counted from the last replica's switch,
+    so a lifetime shortened during the rotation does not shorten the wait.
     Such a key id is retired when no credential issued under it can still be valid, which says nothing about captures.
 - `KeyProvider` implementations:
   `vault` (KV v2 with the version pinned in the binding; Kubernetes auth in the cluster, AppRole on a host; material held in memory only, never on disk, and cached by the `keys` module, below),
   `file` (files a Vault Agent or an operator places, mode 0600, for standalone; a file any other user may read is refused), `env` (development only, refused in production mode: every command but `tracekeep dev` refuses it at load).
   Vault Transit does not fit: the derivation and AES-SIV need the raw master key in process.
   A provider returns the material as base64 text in standard encoding, surrounding white space ignored;
-  a `digest`, `master` or `download` key's material holds at least 32 bytes.
+  a `digest`, `master`, `download` or `session` key's material holds at least 32 bytes.
 - **The `vault` provider**:
   - **Configuration**: the server's address (https only) and the CA that verifies it, the KV v2 mount, and one auth method with its role:
     `kubernetes`, which logs in with the service account token read from its file at each login, since the file rotates,

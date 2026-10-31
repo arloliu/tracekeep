@@ -1,6 +1,6 @@
 # Runbook
 
-Status: current (2026-10-30) — the key and masking incidents, refused restores and digests, merges over budget; the others join with their alerts
+Status: current (2026-10-30) — key, masking and sign-in incidents, refused restores and digests, merges over budget; the others join with their alerts
 
 One section per named incident of `docs/specs/tracekeep/operations.md` §10.4:
 the alert that raises it, the metric to look at, the command that resolves it, and what is lost if it is ignored.
@@ -78,6 +78,21 @@ or, outside `tracekeep dev`, a capture's start finds no masking configuration it
 3. With one active but not bindable, a leased member does not execute it: upgrade or stop that member; it becomes bindable once the member lapses or leaves.
 
 **If ignored**: the capture's records wait on the stream, bounded by the capture, until a configuration binds or an operator terminates the capture.
+
+## People cannot sign in
+
+This raises no alert of its own: `logins_total{outcome}` and `auth_failures_total{reason}` say why.
+Neither a log line nor the error page holds a code, a token, a secret or a cookie.
+
+| Signal | Meaning and action |
+|---|---|
+| `logins_total{outcome="unavailable"}` (a login started or a callback), reason `idp-unavailable` | the IdP's discovery or keys cannot be fetched: people already signed in keep working until their session expires, new logins fail; restore the IdP's reachability |
+| reason `exchange` | the token endpoint refused the code or did not answer within `auth.people.exchange_timeout`: check the client id and secret, the redirect URL registered at the IdP (`<api.public_url>/auth/callback`) and the IdP's latency |
+| reason `login` | a callback without its login cookie or with another state: a login left open past `auth.people.login_lifetime`, a callback replayed, or a browser refusing cookies; a person sees it once and signs in again |
+| reason `nonce`, `audience`, `issuer` | the ID token is not for this login or client: check `auth.people.client_id` and the IdP's client |
+| reason `session` | a session cookie past its expiry or under a dropped key id: the person signs in again; many at once after a rotation mean the old key id was dropped too soon |
+| reason `csrf`, `session-scope` | a cookie-borne request from another origin or on an operation the browser does not use: a misconfigured `api.public_url` or a page that should not be calling |
+| a person signed in and refused every operation (`forbidden`) | the ID token's `auth.people.roles_claim` holds no value `auth.people.roles` maps: map the person's group |
 
 ## Refused restores and digests
 

@@ -1,6 +1,6 @@
 # Configuration guide
 
-Status: current (2026-10-29) — the keys phases 1 to 3.2 read
+Status: current (2026-10-29) — the keys phases 1 to 4.1 read
 
 Every key the service reads, its default, its environment override, and what moving it costs.
 Read when deploying a role, tuning one, or adding a key.
@@ -9,7 +9,7 @@ The configuration is one YAML file, given to every role with `--config`, loaded 
 a key's default applies when the file omits it, an environment variable overrides the file,
 and a secret is read from a reference (`file:///run/secrets/x` or `env://NAME`) named by its `*_ref` key, never written in the file.
 It is read once at start; a change takes a restart.
-The tunables of later phases (the masking keys' other purposes) join this file with the code that reads them.
+The tunables of later phases join this file with the code that reads them.
 
 **A standalone host upgraded to phase 2** runs the `api` role inside `all`, which then needs:
 `api.tls_cert_file` and `api.tls_key_file`, without which it fails at start and stops the other roles with it;
@@ -61,10 +61,17 @@ and where the API serves downloads itself (an `fs` store, or `store.presign` off
 | `auth.oidc.issuer`, `auth.oidc.audience` | — | `TRACEKEEP_AUTH_OIDC_…` | the IdP service tokens are validated against (`api.md` §10.2), an https URL, and the audience a token must name; empty configures no IdP |
 | `auth.oidc.roles_claim`, `auth.oidc.roles` | `roles`, — | `TRACEKEEP_AUTH_OIDC_ROLES_CLAIM` | the claim holding a token's role values, and the roles each value grants; a value it does not name grants none |
 | `auth.oidc.jwks_ttl`, `.fetch_interval`, `.leeway` | `1h`, `10s`, `1m` | `TRACEKEEP_AUTH_OIDC_…` | how long cached keys verify, an outage longer than it refusing every token; the least time between two fetches of the JWKS, which bounds the IdP's load from unknown `kid`s and how soon its return is noticed; the clock tolerance of `exp`, `nbf` and `iat` |
+| `auth.people.client_id`, `auth.people.client_secret_ref` | — | `TRACEKEEP_AUTH_PEOPLE_CLIENT_ID`, `…_CLIENT_SECRET_REF` | people's sign-in (`api.md` §10.2), its client at the IdP of `auth.oidc.issuer`, which it needs, and the client's secret by reference; the client id must differ from `auth.oidc.audience`, and a service token naming it is refused; without a client id people cannot sign in, and with one `api.public_url` (https), a `keys.session` key and TLS are required, or the start fails, so `tracekeep dev` offers no sign-in |
+| `auth.people.scopes` | `openid` | — | the scopes a login asks for; `openid` is always sent, so add only the scope that puts the roles claim in the ID token |
+| `auth.people.roles_claim`, `auth.people.roles` | `groups`, — | `TRACEKEEP_AUTH_PEOPLE_ROLES_CLAIM` | the ID token claim holding a person's group values, and the roles each value grants; a value it does not name grants none, and a person with none is refused every operation |
+| `auth.people.session_lifetime` | `8h` | `TRACEKEEP_AUTH_PEOPLE_SESSION_LIFETIME` | how long a session cookie admits its holder; a cookie cannot be revoked, so longer leaves a stolen one usable longer, shorter signs people in more often; it lengthens a session key's rotation |
+| `auth.people.login_lifetime` | `10m` | `TRACEKEEP_AUTH_PEOPLE_LOGIN_LIFETIME` | how long a started login may take at the IdP before its callback is refused |
+| `auth.people.exchange_timeout` | `10s` | `TRACEKEEP_AUTH_PEOPLE_EXCHANGE_TIMEOUT` | the deadline of the token exchange; a slower IdP refuses the sign-in as `exchange` |
 | `auth.mtls.client_ca_file`, `auth.mtls.subjects` | — | `TRACEKEEP_AUTH_MTLS_CLIENT_CA_FILE` | the CA client certificates are verified against, and each verified identity's roles (its first URI name, else its first DNS name); given together |
 | `auth.static.enabled`, `auth.static.tokens` | `false`, — | `TRACEKEEP_AUTH_STATIC_ENABLED` | the static-token provider of a standalone host without an IdP; only the flag admits the tokens, each a `subject`, a `token_ref` naming a token of at least 32 bytes (never the token itself) and its `roles`; never turned on by a failure |
 | `keys.declared.<key id>` | — | — | a key id's `provider` (`vault`; `file`, mode 0600; `env` only under `tracekeep dev`), `ref` (for `vault`, the secret's path under the mount, its `material` field holding the key) and `version` (for `vault`, the KV v2 version; empty for `file` and `env`, which have no versions), and its `kind`, required for a `digest` or `master` key id and refused under any other (`masking-keys.md` §9); a key id of at most 128 characters, a provider and ref of at most 255 together; a bound key id is read at its binding's reference whatever its declaration says later |
 | `keys.download.issuing`, `keys.download.accepted` | — | — | the download tokens' issuing key id, one of the accepted ones, each declared; rotation adds the new id to `accepted` on every replica, then switches `issuing`, then drops the old id once the longest download lifetime plus the clock skew has passed |
+| `keys.session.issuing`, `keys.session.accepted` | — | — | the session and login cookies' issuing key id, one of the accepted ones, each declared, each resolved at start (a failure fails it); rotation adds the new id to `accepted` on every replica, then switches `issuing`, then drops the old id once the longest session and login lifetimes in force while it issued, plus `auth.oidc.leeway`, have passed since the last replica switched; a lifetime shortened meanwhile does not shorten the wait |
 | `keys.vault.address`, `keys.vault.ca_file` | — | `TRACEKEEP_KEYS_VAULT_ADDRESS`, `…_CA_FILE` | the Vault server, https only, and the CA that verifies it beside the system's roots; required once a key id is declared with `vault` |
 | `keys.vault.mount` | `secret` | `TRACEKEEP_KEYS_VAULT_MOUNT` | the KV v2 mount the references are under; its `max_versions` and `delete_version_after` must never remove a version a `digest` or `master` binding pins while a retained pack needs it, or `Restore` and masking under that key id are refused for good |
 | `keys.vault.timeout` | `10s` | `TRACEKEEP_KEYS_VAULT_TIMEOUT` | the deadline of every call to Vault (login, renewal, read); longer waits longer on a stalled server before deferring, shorter fails a slow but healthy one |
