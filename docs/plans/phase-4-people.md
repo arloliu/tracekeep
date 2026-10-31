@@ -97,7 +97,7 @@ the branch merges by pull request once the whole phase passes an external post-i
 | 2 | the `session` purpose: its configuration, issuing and accepted ids, every accepted id resolved at start and a failure failing it; a wrong-purpose request failing closed | pending |
 | 3 | the cookie codec: login and session cookies encrypted and authenticated under the session key, the purpose and key id bound, the key id checked against the accepted ones before its key is resolved, a size bound before decoding; a fuzz target | pending |
 | 4 | discovery's endpoints and the ID token's verification beside the service token's, sharing its key cache; the token exchange with its deadline; an `httptest` IdP with single-use codes, a stall and an outage | pending |
-| 5 | the routes: login, callback, logout and the signed-in principal; a callback crossing replicas, two callbacks of one login racing, a replayed one, a rotation between a login and its callback, the IdP down cold and warm | pending |
+| 5 | the routes: login, callback, logout and the signed-in principal; a callback crossing replicas, two callbacks of one code racing, a replayed one, a rotation between a login and its callback, the IdP down cold and warm | pending |
 | 6 | the authenticator's cookie branch: precedence without fallback, the admitted operations, the `Origin` check, `/download/` token-only, the new reasons counted; nothing of a code, token, secret or cookie in the log, scanned with sentinels | pending |
 
 ## Gate cases and their owners

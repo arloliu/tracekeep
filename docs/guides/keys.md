@@ -78,6 +78,11 @@ For `vault`:
 - **`download`** rotates in three steps (the configuration guide's `keys.download`):
   add the new key id to `accepted` on every replica, then switch `issuing` to it,
   then drop the old one once the longest download lifetime plus the clock skew has passed.
+- **`session`** rotates the same way (the configuration guide's `keys.session`),
+  dropping the old key id once the longest session and login lifetimes it issued under, plus the clock tolerance, have passed since the last replica switched;
+  dropped sooner, every person signed in under it is signed out.
+  Every accepted session key id is resolved when the `api` role starts, so a replica started while Vault is down does not start,
+  and the replicas already running keep validating cookies.
 
 ## Restore and Digest
 
