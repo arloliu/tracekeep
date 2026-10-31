@@ -161,6 +161,9 @@ func (o *out) Versions(rs []Record) error {
 		}
 		if r.Conflict {
 			line += "!"
+			if len(r.Holders) == 0 {
+				return fmt.Errorf("a conflict's version of seq %d names no holder", r.Seq)
+			}
 		}
 		if r.Excluded {
 			line += "x"

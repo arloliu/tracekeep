@@ -20,6 +20,7 @@ const (
 	OpDigest           = "Digest"
 	OpRestore          = "Restore"
 	OpExport           = "Export"
+	OpQueryRecords     = "QueryRecords"
 	OpAdmin            = "Admin"
 )
 
@@ -28,7 +29,7 @@ const (
 var operationRoles = map[string][]string{
 	OpListDevices: {RolePackReader, RoleViewer}, OpListCaptures: {RolePackReader, RoleViewer}, OpListScopeChanges: {RolePackReader, RoleViewer},
 	OpListPacks: {RolePackReader}, OpPackURL: {RolePackReader},
-	OpDigest: {RoleScorer}, OpRestore: {RoleRestorer}, OpExport: {RoleExporter}, OpAdmin: {RoleAdmin},
+	OpDigest: {RoleScorer}, OpRestore: {RoleRestorer}, OpExport: {RoleExporter}, OpQueryRecords: {RoleViewer}, OpAdmin: {RoleAdmin},
 }
 
 // cookieOperations are the operations a session cookie admits: those the browser uses (api.md §10.2 *People's sign-in*).

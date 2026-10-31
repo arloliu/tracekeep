@@ -25,6 +25,8 @@ service MachineService {
   rpc Restore(RestoreRequest) returns (RestoreResponse);
   // Digest answers the digest of each input under one digest key id (masking-keys.md §9, T-44).
   rpc Digest(DigestRequest) returns (DigestResponse);
+  // QueryRecords streams the selected captures' masked records with their markers, in batches (api.md §10.1 *Records*).
+  rpc QueryRecords(QueryRecordsRequest) returns (stream QueryRecordsResponse);
 }
 
 // Selector names the connections a read wants (api.md §10.1 *Selector*).
@@ -305,4 +307,110 @@ message DigestResponse {
   string digest_key_id = 1;
   // digests are the inputs' digests, in order.
   repeated bytes digests = 2;
+}
+
+// QueryRecordsRequest selects records (api.md §10.1 *Record predicates of QueryRecords*).
+message QueryRecordsRequest {
+  Selector selector = 1;
+  // messages are SxFy entries, SxF* for any function.
+  repeated string messages = 2;
+  // direction is to_host, to_equipment or empty for both.
+  string direction = 3;
+  // kinds are data, control, transport-event and annotation; none selects all but transport events.
+  repeated string kinds = 4;
+  bool include_transport_events = 5;
+  // seq_from and seq_to bound the producer seqs, inclusive; they need the selector's capture_id.
+  optional uint64 seq_from = 6;
+  optional uint64 seq_to = 7;
+  // limit counts records, 5,000 when 0, at most 50,000.
+  uint32 limit = 8;
+  // cursor continues a previous answer of the same selector and predicates.
+  string cursor = 9;
+}
+
+// QueryRecordsResponse is one batch: items up to 128 KiB encoded, the cursor after the last, and end on the last batch.
+message QueryRecordsResponse {
+  repeated RecordItem items = 1;
+  string cursor = 2;
+  optional QueryEnd end = 3;
+}
+
+// RecordItem is a record or a marker.
+message RecordItem {
+  oneof item {
+    CaptureStart capture = 1;
+    Record record = 2;
+    Withheld withheld = 3;
+    Incomplete incomplete = 4;
+    UnknownTail unknown_tail = 5;
+  }
+}
+
+// CaptureStart opens a capture's records with its completeness as far as it meets the window.
+message CaptureStart {
+  Capture capture = 1;
+  Completeness completeness = 2;
+}
+
+// Record is one version of a masked record.
+message Record {
+  google.protobuf.Timestamp hour = 1;
+  uint64 seq = 2;
+  google.protobuf.Timestamp time = 3;
+  uint32 epoch = 4;
+  // kind is data, control, transport-event or annotation; direction to_host, to_equipment or local.
+  string kind = 5;
+  string direction = 6;
+  optional HSMSHeader header = 7;
+  bool conflict = 8;
+  bool excluded = 9;
+  bool unobserved = 10;
+  bytes payload = 11;
+  // sml is a data record's SML, valid UTF-8, cut at 64 KiB when sml_truncated; sml_error replaces it when the body does not render.
+  string sml = 12;
+  bool sml_truncated = 13;
+  string sml_error = 14;
+  // holders are, for a conflict's version, the packs of the read set whose ranges hold the seq, with their states.
+  repeated Holder holders = 15;
+}
+
+// HSMSHeader is a record's HSMS message header.
+message HSMSHeader {
+  uint32 session_id = 1;
+  uint32 stream = 2;
+  uint32 function = 3;
+  bool w = 4;
+  bytes system_bytes = 5;
+}
+
+// Holder is a pack holding a seq, with its state.
+message Holder {
+  string pack_id = 1;
+  string state = 2;
+}
+
+// Withheld follows the capture's start when its configuration has no policy; none of its records follow.
+message Withheld {}
+
+// Incomplete names what a read could not read.
+message Incomplete {
+  google.protobuf.Timestamp hour = 1;
+  string reason = 2;
+  string detail = 3;
+  repeated string packs = 4;
+  optional uint64 seq_from = 5;
+  optional uint64 seq_to = 6;
+}
+
+// UnknownTail closes a capture: the first seq above the frontier, and whether the capture is still open.
+message UnknownTail {
+  optional uint64 from = 1;
+  bool open = 2;
+}
+
+// QueryEnd ends a stream: the records streamed, whether any incomplete marker or completeness entry was, and the cursor when the limit stopped it.
+message QueryEnd {
+  uint64 records = 1;
+  bool incomplete = 2;
+  string cursor = 3;
 }

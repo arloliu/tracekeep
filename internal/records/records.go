@@ -84,6 +84,8 @@ type Record struct {
 	HasHeader bool
 	// Conflict, Excluded and Unobserved flag the version (api.md §10.1 *Items*).
 	Conflict, Excluded, Unobserved bool
+	// Holders are, for a conflict's version, the read set's packs whose ranges hold the seq.
+	Holders []catalog.ReadPack
 }
 
 // Incomplete names what a read could not read.
@@ -312,6 +314,9 @@ func (g *group) add(it *tracepack.Item) error {
 		return nil
 	}
 	rec.Excluded = excluded(g.rs, seq)
+	if rec.Conflict {
+		rec.Holders = holders(g.rs, seq)
+	}
 	g.seq = seq
 	g.held = append(g.held, rec)
 
@@ -376,6 +381,19 @@ func excluded(rs *catalog.ReadSet, seq uint64) bool {
 	}
 
 	return true
+}
+
+// holders are rs's packs whose ranges hold seq, without their ranges.
+func holders(rs *catalog.ReadSet, seq uint64) []catalog.ReadPack {
+	var out []catalog.ReadPack
+	for _, p := range rs.Packs {
+		if slices.ContainsFunc(p.Ranges, func(rg catalog.Range) bool { return rg.SeqFrom <= seq && seq <= rg.SeqTo }) {
+			p.Ranges = nil
+			out = append(out, p)
+		}
+	}
+
+	return out
 }
 
 // cluster is packs whose envelopes overlap, [lo, hi].
