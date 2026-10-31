@@ -330,7 +330,7 @@ message QueryRecordsRequest {
   string cursor = 9;
 }
 
-// QueryRecordsResponse is one batch: items up to 128 KiB encoded, the cursor after the last, and end on the last batch.
+// QueryRecordsResponse is one batch: items up to 128 KiB in the stream's encoding, the cursor after the last, and end on the last batch.
 message QueryRecordsResponse {
   repeated RecordItem items = 1;
   string cursor = 2;
@@ -352,6 +352,8 @@ message RecordItem {
 message CaptureStart {
   Capture capture = 1;
   Completeness completeness = 2;
+  // completeness_truncated is set when the completeness was cut to fit a message; ListPacks gives it whole.
+  bool completeness_truncated = 3;
 }
 
 // Record is one version of a masked record.
@@ -399,7 +401,9 @@ message Incomplete {
   google.protobuf.Timestamp hour = 1;
   string reason = 2;
   string detail = 3;
+  // packs are at most 100 of the packs concerned; more_packs counts the rest.
   repeated string packs = 4;
+  uint32 more_packs = 7;
   optional uint64 seq_from = 5;
   optional uint64 seq_to = 6;
 }

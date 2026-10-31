@@ -3,11 +3,13 @@ package api
 import (
 	"bytes"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 
 	"connectrpc.com/connect"
 	"github.com/arloliu/go-secs/tracepack"
+	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
 
 	"github.com/arloliu/tracekeep/internal/catalog"
@@ -15,7 +17,9 @@ import (
 	"github.com/arloliu/tracekeep/internal/maskingtest"
 	"github.com/arloliu/tracekeep/internal/metrics"
 	"github.com/arloliu/tracekeep/internal/procconfig"
+	"github.com/arloliu/tracekeep/internal/records"
 	tkv1 "github.com/arloliu/tracekeep/proto/tracekeep/v1"
+	"github.com/arloliu/tracekeep/proto/tracekeep/v1/tracekeepv1connect"
 )
 
 // captured sets each record's field validity as a raw capture's writer does.
@@ -223,8 +227,8 @@ func TestQueryRecordsLimitAndCursor(t *testing.T) {
 	})
 }
 
-// Outside tracekeep dev a capture whose configuration has no policy streams its start and withheld, no record;
-// under tracekeep dev it streams its records.
+// Outside tracekeep dev a capture whose configuration has no policy streams its start, withheld and its unknown tail, no record,
+// a resumption mid-capture included; under tracekeep dev it streams its records.
 func TestQueryRecordsWithholds(t *testing.T) {
 	t.Parallel()
 	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
@@ -237,8 +241,8 @@ func TestQueryRecordsWithholds(t *testing.T) {
 			t.Fatal(err)
 		}
 		its, end := items(t, msgs)
-		if len(its) != 2 || its[0].GetCapture() == nil || its[1].GetWithheld() == nil || end.GetRecords() != 0 {
-			t.Errorf("a withheld capture = %v, end %v; want its start and withheld only", its, end)
+		if len(its) != 3 || its[0].GetCapture() == nil || its[1].GetWithheld() == nil || its[2].GetUnknownTail() == nil || end.GetRecords() != 0 {
+			t.Errorf("a withheld capture = %v, end %v; want its start, withheld and its unknown tail", its, end)
 		}
 		m.srv.Dev = true
 		msgs, err = m.streamed(t, query(capture, nil))
@@ -247,6 +251,20 @@ func TestQueryRecordsWithholds(t *testing.T) {
 		}
 		if its, _ := items(t, msgs); len(seqsOf(its)) != len(ms) {
 			t.Errorf("under tracekeep dev: %d records, want %d", len(seqsOf(its)), len(ms))
+		}
+		// A cursor taken mid-capture, resumed outside tracekeep dev, reads nothing of the capture.
+		msgs, err = m.streamed(t, query(capture, func(q *tkv1.QueryRecordsRequest) { q.Limit = 2 }))
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, end = items(t, msgs)
+		m.srv.Dev = false
+		msgs, err = m.streamed(t, query(capture, func(q *tkv1.QueryRecordsRequest) { q.Cursor = end.GetCursor() }))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if its, _ := items(t, msgs); len(seqsOf(its)) != 0 || len(its) != 2 || its[0].GetWithheld() == nil {
+			t.Errorf("a withheld capture resumed mid-way = %v; want withheld and its unknown tail", its)
 		}
 	})
 }
@@ -327,4 +345,178 @@ func noSecret(t *testing.T, cs []maskingtest.Carrier, its []*tkv1.RecordItem) {
 			}
 		}
 	}
+}
+
+// The completeness a capture starts with keeps the entries meeting the window, a gap run backwards by a clock step included,
+// its losses in seq order with a loss of no seq last.
+func TestCompletenessInTheWindow(t *testing.T) {
+	t.Parallel()
+	w := &recordWriter{q: &recordQuery{base: records.Query{From: 30, To: 70}}}
+	at := func(v int64) *int64 { return &v }
+	seq := func(v uint64) *uint64 { return &v }
+	got := w.window(&catalog.Completeness{
+		Gaps: []catalog.Gap{{From: 1, To: 2, Start: at(80), End: at(20)}, {From: 3, To: 4, Start: at(71), End: at(90)}},
+		Losses: []catalog.DeclaredLoss{
+			{SeqFrom: seq(100), SeqTo: seq(100), TSFrom: at(40), TSTo: at(40)}, {TSFrom: at(40)}, {SeqFrom: seq(5), SeqTo: seq(6), TSFrom: at(50), TSTo: at(50)},
+		},
+	})
+	if len(got.Gaps) != 1 || got.Gaps[0].From != 1 {
+		t.Errorf("gaps = %+v, want the backward one only", got.Gaps)
+	}
+	if len(got.Losses) != 3 || *got.Losses[0].SeqFrom != 5 || *got.Losses[1].SeqFrom != 100 || got.Losses[2].SeqFrom != nil {
+		t.Errorf("losses = %+v, want seqs 5, 100, then the one without a seq", got.Losses)
+	}
+}
+
+// Over JSON, the browser's codec, each message's items stay within 128 KiB as encoded, payloads in base64.
+func TestQueryRecordsBatchesOverJSON(t *testing.T) {
+	t.Parallel()
+	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
+		m := newMasked(t, c)
+		m.srv.Dev = true
+		capture := m.admitUnmasked(t)
+		cs := carriers(t)
+		rs := make([]tracepack.Record, 0, 300)
+		for i := range 300 {
+			r := recordAt(&cs[0], hour, uint64(i+1)) //nolint:gosec // small seqs
+			r.Payload = append(bytes.Clone(r.Payload), make([]byte, 1000)...)
+			rs = append(rs, r)
+		}
+		m.put(t, capture, hour, rs, nil, nil)
+		cl := tracekeepv1connect.NewMachineServiceClient(m.hs.Client(), m.hs.URL, connect.WithProtoJSON())
+		s, err := cl.QueryRecords(t.Context(), query(capture, nil))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer s.Close()
+		n := 0
+		for s.Receive() {
+			b, err := protojson.Marshal(s.Msg())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(b) > batchBytes {
+				t.Errorf("message %d is %d bytes as JSON", n, len(b))
+			}
+			n++
+		}
+		if s.Err() != nil || n < 2 {
+			t.Errorf("%d messages, %v; want several", n, s.Err())
+		}
+	})
+}
+
+// A conflict's versions travel in one message and are never split by the limit; the cursor resumes after them.
+func TestQueryRecordsKeepsVersionsTogether(t *testing.T) {
+	t.Parallel()
+	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
+		m := newMasked(t, c)
+		m.srv.Dev = true
+		capture := m.admitUnmasked(t)
+		cs := carriers(t)
+		big := func(seq uint64, fill byte) tracepack.Record {
+			r := recordAt(&cs[0], hour, seq)
+			r.Payload = append(bytes.Clone(r.Payload), bytes.Repeat([]byte{fill}, 80<<10)...)
+			return r
+		}
+		// Seq 2 has two versions of 80 KiB each: together above a message's size.
+		m.put(t, capture, hour, []tracepack.Record{big(1, 1), big(2, 1), big(3, 1)}, nil, nil)
+		m.put(t, capture, hour, []tracepack.Record{big(2, 2)}, nil, nil)
+		msgs, err := m.streamed(t, query(capture, func(q *tkv1.QueryRecordsRequest) { q.Limit = 2 }))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for i, msg := range msgs {
+			got := seqsOf(msg.GetItems())
+			if n := len(got) - len(slices.DeleteFunc(slices.Clone(got), func(s uint64) bool { return s == 2 })); n == 1 {
+				t.Errorf("message %d holds %v, want both versions of seq 2 together", i, got)
+			}
+		}
+		its, end := items(t, msgs)
+		if got := seqsOf(its); !slices.Equal(got, []uint64{1, 2, 2}) || end.GetCursor() == "" {
+			t.Fatalf("limit 2 = %v, end %v; want seq 1 and both versions of seq 2, and a cursor", got, end)
+		}
+		msgs, err = m.streamed(t, query(capture, func(q *tkv1.QueryRecordsRequest) { q.Cursor = end.GetCursor() }))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if its, _ := items(t, msgs); !slices.Equal(seqsOf(its), []uint64{3}) {
+			t.Errorf("resumed = %v, want seq 3", seqsOf(its))
+		}
+	})
+}
+
+// Captures stream in the order of their origin, then id; a limit reached at a capture's first record leaves a cursor at its start,
+// which resumes with its start marker again.
+func TestQueryRecordsResumesAtACapturesStart(t *testing.T) {
+	t.Parallel()
+	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
+		m := newMasked(t, c)
+		m.srv.Dev = true
+		cs := carriers(t)
+		a, b := m.admitUnmasked(t), m.admitActive(t)
+		if bytes.Compare(a[:], b[:]) > 0 {
+			a, b = b, a // the same origin: by id
+		}
+		for _, capture := range []tracepack.UUID{a, b} {
+			m.put(t, capture, hour, captured(recordsOf(cs[:2], hour)), nil, nil)
+		}
+		sel := func(q *tkv1.QueryRecordsRequest) { q.Selector.CaptureId = nil }
+		msgs, err := m.streamed(t, query(a, func(q *tkv1.QueryRecordsRequest) { sel(q); q.Limit = 2 }))
+		if err != nil {
+			t.Fatal(err)
+		}
+		its, end := items(t, msgs)
+		if starts := captureStarts(its); !slices.Equal(starts, []string{a.String(), b.String()}) || len(seqsOf(its)) != 2 || end.GetCursor() == "" {
+			t.Fatalf("first page: starts %v, %d records, end %v; want both starts in order, a's two records and a cursor", starts, len(seqsOf(its)), end)
+		}
+		msgs, err = m.streamed(t, query(a, func(q *tkv1.QueryRecordsRequest) { sel(q); q.Cursor = end.GetCursor() }))
+		if err != nil {
+			t.Fatal(err)
+		}
+		its, _ = items(t, msgs)
+		if starts := captureStarts(its); !slices.Equal(starts, []string{b.String()}) || len(seqsOf(its)) != 2 {
+			t.Errorf("resumed: starts %v, %d records; want b's start again and its two records", starts, len(seqsOf(its)))
+		}
+	})
+}
+
+func captureStarts(its []*tkv1.RecordItem) []string {
+	var out []string
+	for _, it := range its {
+		if s := it.GetCapture(); s != nil {
+			out = append(out, s.GetCapture().GetCaptureId())
+		}
+	}
+
+	return out
+}
+
+// A conflict alone in the window is a completeness entry, which the end reports.
+func TestConflictMakesTheEndIncomplete(t *testing.T) {
+	t.Parallel()
+	w := &recordWriter{q: &recordQuery{base: records.Query{From: 0, To: 100}}}
+	w.window(&catalog.Completeness{Conflicts: []catalog.ConflictRange{{SeqFrom: 1, SeqTo: 1, State: "suspect"}}})
+	if !w.lacking {
+		t.Error("a conflict in the window leaves the end complete")
+	}
+}
+
+// FuzzRecordCursor: a cursor of any bytes parses or is refused as invalid, never panics, and one that parses names the digest asked for.
+func FuzzRecordCursor(f *testing.F) {
+	f.Add((&recordCursor{Digest: "d", Capture: tracepack.UUID{1}, Hour: 3, Seq: 4}).text())
+	f.Add("!")
+	f.Add("")
+	f.Fuzz(func(t *testing.T, text string) {
+		c, err := parseCursor(text, "d")
+		if err != nil {
+			if connect.CodeOf(err) != connect.CodeInvalidArgument {
+				t.Errorf("parseCursor(%q) = %v, want invalid_argument", text, err)
+			}
+			return
+		}
+		if c.Digest != "d" {
+			t.Errorf("parseCursor(%q) = %+v, another request's", text, c)
+		}
+	})
 }

@@ -57,7 +57,7 @@ func (s *Server) FindTransaction(ctx context.Context, req *connect.Request[tkv1.
 func lookupFailed(capture tracepack.UUID, seq uint64, err error) error {
 	err = fmt.Errorf("find transaction of %s seq %d: %w", capture, seq, err)
 	switch {
-	case errors.Is(err, tracepack.ErrNotPrimary):
+	case errors.Is(err, tracepack.ErrNotPrimary), errors.Is(err, records.ErrWithheld):
 		return connect.NewError(connect.CodeFailedPrecondition, err)
 	case errors.Is(err, tracepack.ErrInvalidQuery):
 		return connect.NewError(connect.CodeInvalidArgument, err)
@@ -89,12 +89,18 @@ func (src *hourSource) Readers(ctx context.Context, hour int64) ([]*tracepack.Re
 		return nil, err
 	}
 	src.sets[hour] = &rs
+	// Every hour's read set is checked, as QueryRecords' are, so no lookup reads a withheld capture's packs.
+	if withheld, err := src.s.withholds(ctx, rs.ConfigID); err != nil {
+		return nil, err
+	} else if withheld {
+		return nil, records.ErrWithheld
+	}
 	if len(rs.Packs) > src.limit {
 		return nil, fmt.Errorf("%w: hour %d holds %d packs, at most %d", errLookupPacks, hour, len(rs.Packs), src.limit)
 	}
 	out := make([]*tracepack.Reader, 0, len(rs.Packs))
 	for _, p := range rs.Packs {
-		obj, err := src.s.Store.Open(ctx, p.Key)
+		obj, err := records.Open(ctx, src.s.Store, p.Key)
 		if err != nil {
 			return nil, fmt.Errorf("open pack %s: %w", p.ID, err)
 		}
@@ -191,6 +197,9 @@ func (src *hourSource) record(tr *tracepack.TxRecord) *tkv1.TransactionRecord {
 	}
 	if rs := src.sets[tr.Hour]; rs != nil {
 		rec.Excluded = records.Excluded(rs, rec.Seq)
+		if rec.Conflict {
+			rec.Holders = records.Holders(rs, rec.Seq)
+		}
 	}
 	out := &tkv1.TransactionRecord{Record: recordOf(&rec), InWindow: tr.InWindow, Valid: tr.Valid}
 	for _, b := range roleBits {

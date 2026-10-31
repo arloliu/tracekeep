@@ -102,6 +102,16 @@ func TestFindTransaction(t *testing.T) {
 		if got.GetOutcome() == "matched" || len(got.GetConflicts()) != 1 || got.GetConflicts()[0].GetSeq() != 4 || len(got.GetConflicts()[0].GetVersions()) != 2 {
 			t.Errorf("a conflict in the second hour = %v, conflicts %v; want it reported, not matched", got.GetOutcome(), got.GetConflicts())
 		}
+		conflictHeld(t, got, 4)
+		// A backward clock step: the reply's time precedes its primary's, the seqs still in order.
+		m.put(t, capture, hour, []tracepack.Record{message(5, base+500, 5, true, true, 9), message(6, base+400, 6, false, false, 9)}, nil, nil)
+		got, err = find(m, t, capture, 5, viewerToken)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.GetOutcome() != "matched" || !valid(got, 6) {
+			t.Errorf("a reply after a backward clock step = %v, roles %v; want matched", got.GetOutcome(), roles(got))
+		}
 	})
 }
 
@@ -133,4 +143,28 @@ func TestFindTransactionRefusals(t *testing.T) {
 			t.Errorf("an hour of two packs, at most one = %v, want resource_exhausted", err)
 		}
 	})
+}
+
+// conflictHeld checks that every version of seq the lookup read is flagged a conflict, with both its packs and their states.
+func conflictHeld(t *testing.T, got *tkv1.FindTransactionResponse, seq uint64) {
+	t.Helper()
+	versions := 0
+	for _, tr := range got.GetRecords() {
+		r := tr.GetRecord()
+		if r.GetSeq() != seq {
+			continue
+		}
+		versions++
+		if !r.GetConflict() || len(r.GetHolders()) != 2 || r.GetHolders()[0].GetPackId() == r.GetHolders()[1].GetPackId() {
+			t.Errorf("a conflict's version = %v, want it flagged with its two packs", r)
+		}
+		for _, h := range r.GetHolders() {
+			if h.GetState() != catalog.PackStaged {
+				t.Errorf("holder %s is %q, want staged", h.GetPackId(), h.GetState())
+			}
+		}
+	}
+	if versions != 2 {
+		t.Errorf("%d versions of seq %d read, want 2", versions, seq)
+	}
 }

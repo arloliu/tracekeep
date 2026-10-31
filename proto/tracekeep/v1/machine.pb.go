@@ -2505,7 +2505,7 @@ func (x *QueryRecordsRequest) GetCursor() string {
 	return ""
 }
 
-// QueryRecordsResponse is one batch: items up to 128 KiB encoded, the cursor after the last, and end on the last batch.
+// QueryRecordsResponse is one batch: items up to 128 KiB in the stream's encoding, the cursor after the last, and end on the last batch.
 type QueryRecordsResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Items         []*RecordItem          `protobuf:"bytes,1,rep,name=items,proto3" json:"items,omitempty"`
@@ -2699,11 +2699,13 @@ func (*RecordItem_UnknownTail) isRecordItem_Item() {}
 
 // CaptureStart opens a capture's records with its completeness as far as it meets the window.
 type CaptureStart struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Capture       *Capture               `protobuf:"bytes,1,opt,name=capture,proto3" json:"capture,omitempty"`
-	Completeness  *Completeness          `protobuf:"bytes,2,opt,name=completeness,proto3" json:"completeness,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state        protoimpl.MessageState `protogen:"open.v1"`
+	Capture      *Capture               `protobuf:"bytes,1,opt,name=capture,proto3" json:"capture,omitempty"`
+	Completeness *Completeness          `protobuf:"bytes,2,opt,name=completeness,proto3" json:"completeness,omitempty"`
+	// completeness_truncated is set when the completeness was cut to fit a message; ListPacks gives it whole.
+	CompletenessTruncated bool `protobuf:"varint,3,opt,name=completeness_truncated,json=completenessTruncated,proto3" json:"completeness_truncated,omitempty"`
+	unknownFields         protoimpl.UnknownFields
+	sizeCache             protoimpl.SizeCache
 }
 
 func (x *CaptureStart) Reset() {
@@ -2748,6 +2750,13 @@ func (x *CaptureStart) GetCompleteness() *Completeness {
 		return x.Completeness
 	}
 	return nil
+}
+
+func (x *CaptureStart) GetCompletenessTruncated() bool {
+	if x != nil {
+		return x.CompletenessTruncated
+	}
+	return false
 }
 
 // Record is one version of a masked record.
@@ -3079,13 +3088,15 @@ func (*Withheld) Descriptor() ([]byte, []int) {
 
 // Incomplete names what a read could not read.
 type Incomplete struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Hour          *timestamppb.Timestamp `protobuf:"bytes,1,opt,name=hour,proto3" json:"hour,omitempty"`
-	Reason        string                 `protobuf:"bytes,2,opt,name=reason,proto3" json:"reason,omitempty"`
-	Detail        string                 `protobuf:"bytes,3,opt,name=detail,proto3" json:"detail,omitempty"`
-	Packs         []string               `protobuf:"bytes,4,rep,name=packs,proto3" json:"packs,omitempty"`
-	SeqFrom       *uint64                `protobuf:"varint,5,opt,name=seq_from,json=seqFrom,proto3,oneof" json:"seq_from,omitempty"`
-	SeqTo         *uint64                `protobuf:"varint,6,opt,name=seq_to,json=seqTo,proto3,oneof" json:"seq_to,omitempty"`
+	state  protoimpl.MessageState `protogen:"open.v1"`
+	Hour   *timestamppb.Timestamp `protobuf:"bytes,1,opt,name=hour,proto3" json:"hour,omitempty"`
+	Reason string                 `protobuf:"bytes,2,opt,name=reason,proto3" json:"reason,omitempty"`
+	Detail string                 `protobuf:"bytes,3,opt,name=detail,proto3" json:"detail,omitempty"`
+	// packs are at most 100 of the packs concerned; more_packs counts the rest.
+	Packs         []string `protobuf:"bytes,4,rep,name=packs,proto3" json:"packs,omitempty"`
+	MorePacks     uint32   `protobuf:"varint,7,opt,name=more_packs,json=morePacks,proto3" json:"more_packs,omitempty"`
+	SeqFrom       *uint64  `protobuf:"varint,5,opt,name=seq_from,json=seqFrom,proto3,oneof" json:"seq_from,omitempty"`
+	SeqTo         *uint64  `protobuf:"varint,6,opt,name=seq_to,json=seqTo,proto3,oneof" json:"seq_to,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -3146,6 +3157,13 @@ func (x *Incomplete) GetPacks() []string {
 		return x.Packs
 	}
 	return nil
+}
+
+func (x *Incomplete) GetMorePacks() uint32 {
+	if x != nil {
+		return x.MorePacks
+	}
+	return 0
 }
 
 func (x *Incomplete) GetSeqFrom() uint64 {
@@ -4076,10 +4094,11 @@ const file_tracekeep_v1_machine_proto_rawDesc = "" +
 	"incomplete\x18\x04 \x01(\v2\x18.tracekeep.v1.IncompleteH\x00R\n" +
 	"incomplete\x12>\n" +
 	"\funknown_tail\x18\x05 \x01(\v2\x19.tracekeep.v1.UnknownTailH\x00R\vunknownTailB\x06\n" +
-	"\x04item\"\x7f\n" +
+	"\x04item\"\xb6\x01\n" +
 	"\fCaptureStart\x12/\n" +
 	"\acapture\x18\x01 \x01(\v2\x15.tracekeep.v1.CaptureR\acapture\x12>\n" +
-	"\fcompleteness\x18\x02 \x01(\v2\x1a.tracekeep.v1.CompletenessR\fcompleteness\"\xfa\x03\n" +
+	"\fcompleteness\x18\x02 \x01(\v2\x1a.tracekeep.v1.CompletenessR\fcompleteness\x125\n" +
+	"\x16completeness_truncated\x18\x03 \x01(\bR\x15completenessTruncated\"\xfa\x03\n" +
 	"\x06Record\x12.\n" +
 	"\x04hour\x18\x01 \x01(\v2\x1a.google.protobuf.TimestampR\x04hour\x12\x10\n" +
 	"\x03seq\x18\x02 \x01(\x04R\x03seq\x12.\n" +
@@ -4112,13 +4131,15 @@ const file_tracekeep_v1_machine_proto_rawDesc = "" +
 	"\apack_id\x18\x01 \x01(\tR\x06packId\x12\x14\n" +
 	"\x05state\x18\x02 \x01(\tR\x05state\"\n" +
 	"\n" +
-	"\bWithheld\"\xd6\x01\n" +
+	"\bWithheld\"\xf5\x01\n" +
 	"\n" +
 	"Incomplete\x12.\n" +
 	"\x04hour\x18\x01 \x01(\v2\x1a.google.protobuf.TimestampR\x04hour\x12\x16\n" +
 	"\x06reason\x18\x02 \x01(\tR\x06reason\x12\x16\n" +
 	"\x06detail\x18\x03 \x01(\tR\x06detail\x12\x14\n" +
-	"\x05packs\x18\x04 \x03(\tR\x05packs\x12\x1e\n" +
+	"\x05packs\x18\x04 \x03(\tR\x05packs\x12\x1d\n" +
+	"\n" +
+	"more_packs\x18\a \x01(\rR\tmorePacks\x12\x1e\n" +
 	"\bseq_from\x18\x05 \x01(\x04H\x00R\aseqFrom\x88\x01\x01\x12\x1a\n" +
 	"\x06seq_to\x18\x06 \x01(\x04H\x01R\x05seqTo\x88\x01\x01B\v\n" +
 	"\t_seq_fromB\t\n" +
