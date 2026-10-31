@@ -5,13 +5,11 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/tls"
-	"crypto/x509"
 	"errors"
 	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
-	"os"
 	"sync"
 	"time"
 
@@ -72,7 +70,7 @@ func API(ctx context.Context, e *Env) error {
 	} else {
 		srv.Protocols.SetHTTP2(true)
 		var err error
-		if srv.TLSConfig, err = serverTLS(&c.API, &c.Auth.MTLS); err != nil {
+		if srv.TLSConfig, err = serverTLS(&c.API, &c.Auth.MTLS, log); err != nil {
 			return err
 		}
 	}
@@ -285,31 +283,6 @@ func failure(err error) string {
 	default:
 		return "failed"
 	}
-}
-
-// serverTLS is the listener's TLS: a's certificate, and client certificates verified against m's CA when given.
-func serverTLS(a *config.API, m *config.MTLS) (*tls.Config, error) {
-	if a.TLSCertFile == "" {
-		return nil, errors.New("service: api: api.tls_cert_file and api.tls_key_file are required")
-	}
-	cert, err := tls.LoadX509KeyPair(a.TLSCertFile, a.TLSKeyFile)
-	if err != nil {
-		return nil, fmt.Errorf("service: api: %w", err)
-	}
-	cfg := &tls.Config{Certificates: []tls.Certificate{cert}, MinVersion: tls.VersionTLS12}
-	if m.ClientCAFile != "" {
-		pem, err := os.ReadFile(m.ClientCAFile)
-		if err != nil {
-			return nil, fmt.Errorf("service: api: %w", err)
-		}
-		pool := x509.NewCertPool()
-		if !pool.AppendCertsFromPEM(pem) {
-			return nil, fmt.Errorf("service: api: %s holds no certificate", m.ClientCAFile)
-		}
-		cfg.ClientCAs, cfg.ClientAuth = pool, tls.VerifyClientCertIfGiven
-	}
-
-	return cfg, nil
 }
 
 // APIListening returns a channel closed once the api role's listener is bound, which an Env made by Open has.
