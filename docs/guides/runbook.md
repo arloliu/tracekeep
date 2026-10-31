@@ -125,3 +125,17 @@ A stream holds masked records only, so neither the error nor the log line holds 
 | reason `corrupt`, `crash-gap`, `footer` | tracepack found a damaged block, a crash gap or an unusable footer: the records it could read were streamed; investigate the pack |
 | reason `read-limit` | a read passed tracepack's budget, `held_bytes` or its conflict bound: raise `api.records.held_bytes` if the replica's memory allows |
 | a capture shows `withheld` | its configuration has no policy, so it was admitted before the cutover to masking (T-48): its records are never shown to people |
+
+## Export jobs
+
+These raise no alert: `exports_total{outcome}`, `export_jobs{state}` and `export_cleanup_failures_total` count them (`api.md` §10.1 *Exports*).
+No error, reason, manifest or log line names an object key; a cleanup failure is logged by job and fence.
+
+| Signal | Meaning and action |
+|---|---|
+| `resource_exhausted` on `StartExport` | the selection passes `exports.max_packs` or `exports.max_bytes`: a narrower window or fewer devices |
+| a job `failed`, its reason naming a bound | the read sets grew past a bound while it ran, or its JSONL passed `exports.max_bundle_bytes`: narrow it, or raise the bound if the replica's disk allows |
+| a job `failed`, "its attempts are exhausted" | `exports.max_attempts` attempts each ended without completing: the `api` log's `exports: attempt ended` lines say why (the store, the catalog, a lost lease) |
+| `export_jobs{state="running"}` steady and no job completing | attempts losing their lease: replicas overloaded, or a catalog clock far from theirs; `exports.max_running` and the lease |
+| `export_cleanup_failures_total` rising | the store refuses deletions under `exports/`: the objects stay, their jobs too, retried every cycle; fix the store's permissions |
+| a done job answered `expired` | its bundle's deadline is too near for a URL: start it again |

@@ -229,7 +229,11 @@ func (r *Compactor) cycle(ctx context.Context, lease catalog.Lease) error {
 		return err
 	}
 
-	return r.retentionPass(ctx, lease)
+	if err := r.retentionPass(ctx, lease); err != nil {
+		return err
+	}
+
+	return r.exportPass(ctx, lease)
 }
 
 // retentionPass runs the deletion task and then the retention task, and records their metrics:

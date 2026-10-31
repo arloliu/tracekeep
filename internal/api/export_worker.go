@@ -8,8 +8,11 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
+
+	"github.com/arloliu/go-secs/tracepack"
 
 	"github.com/arloliu/tracekeep/internal/catalog"
 	"github.com/arloliu/tracekeep/internal/records"
@@ -24,10 +27,7 @@ func (c *ExportConfig) maxRunning() int           { return cmp.Or(c.MaxRunning, 
 // RunExports runs this replica's export attempts, as holder, until ctx ends, looking for a claimable job every poll
 // (api.md §10.1 *Exports*); it first removes the attempt directories a crash left in the work directory.
 func (s *Server) RunExports(ctx context.Context, holder string, poll time.Duration) error {
-	if err := os.RemoveAll(s.Exports.WorkDir); err != nil {
-		return fmt.Errorf("api: exports: clear the work directory: %w", err)
-	}
-	if err := os.MkdirAll(s.Exports.WorkDir, 0o700); err != nil {
+	if err := s.clearWorkDir(); err != nil {
 		return fmt.Errorf("api: exports: work directory: %w", err)
 	}
 	var wg sync.WaitGroup
@@ -62,6 +62,39 @@ func (s *Server) RunExports(ctx context.Context, holder string, poll time.Durati
 	}
 }
 
+// clearWorkDir creates the work directory, or removes from it the attempt directories a crash left: those named as attempts name theirs,
+// a job id and a fence, so nothing else a shared directory holds is touched.
+func (s *Server) clearWorkDir() error {
+	if err := os.MkdirAll(s.workDir(), 0o700); err != nil {
+		return err
+	}
+	entries, err := os.ReadDir(s.workDir())
+	if err != nil {
+		return err
+	}
+	for _, e := range entries {
+		// The last "-f": a UUID's hex digits may follow its own hyphens with an f.
+		i := strings.LastIndex(e.Name(), "-f")
+		if i < 0 {
+			continue
+		}
+		job, fence := e.Name()[:i], e.Name()[i+2:]
+		if _, err := tracepack.ParseUUID(job); !e.IsDir() || err != nil || fence == "" || strings.Trim(fence, "0123456789") != "" {
+			continue
+		}
+		if err := os.RemoveAll(filepath.Join(s.workDir(), e.Name())); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// workDir is the configured work directory, or one under the system's temporary directory.
+func (s *Server) workDir() string {
+	return cmp.Or(s.Exports.WorkDir, filepath.Join(os.TempDir(), "tracekeep-exports"))
+}
+
 // attempt runs one attempt of a claimed job: its bundle, its intent, its put bounded by the put deadline, and its completion;
 // the lease is renewed meanwhile, and a renewal refused ends the attempt.
 func (s *Server) attempt(parent context.Context, cl *catalog.Claim) {
@@ -71,7 +104,7 @@ func (s *Server) attempt(parent context.Context, cl *catalog.Claim) {
 	var renewing sync.WaitGroup
 	defer renewing.Wait()
 	renewing.Go(func() { s.renew(ctx, cancel, a) })
-	dir := filepath.Join(s.Exports.WorkDir, fmt.Sprintf("%s-%d", a.Job, a.Fence))
+	dir := filepath.Join(s.workDir(), fmt.Sprintf("%s-f%d", a.Job, a.Fence))
 	defer os.RemoveAll(dir)
 	outcome, err := s.runAttempt(ctx, dir, cl)
 	switch {

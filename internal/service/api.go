@@ -27,6 +27,9 @@ import (
 // apiShutdown bounds how long the requests in flight may finish when the api role stops, before their connections are closed.
 const apiShutdown = 10 * time.Second
 
+// exportPoll is how often an api replica looks for an export job to claim.
+const exportPoll = 2 * time.Second
+
 // API runs the api role until ctx ends (architecture.md §3.1): the machine API and its downloads on api.listen,
 // over TLS with client certificates verified when given, or over HTTP/2 without TLS under tracekeep dev.
 // It is ready once its listener is bound and the catalog answers (api.md §10.1 *Downloads*).
@@ -51,6 +54,13 @@ func API(ctx context.Context, e *Env) error {
 			DeleteDelay: c.Compact.DeleteDelay, Now: e.Now,
 		},
 		DigestLimit: &api.DigestLimit{Rate: c.API.DigestRate, Burst: c.API.DigestBurst},
+		Exports: api.ExportConfig{
+			Bounds: api.ExportBounds{
+				MaxHours: c.Exports.MaxHours, MaxPacks: c.Exports.MaxPacks, MaxBytes: c.Exports.MaxBytes, MaxBundleBytes: c.Exports.MaxBundleBytes,
+			},
+			WorkDir: c.Exports.WorkDir, Lease: c.Exports.Lease, PutTimeout: c.Exports.PutTimeout, Retention: c.Exports.Retention,
+			MaxAttempts: c.Exports.MaxAttempts, MaxRunning: c.Exports.MaxRunning,
+		},
 		Records: api.RecordReads{
 			MaxReads: c.API.Records.MaxReads, MaxReaders: c.API.Records.MaxReaders, MaxLookupPacks: c.API.Records.MaxLookupPacks, HeldBytes: c.API.Records.HeldBytes,
 		},
@@ -116,6 +126,10 @@ func API(ctx context.Context, e *Env) error {
 	e.ready("api", e.Catalog.Ping)
 	log.Info("api: serving", "listen", ln.Addr().String(), "tls", !c.API.Plaintext, "presigned", s.Downloads.Presigner != nil)
 	served := make(chan error, 1)
+	exporting := make(chan error, 1)
+	wctx, stopWorkers := context.WithCancel(ctx)
+	defer stopWorkers()
+	go func() { exporting <- s.RunExports(wctx, c.Replica, exportPoll) }()
 	go func() {
 		if c.API.Plaintext {
 			served <- srv.Serve(ln)
@@ -126,6 +140,8 @@ func API(ctx context.Context, e *Env) error {
 	select {
 	case err := <-served:
 		return fmt.Errorf("service: api: %w", err)
+	case err := <-exporting:
+		return fmt.Errorf("service: api: exports: %w", err)
 	case <-ctx.Done():
 	}
 	sctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), cmp.Or(e.apiShutdown, apiShutdown))
@@ -136,6 +152,7 @@ func API(ctx context.Context, e *Env) error {
 		err = errors.Join(fmt.Errorf("service: api: shutdown: %w", err), srv.Close())
 	}
 	inFlight.Wait()
+	err = errors.Join(err, waitWorkers(stopWorkers, exporting))
 	if err != nil {
 		return err
 	}
@@ -368,4 +385,14 @@ func keysConfig(c config.Keys, dev bool, m keys.Metrics) (keys.Config, error) {
 	}
 
 	return kc, nil
+}
+
+// waitWorkers stops the export workers and waits for them: their attempts end with their context, and the cleanup finishes what they leave.
+func waitWorkers(stop context.CancelFunc, exporting <-chan error) error {
+	stop()
+	if err := <-exporting; err != nil {
+		return fmt.Errorf("service: api: exports: %w", err)
+	}
+
+	return nil
 }

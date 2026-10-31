@@ -25,6 +25,7 @@ type Config struct {
 	Compact Compact `yaml:"compact"`
 	Metrics Metrics `yaml:"metrics"`
 	API     API     `yaml:"api"`
+	Exports Exports `yaml:"exports"`
 	Auth    Auth    `yaml:"auth"`
 	Keys    Keys    `yaml:"keys"`
 	// Retention is how long whole hours are kept; a record older than the retention horizon is beyond retention.
@@ -170,6 +171,25 @@ type Records struct {
 	MaxLookupPacks int `yaml:"max_lookup_packs" default:"64" env:"TRACEKEEP_API_RECORDS_MAX_LOOKUP_PACKS" validate:"gte=1"`
 	// HeldBytes are the block bytes one merge holds, tracepack's MaxHeldBytes.
 	HeldBytes int64 `yaml:"held_bytes" default:"67108864" env:"TRACEKEEP_API_RECORDS_HELD_BYTES" validate:"gte=1048576"`
+}
+
+// Exports configures the export jobs the api replicas run and the compactor cleans up (api.md §10.1 *Exports*).
+type Exports struct {
+	// WorkDir holds each attempt's directory; empty takes one under the system's temporary directory.
+	WorkDir string `yaml:"work_dir" env:"TRACEKEEP_EXPORTS_WORK_DIR"`
+	// Retention is how long a completed bundle is kept, and an ended job's row.
+	Retention time.Duration `yaml:"retention" default:"24h" env:"TRACEKEEP_EXPORTS_RETENTION" validate:"gt=0,lte=8760h"`
+	// Lease is an attempt's lease, PutTimeout the bound of its put.
+	Lease      time.Duration `yaml:"lease" default:"1m" env:"TRACEKEEP_EXPORTS_LEASE" validate:"gte=1s"`
+	PutTimeout time.Duration `yaml:"put_timeout" default:"10m" env:"TRACEKEEP_EXPORTS_PUT_TIMEOUT" validate:"gte=1s"`
+	// MaxAttempts bounds a job's attempts, MaxRunning a replica's attempts at once.
+	MaxAttempts int `yaml:"max_attempts" default:"3" env:"TRACEKEEP_EXPORTS_MAX_ATTEMPTS" validate:"gte=1"`
+	MaxRunning  int `yaml:"max_running" default:"1" env:"TRACEKEEP_EXPORTS_MAX_RUNNING" validate:"gte=1"`
+	// MaxHours bounds a job's window; MaxPacks and MaxBytes the packs and object bytes it exports; MaxBundleBytes its work directory.
+	MaxHours       int   `yaml:"max_hours" default:"744" env:"TRACEKEEP_EXPORTS_MAX_HOURS" validate:"gte=1,lte=8784"`
+	MaxPacks       int   `yaml:"max_packs" default:"10000" env:"TRACEKEEP_EXPORTS_MAX_PACKS" validate:"gte=1"`
+	MaxBytes       int64 `yaml:"max_bytes" default:"10737418240" env:"TRACEKEEP_EXPORTS_MAX_BYTES" validate:"gte=1"`
+	MaxBundleBytes int64 `yaml:"max_bundle_bytes" default:"34359738368" env:"TRACEKEEP_EXPORTS_MAX_BUNDLE_BYTES" validate:"gte=1"`
 }
 
 // Metrics is the metrics and health listener (operations.md §10.4).

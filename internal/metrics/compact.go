@@ -22,6 +22,8 @@ type Compact struct {
 	conflictsOpen, oldestUnmerged    prometheus.Gauge
 	claimObjects, claimBytes         prometheus.Gauge
 	survivors                        prometheus.Gauge
+	exportDeleted, exportFailures    prometheus.Counter
+	exportJobs                       *prometheus.GaugeVec
 	// leaseUntil is when the lease this process last took or renewed lapses, in Unix nanoseconds; 0 when it holds none.
 	leaseUntil atomic.Int64
 	now        func() time.Time
@@ -59,11 +61,15 @@ func NewCompact(s *Server) (*Compact, error) {
 		survivors: prometheus.NewGauge(prometheus.GaugeOpts{Namespace: "tracekeep", Subsystem: "compact", Name: "claim_objects_survivors",
 			Help: "Claim objects retention kept for an unresolved parked version, as the lease holder last read them."}),
 	}
+	m.exportDeleted = counter("export_objects_deleted_total", "Export objects the cleanup deleted: abandoned attempts and expired bundles.")
+	m.exportFailures = counter("export_cleanup_failures_total", "Export cleanup steps that failed, retried the next cycle.")
+	m.exportJobs = prometheus.NewGaugeVec(prometheus.GaugeOpts{Namespace: "tracekeep", Subsystem: "compact", Name: "export_jobs",
+		Help: "Export jobs by state, as the lease holder last read them."}, []string{"state"})
 	m.leaseHeld = prometheus.NewGaugeFunc(prometheus.GaugeOpts{Namespace: "tracekeep", Subsystem: "compact", Name: "lease_held",
 		Help: "1 while this process holds the compactor lease: taken or renewed, and not lapsed since."}, m.held)
 	for _, c := range []prometheus.Collector{
 		m.cycle, m.lastSuccess, m.leaseHeld, m.adopted, m.quarantined, m.tombstones, m.deletions, m.merges, m.closes, m.scopes,
-		m.conflictsOpen, m.oldestUnmerged, m.claimObjects, m.claimBytes, m.survivors,
+		m.conflictsOpen, m.oldestUnmerged, m.claimObjects, m.claimBytes, m.survivors, m.exportDeleted, m.exportFailures, m.exportJobs,
 	} {
 		if err := s.Registry().Register(c); err != nil {
 			return nil, fmt.Errorf("metrics: compact: %w", err)
@@ -169,4 +175,23 @@ func (m *Compact) Claims(objects, bytes, survivors int64) {
 	m.claimObjects.Set(float64(objects))
 	m.claimBytes.Set(float64(bytes))
 	m.survivors.Set(float64(survivors))
+}
+
+// ExportCleanup counts one export cleanup's deleted objects and failed steps.
+func (m *Compact) ExportCleanup(deleted, failed int) {
+	if m == nil {
+		return
+	}
+	m.exportDeleted.Add(float64(deleted))
+	m.exportFailures.Add(float64(failed))
+}
+
+// ExportJobs sets the export job gauges, every state, absent ones 0.
+func (m *Compact) ExportJobs(byState map[string]int) {
+	if m == nil {
+		return
+	}
+	for _, st := range []string{"queued", "running", "done", "failed", "cancelled"} {
+		m.exportJobs.WithLabelValues(st).Set(float64(byState[st]))
+	}
 }

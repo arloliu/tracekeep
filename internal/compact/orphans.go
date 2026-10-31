@@ -59,6 +59,9 @@ type Compactor struct {
 	// FlushInterval is ingest's F, which a close's metadata carries as every segment of its capture does.
 	Inactivity    time.Duration
 	FlushInterval time.Duration
+	// ExportRetention is an export bundle's retention, after which a failed or cancelled job is deleted (api.md §10.1 *Exports*);
+	// zero is 24 h.
+	ExportRetention time.Duration
 	// Retention is the configured retention period the compactor records before every retention pass, and DeleteDelay is D:
 	// a merged input is deleted D after its merge, and a shortened period evicts nothing early for D (compactor.md §8.3).
 	// Claims is the claim bucket retention lists and deletes from.
