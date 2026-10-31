@@ -76,6 +76,11 @@ func NewCompact(s *Server) (*Compact, error) {
 		}
 	}
 
+	// Every outcome is exposed from zero, so an alert reads the first refused merge as an increase (operations.md §10.4).
+	for _, outcome := range []string{"merged", "stale", "conflicted", "failed", "refused"} {
+		m.merges.WithLabelValues(outcome)
+	}
+
 	return m, nil
 }
 

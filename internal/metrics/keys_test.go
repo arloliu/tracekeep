@@ -33,3 +33,32 @@ func TestKeys(t *testing.T) {
 		}
 	}
 }
+
+// Counters an alert reads by their increase are exposed from zero, before their first event (operations.md §10.4):
+// every key kind's outcomes, every merge outcome, and a tool's declared losses once it writes a segment.
+func TestAlertedCountersStartAtZero(t *testing.T) {
+	t.Parallel()
+	s := NewServer()
+	if _, err := NewKeys(s); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := NewCompact(s); err != nil {
+		t.Fatal(err)
+	}
+	in, err := NewIngest(s, time.Now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	in.Registered(time.Millisecond, "T-1", 10, false)
+	b := body(t, s)
+	for _, want := range []string{
+		`tracekeep_key_resolutions_total{kind="digest",outcome="refused"} 0`,
+		`tracekeep_key_resolutions_total{kind="session",outcome="unavailable"} 0`,
+		`tracekeep_compact_merges_total{outcome="refused"} 0`,
+		`tracekeep_ingest_declared_losses_total{tool_id="T-1"} 0`,
+	} {
+		if !strings.Contains(b, want) {
+			t.Errorf("no %s in\n%s", want, b)
+		}
+	}
+}

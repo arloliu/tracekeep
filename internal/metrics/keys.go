@@ -34,6 +34,12 @@ func NewKeys(s *Server) (*Keys, error) {
 			return nil, fmt.Errorf("metrics: keys: %w", err)
 		}
 	}
+	// Every kind's outcomes are exposed from zero, so an alert reads a key's first refusal as an increase (operations.md §10.4).
+	for _, kind := range []string{"digest", "master", "session", "download"} {
+		for _, outcome := range []string{"cached", "resolved", "unavailable", "refused", "cancelled"} {
+			m.resolutions.WithLabelValues(kind, outcome)
+		}
+	}
 
 	return m, nil
 }
