@@ -22,7 +22,16 @@ async function fetchMe(): Promise<SignIn> {
   if (resp.status === 401) return { state: "signed-out" };
   if (resp.status === 404) return { state: "unconfigured" };
   if (!resp.ok) throw new Error(`/auth/me answered ${resp.status}`);
-  return { state: "signed-in", me: (await resp.json()) as Me };
+  // A session no role maps answers roles as null: signed in, admitted to nothing.
+  const me = (await resp.json()) as { subject?: unknown; roles?: unknown; expiry?: unknown };
+  return {
+    state: "signed-in",
+    me: {
+      subject: typeof me.subject === "string" ? me.subject : "",
+      roles: Array.isArray(me.roles) ? me.roles.filter((r): r is string => typeof r === "string") : [],
+      expiry: typeof me.expiry === "string" ? me.expiry : "",
+    },
+  };
 }
 
 // useSignIn is the page's sign-in, asked once and again when the session ends.
@@ -48,9 +57,11 @@ export function loginURL(path: string): string {
   return `/auth/login?return=${encodeURIComponent(path)}`;
 }
 
-// signOut clears the session by a same-origin POST, then shows the sign-in page.
+// signOut clears the session by a same-origin POST, then shows the sign-in page;
+// a refusal leaves the session, and the page, as they were. A 401 means it had already ended.
 export async function signOut(client: QueryClient) {
-  await fetch("/auth/logout", { method: "POST", credentials: "same-origin" });
+  const resp = await fetch("/auth/logout", { method: "POST", credentials: "same-origin" });
+  if (!resp.ok && resp.status !== 401) throw new Error(`Sign-out failed (${String(resp.status)}); you are still signed in.`);
   client.setQueryData(meKey, { state: "signed-out" } satisfies SignIn);
 }
 

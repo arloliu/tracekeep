@@ -1,4 +1,4 @@
-import { useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { Link, Outlet, useRouterState } from "@tanstack/react-router";
 import type { ReactNode } from "react";
 
@@ -49,6 +49,7 @@ export function Shell() {
 
 function Layout({ me }: { me: Me }) {
   const client = useQueryClient();
+  const out = useMutation({ mutationFn: () => signOut(client) });
   const { zone, setZone } = useZone();
   const nav = "text-muted-foreground hover:text-foreground [&.active]:text-foreground [&.active]:font-medium";
   return (
@@ -88,9 +89,14 @@ function Layout({ me }: { me: Me }) {
           <span className="text-muted-foreground" title={me.roles.join(", ")}>
             {me.subject}
           </span>
-          <Button variant="outline" size="sm" onClick={() => void signOut(client)}>
+          <Button variant="outline" size="sm" disabled={out.isPending} onClick={() => { out.mutate(); }}>
             Sign out
           </Button>
+          {out.isError && (
+            <span role="alert" className="text-destructive">
+              {out.error.message}
+            </span>
+          )}
         </div>
       </header>
       <main className="flex-1 p-6">
