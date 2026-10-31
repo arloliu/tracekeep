@@ -24,6 +24,7 @@ import (
 	"github.com/arloliu/tracekeep/internal/keys"
 	"github.com/arloliu/tracekeep/internal/metrics"
 	"github.com/arloliu/tracekeep/internal/store"
+	"github.com/arloliu/tracekeep/web"
 )
 
 // apiShutdown bounds how long the requests in flight may finish when the api role stops, before their connections are closed.
@@ -67,6 +68,7 @@ func API(ctx context.Context, e *Env) error {
 			WorkDir: c.Exports.WorkDir, Lease: c.Exports.Lease, PutTimeout: c.Exports.PutTimeout, Retention: c.Exports.Retention,
 			MaxAttempts: c.Exports.MaxAttempts, MaxRunning: c.Exports.MaxRunning,
 		},
+		Web: web.FS(),
 		Records: api.RecordReads{
 			MaxReads: c.API.Records.MaxReads, MaxReaders: c.API.Records.MaxReaders, MaxLookupPacks: c.API.Records.MaxLookupPacks, HeldBytes: c.API.Records.HeldBytes,
 		},

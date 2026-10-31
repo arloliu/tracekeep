@@ -68,6 +68,10 @@ func TestDevSignsPeopleIn(t *testing.T) {
 		return resp
 	}
 
+	// Without -tags webdist the role serves the fallback page.
+	if page := text(t, get(public+"/records")); !strings.Contains(page, "frontend was not built") {
+		t.Errorf("/records = %q, want the fallback page", page)
+	}
 	login := get(public + "/auth/login?return=/records")
 	authorize := login.Header.Get("Location")
 	if login.StatusCode != http.StatusFound || !strings.HasPrefix(authorize, d.Env.Config.Auth.OIDC.Issuer+"/authorize?") {
@@ -190,4 +194,15 @@ func TestIdPClientNeedsItsCAFile(t *testing.T) {
 	if c, err := idpClient(""); err != nil || c.Transport != nil {
 		t.Errorf("idpClient without a file = %v, %v; want the default", c, err)
 	}
+}
+
+// text is resp's body.
+func text(t *testing.T, resp *http.Response) string {
+	t.Helper()
+	b, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	return string(b)
 }
