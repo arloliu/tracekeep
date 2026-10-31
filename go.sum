@@ -17,14 +17,12 @@ github.com/apparentlymart/go-textseg/v15 v15.0.0 h1:uYvfpb3DyLSCGWnctWKGj857c6ew
 github.com/apparentlymart/go-textseg/v15 v15.0.0/go.mod h1:K8XmNZdhEBkdlyDdvbmmsvpAG721bKi0joRfFdHIWJ4=
 github.com/arloliu/fuda v1.7.1 h1:JNUZWF9gJpvfhmN7tKHhJKB5/xVF0ZKTw2/CHAYi++Q=
 github.com/arloliu/fuda v1.7.1/go.mod h1:9GHefXjpnFRMFNwKgT8OmBJfbfmGx7Aaxj4p3/ipbEg=
-github.com/arloliu/go-secs/tracepack v0.9.0 h1:Nf7/NZCLArDyDsh2jNOJ01iliZjvk1iH43O0UYAxFgQ=
-github.com/arloliu/go-secs/tracepack v0.9.0/go.mod h1:BKyTMJM3/QR7hNUHzRivfguTQsn8TsxIv+RhfT7Xg1Q=
 github.com/arloliu/go-secs/tracepack v0.12.0 h1:AHr9ptNs2p0AvdgypCvM/y5Nu0MrA7qkY5XJK1WIrf4=
 github.com/arloliu/go-secs/tracepack v0.12.0/go.mod h1:BKyTMJM3/QR7hNUHzRivfguTQsn8TsxIv+RhfT7Xg1Q=
 github.com/arloliu/go-secs/v2 v2.8.0 h1:gkBY7QQsCBDNWqp98arnSCUdcjSFpRiKLZo6Vddl7iE=
 github.com/arloliu/go-secs/v2 v2.8.0/go.mod h1:SEbNIic8oZ6zb0EW/ldiw7gfQNPgePSDqpZITKHqiHA=
-github.com/arloliu/tracekeep/producer v0.3.0 h1:60HTSO7Sh0nsokp0QALUmk7NoDd7h2tqiiE67jyrVbU=
-github.com/arloliu/tracekeep/producer v0.3.0/go.mod h1:/LEse0+cAcblLEZZW2a4iMFeguRF+rhtwwcLuqqAEVo=
+github.com/arloliu/tracekeep/producer v0.4.0 h1:Oa9Yft8YvSLUlfKUKDzMbZDmiR8Bx1uSCcrHWqlJD/U=
+github.com/arloliu/tracekeep/producer v0.4.0/go.mod h1:JiRMOaVxTkCpVQ8V1g+jmZZ4698kHQ9ENwb+eXiYS7A=
 github.com/aws/aws-sdk-go-v2 v1.47.4 h1:bTvk6UdSSSvaQsfLVj1JRDEEqj/PDRwGf1KanaRzau0=
 github.com/aws/aws-sdk-go-v2 v1.47.4/go.mod h1:XkrjAZvr705Nytv6PkPUhoSB2W9+vVHBp5oAWpkh8Ak=
 github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream v1.7.24 h1:t7FxqJ5KHDeKceyD4HtGaG6z7hMSeVGjs5/4c+L5ArM=

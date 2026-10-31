@@ -8,7 +8,7 @@ require (
 	github.com/arloliu/fuda v1.7.1
 	github.com/arloliu/go-secs/tracepack v0.12.0
 	github.com/arloliu/go-secs/v2 v2.8.0
-	github.com/arloliu/tracekeep/producer v0.3.0
+	github.com/arloliu/tracekeep/producer v0.4.0
 	github.com/aws/aws-sdk-go-v2 v1.47.4
 	github.com/aws/aws-sdk-go-v2/credentials v1.20.10
 	github.com/aws/aws-sdk-go-v2/service/s3 v1.114.5
@@ -84,6 +84,3 @@ require (
 	modernc.org/memory v1.12.1 // indirect
 	sigs.k8s.io/yaml v1.6.0 // indirect
 )
-
-// The SDK at this commit, until producer/v0.4.0 is tagged on it: tracepack v0.12.0 changed the API both use (T-46).
-replace github.com/arloliu/tracekeep/producer => ./producer
