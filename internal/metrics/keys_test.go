@@ -34,31 +34,46 @@ func TestKeys(t *testing.T) {
 	}
 }
 
-// Counters an alert reads by their increase are exposed from zero, before their first event (operations.md §10.4):
-// every key kind's outcomes, every merge outcome, and a tool's declared losses once it writes a segment.
-func TestAlertedCountersStartAtZero(t *testing.T) {
+// The events an alert reads are stamped with their time, whatever their counters' history (operations.md §10.4):
+// a key refused or unavailable, a merge refused, and a tool's declared loss, which can come before any of its segments.
+func TestAlertedEventsStamped(t *testing.T) {
 	t.Parallel()
+	at := time.Unix(1_800_000_000, 0)
+	now := func() time.Time { return at }
 	s := NewServer()
-	if _, err := NewKeys(s); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := NewCompact(s); err != nil {
-		t.Fatal(err)
-	}
-	in, err := NewIngest(s, time.Now)
+	keys, err := NewKeys(s)
 	if err != nil {
 		t.Fatal(err)
 	}
-	in.Registered(time.Millisecond, "T-1", 10, false)
+	keys.now = now
+	compact, err := NewCompact(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	compact.now = now
+	in, err := NewIngest(s, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keys.Resolution("digest", "refused")
+	keys.Resolution("session", "unavailable")
+	keys.Resolution("master", "cached")
+	compact.Merges(0, 0, 0, 0, 1)
+	in.Lost("T-1")
 	b := body(t, s)
 	for _, want := range []string{
-		`tracekeep_key_resolutions_total{kind="digest",outcome="refused"} 0`,
-		`tracekeep_key_resolutions_total{kind="session",outcome="unavailable"} 0`,
-		`tracekeep_compact_merges_total{outcome="refused"} 0`,
-		`tracekeep_ingest_declared_losses_total{tool_id="T-1"} 0`,
+		`tracekeep_key_last_problem_timestamp_seconds{kind="digest",outcome="refused"} 1.8e+09`,
+		`tracekeep_key_last_problem_timestamp_seconds{kind="session",outcome="unavailable"} 1.8e+09`,
+		`tracekeep_compact_last_merge_timestamp_seconds{outcome="refused"} 1.8e+09`,
+		`tracekeep_ingest_last_declared_loss_timestamp_seconds{tool_id="T-1"} 1.8e+09`,
 	} {
 		if !strings.Contains(b, want) {
 			t.Errorf("no %s in\n%s", want, b)
+		}
+	}
+	for _, unwanted := range []string{`outcome="cached"} 1.8e+09`, `last_merge_timestamp_seconds{outcome="merged"}`} {
+		if strings.Contains(b, unwanted) {
+			t.Errorf("%s stamped:\n%s", unwanted, b)
 		}
 	}
 }

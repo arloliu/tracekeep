@@ -17,11 +17,14 @@ import (
 // Every method records nothing on a nil *Ingest, so a component without metrics needs no check.
 type Ingest struct {
 	messages, segments, segmentBytes, conflicts, losses, gapObservations *prometheus.CounterVec
-	redelivered, inProgress                                              prometheus.Counter
-	put, registration, mask                                              prometheus.Histogram
-	refreshFailures, cannotScreen, keyMismatches                         prometheus.Counter
-	snap                                                                 *snapshot
-	deferred                                                             *deferrals
+	// lastLoss is when each tool's last seq was declared lost, an event an alert reads whatever the counter's history (operations.md §10.4).
+	lastLoss                                     *prometheus.GaugeVec
+	now                                          func() time.Time
+	redelivered, inProgress                      prometheus.Counter
+	put, registration, mask                      prometheus.Histogram
+	refreshFailures, cannotScreen, keyMismatches prometheus.Counter
+	snap                                         *snapshot
+	deferred                                     *deferrals
 }
 
 // NewIngest registers the ingest role's collectors on s; the deferral ages and the refresh stamps are read by now, nil for time.Now.
@@ -40,6 +43,9 @@ func NewIngest(s *Server, now func() time.Time) (*Ingest, error) {
 		gapObservations: counter("gap_observations_total",
 			"Holes first seen at a registration, by tool: an event count, not a loss count, since a later registration may fill a hole.", "tool_id"),
 		losses: counter("declared_losses_total", "Seqs ingest declared lost, records beyond retention, by tool.", "tool_id"),
+		lastLoss: prometheus.NewGaugeVec(prometheus.GaugeOpts{Namespace: "tracekeep", Subsystem: "ingest", Name: "last_declared_loss_timestamp_seconds",
+			Help: "When ingest last declared a seq of the tool lost, in Unix seconds."}, []string{"tool_id"}),
+		now: now,
 		redelivered: prometheus.NewCounter(prometheus.CounterOpts{Namespace: "tracekeep", Subsystem: "ingest", Name: "redelivered_total",
 			Help: "Deliveries that were redeliveries."}),
 		inProgress: prometheus.NewCounter(prometheus.CounterOpts{Namespace: "tracekeep", Subsystem: "ingest", Name: "in_progress_acks_total",
@@ -60,7 +66,7 @@ func NewIngest(s *Server, now func() time.Time) (*Ingest, error) {
 		deferred: &deferrals{byID: map[string]deferral{}, now: now},
 	}
 	for _, c := range []prometheus.Collector{
-		m.messages, m.segments, m.segmentBytes, m.conflicts, m.losses, m.gapObservations, m.redelivered, m.inProgress, m.put, m.registration, m.mask,
+		m.messages, m.segments, m.segmentBytes, m.conflicts, m.losses, m.lastLoss, m.gapObservations, m.redelivered, m.inProgress, m.put, m.registration, m.mask,
 		m.refreshFailures, m.cannotScreen, m.keyMismatches, m.snap, m.deferred,
 	} {
 		if err := s.Registry().Register(c); err != nil {
@@ -158,8 +164,6 @@ func (m *Ingest) Registered(d time.Duration, tool string, bytes int64, conflict 
 	m.registration.Observe(d.Seconds())
 	m.segments.WithLabelValues(tool).Inc()
 	m.segmentBytes.WithLabelValues(tool).Add(float64(bytes))
-	// A tool's losses are exposed from zero once it writes, so an alert reads its first declared loss as an increase.
-	m.losses.WithLabelValues(tool)
 	if conflict {
 		m.conflicts.WithLabelValues(tool).Inc()
 	}
@@ -179,6 +183,7 @@ func (m *Ingest) Lost(tool string) {
 		return
 	}
 	m.losses.WithLabelValues(tool).Inc()
+	m.lastLoss.WithLabelValues(tool).Set(float64(m.now().UnixNano()) / 1e9)
 }
 
 // BusState is the traffic consumer's and stream's backlog.

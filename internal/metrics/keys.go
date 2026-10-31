@@ -14,6 +14,9 @@ type Keys struct {
 	resolutions, providerErrors *prometheus.CounterVec
 	providerSeconds             *prometheus.HistogramVec
 	credentialExpiry            *prometheus.GaugeVec
+	// lastProblem is when a kind's key was last refused or unavailable, an event an alert reads whatever the counter's history (operations.md §10.4).
+	lastProblem *prometheus.GaugeVec
+	now         func() time.Time
 }
 
 // NewKeys registers the keys module's collectors on s.
@@ -28,16 +31,13 @@ func NewKeys(s *Server) (*Keys, error) {
 			[]string{"provider", "op"}),
 		credentialExpiry: prometheus.NewGaugeVec(prometheus.GaugeOpts{Namespace: "tracekeep", Name: "key_credential_expiry_timestamp",
 			Help: "When the provider's current token expires, in Unix seconds."}, []string{"provider"}),
+		lastProblem: prometheus.NewGaugeVec(prometheus.GaugeOpts{Namespace: "tracekeep", Name: "key_last_problem_timestamp_seconds",
+			Help: "When a use of a kind's key was last refused or unavailable, in Unix seconds, by kind and outcome."}, []string{"kind", "outcome"}),
+		now: time.Now,
 	}
-	for _, c := range []prometheus.Collector{m.resolutions, m.providerErrors, m.providerSeconds, m.credentialExpiry} {
+	for _, c := range []prometheus.Collector{m.resolutions, m.providerErrors, m.providerSeconds, m.credentialExpiry, m.lastProblem} {
 		if err := s.Registry().Register(c); err != nil {
 			return nil, fmt.Errorf("metrics: keys: %w", err)
-		}
-	}
-	// Every kind's outcomes are exposed from zero, so an alert reads a key's first refusal as an increase (operations.md §10.4).
-	for _, kind := range []string{"digest", "master", "session", "download"} {
-		for _, outcome := range []string{"cached", "resolved", "unavailable", "refused", "cancelled"} {
-			m.resolutions.WithLabelValues(kind, outcome)
 		}
 	}
 
@@ -50,6 +50,9 @@ func (m *Keys) Resolution(kind, outcome string) {
 		return
 	}
 	m.resolutions.WithLabelValues(kind, outcome).Inc()
+	if outcome == "refused" || outcome == "unavailable" {
+		m.lastProblem.WithLabelValues(kind, outcome).Set(float64(m.now().UnixNano()) / 1e9)
+	}
 }
 
 // ProviderCall records one call to provider for op, which took d and failed for reason, or succeeded when reason is empty.

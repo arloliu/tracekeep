@@ -24,6 +24,8 @@ type Compact struct {
 	survivors                        prometheus.Gauge
 	exportDeleted, exportFailures    prometheus.Counter
 	exportJobs                       *prometheus.GaugeVec
+	// lastMerge is when a merge pass last had each outcome, an event an alert reads whatever the counter's history (operations.md §10.4).
+	lastMerge *prometheus.GaugeVec
 	// leaseUntil is when the lease this process last took or renewed lapses, in Unix nanoseconds; 0 when it holds none.
 	leaseUntil atomic.Int64
 	now        func() time.Time
@@ -65,20 +67,17 @@ func NewCompact(s *Server) (*Compact, error) {
 	m.exportFailures = counter("export_cleanup_failures_total", "Export cleanup steps that failed, retried the next cycle.")
 	m.exportJobs = prometheus.NewGaugeVec(prometheus.GaugeOpts{Namespace: "tracekeep", Subsystem: "compact", Name: "export_jobs",
 		Help: "Export jobs by state, as the lease holder last read them."}, []string{"state"})
+	m.lastMerge = prometheus.NewGaugeVec(prometheus.GaugeOpts{Namespace: "tracekeep", Subsystem: "compact", Name: "last_merge_timestamp_seconds",
+		Help: "When a merge pass last had a merge of the outcome, in Unix seconds."}, []string{"outcome"})
 	m.leaseHeld = prometheus.NewGaugeFunc(prometheus.GaugeOpts{Namespace: "tracekeep", Subsystem: "compact", Name: "lease_held",
 		Help: "1 while this process holds the compactor lease: taken or renewed, and not lapsed since."}, m.held)
 	for _, c := range []prometheus.Collector{
-		m.cycle, m.lastSuccess, m.leaseHeld, m.adopted, m.quarantined, m.tombstones, m.deletions, m.merges, m.closes, m.scopes,
+		m.cycle, m.lastSuccess, m.lastMerge, m.leaseHeld, m.adopted, m.quarantined, m.tombstones, m.deletions, m.merges, m.closes, m.scopes,
 		m.conflictsOpen, m.oldestUnmerged, m.claimObjects, m.claimBytes, m.survivors, m.exportDeleted, m.exportFailures, m.exportJobs,
 	} {
 		if err := s.Registry().Register(c); err != nil {
 			return nil, fmt.Errorf("metrics: compact: %w", err)
 		}
-	}
-
-	// Every outcome is exposed from zero, so an alert reads the first refused merge as an increase (operations.md §10.4).
-	for _, outcome := range []string{"merged", "stale", "conflicted", "failed", "refused"} {
-		m.merges.WithLabelValues(outcome)
 	}
 
 	return m, nil
@@ -133,6 +132,9 @@ func (m *Compact) Merges(merged, stale, conflicted, failed, refused int) {
 	}
 	for outcome, n := range map[string]int{"merged": merged, "stale": stale, "conflicted": conflicted, "failed": failed, "refused": refused} {
 		m.merges.WithLabelValues(outcome).Add(float64(n))
+		if n > 0 {
+			m.lastMerge.WithLabelValues(outcome).Set(float64(m.now().UnixNano()) / 1e9)
+		}
 	}
 }
 
