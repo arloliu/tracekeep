@@ -4,11 +4,13 @@ import (
 	"bytes"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/base64"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 // signedIn signs a person in at r through the callback and returns the session cookie's value.
@@ -117,18 +119,38 @@ func TestCSRFBeforeTheCookieOpens(t *testing.T) {
 	keys := newSessionKeys("s-1", "s-1")
 	r := p.replica(c, keys, nil)
 	a := NewAuthenticator(AuthenticatorConfig{People: r.people})
+	// A whole cookie under the accepted key id, its tag corrupted: opening it reaches the key.
+	sealed, err := r.people.cookies.SealSession(t.Context(), Session{Subject: "p", Expiry: c.Now().Add(time.Hour)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := base64.RawURLEncoding.DecodeString(sealed)
+	raw[len(raw)-1] ^= 1
+	forged := base64.RawURLEncoding.EncodeToString(raw)
+	asked := func() int {
+		keys.mu.Lock()
+		defer keys.mu.Unlock()
+		n := len(keys.asked)
+		keys.asked = nil
+
+		return n
+	}
+	if _, err := a.Check(cookieRequest(http.MethodPost, publicURL, forged), OpListCaptures); reason(err) != ReasonSession {
+		t.Fatalf("the forged cookie from the API's origin = %v, want refused as session", err)
+	}
+	if asked() == 0 {
+		t.Fatal("opening the forged cookie asked for no key, so the checks below would prove nothing")
+	}
 	for name, req := range map[string]*http.Request{
-		"a GET with a cookie that does not open":          cookieRequest(http.MethodGet, publicURL, "AQIAA3MtMQ"),
-		"another origin with a cookie that does not open": cookieRequest(http.MethodPost, "https://evil.example.invalid", "AQIAA3MtMQ"),
+		"a GET with a forged cookie":          cookieRequest(http.MethodGet, publicURL, forged),
+		"another origin with a forged cookie": cookieRequest(http.MethodPost, "https://evil.example.invalid", forged),
 	} {
 		if _, err := a.Check(req, OpListCaptures); reason(err) != ReasonCSRF {
 			t.Errorf("%s: Check = %v, want csrf", name, err)
 		}
-	}
-	keys.mu.Lock()
-	defer keys.mu.Unlock()
-	if len(keys.asked) != 0 {
-		t.Errorf("keys asked for %v before the CSRF check refused", keys.asked)
+		if n := asked(); n != 0 {
+			t.Errorf("%s: %d keys asked for before the CSRF check refused", name, n)
+		}
 	}
 }
 
