@@ -59,7 +59,8 @@ the SDK resolves its own `go.mod`, never the service's graph, so the Makefile ru
 ## Setup and checks
 
 1. `mise install` — Go, golangci-lint, Atlas and Node at the versions `mise.toml` pins (T-13);
-   `cd web && npm ci` installs the frontend's packages from `web/package-lock.json`.
+   `cd web && npm ci` installs the frontend's packages from `web/package-lock.json`,
+   and refuses a Node outside `web/package.json`'s engines (`engine-strict`), such as an odd-numbered release another version manager put first on the path.
 2. `make hooks` — once per clone.
 3. `make ci` — lint, vet, docs-check, data-check and the tests of both modules, then the service built with `GOWORK=off`;
    it needs no Node.

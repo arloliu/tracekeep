@@ -18,7 +18,23 @@ const proxy: ProxyOptions = { target, secure: true, agent: cert ? new Agent({ ca
 export default defineConfig({
   plugins: [react(), tailwindcss()],
   resolve: { alias: { "@": join(import.meta.dirname, "src") } },
-  build: { outDir: "dist", emptyOutDir: true },
+  build: {
+    outDir: "dist",
+    emptyOutDir: true,
+    // The libraries apart from the pages, each its own chunk: they change less often than the pages, so a release keeps their cached copies.
+    rolldownOptions: {
+      output: {
+        codeSplitting: {
+          groups: [
+            { name: "react", test: /node_modules[\\/](react|react-dom|scheduler)[\\/]/ },
+            { name: "tanstack", test: /node_modules[\\/]@tanstack[\\/]/ },
+            { name: "connect", test: /node_modules[\\/]@(connectrpc|bufbuild)[\\/]/ },
+            { name: "vendor", test: /node_modules[\\/]/ },
+          ],
+        },
+      },
+    },
+  },
   server: {
     host: "localhost",
     port: 5173,
