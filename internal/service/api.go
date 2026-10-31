@@ -53,6 +53,9 @@ func API(ctx context.Context, e *Env) error {
 			DeleteDelay: c.Compact.DeleteDelay, Now: e.Now,
 		},
 		DigestLimit: &api.DigestLimit{Rate: c.API.DigestRate, Burst: c.API.DigestBurst},
+		Records: api.RecordReads{
+			MaxReads: c.API.Records.MaxReads, MaxReaders: c.API.Records.MaxReaders, MaxLookupPacks: c.API.Records.MaxLookupPacks, HeldBytes: c.API.Records.HeldBytes,
+		},
 	}
 	// Every handler is counted, so the role returns only once none runs: the catalog and the store outlive them all.
 	var inFlight sync.WaitGroup

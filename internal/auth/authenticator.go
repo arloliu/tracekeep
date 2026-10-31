@@ -29,12 +29,12 @@ const (
 // an operation it does not name is refused.
 var operationRoles = map[string][]string{
 	OpListDevices: {RolePackReader, RoleViewer}, OpListCaptures: {RolePackReader, RoleViewer}, OpListScopeChanges: {RolePackReader, RoleViewer},
-	OpListPacks: {RolePackReader}, OpPackURL: {RolePackReader},
+	OpListPacks: {RolePackReader, RoleViewer}, OpPackURL: {RolePackReader},
 	OpDigest: {RoleScorer}, OpRestore: {RoleRestorer}, OpExport: {RoleExporter}, OpQueryRecords: {RoleViewer}, OpFindTransaction: {RoleViewer}, OpAdmin: {RoleAdmin},
 }
 
 // cookieOperations are the operations a session cookie admits: those the browser uses (api.md §10.2 *People's sign-in*).
-var cookieOperations = []string{OpListDevices, OpListCaptures, OpListPacks, OpListScopeChanges}
+var cookieOperations = []string{OpListDevices, OpListCaptures, OpListPacks, OpListScopeChanges, OpQueryRecords, OpFindTransaction}
 
 // Authorize admits p to op when p holds one of the roles the table names for op, and refuses it as forbidden otherwise.
 func Authorize(p Principal, op string) error {

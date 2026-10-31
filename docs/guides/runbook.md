@@ -109,3 +109,19 @@ Neither the error nor the log line holds a byte of the record or an original.
 | `audit-failed` | `internal` | the audit row could not be written, so nothing was returned: the catalog's write path |
 | `rate-limited` (`Digest`) | `resource_exhausted` | the principal's inputs a second passed `api.digest_rate`, or the request is larger than the bucket left: the scorer backs off; raise the limit in the configuration if the load is expected |
 | `invalid` | `invalid_argument` | a malformed request, or a `Digest` input whose kind and domain are no rule of the key id's configurations: the error names the input's index |
+
+## Record reads refused or incomplete
+
+These raise no alert: the viewer's page shows the refusal or the incomplete part,
+and `record_reads_refused_total`, `record_reads_incomplete_total{reason}` and `record_reads_in_flight` count them (`api.md` §10.1 *Records*).
+A stream holds masked records only, so neither the error nor the log line holds a clear byte.
+
+| Signal | Meaning and action |
+|---|---|
+| `resource_exhausted` on `QueryRecords` or `FindTransaction`, `record_reads_refused_total` rising | the replica serves `api.records.max_reads` reads already: the person retries; add `api` replicas, or raise the bound if their memory allows (each read holds up to `held_bytes` and its packs' windows and metadata) |
+| `resource_exhausted` on `FindTransaction` naming an hour | the hour holds more packs than `api.records.max_lookup_packs`: an hour left unmergeable (T-45); merge it with `scope merge` once its cause is fixed, or raise the bound |
+| reason `too-many-packs` | a cluster of overlapping packs above `api.records.max_readers` was not read: the same unmergeable hour, or many redeliveries overlapping in seq |
+| reason `gone`, `evicted` | a pack's object vanished during the read and stayed gone after one re-read, or retention evicted the hour: re-query; a `gone` that repeats is the store's |
+| reason `corrupt`, `crash-gap`, `footer` | tracepack found a damaged block, a crash gap or an unusable footer: the records it could read were streamed; investigate the pack |
+| reason `read-limit` | a read passed tracepack's budget, `held_bytes` or its conflict bound: raise `api.records.held_bytes` if the replica's memory allows |
+| a capture shows `withheld` | its configuration has no policy, so it was admitted before the cutover to masking (T-48): its records are never shown to people |

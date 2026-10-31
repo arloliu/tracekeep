@@ -261,7 +261,7 @@ func TestAuthorize(t *testing.T) {
 	t.Parallel()
 	admits := map[string][]string{
 		OpListDevices: {RolePackReader, RoleViewer}, OpListCaptures: {RolePackReader, RoleViewer}, OpListScopeChanges: {RolePackReader, RoleViewer},
-		OpListPacks: {RolePackReader}, OpPackURL: {RolePackReader},
+		OpListPacks: {RolePackReader, RoleViewer}, OpPackURL: {RolePackReader},
 		OpDigest: {RoleScorer}, OpRestore: {RoleRestorer}, OpExport: {RoleExporter}, OpAdmin: {RoleAdmin},
 		OpQueryRecords: {RoleViewer}, OpFindTransaction: {RoleViewer},
 	}
