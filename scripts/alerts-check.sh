@@ -10,7 +10,7 @@ trap 'rm -rf "$out"' EXIT
 helm template t "$chart" -f "$chart/ci/test-values.yaml" --show-only templates/prometheusrule.yaml |
 	awk 'found { sub(/^  /, ""); print } /^spec:$/ { found = 1 }' > "$out/alerts.yaml"
 cp "$chart/ci/alerts-test.yaml" "$out/"
-promtool check rules "$out/alerts.yaml"
+promtool check rules --lint=all --lint-fatal "$out/alerts.yaml"
 promtool test rules "$out/alerts-test.yaml"
 
 # Each rule is tested, and each runbook section exists.

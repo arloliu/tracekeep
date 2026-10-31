@@ -13,14 +13,14 @@ Read when an alert names an incident; each alert the Helm chart ships links its 
 | `merge-over-budget` | `merges_total{outcome="refused"}`, `scopes{state="unmergeable"}` | lower the policy's masking density for new captures; an hour already refused merges by `scope merge <capture> <hour>` only once a release can merge it within the budget | leave it: the hour's segments stay readable and retention evicts it on time |
 | `cannot-screen` | `cannot_screen_total`, `deferred_messages{reason="cannot-screen"}` | fix the producer or the policy, then let the redelivery retry | `capture terminate` for the records masking cannot screen |
 | `incompatible-configuration` | `deferred_messages{reason="incompatible-configuration"}` | stage and activate a masking configuration; upgrade a member that cannot execute it | `capture terminate` for the capture that waits |
-| `parked` (`TracekeepDeferredOld`) | `deferred_oldest_age_seconds{reason}`, `deferred list` | the section of the deferral's reason | `capture terminate` for the capture that waits |
-| `backlog` (`TracekeepBacklogHigh`) | `stream_backlog_bytes`, `consumer_ack_pending`, `put_seconds` | restore ingest's throughput: replicas, the store, the catalog | none: past the stream's limit, producers drop |
-| `lease-lost` (`TracekeepCompactLeaseLost`) | `compact_lease_held` | bring a `compact` replica up and ready | none: merges, closes, deletions and retention wait |
-| `merge-stalled` (`TracekeepMergeStalled`) | `compact_last_success_timestamp{task="merge"}`, `cycle_seconds` | fix what fails the merge cycle (its log line) | none: segments accumulate unmerged |
-| `gaps-and-losses` (`TracekeepGapsGrowing`) | `open_gaps{tool_id}`, `declared_losses_total{tool_id}` | find the producer's or the bus's fault for the tool | the gaps stay, said by every read |
-| `keys-unavailable` (`TracekeepKeysUnavailable`) | `key_resolutions_total{outcome="unavailable"}`, `key_provider_errors_total{reason}` | restore the key provider's reachability or credentials | records that need an uncached key stay deferred |
-| `tool-silent` (`TracepubToolSilent`) | the gateway's `records_published_total`, `bus_connected` | check the tool's traffic and the gateway's capture | none |
-| `producer-drops` (`TracepubDropping`) | the gateway's `records_dropped_total{reason}` | remove the drop's reason at the gateway or the bus | the dropped seqs stay gaps |
+| `parked` (`TracekeepDeferredOld`) | `tracekeep_ingest_deferred_oldest_age_seconds{reason}`, `tracekeep_ingest_parked_messages{reason}` | the section of the deferral's reason | `capture terminate` for the capture that waits |
+| `backlog` (`TracekeepBacklogHigh`) | `tracekeep_ingest_stream_backlog_bytes`, `tracekeep_ingest_consumer_ack_pending`, `tracekeep_ingest_put_seconds` | restore ingest's throughput: replicas, the store, the catalog | none: past the stream's limit, producers drop |
+| `lease-lost` (`TracekeepCompactLeaseLost`) | `tracekeep_compact_lease_held` | bring a `compact` replica up and ready | none: merges, closes, deletions and retention wait |
+| `merge-stalled` (`TracekeepMergeStalled`) | `tracekeep_compact_last_success_timestamp{task="merge"}`, `tracekeep_compact_cycle_seconds` | fix what fails the merge cycle (its log line) | none: segments accumulate unmerged |
+| `gaps-and-losses` (`TracekeepGapsGrowing`) | `tracekeep_ingest_open_gaps{tool_id}`, `tracekeep_ingest_declared_losses_total{tool_id}` | find the producer's or the bus's fault for the tool | the gaps stay, said by every read |
+| `keys-unavailable` (`TracekeepKeysUnavailable`) | `tracekeep_key_resolutions_total{outcome="unavailable"}`, `tracekeep_key_provider_errors_total{reason}` | restore the key provider's reachability or credentials | records that need an uncached key stay deferred |
+| `tool-silent` (`TracepubToolSilent`) | the gateway's `tracepub_records_published_total`, `tracepub_bus_connected` | check the tool's traffic and the gateway's capture | none |
+| `producer-drops` (`TracepubDropping`) | the gateway's `tracepub_records_dropped_total{reason}` | remove the drop's reason at the gateway or the bus | the dropped seqs stay gaps |
 
 ## key-binding-mismatch
 
@@ -44,16 +44,20 @@ the captures bound to the old one can no longer be masked or restored.
 
 ## parked
 
-**Alert** `TracekeepDeferredOld`: a message has been deferred for more than an hour, for any reason (`ingest.md` §6.1, `parking.md`).
+**Alert** `TracekeepDeferredOld`: an ingest replica has held a message back for more than an hour, for any reason (`ingest.md` §6.1, `parking.md`).
+Two populations wait, found and retried differently:
+- **Deferred deliveries**, each replica's own (`tracekeep_ingest_deferred_messages{reason}`, `tracekeep_ingest_deferred_oldest_age_seconds{reason}`, the alert's metric):
+  messages it nak'd to be redelivered by the bus with its backoff, such as `cannot-screen`, an unavailable key or a failed write.
+  No command lists them; the replica's log names each (`msg_id`, the capture and seq) with why, and a message another replica receives starts its age again.
+- **Parked versions**, durable in the catalog (`tracekeep_ingest_parked_messages{reason}`): `tracekeep admin deferred list` shows them by capture and reason,
+  with each group's count and oldest parking time; the parked consumer redelivers them every `parking.redelivery_delay`.
 
-1. `tracekeep admin deferred list` shows what waits, by capture and reason, with each group's count and oldest parking time;
-   `deferred_messages{reason}` and `deferred_oldest_age_seconds{reason}` say the same by reason.
-2. Resolve by the reason's own section: `cannot-screen`, `incompatible-configuration`, `key-refused` or `keys-unavailable` above and below;
+1. Read the reason from the alert's labels, then resolve it by its own section: `cannot-screen`, `incompatible-configuration`, `key-refused` or `keys-unavailable`;
    an `unknown-capture` waits for its capture's start, which the producer sends at its next rotation;
-   a `write-failure` is the store's or the catalog's: their errors are in ingest's log.
-3. The waiting messages are redelivered every `parking.redelivery_delay` and resolve at their next delivery once the cause is gone.
+   a `write-failure` is the store's or the catalog's, whose errors are in ingest's log.
+2. Once the cause is gone, each waiting message resolves at its next delivery.
 
-**If ignored**: the messages stay parked, their seqs gaps in their captures, until an operator terminates them with `capture terminate`, which declares them lost;
+**If ignored**: the messages wait, their seqs gaps in their captures, until an operator terminates them with `capture terminate`, which declares them lost;
 retention ends nothing that is parked.
 
 ## backlog
@@ -61,8 +65,8 @@ retention ends nothing that is parked.
 **Alert** `TracekeepBacklogHigh`: the traffic stream holds more bytes than the threshold (default 10 GiB) for 15 minutes: ingest takes less than producers publish.
 
 1. Check ingest's replicas are up and ready, and its log for failing flushes.
-2. `consumer_ack_pending` near `ingest.max_ack_pending` means the replicas hold all they may: add replicas.
-   A slow `put_seconds` or `registration_seconds` is the store's or the catalog's: fix that first, since more replicas only press on it.
+2. `tracekeep_ingest_consumer_ack_pending` near `ingest.max_ack_pending` means the replicas hold all they may: add replicas.
+   A slow `tracekeep_ingest_put_seconds` or `tracekeep_ingest_registration_seconds` is the store's or the catalog's: fix that first, since more replicas only press on it.
 3. A backlog that drains once fixed needs nothing more; the messages are acknowledged as their batches flush.
 
 **If ignored**: past the stream's own limits, the bus refuses publications, and producers drop their records (`producer-drops`), which become gaps.
@@ -81,10 +85,11 @@ reads and ingest go on.
 ## merge-stalled
 
 **Alert** `TracekeepMergeStalled`: the lease holder's merge task has completed no cycle for two hours, or none since it took the lease.
-A cycle that merged nothing counts as completed; a scope that stays unmerged shows instead in `oldest_unmerged_scope_age_seconds`.
+A standby's own timestamp does not count, and a cycle that merged nothing counts as completed;
+a scope that stays unmerged shows instead in `tracekeep_compact_oldest_unmerged_scope_age_seconds`.
 
 1. The `compact` log names each failed cycle and why: the store, the catalog, a pack that does not read.
-2. `cycle_seconds{task="merge"}` growing toward the interval means the cycle runs but takes too long: a store or catalog slowed down, or a backlog of scopes after an outage.
+2. `tracekeep_compact_cycle_seconds{task="merge"}` growing toward the interval means the cycle runs but takes too long: a store or catalog slowed down, or a backlog of scopes after an outage.
 3. A pack that does not read is an input to set aside: `tracekeep admin scope exclude-input <pack>` once it is investigated.
 
 **If ignored**: segments accumulate unmerged; reads open more packs per hour, and retention still evicts on time.
@@ -93,7 +98,7 @@ A cycle that merged nothing counts as completed; a scope that stays unmerged sho
 
 **Alert** `TracekeepMergeRefused`: a merge was refused because its inputs' metadata passes the reader's budget (T-45); the scope is left `unmergeable`.
 
-1. `scopes{state="unmergeable"}` counts the scopes refused; `tracekeep admin capture show <capture>` names a capture's.
+1. `tracekeep_compact_scopes{state="unmergeable"}` counts the scopes refused; the browser's completeness by hour shows each refused hour's scope as `unmergeable`.
 2. The hour's segments stay readable as they are. Lower the policy's masking density for new captures, which keeps their hours under the budget.
 3. An hour already refused merges by `tracekeep admin scope merge <capture> <hour>` only once a release can merge it within the budget.
 
@@ -101,7 +106,7 @@ A cycle that merged nothing counts as completed; a scope that stays unmerged sho
 
 ## gaps-and-losses
 
-**Alert** `TracekeepGapsGrowing`: on a tool, the holes in its open captures (`open_gaps`) grew over 30 minutes, or ingest declared seqs lost (`declared_losses_total`).
+**Alert** `TracekeepGapsGrowing`: on a tool, the holes in its open captures (`tracekeep_ingest_open_gaps`) grew over 30 minutes, or ingest declared seqs lost (`tracekeep_ingest_declared_losses_total`).
 
 1. `tracekeep status` and the browser's completeness for the tool show which captures, hours and seqs.
 2. Gaps come from the producer: its drops (`producer-drops`) or a bus it could not reach; check the gateway's metrics for the tool.
@@ -113,8 +118,8 @@ A cycle that merged nothing counts as completed; a scope that stays unmerged sho
 
 **Alert** `TracekeepKeysUnavailable`: key resolutions have failed as unavailable for five minutes: the key provider does not answer, or refuses the service's credentials.
 
-1. `key_provider_errors_total{reason}` says how: `unreachable` or `deadline` (the provider's address or network), `auth` (the Kubernetes role or AppRole, an expired secret id), `server`.
-2. `key_credential_expiry_timestamp{provider}` shows when the current token expires.
+1. `tracekeep_key_provider_errors_total{reason}` says how: `unreachable` or `deadline` (the provider's address or network), `auth` (the Kubernetes role or AppRole, an expired secret id), `server`.
+2. `tracekeep_key_credential_expiry_timestamp{provider}` shows when the current token expires.
 3. Restore the provider's reachability or the credentials; resolutions resume with no restart.
 
 **If ignored**: keys already resolved keep serving; a record that needs an unresolved key stays deferred, and an `api` replica started meanwhile does not become ready.
@@ -239,18 +244,18 @@ No error, reason, manifest or log line names an object key; a cleanup failure is
 
 ## tool-silent
 
-**Alert** `TracepubToolSilent`, from the gateway's metrics: a producer connected to the bus has published no record for ten minutes.
+**Alert** `TracepubToolSilent`, from the gateway's metrics: a producer connected to the bus through the last ten minutes has published no record in them.
 
 1. A tool that sends nothing, idle or down, publishes nothing: check the tool's own state first.
-2. Otherwise the gateway's capture stopped: its log and `capture_rotations_total{reason}` say whether it faulted or was stopped.
+2. Otherwise the gateway's capture stopped: its log and `tracepub_capture_rotations_total{reason}` say whether it faulted or was stopped.
 
 **If ignored**: nothing is lost that was sent; a capture that stopped records nothing until it starts again.
 
 ## producer-drops
 
-**Alert** `TracepubDropping`, from the gateway's metrics: a producer is dropping records (`records_dropped_total{reason}`), each a seq its capture will lack.
+**Alert** `TracepubDropping`, from the gateway's metrics: a producer is dropping records (`tracepub_records_dropped_total{reason}`), each a seq its capture will lack.
 
-1. `lane_full`: the producer's ring is full, the bus taking less than it publishes: the bus's latency (`publish_ack_seconds`) or the ring's size.
+1. `lane_full`: the producer's ring is full, the bus taking less than it publishes: the bus's latency (`tracepub_publish_ack_seconds`) or the ring's size.
 2. `bus_down`, `publish_failed`, `claim_failed`: the bus or its claim bucket refuse or do not answer; past the stream's limits, see `backlog`.
 3. `capture_fault`, `after_stop`: the capture ended while records were in flight; a fault's reason is in the gateway's log.
 

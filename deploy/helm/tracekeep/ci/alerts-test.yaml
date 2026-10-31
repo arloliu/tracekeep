@@ -6,8 +6,8 @@ tests:
 - name: deferred, the maximum of two replicas
   interval: 1m
   input_series:
-  - {series: 'tracekeep_ingest_deferred_oldest_age_seconds{pod="a",reason="cannot-screen"}', values: '4000x10'}
-  - {series: 'tracekeep_ingest_deferred_oldest_age_seconds{pod="b",reason="cannot-screen"}', values: '4000x10'}
+  - {series: 'tracekeep_ingest_deferred_oldest_age_seconds{instance="a",reason="cannot-screen"}', values: '4000x10'}
+  - {series: 'tracekeep_ingest_deferred_oldest_age_seconds{instance="b",reason="cannot-screen"}', values: '4000x10'}
   alert_rule_test:
   - {eval_time: 3m, alertname: TracekeepDeferredOld, exp_alerts: []}
   - eval_time: 6m
@@ -16,24 +16,24 @@ tests:
 - name: deferred younger than an hour on each of two replicas
   interval: 1m
   input_series:
-  - {series: 'tracekeep_ingest_deferred_oldest_age_seconds{pod="a",reason="unknown-capture"}', values: '2000x10'}
-  - {series: 'tracekeep_ingest_deferred_oldest_age_seconds{pod="b",reason="unknown-capture"}', values: '2000x10'}
+  - {series: 'tracekeep_ingest_deferred_oldest_age_seconds{instance="a",reason="unknown-capture"}', values: '2000x10'}
+  - {series: 'tracekeep_ingest_deferred_oldest_age_seconds{instance="b",reason="unknown-capture"}', values: '2000x10'}
   alert_rule_test:
   - {eval_time: 8m, alertname: TracekeepDeferredOld, exp_alerts: []}
 
 - name: backlog, two replicas each under the threshold do not add up
   interval: 1m
   input_series:
-  - {series: 'tracekeep_ingest_stream_backlog_bytes{pod="a"}', values: '6000000000x30'}
-  - {series: 'tracekeep_ingest_stream_backlog_bytes{pod="b"}', values: '6000000000x30'}
-  - {series: 'tracekeep_ingest_refreshed_timestamp_seconds{pod="a",source="bus"}', values: '0+60x30'}
+  - {series: 'tracekeep_ingest_stream_backlog_bytes{instance="a"}', values: '6000000000x30'}
+  - {series: 'tracekeep_ingest_stream_backlog_bytes{instance="b"}', values: '6000000000x30'}
+  - {series: 'tracekeep_ingest_refreshed_timestamp_seconds{instance="a",source="bus"}', values: '0+60x30'}
   alert_rule_test:
   - {eval_time: 20m, alertname: TracekeepBacklogHigh, exp_alerts: []}
 - name: backlog over the threshold, fresh
   interval: 1m
   input_series:
-  - {series: 'tracekeep_ingest_stream_backlog_bytes{pod="a"}', values: '11000000000x30'}
-  - {series: 'tracekeep_ingest_refreshed_timestamp_seconds{pod="a",source="bus"}', values: '0+60x30'}
+  - {series: 'tracekeep_ingest_stream_backlog_bytes{instance="a"}', values: '11000000000x30'}
+  - {series: 'tracekeep_ingest_refreshed_timestamp_seconds{instance="a",source="bus"}', values: '0+60x30'}
   alert_rule_test:
   - {eval_time: 10m, alertname: TracekeepBacklogHigh, exp_alerts: []}
   - eval_time: 16m
@@ -42,16 +42,26 @@ tests:
 - name: backlog over the threshold, its source stale
   interval: 1m
   input_series:
-  - {series: 'tracekeep_ingest_stream_backlog_bytes{pod="a"}', values: '11000000000x30'}
-  - {series: 'tracekeep_ingest_refreshed_timestamp_seconds{pod="a",source="bus"}', values: '0x30'}
+  - {series: 'tracekeep_ingest_stream_backlog_bytes{instance="a"}', values: '11000000000x30'}
+  - {series: 'tracekeep_ingest_refreshed_timestamp_seconds{instance="a",source="bus"}', values: '0x30'}
+  alert_rule_test:
+  - {eval_time: 28m, alertname: TracekeepBacklogHigh, exp_alerts: []}
+
+- name: backlog, one replica's stale snapshot high, another's fresh and low
+  interval: 1m
+  input_series:
+  - {series: 'tracekeep_ingest_stream_backlog_bytes{instance="a"}', values: '11000000000x30'}
+  - {series: 'tracekeep_ingest_refreshed_timestamp_seconds{instance="a",source="bus"}', values: '0x30'}
+  - {series: 'tracekeep_ingest_stream_backlog_bytes{instance="b"}', values: '1000000000x30'}
+  - {series: 'tracekeep_ingest_refreshed_timestamp_seconds{instance="b",source="bus"}', values: '0+60x30'}
   alert_rule_test:
   - {eval_time: 28m, alertname: TracekeepBacklogHigh, exp_alerts: []}
 
 - name: no replica holds the lease
   interval: 1m
   input_series:
-  - {series: 'tracekeep_compact_lease_held{pod="a"}', values: '0x10'}
-  - {series: 'tracekeep_compact_lease_held{pod="b"}', values: '0x10'}
+  - {series: 'tracekeep_compact_lease_held{instance="a"}', values: '0x10'}
+  - {series: 'tracekeep_compact_lease_held{instance="b"}', values: '0x10'}
   alert_rule_test:
   - eval_time: 6m
     alertname: TracekeepCompactLeaseLost
@@ -67,42 +77,54 @@ tests:
 - name: one replica holds the lease, its standby not
   interval: 1m
   input_series:
-  - {series: 'tracekeep_compact_lease_held{pod="a"}', values: '1x10'}
-  - {series: 'tracekeep_compact_lease_held{pod="b"}', values: '0x10'}
+  - {series: 'tracekeep_compact_lease_held{instance="a"}', values: '1x10'}
+  - {series: 'tracekeep_compact_lease_held{instance="b"}', values: '0x10'}
   alert_rule_test:
   - {eval_time: 8m, alertname: TracekeepCompactLeaseLost, exp_alerts: []}
 
 - name: merges completing every five minutes
   interval: 5m
   input_series:
-  - {series: 'tracekeep_compact_lease_held{pod="a"}', values: '1x60'}
-  - {series: 'tracekeep_compact_last_success_timestamp{pod="a",task="merge"}', values: '0+300x60'}
+  - {series: 'tracekeep_compact_lease_held{instance="a"}', values: '1x60'}
+  - {series: 'tracekeep_compact_last_success_timestamp{instance="a",task="merge"}', values: '0+300x60'}
   alert_rule_test:
   - {eval_time: 4h30m, alertname: TracekeepMergeStalled, exp_alerts: []}
-- name: the last merge cycle completed long ago
+- name: the last merge cycle completed two hours ago
   interval: 5m
   input_series:
-  - {series: 'tracekeep_compact_lease_held{pod="a"}', values: '1x60'}
-  - {series: 'tracekeep_compact_last_success_timestamp{pod="a",task="merge"}', values: '0x60'}
+  - {series: 'tracekeep_compact_lease_held{instance="a"}', values: '1x60'}
+  - {series: 'tracekeep_compact_last_success_timestamp{instance="a",task="merge"}', values: '0x60'}
   alert_rule_test:
-  - {eval_time: 3h, alertname: TracekeepMergeStalled, exp_alerts: []}
-  - eval_time: 4h5m
+  - {eval_time: 1h55m, alertname: TracekeepMergeStalled, exp_alerts: []}
+  - eval_time: 2h10m
     alertname: TracekeepMergeStalled
-    exp_alerts: [{exp_labels: {severity: warning}, exp_annotations: {summary: "The merge task has completed no cycle for two hours.", runbook_url: "rb#merge-stalled"}}]
-- name: a lease holder that never completed a merge cycle
+    exp_alerts: [{exp_labels: {severity: warning, cause: last-cycle-old}, exp_annotations: {summary: "The merge task has completed no cycle for two hours.", runbook_url: "rb#merge-stalled"}}]
+- name: a standby's recent timestamp does not hide the holder's stalled task
   interval: 5m
   input_series:
-  - {series: 'tracekeep_compact_lease_held{pod="a"}', values: '1x60'}
+  - {series: 'tracekeep_compact_lease_held{instance="a"}', values: '0x60'}
+  - {series: 'tracekeep_compact_last_success_timestamp{instance="a",task="merge"}', values: '0+300x60'}
+  - {series: 'tracekeep_compact_lease_held{instance="b"}', values: '1x60'}
+  - {series: 'tracekeep_compact_last_success_timestamp{instance="b",task="merge"}', values: '0x60'}
   alert_rule_test:
-  - {eval_time: 1h, alertname: TracekeepMergeStalled, exp_alerts: []}
-  - eval_time: 2h5m
+  - eval_time: 2h10m
     alertname: TracekeepMergeStalled
-    exp_alerts: [{exp_labels: {severity: warning}, exp_annotations: {summary: "The merge task has completed no cycle for two hours.", runbook_url: "rb#merge-stalled"}}]
-
+    exp_alerts: [{exp_labels: {severity: warning, cause: last-cycle-old}, exp_annotations: {summary: "The merge task has completed no cycle for two hours.", runbook_url: "rb#merge-stalled"}}]
+- name: a lease taken over, the new holder never completing a cycle
+  interval: 5m
+  input_series:
+  - {series: 'tracekeep_compact_lease_held{instance="a"}', values: '1x12 0x48'}
+  - {series: 'tracekeep_compact_last_success_timestamp{instance="a",task="merge"}', values: '0+300x12 3600x48'}
+  - {series: 'tracekeep_compact_lease_held{instance="b"}', values: '0x12 1x48'}
+  alert_rule_test:
+  - {eval_time: 2h30m, alertname: TracekeepMergeStalled, exp_alerts: []}
+  - eval_time: 3h10m
+    alertname: TracekeepMergeStalled
+    exp_alerts: [{exp_labels: {severity: warning, cause: no-cycle-since-lease}, exp_annotations: {summary: "The merge task has completed no cycle for two hours.", runbook_url: "rb#merge-stalled"}}]
 - name: a refused merge
   interval: 1m
   input_series:
-  - {series: 'tracekeep_compact_merges_total{pod="a",outcome="refused"}', values: '0 0 0 1 1 1'}
+  - {series: 'tracekeep_compact_merges_total{instance="a",outcome="refused"}', values: '0 0 0 1 1 1'}
   alert_rule_test:
   - {eval_time: 2m, alertname: TracekeepMergeRefused, exp_alerts: []}
   - eval_time: 5m
@@ -112,9 +134,9 @@ tests:
 - name: open gaps growing on a tool, fresh, two replicas
   interval: 1m
   input_series:
-  - {series: 'tracekeep_ingest_open_gaps{pod="a",tool_id="T-1"}', values: '1x30 3x10'}
-  - {series: 'tracekeep_ingest_open_gaps{pod="b",tool_id="T-1"}', values: '1x30 3x10'}
-  - {series: 'tracekeep_ingest_refreshed_timestamp_seconds{pod="a",source="catalog"}', values: '0+60x40'}
+  - {series: 'tracekeep_ingest_open_gaps{instance="a",tool_id="T-1"}', values: '1x30 3x10'}
+  - {series: 'tracekeep_ingest_open_gaps{instance="b",tool_id="T-1"}', values: '1x30 3x10'}
+  - {series: 'tracekeep_ingest_refreshed_timestamp_seconds{instance="a",source="catalog"}', values: '0+60x40'}
   alert_rule_test:
   - {eval_time: 20m, alertname: TracekeepGapsGrowing, exp_alerts: []}
   - eval_time: 35m
@@ -123,14 +145,23 @@ tests:
 - name: open gaps grown but their source stale
   interval: 1m
   input_series:
-  - {series: 'tracekeep_ingest_open_gaps{pod="a",tool_id="T-1"}', values: '1x30 3x10'}
-  - {series: 'tracekeep_ingest_refreshed_timestamp_seconds{pod="a",source="catalog"}', values: '0x40'}
+  - {series: 'tracekeep_ingest_open_gaps{instance="a",tool_id="T-1"}', values: '1x30 3x10'}
+  - {series: 'tracekeep_ingest_refreshed_timestamp_seconds{instance="a",source="catalog"}', values: '0x40'}
+  alert_rule_test:
+  - {eval_time: 35m, alertname: TracekeepGapsGrowing, exp_alerts: []}
+- name: open gaps grown in one replica's stale snapshot, flat in another's fresh one
+  interval: 1m
+  input_series:
+  - {series: 'tracekeep_ingest_open_gaps{instance="a",tool_id="T-1"}', values: '1x30 3x10'}
+  - {series: 'tracekeep_ingest_refreshed_timestamp_seconds{instance="a",source="catalog"}', values: '0x40'}
+  - {series: 'tracekeep_ingest_open_gaps{instance="b",tool_id="T-1"}', values: '1x40'}
+  - {series: 'tracekeep_ingest_refreshed_timestamp_seconds{instance="b",source="catalog"}', values: '0+60x40'}
   alert_rule_test:
   - {eval_time: 35m, alertname: TracekeepGapsGrowing, exp_alerts: []}
 - name: declared losses on a tool, counted across a restart's reset
   interval: 1m
   input_series:
-  - {series: 'tracekeep_ingest_declared_losses_total{pod="a",tool_id="T-2"}', values: '5x10 0 2'}
+  - {series: 'tracekeep_ingest_declared_losses_total{instance="a",tool_id="T-2"}', values: '5x10 0 2'}
   alert_rule_test:
   - {eval_time: 5m, alertname: TracekeepGapsGrowing, exp_alerts: []}
   - eval_time: 12m
@@ -140,8 +171,8 @@ tests:
 - name: a key refused
   interval: 1m
   input_series:
-  - {series: 'tracekeep_key_resolutions_total{pod="a",kind="session",outcome="refused"}', values: '0 0 1 1'}
-  - {series: 'tracekeep_key_resolutions_total{pod="a",kind="session",outcome="resolved"}', values: '0 5 9 12'}
+  - {series: 'tracekeep_key_resolutions_total{instance="a",kind="session",outcome="refused"}', values: '0 0 1 1'}
+  - {series: 'tracekeep_key_resolutions_total{instance="a",kind="session",outcome="resolved"}', values: '0 5 9 12'}
   alert_rule_test:
   - eval_time: 3m
     alertname: TracekeepKeyRefused
@@ -149,7 +180,7 @@ tests:
 - name: keys unavailable for five minutes
   interval: 1m
   input_series:
-  - {series: 'tracekeep_key_resolutions_total{pod="a",kind="digest",outcome="unavailable"}', values: '0+1x15'}
+  - {series: 'tracekeep_key_resolutions_total{instance="a",kind="digest",outcome="unavailable"}', values: '0+1x15'}
   alert_rule_test:
   - {eval_time: 3m, alertname: TracekeepKeysUnavailable, exp_alerts: []}
   - eval_time: 8m
@@ -175,6 +206,22 @@ tests:
     exp_alerts:
     - {exp_labels: {severity: warning, job: gw, instance: gw-1}, exp_annotations: {summary: "Producer gw-1 is connected and has published nothing for ten minutes.", runbook_url: "rb#tool-silent"}}
     - {exp_labels: {severity: warning, job: gw, instance: gw-2}, exp_annotations: {summary: "Producer gw-2 is connected and has published nothing for ten minutes.", runbook_url: "rb#tool-silent"}}
+- name: a producer connected only minutes ago, not yet published
+  interval: 1m
+  input_series:
+  - {series: 'tracepub_bus_connected{job="gw",instance="gw-3"}', values: '0x10 1x8'}
+  alert_rule_test:
+  - {eval_time: 17m, alertname: TracepubToolSilent, exp_alerts: []}
+- name: a connected producer that stops publishing
+  interval: 1m
+  input_series:
+  - {series: 'tracepub_bus_connected{job="gw",instance="gw-1"}', values: '1x45'}
+  - {series: 'tracepub_records_published_total{job="gw",instance="gw-1"}', values: '0+10x20 200x25'}
+  alert_rule_test:
+  - {eval_time: 28m, alertname: TracepubToolSilent, exp_alerts: []}
+  - eval_time: 33m
+    alertname: TracepubToolSilent
+    exp_alerts: [{exp_labels: {severity: warning, job: gw, instance: gw-1}, exp_annotations: {summary: "Producer gw-1 is connected and has published nothing for ten minutes.", runbook_url: "rb#tool-silent"}}]
 - name: a producer dropping records
   interval: 1m
   input_series:
