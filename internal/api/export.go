@@ -63,7 +63,7 @@ func (s *Server) StartExport(ctx context.Context, req *connect.Request[tkv1.Star
 	id[6], id[8] = id[6]&0x0f|0x40, id[8]&0x3f|0x80
 	audit := catalog.AuditEntry{Actor: owner, Action: "export-start", Detail: fmt.Sprintf("job %s, %s", id, b)}
 	if err := s.Catalog.CreateExport(ctx, id, owner, b, audit); err != nil {
-		return nil, failed(err)
+		return nil, exportFailed(err)
 	}
 
 	return connect.NewResponse(&tkv1.StartExportResponse{JobId: id.String()}), nil
@@ -100,6 +100,9 @@ func (s *Server) GetExport(ctx context.Context, req *connect.Request[tkv1.GetExp
 		return nil, err
 	}
 	out := s.jobOf(&j)
+	if out.GetState() == stateExpired {
+		s.Metrics.DownloadRefused()
+	}
 	if out.GetState() != catalog.ExportDone {
 		return connect.NewResponse(out), nil
 	}
@@ -120,6 +123,13 @@ func (s *Server) GetExport(ctx context.Context, req *connect.Request[tkv1.GetExp
 	}
 	if err := s.Catalog.Audit(ctx, entry); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit: %w", err))
+	}
+	// A URL its audit row's write left below the floor is withheld, as PackURL withholds one.
+	if u.expires.Sub(dl.now()) < dl.Floor {
+		s.Metrics.DownloadRefused()
+		out.State = stateExpired
+
+		return connect.NewResponse(out), nil
 	}
 	s.Metrics.DownloadURL(u.kind)
 	out.Url, out.UrlExpires, out.Presigned = u.url, ts(u.expires.UnixNano()), u.kind == kindPresigned
@@ -173,11 +183,20 @@ func (s *Server) CancelExport(ctx context.Context, req *connect.Request[tkv1.Can
 	case errors.Is(err, catalog.ErrExportEnded):
 		return nil, connect.NewError(connect.CodeFailedPrecondition, err)
 	case err != nil:
-		return nil, failed(err)
+		return nil, exportFailed(err)
 	}
 	s.Metrics.Export(catalog.ExportCancelled, 0)
 
 	return connect.NewResponse(&tkv1.CancelExportResponse{}), nil
+}
+
+// exportFailed maps an export transaction's error: an audit row that could not be written is internal, anything else the catalog unavailable.
+func exportFailed(err error) error {
+	if errors.Is(err, catalog.ErrAudit) {
+		return connect.NewError(connect.CodeInternal, err)
+	}
+
+	return failed(err)
 }
 
 // ownJob reads the principal's job named by text, or answers not found.

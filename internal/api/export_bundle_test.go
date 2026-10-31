@@ -11,16 +11,20 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/arloliu/go-secs/tracepack"
+	"google.golang.org/protobuf/encoding/protojson"
 
 	"github.com/arloliu/tracekeep/internal/catalog"
 	"github.com/arloliu/tracekeep/internal/catalog/catalogtest"
 	"github.com/arloliu/tracekeep/internal/maskingtest"
 	"github.com/arloliu/tracekeep/internal/store"
+	tkv1 "github.com/arloliu/tracekeep/proto/tracekeep/v1"
 )
 
 // unpacked is a bundle's files by name.
@@ -43,6 +47,9 @@ func unpacked(t *testing.T, path string) map[string][]byte {
 		b, err := io.ReadAll(tr)
 		if err != nil {
 			t.Fatal(err)
+		}
+		if _, dup := out[h.Name]; dup {
+			t.Fatalf("the bundle holds %s twice", h.Name)
 		}
 		out[h.Name] = b
 	}
@@ -93,11 +100,14 @@ func leaks(t *testing.T, files map[string][]byte, cs []maskingtest.Carrier) []st
 				for _, secret := range c.Secrets {
 					for _, blob := range blobs {
 						if bytes.Contains(blob, secret) {
-							found = append(found, c.Name)
+							found = append(found, c.Name+":"+string(secret))
 						}
 					}
 				}
 			}
+		}
+		if err := sc.Err(); err != nil {
+			t.Fatalf("%s: %v", name, err)
 		}
 	}
 
@@ -147,8 +157,14 @@ func TestExportBundleHoldsNoClearBody(t *testing.T) {
 		m.put(t, unmasked, hour, captured(recordsOf(cs, hour)), nil, nil)
 		m.srv.Dev = true
 		files, _ = build(t, m, unmasked)
-		if got := leaks(t, files, cs); len(got) == 0 {
-			t.Error("the unmasked control shows no secret: the scan cannot fail")
+		// Every secret of every carrier, the data records' found only in their base64 payloads: the scan can fail on each.
+		got := leaks(t, files, cs)
+		for _, c := range cs {
+			for _, secret := range c.Secrets {
+				if !slices.Contains(got, c.Name+":"+string(secret)) {
+					t.Errorf("the unmasked control does not show %s's secret %q: the scan cannot fail on it", c.Name, secret)
+				}
+			}
 		}
 	})
 }
@@ -206,14 +222,20 @@ type flaky struct {
 	store.ObjectStore
 	mu   sync.Mutex
 	gone map[string]bool
+	// onGone, when set, runs as an object is found gone: what removed it, such as retention evicting its hour.
+	onGone func()
 }
 
 func (f *flaky) Open(ctx context.Context, key string) (store.Object, error) {
 	f.mu.Lock()
 	first := f.gone[key]
 	delete(f.gone, key)
+	onGone := f.onGone
 	f.mu.Unlock()
 	if first {
+		if onGone != nil {
+			onGone()
+		}
 		return nil, fmt.Errorf("%w: %s", store.ErrNotFound, key)
 	}
 
@@ -243,6 +265,69 @@ func TestExportBundleRetriesAnHour(t *testing.T) {
 		}
 		if n := len(files); n != 3 {
 			t.Errorf("%d files in the bundle, want two packs and the manifest", n)
+		}
+	})
+}
+
+// The manifest carries the capture's conflicts in the window with their states, whichever hour holds the other version:
+// one suspect and one acknowledged across two hours.
+func TestExportBundleConflictsAcrossHours(t *testing.T) {
+	t.Parallel()
+	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
+		m := newMasked(t, c)
+		m.srv.Dev = true
+		capture := m.admitUnmasked(t)
+		cs := carriers(t)
+		at := func(h int64, seq uint64) tracepack.Record {
+			r := recordAt(&cs[0], h, seq)
+			r.SetCapturedFieldValidity()
+			return r
+		}
+		m.put(t, capture, hour, []tracepack.Record{at(hour, 1), at(hour, 2), at(hour, 3)}, nil, nil)
+		m.put(t, capture, hour+1, []tracepack.Record{at(hour+1, 3)}, nil, nil) // seq 3 again, in the next hour: a suspect
+		m.put(t, capture, hour, []tracepack.Record{at(hour, 5)}, nil, nil)
+		m.put(t, capture, hour+1, []tracepack.Record{at(hour+1, 5)}, nil, nil) // seq 5 again: a suspect, then acknowledged
+		if _, err := c.AcknowledgeConflict(t.Context(), capture, 5, "op", "a1"); err != nil {
+			t.Fatal(err)
+		}
+		_, man := build(t, m, capture)
+		var comp tkv1.Completeness
+		if err := protojson.Unmarshal(man.Captures[0].Completeness, &comp); err != nil {
+			t.Fatal(err)
+		}
+		states := map[uint64]string{}
+		for _, k := range comp.GetConflicts() {
+			states[k.GetSeqFrom()] = k.GetState()
+		}
+		if states[3] != "suspect" || states[5] != "acknowledged" {
+			t.Errorf("conflicts = %v, want seq 3 suspect and seq 5 acknowledged", states)
+		}
+		if len(man.Captures[0].Hours) != 2 {
+			t.Errorf("hours = %+v, want both", man.Captures[0].Hours)
+		}
+	})
+}
+
+// Retention evicting the hour while it is exported: the object found gone, the hour's read set read again finds no scope,
+// and the manifest names the hour evicted, with none of its packs.
+func TestExportBundleHourEvictedDuringItsRead(t *testing.T) {
+	t.Parallel()
+	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
+		m := newMasked(t, c)
+		m.srv.Dev = true
+		now := deadlineOf().Add(time.Hour)
+		m.urls(t, &now, true)
+		capture := m.admitUnmasked(t)
+		p := m.put(t, capture, hour, captured(recordsOf(carriers(t)[:1], hour)), nil, nil)
+		m.srv.Store = &flaky{ObjectStore: m.st, gone: map[string]bool{p.Key: true}, onGone: func() {
+			if ev, err := c.EvictHour(context.Background(), m.lease, catalog.Scope{Capture: capture, Hour: hour}, now.UnixNano()); err != nil || !ev.Evicted {
+				t.Errorf("EvictHour = %+v, %v", ev, err)
+			}
+		}}
+		_, man := build(t, m, capture)
+		h := man.Captures[0].Hours[0]
+		if !h.Evicted || len(h.Packs) != 0 {
+			t.Errorf("hour = %+v, want it evicted, without packs", h)
 		}
 	})
 }

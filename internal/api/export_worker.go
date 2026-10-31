@@ -41,7 +41,12 @@ func (s *Server) RunExports(ctx context.Context, holder string, poll time.Durati
 			return nil
 		case slots <- struct{}{}:
 		}
+		// The lease counts from before the claim by this replica's clock: the catalog's reads it later.
+		claimed := time.Now()
 		cl, ok, err := s.Catalog.ClaimExport(ctx, holder, s.Exports.lease(), s.Exports.maxAttempts())
+		for range cl.Exhausted {
+			s.Metrics.Export(catalog.ExportFailed, 0)
+		}
 		if err != nil || !ok {
 			<-slots
 			if err != nil && ctx.Err() == nil && s.Log != nil {
@@ -57,7 +62,7 @@ func (s *Server) RunExports(ctx context.Context, holder string, poll time.Durati
 		}
 		wg.Go(func() {
 			defer func() { <-slots }()
-			s.attempt(ctx, &cl)
+			s.attempt(ctx, &cl, claimed)
 		})
 	}
 }
@@ -97,16 +102,19 @@ func (s *Server) workDir() string {
 
 // attempt runs one attempt of a claimed job: its bundle, its intent, its put bounded by the put deadline, and its completion;
 // the lease is renewed meanwhile, and a renewal refused ends the attempt.
-func (s *Server) attempt(parent context.Context, cl *catalog.Claim) {
+func (s *Server) attempt(parent context.Context, cl *catalog.Claim, claimed time.Time) {
 	a := cl.Attempt
 	ctx, cancel := context.WithCancel(parent)
-	defer cancel()
+	// The lease timer starts before any work: it fires when the claim's lease passes, unless a renewal moves it.
+	expiry := time.AfterFunc(s.Exports.lease()-time.Since(claimed), cancel)
 	var renewing sync.WaitGroup
-	defer renewing.Wait()
-	renewing.Go(func() { s.renew(ctx, cancel, a) })
+	renewing.Go(func() { s.renew(ctx, cancel, a, expiry) })
 	dir := filepath.Join(s.workDir(), fmt.Sprintf("%s-f%d", a.Job, a.Fence))
-	defer os.RemoveAll(dir)
 	outcome, err := s.runAttempt(ctx, dir, cl)
+	// The attempt is over: its renewal stops, so a lease left running lapses and the next attempt claims the job.
+	cancel()
+	renewing.Wait()
+	_ = os.RemoveAll(dir)
 	switch {
 	case outcome != "":
 		s.Metrics.Export(outcome, 0)
@@ -137,12 +145,13 @@ func (s *Server) runAttempt(ctx context.Context, dir string, cl *catalog.Claim) 
 	}
 	s.exportStalled("built")
 	key := fmt.Sprintf("exports/%s/%d.tar", a.Job, a.Fence)
+	// The put deadline counts from before the intent, by this replica's clock: the catalog's, read during the intent, is later
+	// but for the clock skew, which the cleanup waits out twice, so no put outlives the deadline the cleanup reads.
+	putCtx, stop := context.WithDeadline(ctx, time.Now().Add(s.Exports.putTimeout()))
+	defer stop()
 	if _, err := s.Catalog.IntendExport(ctx, a, key, s.Exports.putTimeout()); err != nil {
 		return "", err
 	}
-	// Bounded by this replica's clock from now, within the catalog's deadline but for the clock skew the cleanup waits out twice.
-	putCtx, stop := context.WithTimeout(ctx, s.Exports.putTimeout())
-	defer stop()
 	f, err := os.Open(path)
 	if err != nil {
 		return "", err
@@ -169,24 +178,33 @@ func (s *Server) fail(ctx context.Context, a catalog.Attempt, reason string) (st
 	return catalog.ExportFailed, nil
 }
 
-// renew renews a's lease every third of it until ctx ends, cancelling the attempt when a renewal is refused or comes too late.
-func (s *Server) renew(ctx context.Context, cancel context.CancelFunc, a catalog.Attempt) {
+// renew renews a's lease every third of it until ctx ends, cancelling the attempt when a renewal is refused,
+// and, independently of any renewal in flight, when the lease would pass by this replica's clock:
+// the deadline counts from before each renewal's call, which the catalog's clock reads later.
+func (s *Server) renew(ctx context.Context, cancel context.CancelFunc, a catalog.Attempt, expiry *time.Timer) {
 	lease := s.Exports.lease()
+	defer expiry.Stop()
 	t := time.NewTicker(lease / 3)
 	defer t.Stop()
-	last := time.Now()
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-t.C:
 		}
+		before := time.Now()
 		s.exportStalled("renew")
-		if err := s.Catalog.RenewExport(ctx, a, lease); err != nil || time.Since(last) > lease {
+		rctx, stop := context.WithTimeout(ctx, lease/3)
+		err := s.Catalog.RenewExport(rctx, a, lease)
+		stop()
+		if err != nil {
 			cancel()
 			return
 		}
-		last = time.Now()
+		if !expiry.Stop() {
+			return // the lease passed while the renewal ran: the attempt is cancelled
+		}
+		expiry.Reset(lease - time.Since(before))
 	}
 }
 

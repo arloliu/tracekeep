@@ -245,3 +245,38 @@ func TestExportCleanupAgainstCompletion(t *testing.T) {
 		}
 	})
 }
+
+// Cancel and completion run together: exactly one wins, whichever commits first.
+func TestExportCancelRacesCompletion(t *testing.T) {
+	t.Parallel()
+	engines(t, func(t *testing.T, c *Catalog) {
+		for range 10 {
+			id := createExport(t, c)
+			a, _ := claim(t, c, "r1")
+			key := "exports/" + id.String() + "/1.tar"
+			if _, err := c.IntendExport(t.Context(), a, key, time.Minute); err != nil {
+				t.Fatal(err)
+			}
+			start := make(chan struct{})
+			errs := make(chan error, 2)
+			go func() {
+				<-start
+				errs <- c.CancelExport(t.Context(), id, owner, AuditEntry{Actor: owner, Action: "export-cancel"})
+			}()
+			go func() {
+				<-start
+				_, err := c.CompleteExport(t.Context(), a, key, 1, time.Hour)
+				errs <- err
+			}()
+			close(start)
+			e1, e2 := <-errs, <-errs
+			if (e1 == nil) == (e2 == nil) {
+				t.Fatalf("cancel and completion = %v, %v; want exactly one to win", e1, e2)
+			}
+			j := exportState(t, c, id)
+			if j.State != ExportCancelled && j.State != ExportDone {
+				t.Fatalf("job = %+v", j)
+			}
+		}
+	})
+}

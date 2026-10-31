@@ -32,6 +32,8 @@ var (
 	ErrExportNotFound = errors.New("catalog: no such export job")
 	// ErrExportEnded refuses to cancel a job that has ended.
 	ErrExportEnded = errors.New("catalog: the export job has ended")
+	// ErrAudit marks a transaction that rolled back because its audit row could not be written.
+	ErrAudit = errors.New("catalog: the audit row could not be written")
 )
 
 // ExportJob is an export job's row.
@@ -59,10 +61,11 @@ type Attempt struct {
 	Holder string
 }
 
-// Claim is a claimed job with the attempt holding it.
+// Claim is a claimed job with the attempt holding it, and the jobs the claim failed for their exhausted attempts.
 type Claim struct {
-	Attempt Attempt
-	Job     ExportJob
+	Attempt   Attempt
+	Job       ExportJob
+	Exhausted int
 }
 
 // ExportObject is an attempt's object row.
@@ -127,8 +130,11 @@ func (c *Catalog) CreateExport(ctx context.Context, id tracepack.UUID, owner str
 		if err != nil {
 			return err
 		}
+		if err := c.auditIn(ctx, tx, audit); err != nil {
+			return fmt.Errorf("%w: %w", ErrAudit, err)
+		}
 
-		return c.auditIn(ctx, tx, audit)
+		return nil
 	})
 	if err != nil {
 		return fmt.Errorf("catalog: create export %s: %w", id, err)
@@ -138,26 +144,32 @@ func (c *Catalog) CreateExport(ctx context.Context, id tracepack.UUID, owner str
 }
 
 // ClaimExport claims the oldest queued job, or a running one whose lease has passed, for holder, with a lease of lease;
-// a claimable job that has had maxAttempts attempts is failed instead. ok is false when there is none.
+// a claimable job that has had maxAttempts attempts is failed instead, and counted in the claim's Exhausted.
+// ok is false when there is none to claim.
 func (c *Catalog) ClaimExport(ctx context.Context, holder string, lease time.Duration, maxAttempts int) (Claim, bool, error) {
-	claimable := `(state = 'queued' OR (state = 'running' AND lease_until < ` + c.d.nowNS + `))`
+	claimable := `(state = 'queued' OR (state = 'running' AND lease_until < ` + c.d.nowNS + `)) AND attempts < ?`
 	var job ExportJob
+	var exhausted int64
 	err := c.inTx(ctx, func(tx *sqlx.Tx) error {
-		// Jobs past their attempts are failed first, so the claim below never picks one.
-		_, err := tx.ExecContext(ctx, `UPDATE export_jobs SET state = 'failed', ended_at = `+c.d.nowNS+`, holder = NULL,
-			reason = 'its attempts are exhausted' WHERE `+claimable+` AND attempts >= ?`, maxAttempts)
+		// Jobs past their attempts are failed, and the claim's own guard excludes them too, whatever the clock read between.
+		res, err := tx.ExecContext(ctx, `UPDATE export_jobs SET state = 'failed', ended_at = `+c.d.nowNS+`, holder = NULL,
+			reason = 'its attempts are exhausted'
+			WHERE (state = 'queued' OR (state = 'running' AND lease_until < `+c.d.nowNS+`)) AND attempts >= ?`, maxAttempts)
 		if err != nil {
 			return err
 		}
+		if exhausted, err = res.RowsAffected(); err != nil {
+			return err
+		}
 		var id []byte
-		err = tx.GetContext(ctx, &id, `SELECT job_id FROM export_jobs WHERE `+claimable+` ORDER BY created_at, job_id LIMIT 1`)
+		err = tx.GetContext(ctx, &id, `SELECT job_id FROM export_jobs WHERE `+claimable+` ORDER BY created_at, job_id LIMIT 1`, maxAttempts)
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil
 		} else if err != nil {
 			return err
 		}
-		res, err := tx.ExecContext(ctx, `UPDATE export_jobs SET state = 'running', fence = fence + 1, holder = ?, lease_until = `+c.d.nowNS+` + ?,
-			attempts = attempts + 1 WHERE job_id = ? AND `+claimable, holder, lease.Nanoseconds(), id)
+		res, err = tx.ExecContext(ctx, `UPDATE export_jobs SET state = 'running', fence = fence + 1, holder = ?, lease_until = `+c.d.nowNS+` + ?,
+			attempts = attempts + 1 WHERE job_id = ? AND `+claimable, holder, lease.Nanoseconds(), id, maxAttempts)
 		if err := affected(res, err, errRetryClaim); err != nil {
 			return err
 		}
@@ -169,16 +181,17 @@ func (c *Catalog) ClaimExport(ctx context.Context, holder string, lease time.Dur
 
 		return nil
 	})
+	n := int(exhausted)
 	switch {
 	case errors.Is(err, errRetryClaim):
-		return Claim{}, false, nil // another replica claimed it first
+		return Claim{}, false, nil // another replica claimed it first, and the transaction, the exhausted ones' too, rolled back
 	case err != nil:
 		return Claim{}, false, fmt.Errorf("catalog: claim an export: %w", err)
 	case job.State == "":
-		return Claim{}, false, nil
+		return Claim{Exhausted: n}, false, nil
 	}
 
-	return Claim{Attempt: Attempt{Job: job.ID, Fence: job.Fence, Holder: holder}, Job: job}, true, nil
+	return Claim{Attempt: Attempt{Job: job.ID, Fence: job.Fence, Holder: holder}, Job: job, Exhausted: n}, true, nil
 }
 
 var errRetryClaim = errors.New("catalog: the claim lost a race")
@@ -231,15 +244,16 @@ func (c *Catalog) IntendExport(ctx context.Context, a Attempt, key string, putTi
 func (c *Catalog) CompleteExport(ctx context.Context, a Attempt, key string, size int64, retention time.Duration) (int64, error) {
 	var deleteAt int64
 	err := c.inTx(ctx, func(tx *sqlx.Tx) error {
-		res, err := tx.ExecContext(ctx, `UPDATE export_objects SET state = 'bundle' WHERE object_key = ? AND job_id = ? AND fence = ? AND state = 'intended'`,
-			key, a.Job[:], a.Fence)
-		if err := affected(res, err, ErrAttemptLost); err != nil {
-			return err
-		}
-		res, err = tx.ExecContext(ctx, `UPDATE export_jobs SET state = 'done', holder = NULL, object_key = ?, size = ?, ended_at = `+c.d.nowNS+`,
+		// The job row first, then its object's: the lock order of every export transaction (catalog.md §7.2).
+		res, err := tx.ExecContext(ctx, `UPDATE export_jobs SET state = 'done', holder = NULL, object_key = ?, size = ?, ended_at = `+c.d.nowNS+`,
 			delete_at = `+c.d.nowNS+` + ? WHERE `+c.attemptGuard(), key, size, retention.Nanoseconds(), a.Job[:], a.Fence)
 		if err := affected(res, err, ErrAttemptLost); err != nil {
 			return err
+		}
+		res, err = tx.ExecContext(ctx, `UPDATE export_objects SET state = 'bundle' WHERE object_key = ? AND job_id = ? AND fence = ? AND state = 'intended'`,
+			key, a.Job[:], a.Fence)
+		if err := affected(res, err, ErrAttemptLost); err != nil {
+			return err // the job's update rolls back with it
 		}
 
 		return tx.GetContext(ctx, &deleteAt, `SELECT delete_at FROM export_jobs WHERE job_id = ?`, a.Job[:])
@@ -285,8 +299,11 @@ func (c *Catalog) CancelExport(ctx context.Context, job tracepack.UUID, owner st
 		} else if err != nil {
 			return err
 		}
+		if err := c.auditIn(ctx, tx, audit); err != nil {
+			return fmt.Errorf("%w: %w", ErrAudit, err)
+		}
 
-		return c.auditIn(ctx, tx, audit)
+		return nil
 	})
 	if err != nil {
 		return fmt.Errorf("catalog: cancel export %s: %w", job, err)
@@ -333,12 +350,25 @@ func (c *Catalog) DoomExportObjects(ctx context.Context, l Lease, skew time.Dura
 		if err := c.checkLease(ctx, tx, l); err != nil {
 			return err
 		}
-		_, err := tx.ExecContext(ctx, `UPDATE export_objects SET state = 'deleting' WHERE state = 'intended' AND put_deadline + ? < `+c.d.nowNS, skew.Nanoseconds())
+		// One reading of the clock judges every row, so the objects doomed are exactly those of the jobs locked first:
+		// the jobs' rows, then their objects', the lock order of every export transaction (catalog.md §7.2).
+		var now int64
+		if err := tx.GetContext(ctx, &now, `SELECT `+c.d.nowNS); err != nil {
+			return err
+		}
+		cutoff := now - skew.Nanoseconds()
+		_, err := tx.ExecContext(ctx, `UPDATE export_jobs SET fence = fence WHERE job_id IN
+			(SELECT job_id FROM export_objects WHERE state = 'intended' AND put_deadline < ?)
+			OR (state = 'done' AND delete_at < ?)`, cutoff, cutoff)
+		if err != nil {
+			return err
+		}
+		_, err = tx.ExecContext(ctx, `UPDATE export_objects SET state = 'deleting' WHERE state = 'intended' AND put_deadline < ?`, cutoff)
 		if err != nil {
 			return err
 		}
 		_, err = tx.ExecContext(ctx, `UPDATE export_objects SET state = 'deleting' WHERE state = 'bundle'
-			AND job_id IN (SELECT job_id FROM export_jobs WHERE state = 'done' AND delete_at + ? < `+c.d.nowNS+`)`, skew.Nanoseconds())
+			AND job_id IN (SELECT job_id FROM export_jobs WHERE state = 'done' AND delete_at < ?)`, cutoff)
 		if err != nil {
 			return err
 		}
@@ -369,7 +399,11 @@ func (c *Catalog) ForgetExportObject(ctx context.Context, l Lease, key string) e
 		if err := c.checkLease(ctx, tx, l); err != nil {
 			return err
 		}
-		_, err := tx.ExecContext(ctx, `DELETE FROM export_objects WHERE object_key = ? AND state = 'deleting'`, key)
+		_, err := tx.ExecContext(ctx, `UPDATE export_jobs SET fence = fence WHERE job_id IN (SELECT job_id FROM export_objects WHERE object_key = ?)`, key)
+		if err != nil {
+			return err
+		}
+		_, err = tx.ExecContext(ctx, `DELETE FROM export_objects WHERE object_key = ? AND state = 'deleting'`, key)
 
 		return err
 	})
