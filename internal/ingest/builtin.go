@@ -57,7 +57,7 @@ func (c *Config) Content() []byte {
 // (classify.Name), under maxFrameLen.
 // An unversioned build is refused unless allowUnversioned, which only dev passes.
 func Builtin(maxFrameLen uint64, allowUnversioned bool) (Config, error) {
-	return namedConfig(classify.Name, maxFrameLen, allowUnversioned)
+	return namedConfig(classify.Name(), maxFrameLen, allowUnversioned)
 }
 
 func namedConfig(name string, maxFrameLen uint64, allowUnversioned bool) (Config, error) {

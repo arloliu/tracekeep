@@ -215,7 +215,7 @@ func (r *Compactor) write(ctx context.Context, w *os.File, lease catalog.Lease, 
 	}
 	conflicts := []tracepack.Conflict{}
 	report, err := tracepack.Merge(ctx, w, inputs, tracepack.MergeOptions{
-		Writer: r.Writer,
+		WriterTag: r.Writer,
 		// The revision the commit gives the scope, and the lease's fence token (compactor.md §8.1 step 4).
 		ScopeGeneration: uint64(snap.Revision + 1), //nolint:gosec // a revision is positive
 		PublisherEpoch:  uint64(lease.Fence),       //nolint:gosec // a fence token is positive

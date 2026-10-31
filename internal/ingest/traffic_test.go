@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/arloliu/go-secs/tracepack"
+	tpbus "github.com/arloliu/go-secs/tracepack/bus"
 )
 
 // The test traffic: bus messages built as a producer publishes them (the tracepack storage specification §4).
@@ -80,9 +81,9 @@ func dataRecord(seq uint64, ts int64) tracepack.Record {
 // inline is the message of r, carrying descriptor when it is a start.
 func inline(t *testing.T, capture tracepack.UUID, r tracepack.Record, descriptor []byte) Message {
 	t.Helper()
-	br := tracepack.NewBusRecord(&r)
+	br := tpbus.NewRecord(&r)
 	br.CaptureID = capture
-	body, err := tracepack.EncodeBusBody(&br)
+	body, err := tpbus.EncodeBody(&br)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -94,26 +95,26 @@ func inline(t *testing.T, capture tracepack.UUID, r tracepack.Record, descriptor
 func claimCheck(t *testing.T, c *claims, capture tracepack.UUID, r tracepack.Record, descriptor []byte) Message {
 	t.Helper()
 	payload := r.Payload
-	br := tracepack.NewBusRecord(&r)
+	br := tpbus.NewRecord(&r)
 	br.CaptureID, br.ClaimCheck, br.Record.Payload = capture, true, nil
-	body, err := tracepack.EncodeBusBody(&br)
+	body, err := tpbus.EncodeBody(&br)
 	if err != nil {
 		t.Fatal(err)
 	}
 	env := envelope(t, capture, r.Seq, descriptor)
-	env.PayloadRef, env.PayloadDigest = bucket+"/"+env.MsgID, tracepack.BusPayloadDigest(payload)
+	env.PayloadRef, env.PayloadDigest = bucket+"/"+env.MsgID, tpbus.PayloadDigest(payload)
 	c.put(env.MsgID, payload)
 
 	return Message{Env: env, Body: body, Incarnation: 1, StreamSeq: int64(r.Seq) + 1}
 }
 
-func envelope(t *testing.T, capture tracepack.UUID, seq uint64, descriptor []byte) tracepack.BusEnvelope {
+func envelope(t *testing.T, capture tracepack.UUID, seq uint64, descriptor []byte) tpbus.Envelope {
 	t.Helper()
-	id, err := tracepack.BusMsgID(capture, seq)
+	id, err := tpbus.MsgID(capture, seq)
 	if err != nil {
 		t.Fatal(err)
 	}
-	env := tracepack.BusEnvelope{Layout: "1", MsgID: id}
+	env := tpbus.Envelope{Layout: "1", MsgID: id}
 	if descriptor != nil {
 		env.Descriptor = base64.StdEncoding.EncodeToString(descriptor)
 	}

@@ -384,10 +384,10 @@ func TestJudge(t *testing.T) {
 		vr   tracepack.VerifyReport
 		want bool
 	}{
-		{tracepack.VerifyReport{Outcome: tracepack.OutcomeFinalizedConsistent}, false},
-		{tracepack.VerifyReport{Outcome: tracepack.OutcomeFinalizedConsistent, WriterDefects: []tracepack.WriterDefect{{}}}, true},
-		{tracepack.VerifyReport{Outcome: tracepack.OutcomeFinalizedInconsistent}, true},
-		{tracepack.VerifyReport{Outcome: tracepack.OutcomeUnfinalized}, true},
+		{tracepack.VerifyReport{Outcome: tracepack.VerifyOutcomeFinalizedConsistent}, false},
+		{tracepack.VerifyReport{Outcome: tracepack.VerifyOutcomeFinalizedConsistent, WriterDefects: []tracepack.WriterDefect{{}}}, true},
+		{tracepack.VerifyReport{Outcome: tracepack.VerifyOutcomeFinalizedInconsistent}, true},
+		{tracepack.VerifyReport{Outcome: tracepack.VerifyOutcomeUnfinalized}, true},
 	} {
 		if got := judge(&tc.vr) != ""; got != tc.want {
 			t.Errorf("judge(%+v) quarantines = %v, want %v", tc.vr, got, tc.want)

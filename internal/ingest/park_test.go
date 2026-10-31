@@ -13,6 +13,7 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 
 	"github.com/arloliu/go-secs/tracepack"
+	tpbus "github.com/arloliu/go-secs/tracepack/bus"
 	"github.com/arloliu/tracekeep/internal/bus"
 	"github.com/arloliu/tracekeep/internal/catalog"
 	"github.com/arloliu/tracekeep/internal/catalog/catalogtest"
@@ -23,14 +24,14 @@ import (
 // transported gives m the traffic subject and the headers a producer's publish stamps, Nats-Expected-Stream included.
 func transported(t *testing.T, m Message) Message {
 	t.Helper()
-	subject, err := tracepack.BusSubject(prefix, "T1", m.Raw().Version.Capture)
+	subject, err := tpbus.Subject(prefix, "T1", m.Raw().Version.Capture)
 	if err != nil {
 		t.Fatal(err)
 	}
 	h := nats.Header{}
 	for k, v := range map[string]string{
-		tracepack.BusHeaderLayout: m.Env.Layout, tracepack.BusHeaderMsgID: m.Env.MsgID, tracepack.BusHeaderDescriptor: m.Env.Descriptor,
-		tracepack.BusHeaderPayloadRef: m.Env.PayloadRef, tracepack.BusHeaderPayloadDigest: m.Env.PayloadDigest,
+		tpbus.HeaderLayout: m.Env.Layout, tpbus.HeaderMsgID: m.Env.MsgID, tpbus.HeaderDescriptor: m.Env.Descriptor,
+		tpbus.HeaderPayloadRef: m.Env.PayloadRef, tpbus.HeaderPayloadDigest: m.Env.PayloadDigest,
 		jetstream.ExpectedStreamHeader: busconfig.DefaultTrafficStream,
 	} {
 		if v != "" {
@@ -188,7 +189,7 @@ func TestPublishCopy(t *testing.T) {
 			}
 			cp := stored(t, parked, sa)
 			if cp == nil || string(cp.Data) != string(a.Msg.Body) || cp.Header.Get(jetstream.MsgIDHeader) != a.Msg.Env.MsgID ||
-				cp.Header.Get(tracepack.BusHeaderLayout) != "1" || cp.Header.Get(jetstream.ExpectedStreamHeader) != "" {
+				cp.Header.Get(tpbus.HeaderLayout) != "1" || cp.Header.Get(jetstream.ExpectedStreamHeader) != "" {
 				t.Fatalf("stored copy %+v; want the body and headers unchanged, Nats-Expected-Stream removed", cp)
 			}
 

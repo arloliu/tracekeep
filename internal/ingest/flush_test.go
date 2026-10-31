@@ -123,7 +123,7 @@ func verify(t *testing.T, st store.ObjectStore, key string) {
 	}
 	defer obj.Close()
 	rep, err := tracepack.Verify(t.Context(), obj, obj.Size(), tracepack.VerifyOptions{})
-	if err != nil || rep.Outcome != tracepack.OutcomeFinalizedConsistent || len(rep.WriterDefects) != 0 {
+	if err != nil || rep.Outcome != tracepack.VerifyOutcomeFinalizedConsistent || len(rep.WriterDefects) != 0 {
 		t.Errorf("Verify = %v, %v, writer defects %v", rep.Outcome, err, rep.WriterDefects)
 	}
 }

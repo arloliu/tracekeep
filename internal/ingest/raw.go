@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/arloliu/go-secs/tracepack"
+	tpbus "github.com/arloliu/go-secs/tracepack/bus"
 )
 
 // headerLen is the record header every bus body starts with.
@@ -36,14 +37,14 @@ type Raw struct {
 // the layout and length checked first, then the version, whose capture and seq come from Nats-Msg-Id
 // and whose digest is the claim's Tpk-Payload-Digest or the SHA-256 of the inline payload.
 // A record older than horizonNS (UTC nanoseconds) is expired.
-func ReadRaw(env *tracepack.BusEnvelope, body []byte, horizonNS int64) (Raw, Facts) {
+func ReadRaw(env *tpbus.Envelope, body []byte, horizonNS int64) (Raw, Facts) {
 	var r Raw
 	var f Facts
 	if env.Layout != "1" || len(body) < headerLen {
 		return r, f
 	}
 	f.LayoutOK = true
-	capture, seq, err := tracepack.ParseBusMsgID(env.MsgID)
+	capture, seq, err := tpbus.ParseMsgID(env.MsgID)
 	if err != nil {
 		return r, f
 	}

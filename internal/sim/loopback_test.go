@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/arloliu/go-secs/tracepack"
+	tpbus "github.com/arloliu/go-secs/tracepack/bus"
 	"github.com/arloliu/tracekeep/producer"
 	"github.com/arloliu/tracekeep/producer/producertest"
 )
@@ -170,10 +171,10 @@ func TestLoopbackRecordsT3(t *testing.T) {
 	}
 }
 
-func decode(t *testing.T, m *producer.Msg) tracepack.BusRecord {
+func decode(t *testing.T, m *producer.Msg) tpbus.Record {
 	t.Helper()
-	br, err := tracepack.CheckBusMessage(tracepack.BusEnvelope{
-		Layout: m.Header[tracepack.BusHeaderLayout], MsgID: m.MsgID, Descriptor: m.Header[tracepack.BusHeaderDescriptor],
+	br, err := tpbus.CheckMessage(tpbus.Envelope{
+		Layout: m.Header[tpbus.HeaderLayout], MsgID: m.MsgID, Descriptor: m.Header[tpbus.HeaderDescriptor],
 	}, m.Data)
 	if err != nil {
 		t.Fatalf("CheckBusMessage(%s): %v", m.MsgID, err)

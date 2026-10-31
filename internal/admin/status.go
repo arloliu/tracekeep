@@ -9,6 +9,7 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 
 	"github.com/arloliu/go-secs/tracepack"
+	tpbus "github.com/arloliu/go-secs/tracepack/bus"
 	"github.com/arloliu/tracekeep/internal/bus"
 	"github.com/arloliu/tracekeep/internal/catalog"
 )
@@ -64,7 +65,7 @@ func (a *Admin) Status(ctx context.Context) (Status, error) {
 			line.LastRecord = &at
 		}
 		// A subject is <prefix>.<tool token>.<capture> (tracepack's BusSubject).
-		if token, err := tracepack.BusToolToken(t.ToolID); err == nil {
+		if token, err := tpbus.ToolToken(t.ToolID); err == nil {
 			for subject, n := range info.State.Subjects {
 				if strings.HasPrefix(subject, prefix+token+".") {
 					line.Backlog += n

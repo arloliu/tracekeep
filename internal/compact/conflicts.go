@@ -91,7 +91,7 @@ func (r *Compactor) compare(ctx context.Context, s *catalog.Suspect) (bool, erro
 		return false, err
 	}
 	for _, d := range res.Incomplete {
-		if d.Reason != tracepack.ReasonCoverage && d.Reason != tracepack.ReasonCrashGap {
+		if d.Reason != tracepack.IncompleteReasonCoverage && d.Reason != tracepack.IncompleteReasonCrashGap {
 			return false, fmt.Errorf("compact: comparison incomplete: %v", d.Reason)
 		}
 	}

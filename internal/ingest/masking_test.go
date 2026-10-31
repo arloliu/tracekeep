@@ -60,7 +60,7 @@ func maskingConfig(t *testing.T) Config {
 	t.Helper()
 	p := policy.Baseline()
 	cfg := Config{
-		Classifier: classify.NewNamed(classify.Name, maxFrameLen), Name: classify.Name, MaxFrameLen: maxFrameLen,
+		Classifier: classify.NewNamed(classify.Name(), maxFrameLen), Name: classify.Name(), MaxFrameLen: maxFrameLen,
 		Policy: &p, DigestKey: KeyRef{ID: "d-1"}, EncryptionKey: KeyRef{ID: "m-1"}, FormatMinor: 1,
 	}
 	var err error
@@ -135,7 +135,7 @@ func TestMaskingAtIngest(t *testing.T) {
 					t.Errorf("%s: the stored record holds %q", carriers[i].Name, s)
 				}
 			}
-			if !r.Quality.Has(tracepack.QualityRedacted) {
+			if !r.Quality.HasAny(tracepack.QualityRedacted) {
 				t.Errorf("%s: the stored record is not redacted", carriers[i].Name)
 			}
 		}
@@ -374,7 +374,7 @@ func TestPolicyLessConfigurationMasksNothing(t *testing.T) {
 		p.flushAll(t)
 		keys := storedKeys(t, p.st)
 		recs := records(t, p.st, keys[0])
-		if !bytes.Equal(recs[1].Payload, carriers[0].Payload) || recs[1].Quality.Has(tracepack.QualityRedacted) {
+		if !bytes.Equal(recs[1].Payload, carriers[0].Payload) || recs[1].Quality.HasAny(tracepack.QualityRedacted) {
 			t.Error("a policy-less configuration changed the record")
 		}
 		if m := header(t, p, keys[0]).Meta; m.RedactionPolicy != nil || len(m.Redaction) != 0 {

@@ -230,7 +230,7 @@ func TestWriteFailureThreeTimes(t *testing.T) {
 	t.Parallel()
 	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
 		p := newPipeline(t, c)
-		p.f.hooks[hookWrite] = func() error { return fmt.Errorf("refused: %w", tracepack.ErrInvalidRecord) }
+		p.f.hooks[hookWrite] = func() error { return fmt.Errorf("refused: %w: %w", tracepack.ErrRefused, tracepack.ErrInvalidRecord) }
 		var logged bytes.Buffer
 		g := p.ingester(slog.New(slog.NewTextHandler(&logged, nil)))
 		s := metrics.NewServer()
@@ -330,7 +330,7 @@ func TestRefusedConflictSegmentRegistersNothing(t *testing.T) {
 		writes := 0
 		p.f.hooks[hookWrite] = func() error {
 			if writes++; writes == 2 {
-				return fmt.Errorf("refused: %w", tracepack.ErrInvalidRecord)
+				return fmt.Errorf("refused: %w: %w", tracepack.ErrRefused, tracepack.ErrInvalidRecord)
 			}
 			return nil
 		}

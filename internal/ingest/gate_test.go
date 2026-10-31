@@ -9,6 +9,7 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 
 	"github.com/arloliu/go-secs/tracepack"
+	tpbus "github.com/arloliu/go-secs/tracepack/bus"
 	"github.com/arloliu/tracekeep/internal/admin"
 	"github.com/arloliu/tracekeep/internal/bus"
 	"github.com/arloliu/tracekeep/internal/catalog"
@@ -415,7 +416,7 @@ func TestResolutionInputs(t *testing.T) {
 		malformed := map[string]func(m *Message){
 			"claim reference without digest":    func(m *Message) { m.Env.PayloadRef = bucket + "/" + m.Env.MsgID },
 			"malformed digest":                  func(m *Message) { m.Env.PayloadRef, m.Env.PayloadDigest = bucket+"/"+m.Env.MsgID, "SHA-256=xyz" },
-			"digest without reference":          func(m *Message) { m.Env.PayloadDigest = tracepack.BusPayloadDigest([]byte("x")) },
+			"digest without reference":          func(m *Message) { m.Env.PayloadDigest = tpbus.PayloadDigest([]byte("x")) },
 			"malformed Nats-Msg-Id":             func(m *Message) { m.Env.MsgID = "x" },
 			"body shorter than a record header": func(m *Message) { m.Body = m.Body[:43] },
 		}
@@ -472,6 +473,31 @@ func TestTerminatedVersionAboveTheCutOff(t *testing.T) {
 		other.StreamSeq = 301
 		if _, dec := dispose(t, x, other); dec.Action != ActPark || dec.Reason != ReasonUnknownCapture {
 			t.Errorf("an unresolved version above the cut-off = %+v, want handled as new traffic", dec)
+		}
+	})
+}
+
+// A transport event or an annotation whose payload decodes in no minor is malformed, inline or by claim-check (tracepack G5-294):
+// terminated, a seq gap, never retried.
+func TestUndecodableEventsAreMalformed(t *testing.T) {
+	t.Parallel()
+	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
+		cl := newClaims()
+		x := executor(t, c, cl)
+		capture := tracepack.UUID{0x5e}
+		if _, dec := dispose(t, x, inline(t, capture, startRecord(t, now), descriptorOf(t, "eqp"))); dec.Action != ActBatch {
+			t.Fatalf("start = %+v, want admitted and batched", dec)
+		}
+		for i, kind := range []tracepack.Kind{tracepack.KindTransportEvent, tracepack.KindAnnotation} {
+			r := tracepack.Record{
+				Seq: uint64(10 + i), TSUTCNs: now, Kind: kind, Dir: tracepack.DirLocal, Fidelity: tracepack.FidelityNotApplicable,
+				Payload: []byte{0xff, 0xff, 0xff},
+			}
+			for name, m := range map[string]Message{"inline": inline(t, capture, r, nil), "claim-check": claimCheck(t, cl, capture, r, nil)} {
+				if _, dec := dispose(t, x, m); dec.Action != ActTerminate || dec.Reason != ReasonMalformed {
+					t.Errorf("%v %s: %+v, want terminated as malformed", kind, name, dec)
+				}
+			}
 		}
 	})
 }

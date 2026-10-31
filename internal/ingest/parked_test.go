@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"log/slog"
 	"slices"
 	"strconv"
@@ -14,6 +15,7 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 
 	"github.com/arloliu/go-secs/tracepack"
+	tpbus "github.com/arloliu/go-secs/tracepack/bus"
 	"github.com/arloliu/tracekeep/internal/bus"
 	"github.com/arloliu/tracekeep/internal/catalog"
 	"github.com/arloliu/tracekeep/internal/catalog/catalogtest"
@@ -81,7 +83,7 @@ func TestParkedConsumerStages(t *testing.T) {
 	t.Parallel()
 	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
 		r := newReplica(t, c)
-		r.g.Flusher.hooks[hookWrite] = func() error { return tracepack.ErrInvalidRecord }
+		r.g.Flusher.hooks[hookWrite] = func() error { return fmt.Errorf("%w: %w", tracepack.ErrRefused, tracepack.ErrInvalidRecord) }
 		capture := tracepack.UUID{40}
 		for _, m := range traffic(t, capture) {
 			r.publish(t, m, nil)
@@ -233,7 +235,7 @@ func TestParkedConsumerAcknowledgesUnderTheTermination(t *testing.T) {
 
 		// A copy of the version published later (the gate's "a day later": after the first was acknowledged, its subject empty),
 		// as a delayed publish would store it, is acknowledged under the same termination with its own audit row.
-		traffic, err := tracepack.BusSubject(prefix, "T1", capture)
+		traffic, err := tpbus.Subject(prefix, "T1", capture)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -439,7 +441,7 @@ func TestConsumersProcessAtOnce(t *testing.T) {
 		r := newReplica(t, c)
 		parkedCapture, live := tracepack.UUID{53}, tracepack.UUID{54}
 		// The parked capture: its batch refused by the Writer to the write-failure limit, then parked.
-		r.g.Flusher.hooks[hookWrite] = func() error { return tracepack.ErrInvalidRecord }
+		r.g.Flusher.hooks[hookWrite] = func() error { return fmt.Errorf("%w: %w", tracepack.ErrRefused, tracepack.ErrInvalidRecord) }
 		for _, m := range traffic(t, parkedCapture) {
 			r.publish(t, m, nil)
 		}
@@ -591,7 +593,7 @@ func lateMessageUnderTermination(t *testing.T, r *replica, c *catalog.Catalog, c
 	t.Helper()
 	ctx := t.Context()
 	time.Sleep(2 * window) // the scenario's delay: the late message comes after the window
-	subject, err := tracepack.BusSubject(prefix, "T1", capture)
+	subject, err := tpbus.Subject(prefix, "T1", capture)
 	if err != nil {
 		t.Fatal(err)
 	}

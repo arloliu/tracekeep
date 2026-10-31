@@ -11,6 +11,7 @@ import (
 
 	"connectrpc.com/connect"
 	"github.com/arloliu/go-secs/tracepack"
+	tpbus "github.com/arloliu/go-secs/tracepack/bus"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"github.com/arloliu/tracekeep/internal/catalog"
@@ -62,8 +63,8 @@ func thinnedTraffic(t *testing.T, n int) (tracepack.UUID, []byte, []tracepack.Re
 			t.Fatalf("%d data records on the bus: %v", data, err)
 		}
 		m := &msgs[i-1]
-		br, err := tracepack.CheckBusMessage(tracepack.BusEnvelope{
-			Layout: m.Header[tracepack.BusHeaderLayout], MsgID: m.MsgID, Descriptor: m.Header[tracepack.BusHeaderDescriptor],
+		br, err := tpbus.CheckMessage(tpbus.Envelope{
+			Layout: m.Header[tpbus.HeaderLayout], MsgID: m.MsgID, Descriptor: m.Header[tpbus.HeaderDescriptor],
 		}, m.Data)
 		if err != nil {
 			t.Fatal(err)
@@ -227,14 +228,14 @@ func checkThinnedStorage(t *testing.T, p *pipeline, sent map[uint64]*tracepack.R
 			}
 			in := sent[r.Seq]
 			switch {
-			case in.Quality.Has(tracepack.QualityUnobserved):
+			case in.Quality.HasAny(tracepack.QualityUnobserved):
 				thinned[r.Seq] = true
-				if !bytes.Equal(r.Payload, in.Payload) || r.Quality.Has(tracepack.QualityRedacted) || !r.Quality.Has(tracepack.QualityUnobserved) || entries[r.Seq] != 0 {
+				if !bytes.Equal(r.Payload, in.Payload) || r.Quality.HasAny(tracepack.QualityRedacted) || !r.Quality.HasAny(tracepack.QualityUnobserved) || entries[r.Seq] != 0 {
 					t.Errorf("%s: thinned seq %d stored with quality %v and %d entries, or changed", key, r.Seq, r.Quality, entries[r.Seq])
 				}
 			default:
 				kept[r.Seq] = true
-				if !r.Quality.Has(tracepack.QualityRedacted) || entries[r.Seq] == 0 || bytes.Equal(r.Payload, in.Payload) {
+				if !r.Quality.HasAny(tracepack.QualityRedacted) || entries[r.Seq] == 0 || bytes.Equal(r.Payload, in.Payload) {
 					t.Errorf("%s: kept seq %d stored with quality %v and %d entries, or in clear", key, r.Seq, r.Quality, entries[r.Seq])
 				}
 			}

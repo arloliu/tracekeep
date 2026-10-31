@@ -148,7 +148,7 @@ func (m *masked) mask(t *testing.T, capture tracepack.UUID, rs []tracepack.Recor
 	out := make([]tracepack.Record, 0, len(rs))
 	var entries []tracepack.RedactionEntry
 	for i := range rs {
-		r, es, err := m.compiled.Mask(capture, &rs[i], false, m.keys.ForUse(t.Context()))
+		r, es, err := m.compiled.Mask(t.Context(), capture, &rs[i], false, m.keys)
 		if err != nil {
 			t.Fatal(err)
 		}

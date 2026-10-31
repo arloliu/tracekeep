@@ -12,6 +12,7 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 
 	"github.com/arloliu/go-secs/tracepack"
+	tpbus "github.com/arloliu/go-secs/tracepack/bus"
 	"github.com/arloliu/tracekeep/internal/bus"
 	"github.com/arloliu/tracekeep/internal/catalog"
 	"github.com/arloliu/tracekeep/internal/catalog/catalogtest"
@@ -109,7 +110,7 @@ func newReplica(t *testing.T, c *catalog.Catalog) *replica {
 // publish publishes m on its capture's subject, putting a claim-check record's payload in the bucket first.
 func (r *replica) publish(t *testing.T, m Message, claim []byte) {
 	t.Helper()
-	subject, err := tracepack.BusSubject(prefix, "T1", m.Raw().Version.Capture)
+	subject, err := tpbus.Subject(prefix, "T1", m.Raw().Version.Capture)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -131,11 +132,11 @@ func (r *replica) publishTo(t *testing.T, subject string, m Message) *jetstream.
 			nm.Header.Set(k, v)
 		}
 	}
-	set(tracepack.BusHeaderLayout, m.Env.Layout)
-	set(tracepack.BusHeaderMsgID, m.Env.MsgID)
-	set(tracepack.BusHeaderDescriptor, m.Env.Descriptor)
-	set(tracepack.BusHeaderPayloadRef, m.Env.PayloadRef)
-	set(tracepack.BusHeaderPayloadDigest, m.Env.PayloadDigest)
+	set(tpbus.HeaderLayout, m.Env.Layout)
+	set(tpbus.HeaderMsgID, m.Env.MsgID)
+	set(tpbus.HeaderDescriptor, m.Env.Descriptor)
+	set(tpbus.HeaderPayloadRef, m.Env.PayloadRef)
+	set(tpbus.HeaderPayloadDigest, m.Env.PayloadDigest)
 	ack, err := r.js.PublishMsg(t.Context(), nm)
 	if err != nil {
 		t.Fatal(err)

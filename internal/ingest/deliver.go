@@ -12,6 +12,7 @@ import (
 	"github.com/nats-io/nats.go"
 
 	"github.com/arloliu/go-secs/tracepack"
+	tpbus "github.com/arloliu/go-secs/tracepack/bus"
 	"github.com/arloliu/go-secs/tracepack/redact"
 	"github.com/arloliu/tracekeep/internal/catalog"
 	"github.com/arloliu/tracekeep/internal/keys"
@@ -36,7 +37,7 @@ type ClaimStore interface {
 
 // Message is one delivery as ingest reads it.
 type Message struct {
-	Env  tracepack.BusEnvelope
+	Env  tpbus.Envelope
 	Body []byte
 	// Incarnation is the incarnation of the stream the message came from, and StreamSeq its sequence there.
 	Incarnation int64
@@ -56,7 +57,7 @@ type Delivery struct {
 	Raw   Raw
 	Facts Facts
 	// Record is the bus record once framed, with its payload once a claim object was fetched and its derived values once classified.
-	Record tracepack.BusRecord
+	Record tpbus.Record
 	// ConfigID is the capture's processing configuration once it is admitted.
 	ConfigID int64
 	// Claim is the claim object of a claim-check record once fetched, until the record is masked; ClaimSize is its size.
@@ -138,11 +139,11 @@ func (x *Executor) run(ctx context.Context, d *Delivery, s Step) error {
 	case StepApplyOrder:
 		return x.applyOrder(ctx, d)
 	case StepFrame:
-		br, err := tracepack.CheckBusMessage(d.Msg.Env, d.Msg.Body)
+		br, err := tpbus.CheckMessage(d.Msg.Env, d.Msg.Body)
 		switch {
-		case errors.Is(err, tracepack.ErrBusMalformed):
+		case errors.Is(err, tpbus.ErrMalformed):
 			f.Framing = FramedMalformed
-		case errors.Is(err, tracepack.ErrBusNotAccepted):
+		case errors.Is(err, tpbus.ErrNotAccepted):
 			f.Framing = FramedNotAccepted
 		case err != nil:
 			return err
@@ -245,7 +246,7 @@ func (x *Executor) lookupCapture(ctx context.Context, d *Delivery) error {
 }
 
 // fetchClaim fetches the claim object the message names and checks it against the length and digest the message declares;
-// for a start, CheckBusPayload also decodes its descriptor.
+// for a start, bus.CheckPayload also decodes its descriptor, and an event's or an annotation's payload must decode.
 func (x *Executor) fetchClaim(ctx context.Context, d *Delivery) error {
 	payload, err := x.Claims.Get(ctx, d.Msg.Env.MsgID)
 	if errors.Is(err, ErrClaimNotFound) {
@@ -255,15 +256,18 @@ func (x *Executor) fetchClaim(ctx context.Context, d *Delivery) error {
 	if err != nil {
 		return err
 	}
-	err = tracepack.CheckBusPayload(&d.Record, payload)
+	err = tpbus.CheckPayload(&d.Record, payload)
 	switch {
-	case errors.Is(err, tracepack.ErrBusPayloadMismatch):
+	case errors.Is(err, tpbus.ErrPayloadMismatch):
 		d.Facts.Claim = ClaimMismatch
-	case errors.Is(err, tracepack.ErrBusNotAccepted):
+	case errors.Is(err, tpbus.ErrNotAccepted):
 		// A start whose descriptor does not decode: the payload is the start's, and the descriptor is not accepted.
 		d.Facts.Claim, d.Facts.Start, d.Facts.Descriptor = ClaimOK, true, No
+	case errors.Is(err, tpbus.ErrMalformed):
+		// A transport event or an annotation whose payload decodes in no minor (tracepack G5-294): malformed, as framing would find it inline.
+		d.Facts.Framing = FramedMalformed
 	case err != nil:
-		return err // CheckBusPayload of a record that is not a claim-check one: an invariant failure, nak'd
+		return err // bus.CheckPayload of a record that is not a claim-check one: an invariant failure, nak'd
 	default:
 		d.Facts.Claim, d.Facts.Start, d.Claim, d.ClaimSize = ClaimOK, d.Record.Descriptor != nil, payload, int64(len(payload))
 	}
@@ -353,10 +357,8 @@ func (x *Executor) record(ctx context.Context, d *Delivery, s Step) error {
 	return x.mask(ctx, d)
 }
 
-// MaskKeys gives one use's masking its keys; *keys.Keys is one.
-type MaskKeys interface {
-	ForUse(ctx context.Context) redact.Keys
-}
+// MaskKeys gives masking its keys, each call over its own context; *keys.Keys is one.
+type MaskKeys = redact.Keys
 
 // mask masks the record under its capture's configuration (ingest.md §6.2), unobserved as the bus record's quality bit 7 says;
 // the delivery then holds the masked record and its entries, and drops the claim object's clear bytes.
@@ -369,7 +371,7 @@ func (x *Executor) mask(ctx context.Context, d *Delivery) error {
 	}
 	started := time.Now()
 	r := d.Record.Record
-	masked, entries, err := cfg.Masking.Mask(d.Raw.Version.Capture, &r, r.Quality.Has(tracepack.QualityUnobserved), x.Keys.ForUse(ctx))
+	masked, entries, err := cfg.Masking.Mask(ctx, d.Raw.Version.Capture, &r, r.Quality.HasAny(tracepack.QualityUnobserved), x.Keys)
 	x.Metrics.Masked(time.Since(started))
 	switch {
 	case err == nil:
@@ -401,7 +403,7 @@ func (x *Executor) derive(d *Delivery) {
 		d.Facts.Derived = DerivedKindInvalid
 		return
 	}
-	if err := tracepack.DeriveBusRecord(&d.Record.Record, x.Configs[d.ConfigID].Classifier); err != nil {
+	if err := tpbus.DeriveRecord(&d.Record.Record, x.Configs[d.ConfigID].Classifier); err != nil {
 		d.Facts.Derived = DerivedClassifierInvalid
 		return
 	}
