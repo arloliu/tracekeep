@@ -92,10 +92,10 @@ test("a session no role maps is signed in and admitted to nothing", async () => 
   expect(screen.queryByRole("link", { name: "Records" })).not.toBeInTheDocument();
 });
 
-test("a refused sign-out says so and keeps the page signed in", async () => {
-  stubFetch({ "/auth/logout": () => new Response("refused", { status: 403 }) });
+test.each([403, 401, 502])("a sign-out answered %i says so and keeps the page signed in", async (status) => {
+  stubFetch({ "/auth/logout": () => new Response("refused", { status }) });
   renderApp("/");
   await userEvent.click(await screen.findByRole("button", { name: "Sign out" }));
-  expect(await screen.findByRole("alert")).toHaveTextContent("Sign-out failed (403); you are still signed in.");
+  expect(await screen.findByRole("alert")).toHaveTextContent(`Sign-out failed (${String(status)}); you are still signed in.`);
   expect(screen.queryByRole("link", { name: "Sign in" })).not.toBeInTheDocument();
 });

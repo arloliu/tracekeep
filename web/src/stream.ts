@@ -37,11 +37,12 @@ function initial(req: RecordsRequest): Stream {
 
 // lacks tells whether an item says the answer is incomplete, as the server's end counts it:
 // an incomplete marker, or a capture's completeness with any missing entry.
+// A completeness cut to fit only ever lost missing entries, so it counts too, its lists empty or not.
 function lacks(item: RecordItem): boolean {
   if (item.item.case === "incomplete") return true;
   if (item.item.case !== "capture") return false;
-  const c = item.item.value.completeness;
-  return c !== undefined && c.gaps.length + c.evicted.length + c.deferred.length + c.losses.length + c.crashGaps.length + c.conflicts.length > 0;
+  const { completeness: c, completenessTruncated } = item.item.value;
+  return completenessTruncated || (c !== undefined && c.gaps.length + c.evicted.length + c.deferred.length + c.losses.length + c.crashGaps.length + c.conflicts.length > 0);
 }
 
 function append(s: Stream, res: QueryRecordsResponse): Stream {

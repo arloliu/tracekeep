@@ -58,10 +58,10 @@ export function loginURL(path: string): string {
 }
 
 // signOut clears the session by a same-origin POST, then shows the sign-in page;
-// a refusal leaves the session, and the page, as they were. A 401 means it had already ended.
+// any other answer, from the API or a proxy before it, leaves the session, and the page, as they were.
 export async function signOut(client: QueryClient) {
   const resp = await fetch("/auth/logout", { method: "POST", credentials: "same-origin" });
-  if (!resp.ok && resp.status !== 401) throw new Error(`Sign-out failed (${String(resp.status)}); you are still signed in.`);
+  if (!resp.ok) throw new Error(`Sign-out failed (${String(resp.status)}); you are still signed in.`);
   client.setQueryData(meKey, { state: "signed-out" } satisfies SignIn);
 }
 
