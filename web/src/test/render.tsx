@@ -1,9 +1,12 @@
+import { createClient, createRouterTransport, type ConnectRouter } from "@connectrpc/connect";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { RouterProvider, createMemoryHistory } from "@tanstack/react-router";
 import { render } from "@testing-library/react";
 import { vi } from "vitest";
 
+import { MachineContext } from "@/api";
 import type { Me } from "@/auth";
+import { MachineService } from "@/gen/tracekeep/v1/machine_pb";
 import { newQueryClient } from "@/query";
 import { newRouter } from "@/router";
 import { ZoneProvider } from "@/time";
@@ -31,15 +34,18 @@ export function stubFetch(answers: Answers = {}) {
   return calls;
 }
 
-// renderApp renders the whole application at path.
-export function renderApp(path: string) {
+// renderApp renders the whole application at path, its machine API answered by routes over a router transport.
+export function renderApp(path: string, routes: (r: ConnectRouter) => void = () => undefined) {
   const client = newQueryClient();
   const router = newRouter(createMemoryHistory({ initialEntries: [path] }));
+  const machine = createClient(MachineService, createRouterTransport(routes));
   const view = render(
     <QueryClientProvider client={client}>
-      <ZoneProvider>
-        <RouterProvider router={router} />
-      </ZoneProvider>
+      <MachineContext value={machine}>
+        <ZoneProvider>
+          <RouterProvider router={router} />
+        </ZoneProvider>
+      </MachineContext>
     </QueryClientProvider>,
   );
   return { ...view, client, router };

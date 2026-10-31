@@ -44,3 +44,16 @@ export function Time({ ts }: { ts: Timestamp | undefined }) {
     </time>
   );
 }
+
+// inputValue is d as a datetime-local input shows it in zone, to the minute.
+export function inputValue(d: Date, zone: Zone): string {
+  if (zone === "utc") return d.toISOString().slice(0, 16);
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+// fromInput is a datetime-local input's value read in zone, undefined when it names no time.
+export function fromInput(v: string, zone: Zone): Date | undefined {
+  if (v === "") return undefined;
+  const d = new Date(zone === "utc" ? `${v}Z` : v);
+  return Number.isNaN(d.getTime()) ? undefined : d;
+}
