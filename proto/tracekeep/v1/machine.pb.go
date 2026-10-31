@@ -3859,6 +3859,459 @@ func (x *UnreadablePack) GetError() string {
 	return ""
 }
 
+type StartExportRequest struct {
+	state    protoimpl.MessageState `protogen:"open.v1"`
+	Selector *Selector              `protobuf:"bytes,1,opt,name=selector,proto3" json:"selector,omitempty"`
+	// kind is canonical; filtered is refused as unimplemented.
+	Kind          string `protobuf:"bytes,2,opt,name=kind,proto3" json:"kind,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *StartExportRequest) Reset() {
+	*x = StartExportRequest{}
+	mi := &file_tracekeep_v1_machine_proto_msgTypes[55]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *StartExportRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*StartExportRequest) ProtoMessage() {}
+
+func (x *StartExportRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_tracekeep_v1_machine_proto_msgTypes[55]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use StartExportRequest.ProtoReflect.Descriptor instead.
+func (*StartExportRequest) Descriptor() ([]byte, []int) {
+	return file_tracekeep_v1_machine_proto_rawDescGZIP(), []int{55}
+}
+
+func (x *StartExportRequest) GetSelector() *Selector {
+	if x != nil {
+		return x.Selector
+	}
+	return nil
+}
+
+func (x *StartExportRequest) GetKind() string {
+	if x != nil {
+		return x.Kind
+	}
+	return ""
+}
+
+type StartExportResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	JobId         string                 `protobuf:"bytes,1,opt,name=job_id,json=jobId,proto3" json:"job_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *StartExportResponse) Reset() {
+	*x = StartExportResponse{}
+	mi := &file_tracekeep_v1_machine_proto_msgTypes[56]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *StartExportResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*StartExportResponse) ProtoMessage() {}
+
+func (x *StartExportResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_tracekeep_v1_machine_proto_msgTypes[56]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use StartExportResponse.ProtoReflect.Descriptor instead.
+func (*StartExportResponse) Descriptor() ([]byte, []int) {
+	return file_tracekeep_v1_machine_proto_rawDescGZIP(), []int{56}
+}
+
+func (x *StartExportResponse) GetJobId() string {
+	if x != nil {
+		return x.JobId
+	}
+	return ""
+}
+
+type GetExportRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	JobId         string                 `protobuf:"bytes,1,opt,name=job_id,json=jobId,proto3" json:"job_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetExportRequest) Reset() {
+	*x = GetExportRequest{}
+	mi := &file_tracekeep_v1_machine_proto_msgTypes[57]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetExportRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetExportRequest) ProtoMessage() {}
+
+func (x *GetExportRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_tracekeep_v1_machine_proto_msgTypes[57]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetExportRequest.ProtoReflect.Descriptor instead.
+func (*GetExportRequest) Descriptor() ([]byte, []int) {
+	return file_tracekeep_v1_machine_proto_rawDescGZIP(), []int{57}
+}
+
+func (x *GetExportRequest) GetJobId() string {
+	if x != nil {
+		return x.JobId
+	}
+	return ""
+}
+
+type ListExportsRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// limit is at most 1,000, 100 when 0.
+	Limit         uint32 `protobuf:"varint,1,opt,name=limit,proto3" json:"limit,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListExportsRequest) Reset() {
+	*x = ListExportsRequest{}
+	mi := &file_tracekeep_v1_machine_proto_msgTypes[58]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListExportsRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListExportsRequest) ProtoMessage() {}
+
+func (x *ListExportsRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_tracekeep_v1_machine_proto_msgTypes[58]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListExportsRequest.ProtoReflect.Descriptor instead.
+func (*ListExportsRequest) Descriptor() ([]byte, []int) {
+	return file_tracekeep_v1_machine_proto_rawDescGZIP(), []int{58}
+}
+
+func (x *ListExportsRequest) GetLimit() uint32 {
+	if x != nil {
+		return x.Limit
+	}
+	return 0
+}
+
+type ListExportsResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Jobs          []*ExportJob           `protobuf:"bytes,1,rep,name=jobs,proto3" json:"jobs,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListExportsResponse) Reset() {
+	*x = ListExportsResponse{}
+	mi := &file_tracekeep_v1_machine_proto_msgTypes[59]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListExportsResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListExportsResponse) ProtoMessage() {}
+
+func (x *ListExportsResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_tracekeep_v1_machine_proto_msgTypes[59]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListExportsResponse.ProtoReflect.Descriptor instead.
+func (*ListExportsResponse) Descriptor() ([]byte, []int) {
+	return file_tracekeep_v1_machine_proto_rawDescGZIP(), []int{59}
+}
+
+func (x *ListExportsResponse) GetJobs() []*ExportJob {
+	if x != nil {
+		return x.Jobs
+	}
+	return nil
+}
+
+type CancelExportRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	JobId         string                 `protobuf:"bytes,1,opt,name=job_id,json=jobId,proto3" json:"job_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *CancelExportRequest) Reset() {
+	*x = CancelExportRequest{}
+	mi := &file_tracekeep_v1_machine_proto_msgTypes[60]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CancelExportRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CancelExportRequest) ProtoMessage() {}
+
+func (x *CancelExportRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_tracekeep_v1_machine_proto_msgTypes[60]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CancelExportRequest.ProtoReflect.Descriptor instead.
+func (*CancelExportRequest) Descriptor() ([]byte, []int) {
+	return file_tracekeep_v1_machine_proto_rawDescGZIP(), []int{60}
+}
+
+func (x *CancelExportRequest) GetJobId() string {
+	if x != nil {
+		return x.JobId
+	}
+	return ""
+}
+
+type CancelExportResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *CancelExportResponse) Reset() {
+	*x = CancelExportResponse{}
+	mi := &file_tracekeep_v1_machine_proto_msgTypes[61]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CancelExportResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CancelExportResponse) ProtoMessage() {}
+
+func (x *CancelExportResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_tracekeep_v1_machine_proto_msgTypes[61]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CancelExportResponse.ProtoReflect.Descriptor instead.
+func (*CancelExportResponse) Descriptor() ([]byte, []int) {
+	return file_tracekeep_v1_machine_proto_rawDescGZIP(), []int{61}
+}
+
+// ExportJob is an export job: its state (queued, running, done, failed, cancelled, or expired, a done job too near its deadline), and its bundle.
+type ExportJob struct {
+	state    protoimpl.MessageState `protogen:"open.v1"`
+	JobId    string                 `protobuf:"bytes,1,opt,name=job_id,json=jobId,proto3" json:"job_id,omitempty"`
+	State    string                 `protobuf:"bytes,2,opt,name=state,proto3" json:"state,omitempty"`
+	Kind     string                 `protobuf:"bytes,3,opt,name=kind,proto3" json:"kind,omitempty"`
+	Selector *Selector              `protobuf:"bytes,4,opt,name=selector,proto3" json:"selector,omitempty"`
+	Attempts uint64                 `protobuf:"varint,5,opt,name=attempts,proto3" json:"attempts,omitempty"`
+	Created  *timestamppb.Timestamp `protobuf:"bytes,6,opt,name=created,proto3" json:"created,omitempty"`
+	Ended    *timestamppb.Timestamp `protobuf:"bytes,7,opt,name=ended,proto3,oneof" json:"ended,omitempty"`
+	Reason   string                 `protobuf:"bytes,8,opt,name=reason,proto3" json:"reason,omitempty"`
+	Size     *uint64                `protobuf:"varint,9,opt,name=size,proto3,oneof" json:"size,omitempty"`
+	// deadline is the bundle's, fixed at completion.
+	Deadline *timestamppb.Timestamp `protobuf:"bytes,10,opt,name=deadline,proto3,oneof" json:"deadline,omitempty"`
+	// url and url_expires are GetExport's download URL of a done job.
+	Url           string                 `protobuf:"bytes,11,opt,name=url,proto3" json:"url,omitempty"`
+	UrlExpires    *timestamppb.Timestamp `protobuf:"bytes,12,opt,name=url_expires,json=urlExpires,proto3,oneof" json:"url_expires,omitempty"`
+	Presigned     bool                   `protobuf:"varint,13,opt,name=presigned,proto3" json:"presigned,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ExportJob) Reset() {
+	*x = ExportJob{}
+	mi := &file_tracekeep_v1_machine_proto_msgTypes[62]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ExportJob) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ExportJob) ProtoMessage() {}
+
+func (x *ExportJob) ProtoReflect() protoreflect.Message {
+	mi := &file_tracekeep_v1_machine_proto_msgTypes[62]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ExportJob.ProtoReflect.Descriptor instead.
+func (*ExportJob) Descriptor() ([]byte, []int) {
+	return file_tracekeep_v1_machine_proto_rawDescGZIP(), []int{62}
+}
+
+func (x *ExportJob) GetJobId() string {
+	if x != nil {
+		return x.JobId
+	}
+	return ""
+}
+
+func (x *ExportJob) GetState() string {
+	if x != nil {
+		return x.State
+	}
+	return ""
+}
+
+func (x *ExportJob) GetKind() string {
+	if x != nil {
+		return x.Kind
+	}
+	return ""
+}
+
+func (x *ExportJob) GetSelector() *Selector {
+	if x != nil {
+		return x.Selector
+	}
+	return nil
+}
+
+func (x *ExportJob) GetAttempts() uint64 {
+	if x != nil {
+		return x.Attempts
+	}
+	return 0
+}
+
+func (x *ExportJob) GetCreated() *timestamppb.Timestamp {
+	if x != nil {
+		return x.Created
+	}
+	return nil
+}
+
+func (x *ExportJob) GetEnded() *timestamppb.Timestamp {
+	if x != nil {
+		return x.Ended
+	}
+	return nil
+}
+
+func (x *ExportJob) GetReason() string {
+	if x != nil {
+		return x.Reason
+	}
+	return ""
+}
+
+func (x *ExportJob) GetSize() uint64 {
+	if x != nil && x.Size != nil {
+		return *x.Size
+	}
+	return 0
+}
+
+func (x *ExportJob) GetDeadline() *timestamppb.Timestamp {
+	if x != nil {
+		return x.Deadline
+	}
+	return nil
+}
+
+func (x *ExportJob) GetUrl() string {
+	if x != nil {
+		return x.Url
+	}
+	return ""
+}
+
+func (x *ExportJob) GetUrlExpires() *timestamppb.Timestamp {
+	if x != nil {
+		return x.UrlExpires
+	}
+	return nil
+}
+
+func (x *ExportJob) GetPresigned() bool {
+	if x != nil {
+		return x.Presigned
+	}
+	return false
+}
+
 var File_tracekeep_v1_machine_proto protoreflect.FileDescriptor
 
 const file_tracekeep_v1_machine_proto_rawDesc = "" +
@@ -4205,7 +4658,41 @@ const file_tracekeep_v1_machine_proto_rawDesc = "" +
 	"\x0eUnreadablePack\x12.\n" +
 	"\x04hour\x18\x01 \x01(\v2\x1a.google.protobuf.TimestampR\x04hour\x12\x17\n" +
 	"\apack_id\x18\x02 \x01(\tR\x06packId\x12\x14\n" +
-	"\x05error\x18\x03 \x01(\tR\x05error2\xfa\x05\n" +
+	"\x05error\x18\x03 \x01(\tR\x05error\"\\\n" +
+	"\x12StartExportRequest\x122\n" +
+	"\bselector\x18\x01 \x01(\v2\x16.tracekeep.v1.SelectorR\bselector\x12\x12\n" +
+	"\x04kind\x18\x02 \x01(\tR\x04kind\",\n" +
+	"\x13StartExportResponse\x12\x15\n" +
+	"\x06job_id\x18\x01 \x01(\tR\x05jobId\")\n" +
+	"\x10GetExportRequest\x12\x15\n" +
+	"\x06job_id\x18\x01 \x01(\tR\x05jobId\"*\n" +
+	"\x12ListExportsRequest\x12\x14\n" +
+	"\x05limit\x18\x01 \x01(\rR\x05limit\"B\n" +
+	"\x13ListExportsResponse\x12+\n" +
+	"\x04jobs\x18\x01 \x03(\v2\x17.tracekeep.v1.ExportJobR\x04jobs\",\n" +
+	"\x13CancelExportRequest\x12\x15\n" +
+	"\x06job_id\x18\x01 \x01(\tR\x05jobId\"\x16\n" +
+	"\x14CancelExportResponse\"\x99\x04\n" +
+	"\tExportJob\x12\x15\n" +
+	"\x06job_id\x18\x01 \x01(\tR\x05jobId\x12\x14\n" +
+	"\x05state\x18\x02 \x01(\tR\x05state\x12\x12\n" +
+	"\x04kind\x18\x03 \x01(\tR\x04kind\x122\n" +
+	"\bselector\x18\x04 \x01(\v2\x16.tracekeep.v1.SelectorR\bselector\x12\x1a\n" +
+	"\battempts\x18\x05 \x01(\x04R\battempts\x124\n" +
+	"\acreated\x18\x06 \x01(\v2\x1a.google.protobuf.TimestampR\acreated\x125\n" +
+	"\x05ended\x18\a \x01(\v2\x1a.google.protobuf.TimestampH\x00R\x05ended\x88\x01\x01\x12\x16\n" +
+	"\x06reason\x18\b \x01(\tR\x06reason\x12\x17\n" +
+	"\x04size\x18\t \x01(\x04H\x01R\x04size\x88\x01\x01\x12;\n" +
+	"\bdeadline\x18\n" +
+	" \x01(\v2\x1a.google.protobuf.TimestampH\x02R\bdeadline\x88\x01\x01\x12\x10\n" +
+	"\x03url\x18\v \x01(\tR\x03url\x12@\n" +
+	"\vurl_expires\x18\f \x01(\v2\x1a.google.protobuf.TimestampH\x03R\n" +
+	"urlExpires\x88\x01\x01\x12\x1c\n" +
+	"\tpresigned\x18\r \x01(\bR\tpresignedB\b\n" +
+	"\x06_endedB\a\n" +
+	"\x05_sizeB\v\n" +
+	"\t_deadlineB\x0e\n" +
+	"\f_url_expires2\xbf\b\n" +
 	"\x0eMachineService\x12R\n" +
 	"\vListDevices\x12 .tracekeep.v1.ListDevicesRequest\x1a!.tracekeep.v1.ListDevicesResponse\x12U\n" +
 	"\fListCaptures\x12!.tracekeep.v1.ListCapturesRequest\x1a\".tracekeep.v1.ListCapturesResponse\x12L\n" +
@@ -4215,7 +4702,11 @@ const file_tracekeep_v1_machine_proto_rawDesc = "" +
 	"\aRestore\x12\x1c.tracekeep.v1.RestoreRequest\x1a\x1d.tracekeep.v1.RestoreResponse\x12C\n" +
 	"\x06Digest\x12\x1b.tracekeep.v1.DigestRequest\x1a\x1c.tracekeep.v1.DigestResponse\x12W\n" +
 	"\fQueryRecords\x12!.tracekeep.v1.QueryRecordsRequest\x1a\".tracekeep.v1.QueryRecordsResponse0\x01\x12^\n" +
-	"\x0fFindTransaction\x12$.tracekeep.v1.FindTransactionRequest\x1a%.tracekeep.v1.FindTransactionResponseB=Z;github.com/arloliu/tracekeep/proto/tracekeep/v1;tracekeepv1b\x06proto3"
+	"\x0fFindTransaction\x12$.tracekeep.v1.FindTransactionRequest\x1a%.tracekeep.v1.FindTransactionResponse\x12R\n" +
+	"\vStartExport\x12 .tracekeep.v1.StartExportRequest\x1a!.tracekeep.v1.StartExportResponse\x12D\n" +
+	"\tGetExport\x12\x1e.tracekeep.v1.GetExportRequest\x1a\x17.tracekeep.v1.ExportJob\x12R\n" +
+	"\vListExports\x12 .tracekeep.v1.ListExportsRequest\x1a!.tracekeep.v1.ListExportsResponse\x12U\n" +
+	"\fCancelExport\x12!.tracekeep.v1.CancelExportRequest\x1a\".tracekeep.v1.CancelExportResponseB=Z;github.com/arloliu/tracekeep/proto/tracekeep/v1;tracekeepv1b\x06proto3"
 
 var (
 	file_tracekeep_v1_machine_proto_rawDescOnce sync.Once
@@ -4229,7 +4720,7 @@ func file_tracekeep_v1_machine_proto_rawDescGZIP() []byte {
 	return file_tracekeep_v1_machine_proto_rawDescData
 }
 
-var file_tracekeep_v1_machine_proto_msgTypes = make([]protoimpl.MessageInfo, 55)
+var file_tracekeep_v1_machine_proto_msgTypes = make([]protoimpl.MessageInfo, 63)
 var file_tracekeep_v1_machine_proto_goTypes = []any{
 	(*Selector)(nil),                 // 0: tracekeep.v1.Selector
 	(*ListDevicesRequest)(nil),       // 1: tracekeep.v1.ListDevicesRequest
@@ -4286,34 +4777,42 @@ var file_tracekeep_v1_machine_proto_goTypes = []any{
 	(*TransactionConflict)(nil),      // 52: tracekeep.v1.TransactionConflict
 	(*Holders)(nil),                  // 53: tracekeep.v1.Holders
 	(*UnreadablePack)(nil),           // 54: tracekeep.v1.UnreadablePack
-	(*timestamppb.Timestamp)(nil),    // 55: google.protobuf.Timestamp
+	(*StartExportRequest)(nil),       // 55: tracekeep.v1.StartExportRequest
+	(*StartExportResponse)(nil),      // 56: tracekeep.v1.StartExportResponse
+	(*GetExportRequest)(nil),         // 57: tracekeep.v1.GetExportRequest
+	(*ListExportsRequest)(nil),       // 58: tracekeep.v1.ListExportsRequest
+	(*ListExportsResponse)(nil),      // 59: tracekeep.v1.ListExportsResponse
+	(*CancelExportRequest)(nil),      // 60: tracekeep.v1.CancelExportRequest
+	(*CancelExportResponse)(nil),     // 61: tracekeep.v1.CancelExportResponse
+	(*ExportJob)(nil),                // 62: tracekeep.v1.ExportJob
+	(*timestamppb.Timestamp)(nil),    // 63: google.protobuf.Timestamp
 }
 var file_tracekeep_v1_machine_proto_depIdxs = []int32{
-	55, // 0: tracekeep.v1.Selector.from:type_name -> google.protobuf.Timestamp
-	55, // 1: tracekeep.v1.Selector.to:type_name -> google.protobuf.Timestamp
+	63, // 0: tracekeep.v1.Selector.from:type_name -> google.protobuf.Timestamp
+	63, // 1: tracekeep.v1.Selector.to:type_name -> google.protobuf.Timestamp
 	0,  // 2: tracekeep.v1.ListDevicesRequest.selector:type_name -> tracekeep.v1.Selector
 	3,  // 3: tracekeep.v1.ListDevicesResponse.devices:type_name -> tracekeep.v1.Device
-	55, // 4: tracekeep.v1.Device.last_record:type_name -> google.protobuf.Timestamp
+	63, // 4: tracekeep.v1.Device.last_record:type_name -> google.protobuf.Timestamp
 	0,  // 5: tracekeep.v1.ListCapturesRequest.selector:type_name -> tracekeep.v1.Selector
 	6,  // 6: tracekeep.v1.ListCapturesResponse.captures:type_name -> tracekeep.v1.Capture
-	55, // 7: tracekeep.v1.Capture.origin:type_name -> google.protobuf.Timestamp
-	55, // 8: tracekeep.v1.Capture.last_record:type_name -> google.protobuf.Timestamp
+	63, // 7: tracekeep.v1.Capture.origin:type_name -> google.protobuf.Timestamp
+	63, // 8: tracekeep.v1.Capture.last_record:type_name -> google.protobuf.Timestamp
 	7,  // 9: tracekeep.v1.Capture.thinning:type_name -> tracekeep.v1.Thinning
 	8,  // 10: tracekeep.v1.Capture.unregistered:type_name -> tracekeep.v1.UnregisteredInterval
-	55, // 11: tracekeep.v1.UnregisteredInterval.start:type_name -> google.protobuf.Timestamp
-	55, // 12: tracekeep.v1.UnregisteredInterval.end:type_name -> google.protobuf.Timestamp
+	63, // 11: tracekeep.v1.UnregisteredInterval.start:type_name -> google.protobuf.Timestamp
+	63, // 12: tracekeep.v1.UnregisteredInterval.end:type_name -> google.protobuf.Timestamp
 	0,  // 13: tracekeep.v1.ListPacksRequest.selector:type_name -> tracekeep.v1.Selector
 	11, // 14: tracekeep.v1.ListPacksResponse.cursor:type_name -> tracekeep.v1.Cursor
 	12, // 15: tracekeep.v1.ListPacksResponse.hours:type_name -> tracekeep.v1.Hour
 	16, // 16: tracekeep.v1.ListPacksResponse.captures:type_name -> tracekeep.v1.CaptureCompleteness
-	55, // 17: tracekeep.v1.Hour.hour:type_name -> google.protobuf.Timestamp
+	63, // 17: tracekeep.v1.Hour.hour:type_name -> google.protobuf.Timestamp
 	13, // 18: tracekeep.v1.Hour.scopes:type_name -> tracekeep.v1.Scope
 	19, // 19: tracekeep.v1.Hour.deferred:type_name -> tracekeep.v1.Deferred
 	21, // 20: tracekeep.v1.Hour.losses:type_name -> tracekeep.v1.DeclaredLoss
 	14, // 21: tracekeep.v1.Scope.packs:type_name -> tracekeep.v1.Pack
 	15, // 22: tracekeep.v1.Pack.ranges:type_name -> tracekeep.v1.Range
-	55, // 23: tracekeep.v1.Range.from:type_name -> google.protobuf.Timestamp
-	55, // 24: tracekeep.v1.Range.to:type_name -> google.protobuf.Timestamp
+	63, // 23: tracekeep.v1.Range.from:type_name -> google.protobuf.Timestamp
+	63, // 24: tracekeep.v1.Range.to:type_name -> google.protobuf.Timestamp
 	6,  // 25: tracekeep.v1.CaptureCompleteness.capture:type_name -> tracekeep.v1.Capture
 	17, // 26: tracekeep.v1.CaptureCompleteness.completeness:type_name -> tracekeep.v1.Completeness
 	15, // 27: tracekeep.v1.Completeness.retained:type_name -> tracekeep.v1.Range
@@ -4323,24 +4822,24 @@ var file_tracekeep_v1_machine_proto_depIdxs = []int32{
 	21, // 31: tracekeep.v1.Completeness.losses:type_name -> tracekeep.v1.DeclaredLoss
 	22, // 32: tracekeep.v1.Completeness.crash_gaps:type_name -> tracekeep.v1.CrashGap
 	23, // 33: tracekeep.v1.Completeness.conflicts:type_name -> tracekeep.v1.Conflict
-	55, // 34: tracekeep.v1.Run.from:type_name -> google.protobuf.Timestamp
-	55, // 35: tracekeep.v1.Run.to:type_name -> google.protobuf.Timestamp
-	55, // 36: tracekeep.v1.Deferred.time:type_name -> google.protobuf.Timestamp
-	55, // 37: tracekeep.v1.Gap.start:type_name -> google.protobuf.Timestamp
-	55, // 38: tracekeep.v1.Gap.end:type_name -> google.protobuf.Timestamp
-	55, // 39: tracekeep.v1.DeclaredLoss.from:type_name -> google.protobuf.Timestamp
-	55, // 40: tracekeep.v1.DeclaredLoss.to:type_name -> google.protobuf.Timestamp
-	55, // 41: tracekeep.v1.CrashGap.start:type_name -> google.protobuf.Timestamp
-	55, // 42: tracekeep.v1.CrashGap.end:type_name -> google.protobuf.Timestamp
+	63, // 34: tracekeep.v1.Run.from:type_name -> google.protobuf.Timestamp
+	63, // 35: tracekeep.v1.Run.to:type_name -> google.protobuf.Timestamp
+	63, // 36: tracekeep.v1.Deferred.time:type_name -> google.protobuf.Timestamp
+	63, // 37: tracekeep.v1.Gap.start:type_name -> google.protobuf.Timestamp
+	63, // 38: tracekeep.v1.Gap.end:type_name -> google.protobuf.Timestamp
+	63, // 39: tracekeep.v1.DeclaredLoss.from:type_name -> google.protobuf.Timestamp
+	63, // 40: tracekeep.v1.DeclaredLoss.to:type_name -> google.protobuf.Timestamp
+	63, // 41: tracekeep.v1.CrashGap.start:type_name -> google.protobuf.Timestamp
+	63, // 42: tracekeep.v1.CrashGap.end:type_name -> google.protobuf.Timestamp
 	11, // 43: tracekeep.v1.ListScopeChangesRequest.after:type_name -> tracekeep.v1.Cursor
 	0,  // 44: tracekeep.v1.ListScopeChangesRequest.selector:type_name -> tracekeep.v1.Selector
 	26, // 45: tracekeep.v1.ListScopeChangesResponse.events:type_name -> tracekeep.v1.ScopeEvent
 	11, // 46: tracekeep.v1.ListScopeChangesResponse.next:type_name -> tracekeep.v1.Cursor
-	55, // 47: tracekeep.v1.ScopeEvent.hour:type_name -> google.protobuf.Timestamp
-	55, // 48: tracekeep.v1.ScopeEvent.at:type_name -> google.protobuf.Timestamp
-	55, // 49: tracekeep.v1.PackURLResponse.expires:type_name -> google.protobuf.Timestamp
-	55, // 50: tracekeep.v1.RestoreRequest.hour:type_name -> google.protobuf.Timestamp
-	55, // 51: tracekeep.v1.RestoreResponse.time:type_name -> google.protobuf.Timestamp
+	63, // 47: tracekeep.v1.ScopeEvent.hour:type_name -> google.protobuf.Timestamp
+	63, // 48: tracekeep.v1.ScopeEvent.at:type_name -> google.protobuf.Timestamp
+	63, // 49: tracekeep.v1.PackURLResponse.expires:type_name -> google.protobuf.Timestamp
+	63, // 50: tracekeep.v1.RestoreRequest.hour:type_name -> google.protobuf.Timestamp
+	63, // 51: tracekeep.v1.RestoreResponse.time:type_name -> google.protobuf.Timestamp
 	34, // 52: tracekeep.v1.DigestRequest.inputs:type_name -> tracekeep.v1.DigestInput
 	0,  // 53: tracekeep.v1.QueryRecordsRequest.selector:type_name -> tracekeep.v1.Selector
 	38, // 54: tracekeep.v1.QueryRecordsResponse.items:type_name -> tracekeep.v1.RecordItem
@@ -4352,45 +4851,60 @@ var file_tracekeep_v1_machine_proto_depIdxs = []int32{
 	45, // 60: tracekeep.v1.RecordItem.unknown_tail:type_name -> tracekeep.v1.UnknownTail
 	6,  // 61: tracekeep.v1.CaptureStart.capture:type_name -> tracekeep.v1.Capture
 	17, // 62: tracekeep.v1.CaptureStart.completeness:type_name -> tracekeep.v1.Completeness
-	55, // 63: tracekeep.v1.Record.hour:type_name -> google.protobuf.Timestamp
-	55, // 64: tracekeep.v1.Record.time:type_name -> google.protobuf.Timestamp
+	63, // 63: tracekeep.v1.Record.hour:type_name -> google.protobuf.Timestamp
+	63, // 64: tracekeep.v1.Record.time:type_name -> google.protobuf.Timestamp
 	41, // 65: tracekeep.v1.Record.header:type_name -> tracekeep.v1.HSMSHeader
 	42, // 66: tracekeep.v1.Record.holders:type_name -> tracekeep.v1.Holder
-	55, // 67: tracekeep.v1.Incomplete.hour:type_name -> google.protobuf.Timestamp
-	55, // 68: tracekeep.v1.FindTransactionRequest.hour:type_name -> google.protobuf.Timestamp
+	63, // 67: tracekeep.v1.Incomplete.hour:type_name -> google.protobuf.Timestamp
+	63, // 68: tracekeep.v1.FindTransactionRequest.hour:type_name -> google.protobuf.Timestamp
 	49, // 69: tracekeep.v1.FindTransactionResponse.key:type_name -> tracekeep.v1.TransactionKey
 	50, // 70: tracekeep.v1.FindTransactionResponse.records:type_name -> tracekeep.v1.TransactionRecord
 	51, // 71: tracekeep.v1.FindTransactionResponse.gaps:type_name -> tracekeep.v1.TransactionGap
-	55, // 72: tracekeep.v1.FindTransactionResponse.hours:type_name -> google.protobuf.Timestamp
+	63, // 72: tracekeep.v1.FindTransactionResponse.hours:type_name -> google.protobuf.Timestamp
 	52, // 73: tracekeep.v1.FindTransactionResponse.conflicts:type_name -> tracekeep.v1.TransactionConflict
 	54, // 74: tracekeep.v1.FindTransactionResponse.unreadable:type_name -> tracekeep.v1.UnreadablePack
 	40, // 75: tracekeep.v1.TransactionRecord.record:type_name -> tracekeep.v1.Record
-	55, // 76: tracekeep.v1.TransactionGap.hours:type_name -> google.protobuf.Timestamp
+	63, // 76: tracekeep.v1.TransactionGap.hours:type_name -> google.protobuf.Timestamp
 	53, // 77: tracekeep.v1.TransactionConflict.versions:type_name -> tracekeep.v1.Holders
-	55, // 78: tracekeep.v1.UnreadablePack.hour:type_name -> google.protobuf.Timestamp
-	1,  // 79: tracekeep.v1.MachineService.ListDevices:input_type -> tracekeep.v1.ListDevicesRequest
-	4,  // 80: tracekeep.v1.MachineService.ListCaptures:input_type -> tracekeep.v1.ListCapturesRequest
-	9,  // 81: tracekeep.v1.MachineService.ListPacks:input_type -> tracekeep.v1.ListPacksRequest
-	24, // 82: tracekeep.v1.MachineService.ListScopeChanges:input_type -> tracekeep.v1.ListScopeChangesRequest
-	27, // 83: tracekeep.v1.MachineService.PackURL:input_type -> tracekeep.v1.PackURLRequest
-	30, // 84: tracekeep.v1.MachineService.Restore:input_type -> tracekeep.v1.RestoreRequest
-	33, // 85: tracekeep.v1.MachineService.Digest:input_type -> tracekeep.v1.DigestRequest
-	36, // 86: tracekeep.v1.MachineService.QueryRecords:input_type -> tracekeep.v1.QueryRecordsRequest
-	47, // 87: tracekeep.v1.MachineService.FindTransaction:input_type -> tracekeep.v1.FindTransactionRequest
-	2,  // 88: tracekeep.v1.MachineService.ListDevices:output_type -> tracekeep.v1.ListDevicesResponse
-	5,  // 89: tracekeep.v1.MachineService.ListCaptures:output_type -> tracekeep.v1.ListCapturesResponse
-	10, // 90: tracekeep.v1.MachineService.ListPacks:output_type -> tracekeep.v1.ListPacksResponse
-	25, // 91: tracekeep.v1.MachineService.ListScopeChanges:output_type -> tracekeep.v1.ListScopeChangesResponse
-	28, // 92: tracekeep.v1.MachineService.PackURL:output_type -> tracekeep.v1.PackURLResponse
-	31, // 93: tracekeep.v1.MachineService.Restore:output_type -> tracekeep.v1.RestoreResponse
-	35, // 94: tracekeep.v1.MachineService.Digest:output_type -> tracekeep.v1.DigestResponse
-	37, // 95: tracekeep.v1.MachineService.QueryRecords:output_type -> tracekeep.v1.QueryRecordsResponse
-	48, // 96: tracekeep.v1.MachineService.FindTransaction:output_type -> tracekeep.v1.FindTransactionResponse
-	88, // [88:97] is the sub-list for method output_type
-	79, // [79:88] is the sub-list for method input_type
-	79, // [79:79] is the sub-list for extension type_name
-	79, // [79:79] is the sub-list for extension extendee
-	0,  // [0:79] is the sub-list for field type_name
+	63, // 78: tracekeep.v1.UnreadablePack.hour:type_name -> google.protobuf.Timestamp
+	0,  // 79: tracekeep.v1.StartExportRequest.selector:type_name -> tracekeep.v1.Selector
+	62, // 80: tracekeep.v1.ListExportsResponse.jobs:type_name -> tracekeep.v1.ExportJob
+	0,  // 81: tracekeep.v1.ExportJob.selector:type_name -> tracekeep.v1.Selector
+	63, // 82: tracekeep.v1.ExportJob.created:type_name -> google.protobuf.Timestamp
+	63, // 83: tracekeep.v1.ExportJob.ended:type_name -> google.protobuf.Timestamp
+	63, // 84: tracekeep.v1.ExportJob.deadline:type_name -> google.protobuf.Timestamp
+	63, // 85: tracekeep.v1.ExportJob.url_expires:type_name -> google.protobuf.Timestamp
+	1,  // 86: tracekeep.v1.MachineService.ListDevices:input_type -> tracekeep.v1.ListDevicesRequest
+	4,  // 87: tracekeep.v1.MachineService.ListCaptures:input_type -> tracekeep.v1.ListCapturesRequest
+	9,  // 88: tracekeep.v1.MachineService.ListPacks:input_type -> tracekeep.v1.ListPacksRequest
+	24, // 89: tracekeep.v1.MachineService.ListScopeChanges:input_type -> tracekeep.v1.ListScopeChangesRequest
+	27, // 90: tracekeep.v1.MachineService.PackURL:input_type -> tracekeep.v1.PackURLRequest
+	30, // 91: tracekeep.v1.MachineService.Restore:input_type -> tracekeep.v1.RestoreRequest
+	33, // 92: tracekeep.v1.MachineService.Digest:input_type -> tracekeep.v1.DigestRequest
+	36, // 93: tracekeep.v1.MachineService.QueryRecords:input_type -> tracekeep.v1.QueryRecordsRequest
+	47, // 94: tracekeep.v1.MachineService.FindTransaction:input_type -> tracekeep.v1.FindTransactionRequest
+	55, // 95: tracekeep.v1.MachineService.StartExport:input_type -> tracekeep.v1.StartExportRequest
+	57, // 96: tracekeep.v1.MachineService.GetExport:input_type -> tracekeep.v1.GetExportRequest
+	58, // 97: tracekeep.v1.MachineService.ListExports:input_type -> tracekeep.v1.ListExportsRequest
+	60, // 98: tracekeep.v1.MachineService.CancelExport:input_type -> tracekeep.v1.CancelExportRequest
+	2,  // 99: tracekeep.v1.MachineService.ListDevices:output_type -> tracekeep.v1.ListDevicesResponse
+	5,  // 100: tracekeep.v1.MachineService.ListCaptures:output_type -> tracekeep.v1.ListCapturesResponse
+	10, // 101: tracekeep.v1.MachineService.ListPacks:output_type -> tracekeep.v1.ListPacksResponse
+	25, // 102: tracekeep.v1.MachineService.ListScopeChanges:output_type -> tracekeep.v1.ListScopeChangesResponse
+	28, // 103: tracekeep.v1.MachineService.PackURL:output_type -> tracekeep.v1.PackURLResponse
+	31, // 104: tracekeep.v1.MachineService.Restore:output_type -> tracekeep.v1.RestoreResponse
+	35, // 105: tracekeep.v1.MachineService.Digest:output_type -> tracekeep.v1.DigestResponse
+	37, // 106: tracekeep.v1.MachineService.QueryRecords:output_type -> tracekeep.v1.QueryRecordsResponse
+	48, // 107: tracekeep.v1.MachineService.FindTransaction:output_type -> tracekeep.v1.FindTransactionResponse
+	56, // 108: tracekeep.v1.MachineService.StartExport:output_type -> tracekeep.v1.StartExportResponse
+	62, // 109: tracekeep.v1.MachineService.GetExport:output_type -> tracekeep.v1.ExportJob
+	59, // 110: tracekeep.v1.MachineService.ListExports:output_type -> tracekeep.v1.ListExportsResponse
+	61, // 111: tracekeep.v1.MachineService.CancelExport:output_type -> tracekeep.v1.CancelExportResponse
+	99, // [99:112] is the sub-list for method output_type
+	86, // [86:99] is the sub-list for method input_type
+	86, // [86:86] is the sub-list for extension type_name
+	86, // [86:86] is the sub-list for extension extendee
+	0,  // [0:86] is the sub-list for field type_name
 }
 
 func init() { file_tracekeep_v1_machine_proto_init() }
@@ -4423,13 +4937,14 @@ func file_tracekeep_v1_machine_proto_init() {
 	file_tracekeep_v1_machine_proto_msgTypes[48].OneofWrappers = []any{}
 	file_tracekeep_v1_machine_proto_msgTypes[49].OneofWrappers = []any{}
 	file_tracekeep_v1_machine_proto_msgTypes[51].OneofWrappers = []any{}
+	file_tracekeep_v1_machine_proto_msgTypes[62].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_tracekeep_v1_machine_proto_rawDesc), len(file_tracekeep_v1_machine_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   55,
+			NumMessages:   63,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

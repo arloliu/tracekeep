@@ -2,7 +2,9 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -10,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -259,5 +262,69 @@ func TestAuthNotConfigured(t *testing.T) {
 		if resp.StatusCode != http.StatusNotFound || resp.Header.Get("Cache-Control") != "no-store" || resp.Header.Get("Location") != "" {
 			t.Errorf("GET %s = %d, Cache-Control %q, Location %q; want 404, no-store, none", path, resp.StatusCode, resp.Header.Get("Cache-Control"), resp.Header.Get("Location"))
 		}
+	}
+}
+
+// deadlines records the context deadline of each object opened, failing the opens when fail is set, with the key in the error.
+type deadlines struct {
+	store.ObjectStore
+	mu   sync.Mutex
+	seen []time.Time
+	fail bool
+}
+
+func (d *deadlines) Open(ctx context.Context, key string) (store.Object, error) {
+	dl, _ := ctx.Deadline()
+	d.mu.Lock()
+	d.seen = append(d.seen, dl)
+	fail := d.fail
+	d.mu.Unlock()
+	if fail {
+		return nil, fmt.Errorf("the store broke opening %s", key)
+	}
+
+	return d.ObjectStore.Open(ctx, key)
+}
+
+// A download the API serves ends at its token's expiry plus the margin, and a store failure is logged without the object's key.
+func TestDownloadBoundedByItsToken(t *testing.T) {
+	t.Parallel()
+	now := time.Now()
+	c := catalogtest.Open(t, catalog.EngineSQLite)
+	mem := store.NewMem()
+	body := []byte("0123456789")
+	if err := mem.Put(t.Context(), objectKey, bytes.NewReader(body), int64(len(body))); err != nil {
+		t.Fatal(err)
+	}
+	st := &deadlines{ObjectStore: mem}
+	tokens := &auth.Downloads{Keys: downloadKeys(t, c), Now: func() time.Time { return now }}
+	var logs bytes.Buffer
+	s := &Server{Catalog: c, Auth: testAuthenticator(nil), Store: st, Downloads: Downloads{Tokens: tokens, Margin: 2 * time.Minute, Now: func() time.Time { return now }},
+		Log: slog.New(slog.NewTextHandler(&logs, nil))}
+	srv := httptest.NewServer(s.Handler())
+	t.Cleanup(srv.Close)
+	expiry := now.Add(10 * time.Minute).Truncate(time.Second)
+	tok, err := tokens.Sign(t.Context(), objectKey, expiry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp, got := get(t, srv, http.MethodGet, "/download/"+tok, nil); resp.StatusCode != http.StatusOK || !bytes.Equal(got, body) {
+		t.Fatalf("download = %d %q", resp.StatusCode, got)
+	}
+	// The downloads' clock reads now: the deadline is the expiry plus the margin from it, give or take the request's own time.
+	if len(st.seen) != 1 {
+		t.Fatalf("opens = %v, want one", st.seen)
+	}
+	if left := time.Until(st.seen[0]); left > expiry.Add(2*time.Minute).Sub(now) || left < expiry.Add(2*time.Minute).Sub(now)-time.Minute {
+		t.Errorf("the download's deadline = %v, want the token's expiry plus the margin from now", st.seen)
+	}
+	st.mu.Lock()
+	st.fail = true
+	st.mu.Unlock()
+	if resp, _ := get(t, srv, http.MethodGet, "/download/"+tok, nil); resp.StatusCode != http.StatusBadGateway {
+		t.Errorf("a failing store = %d, want 502", resp.StatusCode)
+	}
+	if strings.Contains(logs.String(), objectKey) {
+		t.Errorf("the log names the object key: %s", logs.String())
 	}
 }

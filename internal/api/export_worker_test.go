@@ -15,7 +15,7 @@ import (
 	"github.com/arloliu/tracekeep/internal/catalog/catalogtest"
 )
 
-const exportOwner = "static:viewer"
+const testOwner = "static:viewer"
 
 // startExport creates a job over capture's hour, as StartExport would.
 func startExport(t *testing.T, c *catalog.Catalog, capture tracepack.UUID) tracepack.UUID {
@@ -25,7 +25,7 @@ func startExport(t *testing.T, c *catalog.Catalog, capture tracepack.UUID) trace
 		t.Fatal(err)
 	}
 	id := newID(t)
-	if err := c.CreateExport(t.Context(), id, exportOwner, req, catalog.AuditEntry{Actor: exportOwner, Action: "export-start"}); err != nil {
+	if err := c.CreateExport(t.Context(), id, testOwner, req, catalog.AuditEntry{Actor: testOwner, Action: "export-start"}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -59,7 +59,7 @@ func await(t *testing.T, c *catalog.Catalog, job tracepack.UUID) catalog.ExportJ
 	t.Helper()
 	deadline := time.Now().Add(20 * time.Second)
 	for {
-		j, err := c.ExportJob(t.Context(), job, exportOwner)
+		j, err := c.ExportJob(t.Context(), job, testOwner)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -185,7 +185,7 @@ func TestExportWorkerCancelledMidAttempt(t *testing.T) {
 		workers(t, m)
 		job := startExport(t, c, capture)
 		<-g["put"].arrived
-		if err := c.CancelExport(t.Context(), job, exportOwner, catalog.AuditEntry{Actor: exportOwner, Action: "export-cancel"}); err != nil {
+		if err := c.CancelExport(t.Context(), job, testOwner, catalog.AuditEntry{Actor: testOwner, Action: "export-cancel"}); err != nil {
 			t.Fatal(err)
 		}
 		g.releaseAll()

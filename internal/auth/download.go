@@ -59,7 +59,7 @@ func (d *Downloads) Sign(ctx context.Context, objectKey string, expiry time.Time
 // Verify admits token for objectKey: its key id accepted, its MAC equal in constant time, its object objectKey and its expiry not reached.
 // A refusal is an *Error of reason download, counted.
 func (d *Downloads) Verify(ctx context.Context, token, objectKey string) error {
-	key, err := d.check(ctx, token)
+	key, _, err := d.check(ctx, token)
 	if err == nil && key != objectKey {
 		err = errors.New("a token for another object")
 	}
@@ -70,12 +70,19 @@ func (d *Downloads) Verify(ctx context.Context, token, objectKey string) error {
 // Object returns the object key token admits: its key id accepted, its MAC equal in constant time and its expiry not reached.
 // A refusal is an *Error of reason download, counted.
 func (d *Downloads) Object(ctx context.Context, token string) (string, error) {
-	key, err := d.check(ctx, token)
+	key, _, err := d.ObjectUntil(ctx, token)
+
+	return key, err
+}
+
+// ObjectUntil is Object with the token's expiry, which bounds the download it admits.
+func (d *Downloads) ObjectUntil(ctx context.Context, token string) (string, time.Time, error) {
+	key, expiry, err := d.check(ctx, token)
 	if err != nil {
-		return "", d.refused(err)
+		return "", time.Time{}, d.refused(err)
 	}
 
-	return key, nil
+	return key, expiry, nil
 }
 
 // refused counts and wraps err, a token's refusal, nil when there is none.
@@ -91,24 +98,24 @@ func (d *Downloads) refused(err error) error {
 }
 
 // check returns the object key token names when it admits the token, and the refusal otherwise.
-func (d *Downloads) check(ctx context.Context, token string) (string, error) {
+func (d *Downloads) check(ctx context.Context, token string) (string, time.Time, error) {
 	if len(token) > maxDownloadToken {
-		return "", errors.New("a token too long")
+		return "", time.Time{}, errors.New("a token too long")
 	}
 	// The decoder skips line breaks even when strict, so every byte outside the alphabet is refused first.
 	if strings.ContainsFunc(token, func(r rune) bool { return !tokenRune(r) }) {
-		return "", errors.New("not a download token")
+		return "", time.Time{}, errors.New("not a download token")
 	}
 	p, m, ok := strings.Cut(token, ".")
 	payload, err1 := b64.DecodeString(p)
 	sum, err2 := b64.DecodeString(m)
 	if !ok || err1 != nil || err2 != nil || len(payload) == 0 || payload[0] != downloadVersion {
-		return "", errors.New("not a download token")
+		return "", time.Time{}, errors.New("not a download token")
 	}
 	n, w := binary.Uvarint(payload[1:])
 	rest := payload[1:]
 	if w <= 0 || n > uint64(len(rest)-w) || uint64(len(rest)-w)-n < 8 {
-		return "", errors.New("not a download token")
+		return "", time.Time{}, errors.New("not a download token")
 	}
 	end := w + int(n) //nolint:gosec // n is bounded by the payload's length just above
 	keyID := string(rest[w:end])
@@ -117,20 +124,20 @@ func (d *Downloads) check(ctx context.Context, token string) (string, error) {
 	// The key id is checked against the accepted ones before its key is resolved.
 	key, err := d.Keys.Accepted(ctx, catalog.KindDownload, keyID)
 	if err != nil {
-		return "", err
+		return "", time.Time{}, err
 	}
 	if !hmac.Equal(sum, mac(key, payload)) {
-		return "", fmt.Errorf("key id %s: the MAC does not verify", keyID)
+		return "", time.Time{}, fmt.Errorf("key id %s: the MAC does not verify", keyID)
 	}
 	now := time.Now
 	if d.Now != nil {
 		now = d.Now
 	}
 	if !now().Before(expiry) {
-		return "", fmt.Errorf("expired at %s", expiry.UTC().Format(time.RFC3339))
+		return "", time.Time{}, fmt.Errorf("expired at %s", expiry.UTC().Format(time.RFC3339))
 	}
 
-	return string(rest[8:]), nil
+	return string(rest[8:]), expiry, nil
 }
 
 // tokenRune reports whether r is a byte of a token: base64url's alphabet, or the dot between payload and MAC.

@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/base64"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -335,5 +336,26 @@ func TestPackURLStalledAtEachStage(t *testing.T) {
 		if got, err := packURL(t, w, p.ID.String()); connect.CodeOf(err) != connect.CodeFailedPrecondition {
 			t.Errorf("stalled at %q, presigned %v: PackURL = %v, %v; want pack-superseded", tc.stage, tc.presigner != nil, got, err)
 		}
+	}
+}
+
+// brokenSigner is a store whose presign fails with the key in its error, as a store's errors name it.
+type brokenSigner struct{}
+
+func (brokenSigner) PresignGet(_ context.Context, key string, _ time.Time) (string, time.Time, error) {
+	return "", time.Time{}, fmt.Errorf("presign %s: the store broke", key)
+}
+
+// A presign that fails answers internal without the object's key.
+func TestPackURLNamesNoKey(t *testing.T) {
+	t.Parallel()
+	w := newWorld(t, catalogtest.Open(t, catalog.EngineSQLite))
+	now := deadlineOf().Add(-24 * time.Hour)
+	w.urls(t, &now, true)
+	w.srv.Downloads.Presigner = brokenSigner{}
+	p := w.stage(t, w.admit(t))
+	_, err := packURL(t, w, p.ID.String())
+	if connect.CodeOf(err) != connect.CodeInternal || strings.Contains(err.Error(), p.Key) || strings.Contains(err.Error(), "broke") {
+		t.Errorf("PackURL over a broken signer = %v; want internal, without the key or the store's text", err)
 	}
 }

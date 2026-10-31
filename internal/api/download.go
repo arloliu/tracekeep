@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"errors"
 	"io"
 	"net/http"
@@ -8,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/arloliu/tracekeep/internal/records"
 	"github.com/arloliu/tracekeep/internal/store"
 )
 
@@ -30,19 +32,24 @@ func (s *Server) serveDownload(w http.ResponseWriter, r *http.Request) {
 
 		return
 	}
-	key, err := s.Downloads.Tokens.Object(r.Context(), strings.TrimPrefix(r.URL.Path, "/download/"))
+	key, expiry, err := s.Downloads.Tokens.ObjectUntil(r.Context(), strings.TrimPrefix(r.URL.Path, "/download/"))
 	if err != nil {
 		http.Error(w, "download refused", http.StatusForbidden)
 		return
 	}
-	obj, err := s.Store.Open(r.Context(), key)
+	// The download ends at the token's expiry plus the margin, at most its object's deadline, so no read it serves outlives the object.
+	// Measured by the downloads' clock, the one the token's expiry is judged by.
+	ctx, cancel := context.WithTimeout(r.Context(), expiry.Add(s.Downloads.Margin).Sub(s.Downloads.now()))
+	defer cancel()
+	r = r.WithContext(ctx)
+	obj, err := records.Open(ctx, s.Store, key)
 	if errors.Is(err, store.ErrNotFound) {
 		http.Error(w, "not found", http.StatusNotFound)
 		return
 	}
 	if err != nil {
 		if s.Log != nil {
-			s.Log.Error("api: open a download", "error", err)
+			s.Log.Error("api: open a download", "error", err) // keyless, as records.Open makes it
 		}
 		http.Error(w, "the store failed", http.StatusBadGateway)
 

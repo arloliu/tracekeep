@@ -107,6 +107,7 @@ func PrincipalFrom(ctx context.Context) (auth.Principal, bool) {
 var operations = map[string]bool{
 	auth.OpListDevices: true, auth.OpListCaptures: true, auth.OpListPacks: true, auth.OpListScopeChanges: true, auth.OpPackURL: true,
 	auth.OpRestore: true, auth.OpDigest: true, auth.OpAdmin: true, auth.OpQueryRecords: true, auth.OpFindTransaction: true,
+	auth.OpStartExport: true, auth.OpGetExport: true, auth.OpListExports: true, auth.OpCancelExport: true,
 }
 
 const opUnknown = "unknown"
