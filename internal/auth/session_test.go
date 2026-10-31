@@ -51,11 +51,21 @@ func TestSessionCookieCredential(t *testing.T) {
 	if err != nil || got.Subject != "person-1" || got.Via != ViaSession {
 		t.Fatalf("Check(ListCaptures) = %+v, %v; want person-1 by session", got, err)
 	}
+	// The browser's operations a viewer's cookie admits.
+	for _, op := range []string{OpListDevices, OpListPacks, OpListScopeChanges, OpQueryRecords, OpFindTransaction} {
+		if _, err := a.Check(cookieRequest(http.MethodPost, publicURL, session), op); err != nil {
+			t.Errorf("Check(%s) by a viewer's cookie = %v", op, err)
+		}
+	}
+	roleless, err := r.people.cookies.SealSession(t.Context(), Session{Subject: "person-2", Issued: c.Now(), Expiry: c.Now().Add(time.Hour)})
+	if err != nil {
+		t.Fatal(err)
+	}
 	for name, tc := range map[string]struct {
 		r          *http.Request
 		op, reason string
 	}{
-		"a role the person lacks":     {cookieRequest(http.MethodPost, publicURL, session), OpListPacks, ReasonForbidden},
+		"a role the person lacks":     {cookieRequest(http.MethodPost, publicURL, roleless), OpQueryRecords, ReasonForbidden},
 		"PackURL":                     {cookieRequest(http.MethodPost, publicURL, session), OpPackURL, ReasonSessionScope},
 		"Restore":                     {cookieRequest(http.MethodPost, publicURL, session), OpRestore, ReasonSessionScope},
 		"Digest":                      {cookieRequest(http.MethodPost, publicURL, session), OpDigest, ReasonSessionScope},

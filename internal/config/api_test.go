@@ -14,6 +14,7 @@ func TestAPIKeys(t *testing.T) {
 	}
 	if a := c.API; a.Listen != ":8443" || a.DownloadMargin != 2*time.Minute || a.DownloadFloor != time.Minute || a.Plaintext ||
 		a.DigestRate != 200 || a.DigestBurst != 2000 ||
+		a.Records != (Records{MaxReads: 8, MaxReaders: 16, MaxLookupPacks: 64, HeldBytes: 64 << 20}) ||
 		a.PublicURL != "https://tracekeep.example.invalid:8443" {
 		t.Errorf("api = %+v", a)
 	}
@@ -27,6 +28,8 @@ func TestAPIKeys(t *testing.T) {
 		"a margin past a day":        {"api:\n  download_margin: 25h\n", "DownloadMargin"},
 		"no digest rate":             {"api:\n  digest_rate: 0\n", "API.DigestRate"},
 		"a burst below one request":  {"api:\n  digest_burst: 999\n", "API.DigestBurst"},
+		"no record reads":            {"api:\n  records:\n    max_reads: 0\n", "MaxReads"},
+		"held bytes below a MiB":     {"api:\n  records:\n    held_bytes: 1024\n", "HeldBytes"},
 	} {
 		base := minimal
 		if name == "a lifetime past a day" {

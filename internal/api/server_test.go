@@ -117,6 +117,11 @@ func (r *recorder) Digest(ctx context.Context, _ *connect.Request[tkv1.DigestReq
 	return connect.NewResponse(&tkv1.DigestResponse{}), nil
 }
 
+func (r *recorder) FindTransaction(ctx context.Context, _ *connect.Request[tkv1.FindTransactionRequest]) (*connect.Response[tkv1.FindTransactionResponse], error) {
+	r.enter(ctx, auth.OpFindTransaction)
+	return connect.NewResponse(&tkv1.FindTransactionResponse{}), nil
+}
+
 // failures counts the reasons auth refused.
 type failures struct {
 	mu sync.Mutex
@@ -177,10 +182,12 @@ func calls(c tracekeepv1connect.MachineServiceClient, token string) map[string]c
 	_, e5 := c.PackURL(ctx, withToken(&tkv1.PackURLRequest{}, token))
 	_, e6 := c.Restore(ctx, withToken(&tkv1.RestoreRequest{}, token))
 	_, e7 := c.Digest(ctx, withToken(&tkv1.DigestRequest{}, token))
+	_, e8 := c.FindTransaction(ctx, withToken(&tkv1.FindTransactionRequest{}, token))
 
 	return map[string]connect.Code{
 		auth.OpListDevices: code(e1), auth.OpListCaptures: code(e2), auth.OpListPacks: code(e3),
 		auth.OpListScopeChanges: code(e4), auth.OpPackURL: code(e5), auth.OpRestore: code(e6), auth.OpDigest: code(e7),
+		auth.OpFindTransaction: code(e8),
 	}
 }
 
@@ -206,7 +213,7 @@ func TestEveryOperationBehindAuth(t *testing.T) {
 		admitted       []string
 	}{
 		{scorerToken, "scorer", []string{auth.OpDigest}},
-		{viewerToken, "viewer", lists},
+		{viewerToken, "viewer", append([]string{auth.OpListPacks, auth.OpFindTransaction}, lists...)},
 		{readerToken, "reader", append([]string{auth.OpListPacks, auth.OpPackURL}, lists...)},
 		{restorerToken, "restorer", []string{auth.OpRestore}},
 	} {
@@ -228,13 +235,13 @@ func TestEveryOperationBehindAuth(t *testing.T) {
 	if s, _ := rec.ran(auth.OpListPacks); s != "reader" {
 		t.Errorf("ListPacks ran as %q, want the reader's principal", s)
 	}
-	if n := rec.count(); n != 1+3+5+1 {
+	if n := rec.count(); n != 1+5+5+1 {
 		t.Errorf("%d handlers ran, want only the admitted ones", n)
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if f.n[auth.ReasonMissing] != 7 || f.n[auth.ReasonStatic] != 7 || f.n[auth.ReasonForbidden] != 18 {
-		t.Errorf("auth failures %v, want 7 missing, 7 static, 18 forbidden", f.n)
+	if f.n[auth.ReasonMissing] != 8 || f.n[auth.ReasonStatic] != 8 || f.n[auth.ReasonForbidden] != 20 {
+		t.Errorf("auth failures %v, want 8 missing, 8 static, 20 forbidden", f.n)
 	}
 }
 

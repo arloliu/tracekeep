@@ -157,6 +157,19 @@ type API struct {
 	// which holds at least one full request's 1,000 inputs (masking-keys.md §9).
 	DigestRate  float64 `yaml:"digest_rate" default:"200" env:"TRACEKEEP_API_DIGEST_RATE" validate:"gt=0"`
 	DigestBurst int     `yaml:"digest_burst" default:"2000" env:"TRACEKEEP_API_DIGEST_BURST" validate:"gte=1000"`
+	// Records bounds QueryRecords and FindTransaction (api.md §10.1 *Records*).
+	Records Records `yaml:"records"`
+}
+
+// Records bounds the record reads of one replica.
+type Records struct {
+	// MaxReads are the QueryRecords streams and FindTransaction lookups served at once.
+	MaxReads int `yaml:"max_reads" default:"8" env:"TRACEKEEP_API_RECORDS_MAX_READS" validate:"gte=1"`
+	// MaxReaders are the packs a QueryRecords merge opens; MaxLookupPacks, the packs of an hour a lookup reads.
+	MaxReaders     int `yaml:"max_readers" default:"16" env:"TRACEKEEP_API_RECORDS_MAX_READERS" validate:"gte=1"`
+	MaxLookupPacks int `yaml:"max_lookup_packs" default:"64" env:"TRACEKEEP_API_RECORDS_MAX_LOOKUP_PACKS" validate:"gte=1"`
+	// HeldBytes are the block bytes one merge holds, tracepack's MaxHeldBytes.
+	HeldBytes int64 `yaml:"held_bytes" default:"67108864" env:"TRACEKEEP_API_RECORDS_HELD_BYTES" validate:"gte=1048576"`
 }
 
 // Metrics is the metrics and health listener (operations.md §10.4).
