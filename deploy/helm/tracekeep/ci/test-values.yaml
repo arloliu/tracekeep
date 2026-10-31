@@ -1,0 +1,40 @@
+# Values the chart's checks render with (make chart-check): a cluster's configuration, every credential by reference.
+image:
+  tag: test
+secrets: [tracekeep-catalog, tracekeep-bus, tracekeep-s3, tracekeep-tls, tracekeep-people, tracekeep-ca]
+config:
+  catalog:
+    engine: mariadb
+    dsn_ref: file:///run/secrets/tracekeep-catalog/dsn
+  bus:
+    url: nats://nats:4222
+    subject_prefix: traffic
+    claim_bucket: claims
+  store:
+    kind: s3
+    presign: false
+    s3:
+      endpoint: http://minio:9000
+      bucket: tracekeep
+      access_key_id: tracekeep
+      secret_access_key_ref: file:///run/secrets/tracekeep-s3/secret
+  api:
+    tls_cert_file: /run/secrets/tracekeep-tls/tls.crt
+    tls_key_file: /run/secrets/tracekeep-tls/tls.key
+    public_url: https://tracekeep.test:8443
+  auth:
+    oidc:
+      issuer: https://dex.test:5556
+      audience: tracekeep-api
+      ca_file: /run/secrets/tracekeep-ca/ca.crt
+    people:
+      client_id: tracekeep-web
+      client_secret_ref: file:///run/secrets/tracekeep-people/secret
+api:
+  service:
+    type: NodePort
+    nodePort: 30443
+alerts:
+  enabled: true
+  gateway:
+    enabled: true

@@ -1,0 +1,22 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "tracekeep.fullname" . }}-api
+  labels:
+    {{- include "tracekeep.labels" . | nindent 4 }}
+    app.kubernetes.io/component: api
+  {{- with .Values.api.service.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: {{ .Values.api.service.type }}
+  selector:
+    {{- include "tracekeep.selector" (dict "root" . "role" "api") | nindent 4 }}
+  ports:
+  - name: https
+    port: {{ .Values.api.service.port }}
+    targetPort: https
+    {{- if and (eq .Values.api.service.type "NodePort") .Values.api.service.nodePort }}
+    nodePort: {{ .Values.api.service.nodePort }}
+    {{- end }}

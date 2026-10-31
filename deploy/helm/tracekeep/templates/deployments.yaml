@@ -1,0 +1,84 @@
+{{- /* One Deployment per role (architecture.md §3.3), each the same image with its subcommand. */ -}}
+{{- range $role := list "ingest" "compact" "api" }}
+{{- $v := index $.Values $role }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "tracekeep.fullname" $ }}-{{ $role }}
+  labels:
+    {{- include "tracekeep.labels" $ | nindent 4 }}
+    app.kubernetes.io/component: {{ $role }}
+spec:
+  replicas: {{ $v.replicas }}
+  selector:
+    matchLabels:
+      {{- include "tracekeep.selector" (dict "root" $ "role" $role) | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "tracekeep.selector" (dict "root" $ "role" $role) | nindent 8 }}
+        {{- with $.Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      annotations:
+        # A changed configuration rolls the pods.
+        checksum/config: {{ include "tracekeep.config" $ | sha256sum }}
+        {{- with $.Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      serviceAccountName: {{ include "tracekeep.serviceAccount" $ }}
+      {{- with $.Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- toYaml $.Values.podSecurityContext | nindent 8 }}
+      containers:
+      - name: tracekeep
+        image: {{ include "tracekeep.image" $ }}
+        imagePullPolicy: {{ $.Values.image.pullPolicy }}
+        args: [{{ $role | quote }}, "--config", "/etc/tracekeep/config.yaml"]
+        env:
+          {{- include "tracekeep.env" $ | nindent 10 }}
+        ports:
+        - name: metrics
+          containerPort: 9090
+        {{- if eq $role "api" }}
+        - name: https
+          containerPort: 8443
+        {{- end }}
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: metrics
+          periodSeconds: 10
+          failureThreshold: 6
+        readinessProbe:
+          httpGet:
+            path: /readyz
+            port: metrics
+          periodSeconds: 5
+          failureThreshold: 3
+        resources:
+          {{- include "tracekeep.resources" (dict "role" $v) | nindent 10 }}
+        securityContext:
+          {{- toYaml $.Values.securityContext | nindent 10 }}
+        volumeMounts:
+          {{- include "tracekeep.volumeMounts" $ | nindent 10 }}
+      volumes:
+        {{- include "tracekeep.volumes" (dict "root" $ "configMap" (include "tracekeep.fullname" $) "size" $v.workDirSize) | nindent 8 }}
+      {{- with $.Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $.Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $.Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}

@@ -1,0 +1,72 @@
+{{- /*
+migrate (architecture.md §3.3): a pre-install and pre-upgrade hook, reading a snapshot of this release's configuration,
+a hook of a lower weight, so a fresh install has it first and an upgrade migrates with the new configuration.
+Both are deleted before their next creation and once they succeed; a failed Job stays for its logs.
+*/ -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "tracekeep.fullname" . }}-migrate
+  labels:
+    {{- include "tracekeep.labels" . | nindent 4 }}
+  annotations:
+    helm.sh/hook: pre-install,pre-upgrade
+    helm.sh/hook-weight: "-10"
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+data:
+  config.yaml: |
+    {{- include "tracekeep.config" . | nindent 4 }}
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "tracekeep.fullname" . }}-migrate
+  labels:
+    {{- include "tracekeep.labels" . | nindent 4 }}
+    app.kubernetes.io/component: migrate
+  annotations:
+    helm.sh/hook: pre-install,pre-upgrade
+    helm.sh/hook-weight: "0"
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: {{ .Values.migrate.backoffLimit }}
+  activeDeadlineSeconds: {{ .Values.migrate.activeDeadlineSeconds }}
+  template:
+    metadata:
+      labels:
+        {{- include "tracekeep.selector" (dict "root" . "role" "migrate") | nindent 8 }}
+    spec:
+      restartPolicy: Never
+      # migrate resolves no key, so it needs no service account token.
+      automountServiceAccountToken: false
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+      - name: migrate
+        image: {{ include "tracekeep.image" . }}
+        imagePullPolicy: {{ .Values.image.pullPolicy }}
+        args: ["migrate", "--config", "/etc/tracekeep/config.yaml"]
+        env:
+          {{- include "tracekeep.env" . | nindent 10 }}
+        {{- with .Values.migrate.resources }}
+        resources:
+          {{- toYaml . | nindent 10 }}
+        {{- end }}
+        securityContext:
+          {{- toYaml .Values.securityContext | nindent 10 }}
+        volumeMounts:
+          {{- include "tracekeep.volumeMounts" . | nindent 10 }}
+      volumes:
+        {{- include "tracekeep.volumes" (dict "root" . "configMap" (printf "%s-migrate" (include "tracekeep.fullname" .)) "size" "64Mi") | nindent 8 }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

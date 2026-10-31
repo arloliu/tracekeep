@@ -1,0 +1,6 @@
+apiVersion: v2
+name: tracekeep
+description: tracekeep, the traffic-log service, one Deployment per role (architecture.md §3.3); the bus, the catalog, the object store, Vault and the IdP are the cluster's own.
+type: application
+version: 0.1.0
+appVersion: "dev"
