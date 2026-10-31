@@ -8,11 +8,11 @@ Read when an alert names an incident; each alert the Helm chart ships links its 
 
 | Incident | Metric | Recovery | Terminal alternative |
 |---|---|---|---|
-| `key-binding-mismatch` | `key_resolutions_total{outcome="refused"}` | restore the bound material, then `key verify` | stop using the key id: rotate to a new one |
-| `key-refused` | `key_resolutions_total{outcome="refused"}`, `key_provider_errors_total{reason}` | fix the declaration or restore the bound version | rotate to a new key id; `capture terminate` for deferred records that need the old one |
-| `merge-over-budget` | `merges_total{outcome="refused"}`, `scopes{state="unmergeable"}` | lower the policy's masking density for new captures; an hour already refused merges by `scope merge <capture> <hour>` only once a release can merge it within the budget | leave it: the hour's segments stay readable and retention evicts it on time |
-| `cannot-screen` | `cannot_screen_total`, `deferred_messages{reason="cannot-screen"}` | fix the producer or the policy, then let the redelivery retry | `capture terminate` for the records masking cannot screen |
-| `incompatible-configuration` | `deferred_messages{reason="incompatible-configuration"}` | stage and activate a masking configuration; upgrade a member that cannot execute it | `capture terminate` for the capture that waits |
+| `key-binding-mismatch` | `tracekeep_key_resolutions_total{outcome="refused"}` | restore the bound material, then `key verify` | stop using the key id: rotate to a new one |
+| `key-refused` | `tracekeep_key_resolutions_total{outcome="refused"}`, `tracekeep_key_provider_errors_total{reason}` | fix the declaration or restore the bound version | rotate to a new key id; `capture terminate` for deferred records that need the old one |
+| `merge-over-budget` | `tracekeep_compact_merges_total{outcome="refused"}`, `tracekeep_compact_scopes{state="unmergeable"}` | lower the policy's masking density for new captures; an hour already refused merges by `scope merge <capture> <hour>` only once a release can merge it within the budget | leave it: the hour's segments stay readable and retention evicts it on time |
+| `cannot-screen` | `tracekeep_ingest_cannot_screen_total`, `tracekeep_ingest_deferred_messages{reason="cannot-screen"}` | fix the producer or the policy, then let the redelivery retry | `capture terminate` for the records masking cannot screen |
+| `incompatible-configuration` | `tracekeep_ingest_deferred_messages{reason="incompatible-configuration"}` | stage and activate a masking configuration; upgrade a member that cannot execute it | `capture terminate` for the capture that waits |
 | `parked` (`TracekeepDeferredOld`) | `tracekeep_ingest_deferred_oldest_age_seconds{reason}`, `tracekeep_ingest_parked_messages{reason}` | the section of the deferral's reason | `capture terminate` for the capture that waits |
 | `backlog` (`TracekeepBacklogHigh`) | `tracekeep_ingest_stream_backlog_bytes`, `tracekeep_ingest_consumer_ack_pending`, `tracekeep_ingest_put_seconds` | restore ingest's throughput: replicas, the store, the catalog | none: past the stream's limit, producers drop |
 | `lease-lost` (`TracekeepCompactLeaseLost`) | `tracekeep_compact_lease_held` | bring a `compact` replica up and ready | none: merges, closes, deletions and retention wait |
@@ -52,7 +52,7 @@ Two populations wait, found and retried differently:
 - **Parked versions**, durable in the catalog (`tracekeep_ingest_parked_messages{reason}`): `tracekeep admin deferred list` shows them by capture and reason,
   with each group's count and oldest parking time; the parked consumer redelivers them every `parking.redelivery_delay`.
 
-1. Read the reason from the alert's labels, then resolve it by its own section: `cannot-screen`, `incompatible-configuration`, `key-refused` or `keys-unavailable`;
+1. Read the reason from the alert's `reason` label, then resolve it by its own section: `cannot-screen`, `incompatible-configuration`, `key-refused` or `keys-unavailable`;
    an `unknown-capture` waits for its capture's start, which the producer sends at its next rotation;
    a `write-failure` is the store's or the catalog's, whose errors are in ingest's log.
 2. Once the cause is gone, each waiting message resolves at its next delivery.
