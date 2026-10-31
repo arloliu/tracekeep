@@ -1,8 +1,8 @@
 // Package keys is the keys module of masking-keys.md §9: it resolves a key id's material from its provider,
 // checks it against the key id's binding by insert-or-compare, and only then caches it and hands it out.
 // A provider only returns material at a reference and version; it derives, compares and caches nothing.
-// It serves the download purpose (tracekeep-decisions.md T-41) and masking's digest and master purposes;
-// the session purpose joins with people's sign-in.
+// It serves the download purpose (tracekeep-decisions.md T-41), masking's digest and master purposes,
+// and the session purpose of people's sign-in (api.md §10.2).
 package keys
 
 import (
@@ -106,6 +106,8 @@ type Config struct {
 	Dev      bool
 	Declared map[string]Declaration
 	Download Purpose
+	// Session is the session and login cookies' purpose (api.md §10.2), declared only where people sign in.
+	Session Purpose
 	// Providers are the providers beside file and env, by the name declarations give, such as vault.
 	Providers map[string]Provider
 	// Metrics records each use's outcome; nil records nothing.
@@ -164,6 +166,9 @@ func New(cfg Config, binder Binder) (*Keys, error) {
 	if cfg.Download.Issuing != "" || len(cfg.Download.Accepted) > 0 {
 		k.purposes[catalog.KindDownload] = cfg.Download
 	}
+	if cfg.Session.Issuing != "" || len(cfg.Session.Accepted) > 0 {
+		k.purposes[catalog.KindSession] = cfg.Session
+	}
 	// Outside development env is no provider at all, so neither a declaration nor a binding made in development reaches it.
 	if cfg.Dev {
 		k.providers[ProviderEnv] = Env{}
@@ -183,30 +188,39 @@ func New(cfg Config, binder Binder) (*Keys, error) {
 			errs = append(errs, fmt.Errorf("keys: key id %s: unknown provider %q", id, d.Provider))
 		}
 		switch d.Kind {
-		case "", catalog.KindDigest, catalog.KindMaster, catalog.KindDownload:
+		case "", catalog.KindDigest, catalog.KindMaster, catalog.KindDownload, catalog.KindSession:
 		default:
 			errs = append(errs, fmt.Errorf("keys: key id %s: unknown kind %q", id, d.Kind))
 		}
 	}
 	for kind, p := range k.purposes {
-		if p.Issuing == "" {
-			errs = append(errs, fmt.Errorf("keys: %s: no issuing key id", kind))
-		} else if !slices.Contains(p.Accepted, p.Issuing) {
-			errs = append(errs, fmt.Errorf("keys: %s: the issuing key id %s is not accepted", kind, p.Issuing))
-		}
-		for _, id := range p.Accepted {
-			if d, ok := cfg.Declared[id]; !ok {
-				errs = append(errs, fmt.Errorf("keys: %s: accepted key id %s is not declared", kind, id))
-			} else if d.Kind != "" && d.Kind != kind {
-				errs = append(errs, fmt.Errorf("keys: %s: accepted key id %s is declared as %s", kind, id, d.Kind))
-			}
-		}
+		errs = append(errs, checkPurpose(kind, p, cfg.Declared)...)
 	}
 	if err := errors.Join(errs...); err != nil {
 		return nil, err
 	}
 
 	return k, nil
+}
+
+// checkPurpose refuses kind's purpose p without an issuing key id among its accepted ones,
+// or accepting a key id that is not declared or is declared of another kind.
+func checkPurpose(kind string, p Purpose, declared map[string]Declaration) []error {
+	var errs []error
+	if p.Issuing == "" {
+		errs = append(errs, fmt.Errorf("keys: %s: no issuing key id", kind))
+	} else if !slices.Contains(p.Accepted, p.Issuing) {
+		errs = append(errs, fmt.Errorf("keys: %s: the issuing key id %s is not accepted", kind, p.Issuing))
+	}
+	for _, id := range p.Accepted {
+		if d, ok := declared[id]; !ok {
+			errs = append(errs, fmt.Errorf("keys: %s: accepted key id %s is not declared", kind, id))
+		} else if d.Kind != "" && d.Kind != kind {
+			errs = append(errs, fmt.Errorf("keys: %s: accepted key id %s is declared as %s", kind, id, d.Kind))
+		}
+	}
+
+	return errs
 }
 
 // Issuing returns the issuing key id of kind's purpose and its checked material.

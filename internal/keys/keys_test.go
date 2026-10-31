@@ -240,6 +240,33 @@ func TestPurposesStayDistinct(t *testing.T) {
 	noMaterial(t, err, m)
 }
 
+// The session purpose issues and accepts its own key ids; a session key id serves no download, nor a download key id a session.
+func TestSessionPurpose(t *testing.T) {
+	t.Parallel()
+	cat := catalogtest.Open(t, catalog.EngineSQLite)
+	sm, dm := material(12, 32), material(13, 32)
+	cfg := downloadOnly(keyFile(t, dm, 0o600))
+	cfg.Declared["s-1"] = Declaration{Provider: ProviderFile, Ref: keyFile(t, sm, 0o600), Kind: catalog.KindSession}
+	cfg.Session = Purpose{Issuing: "s-1", Accepted: []string{"s-1"}}
+	k := newKeys(t, cfg, cat)
+	if id, got, err := k.Issuing(t.Context(), catalog.KindSession); err != nil || id != "s-1" || !bytes.Equal(got, sm) {
+		t.Errorf("Issuing(session) = %s, %x, %v; want s-1 and its material", id, got, err)
+	}
+	if b, bound, err := cat.KeyBinding(t.Context(), "s-1"); err != nil || !bound || b.Kind != catalog.KindSession {
+		t.Errorf("s-1's binding = %+v, %t, %v; want bound as session", b, bound, err)
+	}
+	if _, err := k.Accepted(t.Context(), catalog.KindDownload, "s-1"); !errors.Is(err, ErrUnknownKey) {
+		t.Errorf("Accepted(download, s-1) = %v, want ErrUnknownKey", err)
+	}
+	if _, err := k.Accepted(t.Context(), catalog.KindSession, "dl-1"); !errors.Is(err, ErrUnknownKey) {
+		t.Errorf("Accepted(session, dl-1) = %v, want ErrUnknownKey", err)
+	}
+	cfg.Download.Accepted = []string{"dl-1", "s-1"}
+	if _, err := New(cfg, cat); err == nil {
+		t.Error("New with a session key id accepted for downloads succeeded")
+	}
+}
+
 func TestAcceptedKeyIDs(t *testing.T) {
 	t.Parallel()
 	cat := catalogtest.Open(t, catalog.EngineSQLite)

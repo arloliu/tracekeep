@@ -59,7 +59,9 @@ type StaticToken struct {
 type Keys struct {
 	Declared map[string]KeyDeclaration `yaml:"declared"`
 	Download KeyPurpose                `yaml:"download"`
-	Vault    Vault                     `yaml:"vault"`
+	// Session is the session and login cookies' purpose (api.md §10.2).
+	Session KeyPurpose `yaml:"session"`
+	Vault   Vault      `yaml:"vault"`
 }
 
 // Vault is the vault key provider's server and login (masking-keys.md §9); read only when a key id is declared with vault.
@@ -159,14 +161,23 @@ func (k *Keys) check(dev bool) []error {
 			errs = append(errs, err)
 		}
 	}
-	if p := k.Download; p.Issuing != "" || len(p.Accepted) > 0 {
-		if !slices.Contains(p.Accepted, p.Issuing) {
-			errs = append(errs, fmt.Errorf("keys.download.issuing %q must be one of keys.download.accepted", p.Issuing))
-		}
-		for _, id := range p.Accepted {
-			if _, ok := k.Declared[id]; !ok {
-				errs = append(errs, fmt.Errorf("keys.download.accepted: key id %s is not declared", id))
-			}
+	errs = append(errs, k.checkPurpose("download", k.Download)...)
+
+	return append(errs, k.checkPurpose("session", k.Session)...)
+}
+
+// checkPurpose refuses a purpose whose issuing key id it does not accept or whose accepted key ids are not declared.
+func (k *Keys) checkPurpose(name string, p KeyPurpose) []error {
+	if p.Issuing == "" && len(p.Accepted) == 0 {
+		return nil
+	}
+	var errs []error
+	if !slices.Contains(p.Accepted, p.Issuing) {
+		errs = append(errs, fmt.Errorf("keys.%s.issuing %q must be one of keys.%s.accepted", name, p.Issuing, name))
+	}
+	for _, id := range p.Accepted {
+		if _, ok := k.Declared[id]; !ok {
+			errs = append(errs, fmt.Errorf("keys.%s.accepted: key id %s is not declared", name, id))
 		}
 	}
 
@@ -182,7 +193,7 @@ func (k *Keys) checkDeclaration(id string, d KeyDeclaration, dev bool) error {
 		return fmt.Errorf("keys.declared.%s: unknown provider %q", id, d.Provider)
 	case d.Provider == "vault" && k.Vault.Address == "":
 		return fmt.Errorf("keys.declared.%s: the vault provider needs keys.vault.address", id)
-	case d.Kind != "" && d.Kind != "digest" && d.Kind != "master" && d.Kind != "download":
+	case d.Kind != "" && d.Kind != "digest" && d.Kind != "master" && d.Kind != "download" && d.Kind != "session":
 		return fmt.Errorf("keys.declared.%s: unknown kind %q", id, d.Kind)
 	case d.Ref == "":
 		return fmt.Errorf("keys.declared.%s: no ref", id)
