@@ -309,29 +309,40 @@ func (w *recordWriter) capture(ctx context.Context, c *catalog.CaptureInfo) erro
 	return w.add(&tkv1.RecordItem{Item: &tkv1.RecordItem_UnknownTail{UnknownTail: tail}})
 }
 
-// withheld tells whether c is withheld: outside tracekeep dev, its configuration has no policy (T-48).
+// withheld tells whether c is withheld (T-48), each configuration decided once a stream.
 func (w *recordWriter) withheld(ctx context.Context, c *catalog.CaptureInfo) (bool, error) {
-	if w.s.Dev {
+	if c.ConfigID != nil {
+		if v, ok := w.configs[*c.ConfigID]; ok {
+			return v, nil
+		}
+	}
+	v, err := w.s.withholds(ctx, c.ConfigID)
+	if err == nil && c.ConfigID != nil {
+		if w.configs == nil {
+			w.configs = map[int64]bool{}
+		}
+		w.configs[*c.ConfigID] = v
+	}
+
+	return v, err
+}
+
+// withholds tells whether a capture bound to config is withheld: outside tracekeep dev, its configuration has no policy (T-48).
+func (s *Server) withholds(ctx context.Context, config *int64) (bool, error) {
+	if s.Dev {
 		return false, nil
 	}
-	if c.ConfigID == nil {
+	if config == nil || *config == 0 {
 		return true, nil
 	}
-	if v, ok := w.configs[*c.ConfigID]; ok {
-		return v, nil
-	}
-	b, err := w.s.Catalog.ConfigContent(ctx, *c.ConfigID)
+	b, err := s.Catalog.ConfigContent(ctx, *config)
 	if err != nil {
 		return false, failed(err)
 	}
 	content, err := procconfig.Decode(b)
 	if err != nil {
-		return false, connect.NewError(connect.CodeInternal, fmt.Errorf("api: configuration %d: %w", *c.ConfigID, err))
+		return false, connect.NewError(connect.CodeInternal, fmt.Errorf("api: configuration %d: %w", *config, err))
 	}
-	if w.configs == nil {
-		w.configs = map[int64]bool{}
-	}
-	w.configs[*c.ConfigID] = content.Policy == nil
 
 	return content.Policy == nil, nil
 }

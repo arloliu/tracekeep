@@ -93,7 +93,7 @@ func PrincipalFrom(ctx context.Context) (auth.Principal, bool) {
 // operations are the procedures the service serves; any other path under it is opUnknown, one label, and refused.
 var operations = map[string]bool{
 	auth.OpListDevices: true, auth.OpListCaptures: true, auth.OpListPacks: true, auth.OpListScopeChanges: true, auth.OpPackURL: true,
-	auth.OpRestore: true, auth.OpDigest: true, auth.OpAdmin: true, auth.OpQueryRecords: true,
+	auth.OpRestore: true, auth.OpDigest: true, auth.OpAdmin: true, auth.OpQueryRecords: true, auth.OpFindTransaction: true,
 }
 
 const opUnknown = "unknown"

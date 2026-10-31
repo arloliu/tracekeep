@@ -3276,6 +3276,571 @@ func (x *QueryEnd) GetCursor() string {
 	return ""
 }
 
+// FindTransactionRequest names a transaction's primary by capture, seq and the hour holding it.
+type FindTransactionRequest struct {
+	state     protoimpl.MessageState `protogen:"open.v1"`
+	CaptureId string                 `protobuf:"bytes,1,opt,name=capture_id,json=captureId,proto3" json:"capture_id,omitempty"`
+	Seq       uint64                 `protobuf:"varint,2,opt,name=seq,proto3" json:"seq,omitempty"`
+	// hour is an hour's start.
+	Hour          *timestamppb.Timestamp `protobuf:"bytes,3,opt,name=hour,proto3" json:"hour,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *FindTransactionRequest) Reset() {
+	*x = FindTransactionRequest{}
+	mi := &file_tracekeep_v1_machine_proto_msgTypes[47]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *FindTransactionRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*FindTransactionRequest) ProtoMessage() {}
+
+func (x *FindTransactionRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_tracekeep_v1_machine_proto_msgTypes[47]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use FindTransactionRequest.ProtoReflect.Descriptor instead.
+func (*FindTransactionRequest) Descriptor() ([]byte, []int) {
+	return file_tracekeep_v1_machine_proto_rawDescGZIP(), []int{47}
+}
+
+func (x *FindTransactionRequest) GetCaptureId() string {
+	if x != nil {
+		return x.CaptureId
+	}
+	return ""
+}
+
+func (x *FindTransactionRequest) GetSeq() uint64 {
+	if x != nil {
+		return x.Seq
+	}
+	return 0
+}
+
+func (x *FindTransactionRequest) GetHour() *timestamppb.Timestamp {
+	if x != nil {
+		return x.Hour
+	}
+	return nil
+}
+
+// FindTransactionResponse is the lookup's outcome and what it read (api.md §10.1 *Records*).
+type FindTransactionResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// outcome is matched, ambiguous or not-found.
+	Outcome string          `protobuf:"bytes,1,opt,name=outcome,proto3" json:"outcome,omitempty"`
+	Key     *TransactionKey `protobuf:"bytes,2,opt,name=key,proto3" json:"key,omitempty"`
+	// window_end is the seq ending the reply window, absent when the window did not close.
+	WindowEnd *uint64              `protobuf:"varint,3,opt,name=window_end,json=windowEnd,proto3,oneof" json:"window_end,omitempty"`
+	Records   []*TransactionRecord `protobuf:"bytes,4,rep,name=records,proto3" json:"records,omitempty"`
+	Gaps      []*TransactionGap    `protobuf:"bytes,5,rep,name=gaps,proto3" json:"gaps,omitempty"`
+	// hours are the hours searched to their end.
+	Hours         []*timestamppb.Timestamp `protobuf:"bytes,6,rep,name=hours,proto3" json:"hours,omitempty"`
+	Conflicts     []*TransactionConflict   `protobuf:"bytes,7,rep,name=conflicts,proto3" json:"conflicts,omitempty"`
+	Unreadable    []*UnreadablePack        `protobuf:"bytes,8,rep,name=unreadable,proto3" json:"unreadable,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *FindTransactionResponse) Reset() {
+	*x = FindTransactionResponse{}
+	mi := &file_tracekeep_v1_machine_proto_msgTypes[48]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *FindTransactionResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*FindTransactionResponse) ProtoMessage() {}
+
+func (x *FindTransactionResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_tracekeep_v1_machine_proto_msgTypes[48]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use FindTransactionResponse.ProtoReflect.Descriptor instead.
+func (*FindTransactionResponse) Descriptor() ([]byte, []int) {
+	return file_tracekeep_v1_machine_proto_rawDescGZIP(), []int{48}
+}
+
+func (x *FindTransactionResponse) GetOutcome() string {
+	if x != nil {
+		return x.Outcome
+	}
+	return ""
+}
+
+func (x *FindTransactionResponse) GetKey() *TransactionKey {
+	if x != nil {
+		return x.Key
+	}
+	return nil
+}
+
+func (x *FindTransactionResponse) GetWindowEnd() uint64 {
+	if x != nil && x.WindowEnd != nil {
+		return *x.WindowEnd
+	}
+	return 0
+}
+
+func (x *FindTransactionResponse) GetRecords() []*TransactionRecord {
+	if x != nil {
+		return x.Records
+	}
+	return nil
+}
+
+func (x *FindTransactionResponse) GetGaps() []*TransactionGap {
+	if x != nil {
+		return x.Gaps
+	}
+	return nil
+}
+
+func (x *FindTransactionResponse) GetHours() []*timestamppb.Timestamp {
+	if x != nil {
+		return x.Hours
+	}
+	return nil
+}
+
+func (x *FindTransactionResponse) GetConflicts() []*TransactionConflict {
+	if x != nil {
+		return x.Conflicts
+	}
+	return nil
+}
+
+func (x *FindTransactionResponse) GetUnreadable() []*UnreadablePack {
+	if x != nil {
+		return x.Unreadable
+	}
+	return nil
+}
+
+// TransactionKey is the primary's key.
+type TransactionKey struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Epoch         uint32                 `protobuf:"varint,1,opt,name=epoch,proto3" json:"epoch,omitempty"`
+	Direction     string                 `protobuf:"bytes,2,opt,name=direction,proto3" json:"direction,omitempty"`
+	SessionId     uint32                 `protobuf:"varint,3,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
+	SystemBytes   []byte                 `protobuf:"bytes,4,opt,name=system_bytes,json=systemBytes,proto3" json:"system_bytes,omitempty"`
+	Stream        *uint32                `protobuf:"varint,5,opt,name=stream,proto3,oneof" json:"stream,omitempty"`
+	Function      uint32                 `protobuf:"varint,6,opt,name=function,proto3" json:"function,omitempty"`
+	W             *bool                  `protobuf:"varint,7,opt,name=w,proto3,oneof" json:"w,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *TransactionKey) Reset() {
+	*x = TransactionKey{}
+	mi := &file_tracekeep_v1_machine_proto_msgTypes[49]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *TransactionKey) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*TransactionKey) ProtoMessage() {}
+
+func (x *TransactionKey) ProtoReflect() protoreflect.Message {
+	mi := &file_tracekeep_v1_machine_proto_msgTypes[49]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use TransactionKey.ProtoReflect.Descriptor instead.
+func (*TransactionKey) Descriptor() ([]byte, []int) {
+	return file_tracekeep_v1_machine_proto_rawDescGZIP(), []int{49}
+}
+
+func (x *TransactionKey) GetEpoch() uint32 {
+	if x != nil {
+		return x.Epoch
+	}
+	return 0
+}
+
+func (x *TransactionKey) GetDirection() string {
+	if x != nil {
+		return x.Direction
+	}
+	return ""
+}
+
+func (x *TransactionKey) GetSessionId() uint32 {
+	if x != nil {
+		return x.SessionId
+	}
+	return 0
+}
+
+func (x *TransactionKey) GetSystemBytes() []byte {
+	if x != nil {
+		return x.SystemBytes
+	}
+	return nil
+}
+
+func (x *TransactionKey) GetStream() uint32 {
+	if x != nil && x.Stream != nil {
+		return *x.Stream
+	}
+	return 0
+}
+
+func (x *TransactionKey) GetFunction() uint32 {
+	if x != nil {
+		return x.Function
+	}
+	return 0
+}
+
+func (x *TransactionKey) GetW() bool {
+	if x != nil && x.W != nil {
+		return *x.W
+	}
+	return false
+}
+
+// TransactionRecord is a record the lookup read, with tracepack's roles: primary, candidate (a reply), possible-reply, same-key-primary, possible-primary, closing, outcome;
+// valid marks a valid match.
+type TransactionRecord struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Record        *Record                `protobuf:"bytes,1,opt,name=record,proto3" json:"record,omitempty"`
+	Roles         []string               `protobuf:"bytes,2,rep,name=roles,proto3" json:"roles,omitempty"`
+	InWindow      bool                   `protobuf:"varint,3,opt,name=in_window,json=inWindow,proto3" json:"in_window,omitempty"`
+	Valid         bool                   `protobuf:"varint,4,opt,name=valid,proto3" json:"valid,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *TransactionRecord) Reset() {
+	*x = TransactionRecord{}
+	mi := &file_tracekeep_v1_machine_proto_msgTypes[50]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *TransactionRecord) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*TransactionRecord) ProtoMessage() {}
+
+func (x *TransactionRecord) ProtoReflect() protoreflect.Message {
+	mi := &file_tracekeep_v1_machine_proto_msgTypes[50]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use TransactionRecord.ProtoReflect.Descriptor instead.
+func (*TransactionRecord) Descriptor() ([]byte, []int) {
+	return file_tracekeep_v1_machine_proto_rawDescGZIP(), []int{50}
+}
+
+func (x *TransactionRecord) GetRecord() *Record {
+	if x != nil {
+		return x.Record
+	}
+	return nil
+}
+
+func (x *TransactionRecord) GetRoles() []string {
+	if x != nil {
+		return x.Roles
+	}
+	return nil
+}
+
+func (x *TransactionRecord) GetInWindow() bool {
+	if x != nil {
+		return x.InWindow
+	}
+	return false
+}
+
+func (x *TransactionRecord) GetValid() bool {
+	if x != nil {
+		return x.Valid
+	}
+	return false
+}
+
+// TransactionGap is what the lookup could not decide from, with tracepack's reason.
+type TransactionGap struct {
+	state         protoimpl.MessageState   `protogen:"open.v1"`
+	Reason        string                   `protobuf:"bytes,1,opt,name=reason,proto3" json:"reason,omitempty"`
+	Hours         []*timestamppb.Timestamp `protobuf:"bytes,2,rep,name=hours,proto3" json:"hours,omitempty"`
+	PackId        *string                  `protobuf:"bytes,3,opt,name=pack_id,json=packId,proto3,oneof" json:"pack_id,omitempty"`
+	Seq           *uint64                  `protobuf:"varint,4,opt,name=seq,proto3,oneof" json:"seq,omitempty"`
+	Detail        string                   `protobuf:"bytes,5,opt,name=detail,proto3" json:"detail,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *TransactionGap) Reset() {
+	*x = TransactionGap{}
+	mi := &file_tracekeep_v1_machine_proto_msgTypes[51]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *TransactionGap) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*TransactionGap) ProtoMessage() {}
+
+func (x *TransactionGap) ProtoReflect() protoreflect.Message {
+	mi := &file_tracekeep_v1_machine_proto_msgTypes[51]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use TransactionGap.ProtoReflect.Descriptor instead.
+func (*TransactionGap) Descriptor() ([]byte, []int) {
+	return file_tracekeep_v1_machine_proto_rawDescGZIP(), []int{51}
+}
+
+func (x *TransactionGap) GetReason() string {
+	if x != nil {
+		return x.Reason
+	}
+	return ""
+}
+
+func (x *TransactionGap) GetHours() []*timestamppb.Timestamp {
+	if x != nil {
+		return x.Hours
+	}
+	return nil
+}
+
+func (x *TransactionGap) GetPackId() string {
+	if x != nil && x.PackId != nil {
+		return *x.PackId
+	}
+	return ""
+}
+
+func (x *TransactionGap) GetSeq() uint64 {
+	if x != nil && x.Seq != nil {
+		return *x.Seq
+	}
+	return 0
+}
+
+func (x *TransactionGap) GetDetail() string {
+	if x != nil {
+		return x.Detail
+	}
+	return ""
+}
+
+// TransactionConflict is a seq read in differing versions, each version's packs.
+type TransactionConflict struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Seq           uint64                 `protobuf:"varint,1,opt,name=seq,proto3" json:"seq,omitempty"`
+	Versions      []*Holders             `protobuf:"bytes,2,rep,name=versions,proto3" json:"versions,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *TransactionConflict) Reset() {
+	*x = TransactionConflict{}
+	mi := &file_tracekeep_v1_machine_proto_msgTypes[52]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *TransactionConflict) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*TransactionConflict) ProtoMessage() {}
+
+func (x *TransactionConflict) ProtoReflect() protoreflect.Message {
+	mi := &file_tracekeep_v1_machine_proto_msgTypes[52]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use TransactionConflict.ProtoReflect.Descriptor instead.
+func (*TransactionConflict) Descriptor() ([]byte, []int) {
+	return file_tracekeep_v1_machine_proto_rawDescGZIP(), []int{52}
+}
+
+func (x *TransactionConflict) GetSeq() uint64 {
+	if x != nil {
+		return x.Seq
+	}
+	return 0
+}
+
+func (x *TransactionConflict) GetVersions() []*Holders {
+	if x != nil {
+		return x.Versions
+	}
+	return nil
+}
+
+// Holders are the packs holding one version.
+type Holders struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	PackIds       []string               `protobuf:"bytes,1,rep,name=pack_ids,json=packIds,proto3" json:"pack_ids,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *Holders) Reset() {
+	*x = Holders{}
+	mi := &file_tracekeep_v1_machine_proto_msgTypes[53]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *Holders) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*Holders) ProtoMessage() {}
+
+func (x *Holders) ProtoReflect() protoreflect.Message {
+	mi := &file_tracekeep_v1_machine_proto_msgTypes[53]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use Holders.ProtoReflect.Descriptor instead.
+func (*Holders) Descriptor() ([]byte, []int) {
+	return file_tracekeep_v1_machine_proto_rawDescGZIP(), []int{53}
+}
+
+func (x *Holders) GetPackIds() []string {
+	if x != nil {
+		return x.PackIds
+	}
+	return nil
+}
+
+// UnreadablePack is a pack whose footer the lookup could not use.
+type UnreadablePack struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Hour          *timestamppb.Timestamp `protobuf:"bytes,1,opt,name=hour,proto3" json:"hour,omitempty"`
+	PackId        string                 `protobuf:"bytes,2,opt,name=pack_id,json=packId,proto3" json:"pack_id,omitempty"`
+	Error         string                 `protobuf:"bytes,3,opt,name=error,proto3" json:"error,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *UnreadablePack) Reset() {
+	*x = UnreadablePack{}
+	mi := &file_tracekeep_v1_machine_proto_msgTypes[54]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *UnreadablePack) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*UnreadablePack) ProtoMessage() {}
+
+func (x *UnreadablePack) ProtoReflect() protoreflect.Message {
+	mi := &file_tracekeep_v1_machine_proto_msgTypes[54]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use UnreadablePack.ProtoReflect.Descriptor instead.
+func (*UnreadablePack) Descriptor() ([]byte, []int) {
+	return file_tracekeep_v1_machine_proto_rawDescGZIP(), []int{54}
+}
+
+func (x *UnreadablePack) GetHour() *timestamppb.Timestamp {
+	if x != nil {
+		return x.Hour
+	}
+	return nil
+}
+
+func (x *UnreadablePack) GetPackId() string {
+	if x != nil {
+		return x.PackId
+	}
+	return ""
+}
+
+func (x *UnreadablePack) GetError() string {
+	if x != nil {
+		return x.Error
+	}
+	return ""
+}
+
 var File_tracekeep_v1_machine_proto protoreflect.FileDescriptor
 
 const file_tracekeep_v1_machine_proto_rawDesc = "" +
@@ -3567,7 +4132,59 @@ const file_tracekeep_v1_machine_proto_rawDesc = "" +
 	"\n" +
 	"incomplete\x18\x02 \x01(\bR\n" +
 	"incomplete\x12\x16\n" +
-	"\x06cursor\x18\x03 \x01(\tR\x06cursor2\x9a\x05\n" +
+	"\x06cursor\x18\x03 \x01(\tR\x06cursor\"y\n" +
+	"\x16FindTransactionRequest\x12\x1d\n" +
+	"\n" +
+	"capture_id\x18\x01 \x01(\tR\tcaptureId\x12\x10\n" +
+	"\x03seq\x18\x02 \x01(\x04R\x03seq\x12.\n" +
+	"\x04hour\x18\x03 \x01(\v2\x1a.google.protobuf.TimestampR\x04hour\"\xb4\x03\n" +
+	"\x17FindTransactionResponse\x12\x18\n" +
+	"\aoutcome\x18\x01 \x01(\tR\aoutcome\x12.\n" +
+	"\x03key\x18\x02 \x01(\v2\x1c.tracekeep.v1.TransactionKeyR\x03key\x12\"\n" +
+	"\n" +
+	"window_end\x18\x03 \x01(\x04H\x00R\twindowEnd\x88\x01\x01\x129\n" +
+	"\arecords\x18\x04 \x03(\v2\x1f.tracekeep.v1.TransactionRecordR\arecords\x120\n" +
+	"\x04gaps\x18\x05 \x03(\v2\x1c.tracekeep.v1.TransactionGapR\x04gaps\x120\n" +
+	"\x05hours\x18\x06 \x03(\v2\x1a.google.protobuf.TimestampR\x05hours\x12?\n" +
+	"\tconflicts\x18\a \x03(\v2!.tracekeep.v1.TransactionConflictR\tconflicts\x12<\n" +
+	"\n" +
+	"unreadable\x18\b \x03(\v2\x1c.tracekeep.v1.UnreadablePackR\n" +
+	"unreadableB\r\n" +
+	"\v_window_end\"\xe3\x01\n" +
+	"\x0eTransactionKey\x12\x14\n" +
+	"\x05epoch\x18\x01 \x01(\rR\x05epoch\x12\x1c\n" +
+	"\tdirection\x18\x02 \x01(\tR\tdirection\x12\x1d\n" +
+	"\n" +
+	"session_id\x18\x03 \x01(\rR\tsessionId\x12!\n" +
+	"\fsystem_bytes\x18\x04 \x01(\fR\vsystemBytes\x12\x1b\n" +
+	"\x06stream\x18\x05 \x01(\rH\x00R\x06stream\x88\x01\x01\x12\x1a\n" +
+	"\bfunction\x18\x06 \x01(\rR\bfunction\x12\x11\n" +
+	"\x01w\x18\a \x01(\bH\x01R\x01w\x88\x01\x01B\t\n" +
+	"\a_streamB\x04\n" +
+	"\x02_w\"\x8a\x01\n" +
+	"\x11TransactionRecord\x12,\n" +
+	"\x06record\x18\x01 \x01(\v2\x14.tracekeep.v1.RecordR\x06record\x12\x14\n" +
+	"\x05roles\x18\x02 \x03(\tR\x05roles\x12\x1b\n" +
+	"\tin_window\x18\x03 \x01(\bR\binWindow\x12\x14\n" +
+	"\x05valid\x18\x04 \x01(\bR\x05valid\"\xbb\x01\n" +
+	"\x0eTransactionGap\x12\x16\n" +
+	"\x06reason\x18\x01 \x01(\tR\x06reason\x120\n" +
+	"\x05hours\x18\x02 \x03(\v2\x1a.google.protobuf.TimestampR\x05hours\x12\x1c\n" +
+	"\apack_id\x18\x03 \x01(\tH\x00R\x06packId\x88\x01\x01\x12\x15\n" +
+	"\x03seq\x18\x04 \x01(\x04H\x01R\x03seq\x88\x01\x01\x12\x16\n" +
+	"\x06detail\x18\x05 \x01(\tR\x06detailB\n" +
+	"\n" +
+	"\b_pack_idB\x06\n" +
+	"\x04_seq\"Z\n" +
+	"\x13TransactionConflict\x12\x10\n" +
+	"\x03seq\x18\x01 \x01(\x04R\x03seq\x121\n" +
+	"\bversions\x18\x02 \x03(\v2\x15.tracekeep.v1.HoldersR\bversions\"$\n" +
+	"\aHolders\x12\x19\n" +
+	"\bpack_ids\x18\x01 \x03(\tR\apackIds\"o\n" +
+	"\x0eUnreadablePack\x12.\n" +
+	"\x04hour\x18\x01 \x01(\v2\x1a.google.protobuf.TimestampR\x04hour\x12\x17\n" +
+	"\apack_id\x18\x02 \x01(\tR\x06packId\x12\x14\n" +
+	"\x05error\x18\x03 \x01(\tR\x05error2\xfa\x05\n" +
 	"\x0eMachineService\x12R\n" +
 	"\vListDevices\x12 .tracekeep.v1.ListDevicesRequest\x1a!.tracekeep.v1.ListDevicesResponse\x12U\n" +
 	"\fListCaptures\x12!.tracekeep.v1.ListCapturesRequest\x1a\".tracekeep.v1.ListCapturesResponse\x12L\n" +
@@ -3576,7 +4193,8 @@ const file_tracekeep_v1_machine_proto_rawDesc = "" +
 	"\aPackURL\x12\x1c.tracekeep.v1.PackURLRequest\x1a\x1d.tracekeep.v1.PackURLResponse\x12F\n" +
 	"\aRestore\x12\x1c.tracekeep.v1.RestoreRequest\x1a\x1d.tracekeep.v1.RestoreResponse\x12C\n" +
 	"\x06Digest\x12\x1b.tracekeep.v1.DigestRequest\x1a\x1c.tracekeep.v1.DigestResponse\x12W\n" +
-	"\fQueryRecords\x12!.tracekeep.v1.QueryRecordsRequest\x1a\".tracekeep.v1.QueryRecordsResponse0\x01B=Z;github.com/arloliu/tracekeep/proto/tracekeep/v1;tracekeepv1b\x06proto3"
+	"\fQueryRecords\x12!.tracekeep.v1.QueryRecordsRequest\x1a\".tracekeep.v1.QueryRecordsResponse0\x01\x12^\n" +
+	"\x0fFindTransaction\x12$.tracekeep.v1.FindTransactionRequest\x1a%.tracekeep.v1.FindTransactionResponseB=Z;github.com/arloliu/tracekeep/proto/tracekeep/v1;tracekeepv1b\x06proto3"
 
 var (
 	file_tracekeep_v1_machine_proto_rawDescOnce sync.Once
@@ -3590,7 +4208,7 @@ func file_tracekeep_v1_machine_proto_rawDescGZIP() []byte {
 	return file_tracekeep_v1_machine_proto_rawDescData
 }
 
-var file_tracekeep_v1_machine_proto_msgTypes = make([]protoimpl.MessageInfo, 47)
+var file_tracekeep_v1_machine_proto_msgTypes = make([]protoimpl.MessageInfo, 55)
 var file_tracekeep_v1_machine_proto_goTypes = []any{
 	(*Selector)(nil),                 // 0: tracekeep.v1.Selector
 	(*ListDevicesRequest)(nil),       // 1: tracekeep.v1.ListDevicesRequest
@@ -3639,34 +4257,42 @@ var file_tracekeep_v1_machine_proto_goTypes = []any{
 	(*Incomplete)(nil),               // 44: tracekeep.v1.Incomplete
 	(*UnknownTail)(nil),              // 45: tracekeep.v1.UnknownTail
 	(*QueryEnd)(nil),                 // 46: tracekeep.v1.QueryEnd
-	(*timestamppb.Timestamp)(nil),    // 47: google.protobuf.Timestamp
+	(*FindTransactionRequest)(nil),   // 47: tracekeep.v1.FindTransactionRequest
+	(*FindTransactionResponse)(nil),  // 48: tracekeep.v1.FindTransactionResponse
+	(*TransactionKey)(nil),           // 49: tracekeep.v1.TransactionKey
+	(*TransactionRecord)(nil),        // 50: tracekeep.v1.TransactionRecord
+	(*TransactionGap)(nil),           // 51: tracekeep.v1.TransactionGap
+	(*TransactionConflict)(nil),      // 52: tracekeep.v1.TransactionConflict
+	(*Holders)(nil),                  // 53: tracekeep.v1.Holders
+	(*UnreadablePack)(nil),           // 54: tracekeep.v1.UnreadablePack
+	(*timestamppb.Timestamp)(nil),    // 55: google.protobuf.Timestamp
 }
 var file_tracekeep_v1_machine_proto_depIdxs = []int32{
-	47, // 0: tracekeep.v1.Selector.from:type_name -> google.protobuf.Timestamp
-	47, // 1: tracekeep.v1.Selector.to:type_name -> google.protobuf.Timestamp
+	55, // 0: tracekeep.v1.Selector.from:type_name -> google.protobuf.Timestamp
+	55, // 1: tracekeep.v1.Selector.to:type_name -> google.protobuf.Timestamp
 	0,  // 2: tracekeep.v1.ListDevicesRequest.selector:type_name -> tracekeep.v1.Selector
 	3,  // 3: tracekeep.v1.ListDevicesResponse.devices:type_name -> tracekeep.v1.Device
-	47, // 4: tracekeep.v1.Device.last_record:type_name -> google.protobuf.Timestamp
+	55, // 4: tracekeep.v1.Device.last_record:type_name -> google.protobuf.Timestamp
 	0,  // 5: tracekeep.v1.ListCapturesRequest.selector:type_name -> tracekeep.v1.Selector
 	6,  // 6: tracekeep.v1.ListCapturesResponse.captures:type_name -> tracekeep.v1.Capture
-	47, // 7: tracekeep.v1.Capture.origin:type_name -> google.protobuf.Timestamp
-	47, // 8: tracekeep.v1.Capture.last_record:type_name -> google.protobuf.Timestamp
+	55, // 7: tracekeep.v1.Capture.origin:type_name -> google.protobuf.Timestamp
+	55, // 8: tracekeep.v1.Capture.last_record:type_name -> google.protobuf.Timestamp
 	7,  // 9: tracekeep.v1.Capture.thinning:type_name -> tracekeep.v1.Thinning
 	8,  // 10: tracekeep.v1.Capture.unregistered:type_name -> tracekeep.v1.UnregisteredInterval
-	47, // 11: tracekeep.v1.UnregisteredInterval.start:type_name -> google.protobuf.Timestamp
-	47, // 12: tracekeep.v1.UnregisteredInterval.end:type_name -> google.protobuf.Timestamp
+	55, // 11: tracekeep.v1.UnregisteredInterval.start:type_name -> google.protobuf.Timestamp
+	55, // 12: tracekeep.v1.UnregisteredInterval.end:type_name -> google.protobuf.Timestamp
 	0,  // 13: tracekeep.v1.ListPacksRequest.selector:type_name -> tracekeep.v1.Selector
 	11, // 14: tracekeep.v1.ListPacksResponse.cursor:type_name -> tracekeep.v1.Cursor
 	12, // 15: tracekeep.v1.ListPacksResponse.hours:type_name -> tracekeep.v1.Hour
 	16, // 16: tracekeep.v1.ListPacksResponse.captures:type_name -> tracekeep.v1.CaptureCompleteness
-	47, // 17: tracekeep.v1.Hour.hour:type_name -> google.protobuf.Timestamp
+	55, // 17: tracekeep.v1.Hour.hour:type_name -> google.protobuf.Timestamp
 	13, // 18: tracekeep.v1.Hour.scopes:type_name -> tracekeep.v1.Scope
 	19, // 19: tracekeep.v1.Hour.deferred:type_name -> tracekeep.v1.Deferred
 	21, // 20: tracekeep.v1.Hour.losses:type_name -> tracekeep.v1.DeclaredLoss
 	14, // 21: tracekeep.v1.Scope.packs:type_name -> tracekeep.v1.Pack
 	15, // 22: tracekeep.v1.Pack.ranges:type_name -> tracekeep.v1.Range
-	47, // 23: tracekeep.v1.Range.from:type_name -> google.protobuf.Timestamp
-	47, // 24: tracekeep.v1.Range.to:type_name -> google.protobuf.Timestamp
+	55, // 23: tracekeep.v1.Range.from:type_name -> google.protobuf.Timestamp
+	55, // 24: tracekeep.v1.Range.to:type_name -> google.protobuf.Timestamp
 	6,  // 25: tracekeep.v1.CaptureCompleteness.capture:type_name -> tracekeep.v1.Capture
 	17, // 26: tracekeep.v1.CaptureCompleteness.completeness:type_name -> tracekeep.v1.Completeness
 	15, // 27: tracekeep.v1.Completeness.retained:type_name -> tracekeep.v1.Range
@@ -3676,24 +4302,24 @@ var file_tracekeep_v1_machine_proto_depIdxs = []int32{
 	21, // 31: tracekeep.v1.Completeness.losses:type_name -> tracekeep.v1.DeclaredLoss
 	22, // 32: tracekeep.v1.Completeness.crash_gaps:type_name -> tracekeep.v1.CrashGap
 	23, // 33: tracekeep.v1.Completeness.conflicts:type_name -> tracekeep.v1.Conflict
-	47, // 34: tracekeep.v1.Run.from:type_name -> google.protobuf.Timestamp
-	47, // 35: tracekeep.v1.Run.to:type_name -> google.protobuf.Timestamp
-	47, // 36: tracekeep.v1.Deferred.time:type_name -> google.protobuf.Timestamp
-	47, // 37: tracekeep.v1.Gap.start:type_name -> google.protobuf.Timestamp
-	47, // 38: tracekeep.v1.Gap.end:type_name -> google.protobuf.Timestamp
-	47, // 39: tracekeep.v1.DeclaredLoss.from:type_name -> google.protobuf.Timestamp
-	47, // 40: tracekeep.v1.DeclaredLoss.to:type_name -> google.protobuf.Timestamp
-	47, // 41: tracekeep.v1.CrashGap.start:type_name -> google.protobuf.Timestamp
-	47, // 42: tracekeep.v1.CrashGap.end:type_name -> google.protobuf.Timestamp
+	55, // 34: tracekeep.v1.Run.from:type_name -> google.protobuf.Timestamp
+	55, // 35: tracekeep.v1.Run.to:type_name -> google.protobuf.Timestamp
+	55, // 36: tracekeep.v1.Deferred.time:type_name -> google.protobuf.Timestamp
+	55, // 37: tracekeep.v1.Gap.start:type_name -> google.protobuf.Timestamp
+	55, // 38: tracekeep.v1.Gap.end:type_name -> google.protobuf.Timestamp
+	55, // 39: tracekeep.v1.DeclaredLoss.from:type_name -> google.protobuf.Timestamp
+	55, // 40: tracekeep.v1.DeclaredLoss.to:type_name -> google.protobuf.Timestamp
+	55, // 41: tracekeep.v1.CrashGap.start:type_name -> google.protobuf.Timestamp
+	55, // 42: tracekeep.v1.CrashGap.end:type_name -> google.protobuf.Timestamp
 	11, // 43: tracekeep.v1.ListScopeChangesRequest.after:type_name -> tracekeep.v1.Cursor
 	0,  // 44: tracekeep.v1.ListScopeChangesRequest.selector:type_name -> tracekeep.v1.Selector
 	26, // 45: tracekeep.v1.ListScopeChangesResponse.events:type_name -> tracekeep.v1.ScopeEvent
 	11, // 46: tracekeep.v1.ListScopeChangesResponse.next:type_name -> tracekeep.v1.Cursor
-	47, // 47: tracekeep.v1.ScopeEvent.hour:type_name -> google.protobuf.Timestamp
-	47, // 48: tracekeep.v1.ScopeEvent.at:type_name -> google.protobuf.Timestamp
-	47, // 49: tracekeep.v1.PackURLResponse.expires:type_name -> google.protobuf.Timestamp
-	47, // 50: tracekeep.v1.RestoreRequest.hour:type_name -> google.protobuf.Timestamp
-	47, // 51: tracekeep.v1.RestoreResponse.time:type_name -> google.protobuf.Timestamp
+	55, // 47: tracekeep.v1.ScopeEvent.hour:type_name -> google.protobuf.Timestamp
+	55, // 48: tracekeep.v1.ScopeEvent.at:type_name -> google.protobuf.Timestamp
+	55, // 49: tracekeep.v1.PackURLResponse.expires:type_name -> google.protobuf.Timestamp
+	55, // 50: tracekeep.v1.RestoreRequest.hour:type_name -> google.protobuf.Timestamp
+	55, // 51: tracekeep.v1.RestoreResponse.time:type_name -> google.protobuf.Timestamp
 	34, // 52: tracekeep.v1.DigestRequest.inputs:type_name -> tracekeep.v1.DigestInput
 	0,  // 53: tracekeep.v1.QueryRecordsRequest.selector:type_name -> tracekeep.v1.Selector
 	38, // 54: tracekeep.v1.QueryRecordsResponse.items:type_name -> tracekeep.v1.RecordItem
@@ -3705,32 +4331,45 @@ var file_tracekeep_v1_machine_proto_depIdxs = []int32{
 	45, // 60: tracekeep.v1.RecordItem.unknown_tail:type_name -> tracekeep.v1.UnknownTail
 	6,  // 61: tracekeep.v1.CaptureStart.capture:type_name -> tracekeep.v1.Capture
 	17, // 62: tracekeep.v1.CaptureStart.completeness:type_name -> tracekeep.v1.Completeness
-	47, // 63: tracekeep.v1.Record.hour:type_name -> google.protobuf.Timestamp
-	47, // 64: tracekeep.v1.Record.time:type_name -> google.protobuf.Timestamp
+	55, // 63: tracekeep.v1.Record.hour:type_name -> google.protobuf.Timestamp
+	55, // 64: tracekeep.v1.Record.time:type_name -> google.protobuf.Timestamp
 	41, // 65: tracekeep.v1.Record.header:type_name -> tracekeep.v1.HSMSHeader
 	42, // 66: tracekeep.v1.Record.holders:type_name -> tracekeep.v1.Holder
-	47, // 67: tracekeep.v1.Incomplete.hour:type_name -> google.protobuf.Timestamp
-	1,  // 68: tracekeep.v1.MachineService.ListDevices:input_type -> tracekeep.v1.ListDevicesRequest
-	4,  // 69: tracekeep.v1.MachineService.ListCaptures:input_type -> tracekeep.v1.ListCapturesRequest
-	9,  // 70: tracekeep.v1.MachineService.ListPacks:input_type -> tracekeep.v1.ListPacksRequest
-	24, // 71: tracekeep.v1.MachineService.ListScopeChanges:input_type -> tracekeep.v1.ListScopeChangesRequest
-	27, // 72: tracekeep.v1.MachineService.PackURL:input_type -> tracekeep.v1.PackURLRequest
-	30, // 73: tracekeep.v1.MachineService.Restore:input_type -> tracekeep.v1.RestoreRequest
-	33, // 74: tracekeep.v1.MachineService.Digest:input_type -> tracekeep.v1.DigestRequest
-	36, // 75: tracekeep.v1.MachineService.QueryRecords:input_type -> tracekeep.v1.QueryRecordsRequest
-	2,  // 76: tracekeep.v1.MachineService.ListDevices:output_type -> tracekeep.v1.ListDevicesResponse
-	5,  // 77: tracekeep.v1.MachineService.ListCaptures:output_type -> tracekeep.v1.ListCapturesResponse
-	10, // 78: tracekeep.v1.MachineService.ListPacks:output_type -> tracekeep.v1.ListPacksResponse
-	25, // 79: tracekeep.v1.MachineService.ListScopeChanges:output_type -> tracekeep.v1.ListScopeChangesResponse
-	28, // 80: tracekeep.v1.MachineService.PackURL:output_type -> tracekeep.v1.PackURLResponse
-	31, // 81: tracekeep.v1.MachineService.Restore:output_type -> tracekeep.v1.RestoreResponse
-	35, // 82: tracekeep.v1.MachineService.Digest:output_type -> tracekeep.v1.DigestResponse
-	37, // 83: tracekeep.v1.MachineService.QueryRecords:output_type -> tracekeep.v1.QueryRecordsResponse
-	76, // [76:84] is the sub-list for method output_type
-	68, // [68:76] is the sub-list for method input_type
-	68, // [68:68] is the sub-list for extension type_name
-	68, // [68:68] is the sub-list for extension extendee
-	0,  // [0:68] is the sub-list for field type_name
+	55, // 67: tracekeep.v1.Incomplete.hour:type_name -> google.protobuf.Timestamp
+	55, // 68: tracekeep.v1.FindTransactionRequest.hour:type_name -> google.protobuf.Timestamp
+	49, // 69: tracekeep.v1.FindTransactionResponse.key:type_name -> tracekeep.v1.TransactionKey
+	50, // 70: tracekeep.v1.FindTransactionResponse.records:type_name -> tracekeep.v1.TransactionRecord
+	51, // 71: tracekeep.v1.FindTransactionResponse.gaps:type_name -> tracekeep.v1.TransactionGap
+	55, // 72: tracekeep.v1.FindTransactionResponse.hours:type_name -> google.protobuf.Timestamp
+	52, // 73: tracekeep.v1.FindTransactionResponse.conflicts:type_name -> tracekeep.v1.TransactionConflict
+	54, // 74: tracekeep.v1.FindTransactionResponse.unreadable:type_name -> tracekeep.v1.UnreadablePack
+	40, // 75: tracekeep.v1.TransactionRecord.record:type_name -> tracekeep.v1.Record
+	55, // 76: tracekeep.v1.TransactionGap.hours:type_name -> google.protobuf.Timestamp
+	53, // 77: tracekeep.v1.TransactionConflict.versions:type_name -> tracekeep.v1.Holders
+	55, // 78: tracekeep.v1.UnreadablePack.hour:type_name -> google.protobuf.Timestamp
+	1,  // 79: tracekeep.v1.MachineService.ListDevices:input_type -> tracekeep.v1.ListDevicesRequest
+	4,  // 80: tracekeep.v1.MachineService.ListCaptures:input_type -> tracekeep.v1.ListCapturesRequest
+	9,  // 81: tracekeep.v1.MachineService.ListPacks:input_type -> tracekeep.v1.ListPacksRequest
+	24, // 82: tracekeep.v1.MachineService.ListScopeChanges:input_type -> tracekeep.v1.ListScopeChangesRequest
+	27, // 83: tracekeep.v1.MachineService.PackURL:input_type -> tracekeep.v1.PackURLRequest
+	30, // 84: tracekeep.v1.MachineService.Restore:input_type -> tracekeep.v1.RestoreRequest
+	33, // 85: tracekeep.v1.MachineService.Digest:input_type -> tracekeep.v1.DigestRequest
+	36, // 86: tracekeep.v1.MachineService.QueryRecords:input_type -> tracekeep.v1.QueryRecordsRequest
+	47, // 87: tracekeep.v1.MachineService.FindTransaction:input_type -> tracekeep.v1.FindTransactionRequest
+	2,  // 88: tracekeep.v1.MachineService.ListDevices:output_type -> tracekeep.v1.ListDevicesResponse
+	5,  // 89: tracekeep.v1.MachineService.ListCaptures:output_type -> tracekeep.v1.ListCapturesResponse
+	10, // 90: tracekeep.v1.MachineService.ListPacks:output_type -> tracekeep.v1.ListPacksResponse
+	25, // 91: tracekeep.v1.MachineService.ListScopeChanges:output_type -> tracekeep.v1.ListScopeChangesResponse
+	28, // 92: tracekeep.v1.MachineService.PackURL:output_type -> tracekeep.v1.PackURLResponse
+	31, // 93: tracekeep.v1.MachineService.Restore:output_type -> tracekeep.v1.RestoreResponse
+	35, // 94: tracekeep.v1.MachineService.Digest:output_type -> tracekeep.v1.DigestResponse
+	37, // 95: tracekeep.v1.MachineService.QueryRecords:output_type -> tracekeep.v1.QueryRecordsResponse
+	48, // 96: tracekeep.v1.MachineService.FindTransaction:output_type -> tracekeep.v1.FindTransactionResponse
+	88, // [88:97] is the sub-list for method output_type
+	79, // [79:88] is the sub-list for method input_type
+	79, // [79:79] is the sub-list for extension type_name
+	79, // [79:79] is the sub-list for extension extendee
+	0,  // [0:79] is the sub-list for field type_name
 }
 
 func init() { file_tracekeep_v1_machine_proto_init() }
@@ -3760,13 +4399,16 @@ func file_tracekeep_v1_machine_proto_init() {
 	file_tracekeep_v1_machine_proto_msgTypes[40].OneofWrappers = []any{}
 	file_tracekeep_v1_machine_proto_msgTypes[44].OneofWrappers = []any{}
 	file_tracekeep_v1_machine_proto_msgTypes[45].OneofWrappers = []any{}
+	file_tracekeep_v1_machine_proto_msgTypes[48].OneofWrappers = []any{}
+	file_tracekeep_v1_machine_proto_msgTypes[49].OneofWrappers = []any{}
+	file_tracekeep_v1_machine_proto_msgTypes[51].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_tracekeep_v1_machine_proto_rawDesc), len(file_tracekeep_v1_machine_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   47,
+			NumMessages:   55,
 			NumExtensions: 0,
 			NumServices:   1,
 		},
