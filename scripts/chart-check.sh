@@ -24,6 +24,9 @@ refused "config.catalog.dsn is a credential" -f "$values" --set config.catalog.d
 refused "config.bus.password is a credential" -f "$values" --set config.bus.password=sentinel
 refused "config.store.s3.secret_access_key is a credential" -f "$values" --set config.store.s3.secret_access_key=sentinel
 refused "config is tracekeep's configuration and is required" --set image.tag=test
+refused "config.bus.url carries a credential" -f "$values" --set config.bus.url=nats://user:sentinel@nats:4222
+refused "config.bus.url carries a credential" -f "$values" --set 'config.bus.url=nats://a:4222\,nats://token-sentinel@b:4222'
+refused "config.store.s3.endpoint carries a credential" -f "$values" --set config.store.s3.endpoint=https://key:sentinel@s3.example.invalid
 
 # Every container runs as the image's non-root user on a read-only root, and every role and the Job mount /work.
 for want in "readOnlyRootFilesystem: true" "runAsNonRoot: true" "mountPath: /work"; do
