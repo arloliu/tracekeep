@@ -86,6 +86,14 @@ func TestDownload(t *testing.T) {
 	if resp.StatusCode != http.StatusOK || len(got) != 0 || resp.ContentLength != int64(len(body)) {
 		t.Errorf("HEAD = %d, %d bytes, length %d", resp.StatusCode, len(got), resp.ContentLength)
 	}
+	// A download checks its token alone: a session cookie, valid or not, neither admits nor refuses it.
+	cookie := map[string]string{"Cookie": auth.SessionCookie + "=not-a-session"}
+	if resp, got := get(t, srv, http.MethodGet, path, cookie); resp.StatusCode != http.StatusOK || !bytes.Equal(got, body) {
+		t.Errorf("GET with a session cookie beside the token = %d", resp.StatusCode)
+	}
+	if resp, _ := get(t, srv, http.MethodGet, "/download/", cookie); resp.StatusCode != http.StatusForbidden {
+		t.Errorf("GET with a session cookie and no token = %d, want refused", resp.StatusCode)
+	}
 	if resp, _ := get(t, srv, http.MethodPost, path, nil); resp.StatusCode != http.StatusMethodNotAllowed {
 		t.Errorf("POST = %d, want 405", resp.StatusCode)
 	}
