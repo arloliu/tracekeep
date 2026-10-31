@@ -1,30 +1,44 @@
-import { createRootRoute, createRoute, createRouter, Link, Outlet } from "@tanstack/react-router";
+import { createRootRoute, createRoute, createRouter, type RouterHistory } from "@tanstack/react-router";
 
-const rootRoute = createRootRoute({
-  component: () => (
-    <div className="min-h-screen">
-      <header className="flex items-center gap-6 border-b px-6 py-3">
-        <Link to="/" className="font-semibold">
-          tracekeep
-        </Link>
-      </header>
-      <main className="p-6">
-        <Outlet />
-      </main>
-    </div>
-  ),
-});
+import { Allowed } from "@/me";
+import { Shell } from "@/shell";
+
+const rootRoute = createRootRoute({ component: Shell });
 
 const browserRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/",
-  component: () => <p className="text-muted-foreground">The browser comes next.</p>,
+  component: () => (
+    <Allowed role="viewer">
+      <p className="text-muted-foreground">The browser comes next.</p>
+    </Allowed>
+  ),
 });
 
-export const routeTree = rootRoute.addChildren([browserRoute]);
+const recordsRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/records",
+  component: () => (
+    <Allowed role="viewer">
+      <p className="text-muted-foreground">The records come next.</p>
+    </Allowed>
+  ),
+});
 
-export function newRouter() {
-  return createRouter({ routeTree });
+const exportsRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/exports",
+  component: () => (
+    <Allowed role="exporter">
+      <p className="text-muted-foreground">The exports come next.</p>
+    </Allowed>
+  ),
+});
+
+export const routeTree = rootRoute.addChildren([browserRoute, recordsRoute, exportsRoute]);
+
+export function newRouter(history?: RouterHistory) {
+  return createRouter({ routeTree, history });
 }
 
 declare module "@tanstack/react-router" {
