@@ -110,10 +110,14 @@ func (s *Server) routes(impl tracekeepv1connect.MachineServiceHandler) http.Hand
 		switch p := r.URL.Path; {
 		case strings.HasPrefix(p, "/download/") && s.Downloads.Tokens != nil:
 			s.download(&downloadWriter{ResponseWriter: w}, r)
+		case strings.HasPrefix(p, "/auth/") && (s.People == nil || path.Clean(p) != p):
+			// Not found, with the protections of every answer under /auth/; an unclean path is never redirected, which would echo its query.
+			auth.Protect(w, r)
+			http.NotFound(w, r)
+		case strings.HasPrefix(p, "/auth/"):
+			s.People.Handler().ServeHTTP(w, r)
 		case strings.HasPrefix(p, "/download/") || path.Clean(p) != p:
 			http.NotFound(&downloadWriter{ResponseWriter: w}, r)
-		case strings.HasPrefix(p, "/auth/") && s.People != nil:
-			s.People.Handler().ServeHTTP(w, r)
 		default:
 			mux.ServeHTTP(w, r)
 		}

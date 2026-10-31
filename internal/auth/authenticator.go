@@ -130,14 +130,15 @@ func (a *Authenticator) Authenticate(r *http.Request) (Principal, error) {
 	if a.cfg.MTLS != nil && r.TLS != nil && len(r.TLS.VerifiedChains) > 0 && len(r.TLS.VerifiedChains[0]) > 0 {
 		return a.certificate(r)
 	}
-	h := r.Header.Get("Authorization")
-	if h == "" {
+	// A header present but empty is still the chosen credential, refused as malformed below: it never falls back to the cookie.
+	if _, present := r.Header["Authorization"]; !present {
 		if _, err := r.Cookie(SessionCookie); err == nil && a.cfg.People != nil {
 			return a.session(r)
 		}
 
 		return Principal{}, refuse(ReasonMissing, errors.New("no credential"))
 	}
+	h := r.Header.Get("Authorization")
 	scheme, token, ok := strings.Cut(h, " ")
 	if !ok || !strings.EqualFold(scheme, "Bearer") || token == "" {
 		return Principal{}, refuse(ReasonMalformed, errors.New("not a bearer token"))

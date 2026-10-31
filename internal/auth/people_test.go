@@ -71,6 +71,9 @@ func TestSignInRefusals(t *testing.T) {
 		"the service audience":  {p.grantCode(l.Verifier, with(func(m map[string]any) { m["aud"] = audience })), ReasonAudience},
 		"two audiences, no azp": {p.grantCode(l.Verifier, with(func(m map[string]any) { m["aud"] = []string{peopleClient, "other"} })), ReasonAudience},
 		"another azp":           {p.grantCode(l.Verifier, with(func(m map[string]any) { m["azp"] = "other" })), ReasonAudience},
+		"a null azp":            {p.grantCode(l.Verifier, with(func(m map[string]any) { m["azp"] = nil })), ReasonAudience},
+		"a numeric azp":         {p.grantCode(l.Verifier, with(func(m map[string]any) { m["azp"] = 7 })), ReasonAudience},
+		"an azp list":           {p.grantCode(l.Verifier, with(func(m map[string]any) { m["azp"] = []string{peopleClient} })), ReasonAudience},
 		"no subject":            {p.grantCode(l.Verifier, with(func(m map[string]any) { delete(m, "sub") })), ReasonMalformed},
 		"another issuer":        {p.grantCode(l.Verifier, with(func(m map[string]any) { m["iss"] = "https://other.example.invalid" })), ReasonIssuer},
 		"expired":               {p.grantCode(l.Verifier, with(func(m map[string]any) { m["exp"] = c.Now().Add(-time.Hour).Unix() })), ReasonExpired},
@@ -108,11 +111,17 @@ func TestSignInExchangeDeadline(t *testing.T) {
 	pp := p.people(c)
 	pp.cfg.ExchangeTimeout = 50 * time.Millisecond
 	release := make(chan struct{})
+	t.Cleanup(func() { close(release) })
 	p.set(func() { p.tokenBlock = release })
-	defer close(release)
 	l := Login{Verifier: "verifier-1", Nonce: "nonce-1", Expiry: c.Now().Add(10 * time.Minute)}
 	code := p.grantCode(l.Verifier, sign(t, s, p.idClaims(c.Now(), l.Nonce)))
-	if _, err := pp.signIn(t.Context(), code, l); reason(err) != ReasonExchange {
+	done := make(chan error, 1)
+	go func() {
+		_, err := pp.signIn(t.Context(), code, l)
+		done <- err
+	}()
+	// The endpoint stays blocked: only the exchange's own deadline ends the sign-in.
+	if err := within(t, done, "the exchange's deadline"); reason(err) != ReasonExchange {
 		t.Errorf("a stalled token endpoint: signIn = %v, want refused as exchange", err)
 	}
 }

@@ -1,7 +1,7 @@
-// Package auth authenticates a service's request to a principal and authorizes an operation by its role (api.md §10.2):
+// Package auth authenticates a request to a principal and authorizes an operation by its role (api.md §10.2):
 // a service token validated against the IdP's JWKS, a client certificate the TLS handshake verified,
-// or, behind an explicit flag, a static token; and the download tokens of api.md §10.1 *Downloads*.
-// It serves nothing itself: the API puts it in front of every request.
+// behind an explicit flag a static token, or a person's session cookie; and the download tokens of api.md §10.1 *Downloads*.
+// It serves people's sign-in under /auth/ (api.md §10.2 *People's sign-in*); the API puts the rest in front of every request.
 package auth
 
 import (

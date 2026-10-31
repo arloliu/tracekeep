@@ -558,13 +558,16 @@ func TestAPIRoleServesSignIn(t *testing.T) {
 		ctx, cancel := context.WithCancel(t.Context())
 		done := make(chan error, 1)
 		go func() { done <- API(ctx, e) }()
+		t.Cleanup(cancel)
 		select {
 		case <-bound:
 		case err := <-done:
 			t.Fatalf("configured %t: API = %v", configured, err)
+		case <-time.After(30 * time.Second): // bounds a hung start only
+			t.Fatalf("configured %t: the api role never bound", configured)
 		}
 		client := &http.Client{Transport: &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}}, //nolint:gosec // the test's own certificate
-			CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+			CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }, Timeout: 30 * time.Second}
 		resp, err := client.Get("https://" + e.APIAddr() + "/auth/login")
 		if err != nil {
 			t.Fatal(err)
@@ -574,10 +577,14 @@ func TestAPIRoleServesSignIn(t *testing.T) {
 		if configured {
 			want = http.StatusServiceUnavailable
 		}
-		if resp.StatusCode != want || configured && resp.Header.Get("Cache-Control") != "no-store" {
+		if resp.StatusCode != want || resp.Header.Get("Cache-Control") != "no-store" {
 			t.Errorf("configured %t: /auth/login = %d, Cache-Control %q; want %d", configured, resp.StatusCode, resp.Header.Get("Cache-Control"), want)
 		}
 		cancel()
-		<-done //nolint:errcheck // the role's end, its error the cancellation's
+		select {
+		case <-done: //nolint:errcheck // the role's end, its error the cancellation's
+		case <-time.After(30 * time.Second):
+			t.Fatalf("configured %t: the api role did not stop", configured)
+		}
 	}
 }
