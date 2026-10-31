@@ -321,7 +321,7 @@ function RecordLine({ r }: { r: TkRecord }) {
       <span className="w-16 shrink-0 text-right">{String(r.seq)}</span>
       <span className="w-24 shrink-0">{r.direction}</span>
       <span className="w-28 shrink-0">{r.kind}</span>
-      <span className="w-20 shrink-0">{r.header ? message(r.header) : ""}</span>
+      <span className="w-20 shrink-0">{r.header && r.kind === "data" ? message(r.header) : ""}</span>
       <span className="w-20 shrink-0">{r.header ? hex(r.header.systemBytes) : ""}</span>
       <span className="flex gap-1">
         {r.conflict && <Badge variant="destructive">conflict</Badge>}
@@ -400,7 +400,7 @@ function RecordPanel({ r, capture }: { r: TkRecord; capture: string }) {
         <Field label="Direction">{r.direction}</Field>
         {r.header && (
           <>
-            <Field label="Message">{message(r.header)}</Field>
+            {r.kind === "data" && <Field label="Message">{message(r.header)}</Field>}
             <Field label="Session id">{r.header.sessionId}</Field>
             <Field label="System bytes"><span className="font-mono">{hex(r.header.systemBytes)}</span></Field>
           </>
@@ -426,7 +426,11 @@ function RecordPanel({ r, capture }: { r: TkRecord; capture: string }) {
           {r.smlTruncated && <p className="text-warn">The SML was cut at 64 KiB.</p>}
         </section>
       )}
-      {r.kind === "data" && r.hour && <Transaction capture={capture} r={r} />}
+      {r.kind === "data" && r.hour && r.header && (r.header.function % 2 === 1 ? (
+        <Transaction capture={capture} r={r} />
+      ) : (
+        <p className="text-muted-foreground">A reply: its transaction is looked up from its primary.</p>
+      ))}
     </>
   );
 }
@@ -457,7 +461,7 @@ function Transaction({ capture, r }: { capture: string; r: TkRecord }) {
               <li key={i}>
                 seq {String(t.record?.seq ?? 0n)} {t.record?.header ? message(t.record.header) : t.record?.kind} {t.record?.direction} — {t.roles.join(", ")}
                 {t.valid && " ✓"}
-                {!t.inWindow && " (outside the window)"}
+                {!t.inWindow && " (outside the reply window)"}
               </li>
             ))}
           </ul>

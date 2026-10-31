@@ -109,7 +109,7 @@ test("a selected record shows its header, SML, holders and transaction, looked u
       asked,
       function* () {
         yield {
-          items: [start(), record(7n, { conflict: true, holders: [{ packId: "pack-1", state: "staged" }], smlTruncated: true }), record(8n, { sml: "", smlError: "bad item length" })],
+          items: [start(), record(7n, { conflict: true, holders: [{ packId: "pack-1", state: "staged" }], smlTruncated: true }), record(8n, { sml: "", smlError: "bad item length", header: { stream: 6, function: 12, systemBytes: new Uint8Array([0, 0, 0, 7]) } })],
           cursor: "c1",
           end: { records: 2n },
         };
@@ -142,8 +142,12 @@ test("a selected record shows its header, SML, holders and transaction, looked u
   expect(looked[0]?.seq).toBe(7n);
   expect(looked[0]?.hour?.seconds).toBe(hour.seconds);
 
+  const lookups = looked.length;
   await userEvent.click(within(list).getByRole("button", { name: "Seq 8" }));
-  expect(await within(screen.getByRole("complementary", { name: "Selected" })).findByText("The body does not render: bad item length")).toBeInTheDocument();
+  const reply = screen.getByRole("complementary", { name: "Selected" });
+  expect(await within(reply).findByText("The body does not render: bad item length")).toBeInTheDocument();
+  expect(within(reply).getByText("A reply: its transaction is looked up from its primary.")).toBeInTheDocument();
+  expect(looked).toHaveLength(lookups);
 });
 
 test("a limit's cursor offers the next page, whose items join the same list", async () => {
