@@ -1,6 +1,7 @@
 import { createRootRoute, createRoute, createRouter, type RouterHistory } from "@tanstack/react-router";
 
 import { Browser } from "@/browser";
+import { ExportPage, Exports, NewExport } from "@/exports";
 import { Allowed } from "@/me";
 import { Records } from "@/records";
 import { validateRecords, validateSelector } from "@/selector";
@@ -35,12 +36,33 @@ const exportsRoute = createRoute({
   path: "/exports",
   component: () => (
     <Allowed role="exporter">
-      <p className="text-muted-foreground">The exports come next.</p>
+      <Exports />
     </Allowed>
   ),
 });
 
-export const routeTree = rootRoute.addChildren([browserRoute, recordsRoute, exportsRoute]);
+const newExportRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/exports/new",
+  validateSearch: validateSelector,
+  component: () => (
+    <Allowed role="exporter">
+      <NewExport />
+    </Allowed>
+  ),
+});
+
+const exportRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/exports/$jobId",
+  component: () => (
+    <Allowed role="exporter">
+      <ExportPage />
+    </Allowed>
+  ),
+});
+
+export const routeTree = rootRoute.addChildren([browserRoute, recordsRoute, exportsRoute, newExportRoute, exportRoute]);
 
 export function newRouter(history?: RouterHistory) {
   return createRouter({ routeTree, history });

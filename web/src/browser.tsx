@@ -10,6 +10,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { ErrorNote } from "@/errors";
+import { ExportLink } from "@/exports";
 import type { Capture, Completeness, Hour, Thinning } from "@/gen/tracekeep/v1/machine_pb";
 import { presetLabels, presets, recentTools, rememberTool, selectorOf, windowOf, type Preset, type SelectorSearch, type Window } from "@/selector";
 import { fromInput, inputValue, Time, useZone } from "@/time";
@@ -36,6 +37,7 @@ export function Browser() {
         <p className="text-muted-foreground">Type a tool id to browse its devices.</p>
       ) : (
         <>
+          <ExportLink search={search} from={w.from} to={w.to} />
           <Devices search={search} w={w} />
           {search.devices === undefined ? (
             <p className="text-muted-foreground">Select devices to list their captures.</p>

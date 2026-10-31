@@ -11,6 +11,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { ErrorNote } from "@/errors";
+import { ExportLink } from "@/exports";
 import type { CaptureStart, Completeness, HSMSHeader, Incomplete, Record as TkRecord, UnknownTail } from "@/gen/tracekeep/v1/machine_pb";
 import { cn } from "@/lib/utils";
 import { directions, kinds, selectorOf, windowOf, type RecordsSearch, type Window } from "@/selector";
@@ -29,7 +30,14 @@ export function Records() {
   return (
     <div className="space-y-4">
       <FilterBar key={`${JSON.stringify(search)}|${zone}`} search={search} w={w} />
-      {req === undefined ? <p className="text-muted-foreground">Choose a tool to read its records.</p> : <RecordList req={req} search={search} w={w} />}
+      {req === undefined ? (
+        <p className="text-muted-foreground">Choose a tool to read its records.</p>
+      ) : (
+        <>
+          <ExportLink search={search} from={w.from} to={w.to} />
+          <RecordList req={req} search={search} w={w} />
+        </>
+      )}
     </div>
   );
 }
