@@ -10,6 +10,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/base64"
 	"encoding/pem"
 	"io"
 	"log/slog"
@@ -30,6 +31,8 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"github.com/arloliu/tracekeep/internal/auth"
+	"github.com/arloliu/tracekeep/internal/catalog"
+	"github.com/arloliu/tracekeep/internal/config"
 	"github.com/arloliu/tracekeep/internal/keys"
 	"github.com/arloliu/tracekeep/internal/store"
 	tkv1 "github.com/arloliu/tracekeep/proto/tracekeep/v1"
@@ -491,5 +494,40 @@ func TestAPIRoleStopsWithADownloadInFlight(t *testing.T) {
 	}
 	if !b.closed.Load() {
 		t.Error("the role returned while the download's handler still held its object")
+	}
+}
+
+// The api role resolves every accepted session key id at start (T-48), so a started replica validates every cookie without the provider;
+// one it cannot resolve fails the start.
+func TestAPIRoleResolvesSessionKeysAtStart(t *testing.T) {
+	t.Parallel()
+	e := devEnv(t)
+	dir := t.TempDir()
+	for _, id := range []string{"s-0", "s-1"} {
+		path := filepath.Join(dir, id)
+		if err := os.WriteFile(path, []byte(base64.StdEncoding.EncodeToString([]byte(rand.Text()+rand.Text()))), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		e.Config.Keys.Declared[id] = config.KeyDeclaration{Provider: keys.ProviderFile, Ref: path, Kind: catalog.KindSession}
+	}
+	e.Config.Keys.Session = config.KeyPurpose{Issuing: "s-1", Accepted: []string{"s-0", "s-1"}}
+	if err := e.sessions(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"s-0", "s-1"} {
+		if b, bound, err := e.Catalog.KeyBinding(t.Context(), id); err != nil || !bound || b.Kind != catalog.KindSession {
+			t.Errorf("%s after the start = %+v, %t, %v; want bound as session", id, b, bound, err)
+		}
+	}
+
+	e = devEnv(t)
+	e.Config.Keys.Declared["s-0"] = config.KeyDeclaration{Provider: keys.ProviderFile, Ref: filepath.Join(dir, "absent"), Kind: catalog.KindSession}
+	e.Config.Keys.Declared["s-1"] = config.KeyDeclaration{Provider: keys.ProviderFile, Ref: filepath.Join(dir, "s-1"), Kind: catalog.KindSession}
+	e.Config.Keys.Session = config.KeyPurpose{Issuing: "s-1", Accepted: []string{"s-0", "s-1"}}
+	// The deadline only bounds a regression, which would serve instead of failing.
+	ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
+	defer cancel()
+	if err := API(ctx, e); err == nil || !strings.Contains(err.Error(), "s-0") {
+		t.Errorf("API with an old accepted session key unresolvable = %v, want the start failed naming s-0", err)
 	}
 }

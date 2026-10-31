@@ -94,6 +94,9 @@ func API(ctx context.Context, e *Env) error {
 	if err := e.downloads(ctx, &s.Downloads, m); err != nil {
 		return err
 	}
+	if err := e.sessions(ctx); err != nil {
+		return err
+	}
 	// The admin commands' keys, after downloads named what a missing download key costs; Restore and Digest share them.
 	if s.Admin, err = e.Admin(""); err != nil {
 		return err
@@ -178,6 +181,25 @@ func (e *Env) downloads(ctx context.Context, dl *api.Downloads, m *metrics.API) 
 	_, _, err = k.Issuing(ctx, catalog.KindDownload)
 
 	return err
+}
+
+// sessions resolves and binds every accepted session key id (masking-keys.md §9, T-48), so this replica validates every cookie
+// without the provider once it is ready, and a key it cannot resolve fails the start.
+func (e *Env) sessions(ctx context.Context) error {
+	if len(e.Config.Keys.Session.Accepted) == 0 {
+		return nil
+	}
+	k, err := e.Keys()
+	if err != nil {
+		return err
+	}
+	for _, id := range e.Config.Keys.Session.Accepted {
+		if _, err := k.Accepted(ctx, catalog.KindSession, id); err != nil {
+			return fmt.Errorf("service: api: session key id %s: %w", id, err)
+		}
+	}
+
+	return nil
 }
 
 // checkPresign presigns a GET of a key that does not exist and fetches it (storage.md §5.2 *Downloads*):
@@ -308,6 +330,7 @@ func keysConfig(c config.Keys, dev bool, m keys.Metrics) (keys.Config, error) {
 	kc := keys.Config{
 		Dev: dev, Declared: map[string]keys.Declaration{}, Metrics: m,
 		Download: keys.Purpose{Issuing: c.Download.Issuing, Accepted: c.Download.Accepted},
+		Session:  keys.Purpose{Issuing: c.Session.Issuing, Accepted: c.Session.Accepted},
 	}
 	vault := false
 	for id, d := range c.Declared {

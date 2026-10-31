@@ -105,25 +105,40 @@ func TestAuthAndKeysValidation(t *testing.T) {
 	}
 	long := strings.Repeat("x", 32)
 	for name, tc := range map[string]struct{ extra, want string }{
-		"an inline static token":  {"auth:\n  static:\n    enabled: true\n    tokens:\n      - {subject: s, token: " + long + ", roles: [viewer]}\n", "token_ref"},
-		"a long key ref":          {"keys:\n  declared:\n    dl-1: {provider: file, ref: /" + strings.Repeat("k", 250) + "}\n", "255"},
-		"issuer, no audience":     {"auth:\n  oidc:\n    issuer: https://idp.example.invalid\n", "auth.oidc.audience"},
-		"plain-text issuer":       {"auth:\n  oidc:\n    issuer: http://idp.example.invalid\n    audience: tk\n", "auth.oidc.issuer"},
-		"an unknown role":         {"auth:\n  oidc:\n    issuer: https://idp.example.invalid\n    audience: tk\n    roles:\n      x: [reader]\n", `"reader"`},
-		"subjects, no CA":         {"auth:\n  mtls:\n    subjects:\n      spiffe://c.example/x: [viewer]\n", "auth.mtls.client_ca_file"},
-		"static on, no token":     {"auth:\n  static:\n    enabled: true\n", "auth.static.tokens"},
-		"a short static token":    {"auth:\n  static:\n    enabled: true\n    tokens:\n      - {subject: s, token_ref: \"" + ref("short") + "\", roles: [viewer]}\n", "32"},
-		"a static token, no role": {"auth:\n  static:\n    enabled: true\n    tokens:\n      - {subject: s, token_ref: \"" + ref(long) + "\"}\n", "roles"},
-		"env outside dev":         {"keys:\n  declared:\n    dl-1: {provider: env, ref: TK_DL}\n", "development"},
-		"an unknown provider":     {"keys:\n  declared:\n    dl-1: {provider: transit, ref: kv/dl}\n", "provider"},
-		"vault, no address":       {"keys:\n  declared:\n    d-1: {provider: vault, ref: tk/d-1, kind: digest}\n", "keys.vault.address"},
-		"an unknown kind":         {"keys:\n  declared:\n    d-1: {provider: file, ref: /k, kind: cookie}\n", "kind"},
-		"issuing not accepted":    {"keys:\n  declared:\n    dl-1: {provider: file, ref: /k}\n  download:\n    issuing: dl-1\n    accepted: [dl-0]\n", "keys.download.issuing"},
-		"accepted not declared":   {"keys:\n  declared:\n    dl-1: {provider: file, ref: /k}\n  download:\n    issuing: dl-1\n    accepted: [dl-1, dl-0]\n", "dl-0"},
+		"an inline static token":        {"auth:\n  static:\n    enabled: true\n    tokens:\n      - {subject: s, token: " + long + ", roles: [viewer]}\n", "token_ref"},
+		"a long key ref":                {"keys:\n  declared:\n    dl-1: {provider: file, ref: /" + strings.Repeat("k", 250) + "}\n", "255"},
+		"issuer, no audience":           {"auth:\n  oidc:\n    issuer: https://idp.example.invalid\n", "auth.oidc.audience"},
+		"plain-text issuer":             {"auth:\n  oidc:\n    issuer: http://idp.example.invalid\n    audience: tk\n", "auth.oidc.issuer"},
+		"an unknown role":               {"auth:\n  oidc:\n    issuer: https://idp.example.invalid\n    audience: tk\n    roles:\n      x: [reader]\n", `"reader"`},
+		"subjects, no CA":               {"auth:\n  mtls:\n    subjects:\n      spiffe://c.example/x: [viewer]\n", "auth.mtls.client_ca_file"},
+		"static on, no token":           {"auth:\n  static:\n    enabled: true\n", "auth.static.tokens"},
+		"a short static token":          {"auth:\n  static:\n    enabled: true\n    tokens:\n      - {subject: s, token_ref: \"" + ref("short") + "\", roles: [viewer]}\n", "32"},
+		"a static token, no role":       {"auth:\n  static:\n    enabled: true\n    tokens:\n      - {subject: s, token_ref: \"" + ref(long) + "\"}\n", "roles"},
+		"env outside dev":               {"keys:\n  declared:\n    dl-1: {provider: env, ref: TK_DL}\n", "development"},
+		"an unknown provider":           {"keys:\n  declared:\n    dl-1: {provider: transit, ref: kv/dl}\n", "provider"},
+		"vault, no address":             {"keys:\n  declared:\n    d-1: {provider: vault, ref: tk/d-1, kind: digest}\n", "keys.vault.address"},
+		"an unknown kind":               {"keys:\n  declared:\n    d-1: {provider: file, ref: /k, kind: cookie}\n", "kind"},
+		"issuing not accepted":          {"keys:\n  declared:\n    dl-1: {provider: file, ref: /k}\n  download:\n    issuing: dl-1\n    accepted: [dl-0]\n", "keys.download.issuing"},
+		"accepted not declared":         {"keys:\n  declared:\n    dl-1: {provider: file, ref: /k}\n  download:\n    issuing: dl-1\n    accepted: [dl-1, dl-0]\n", "dl-0"},
+		"session issuing not accepted":  {"keys:\n  declared:\n    s-1: {provider: file, ref: /k, kind: session}\n  session:\n    issuing: s-1\n    accepted: [s-0]\n", "keys.session.issuing"},
+		"session accepted not declared": {"keys:\n  declared:\n    s-1: {provider: file, ref: /k, kind: session}\n  session:\n    issuing: s-1\n    accepted: [s-1, s-0]\n", "keys.session.accepted"},
 	} {
 		if _, err := Load(write(t, minimal+tc.extra)); err == nil || !strings.Contains(err.Error(), tc.want) {
 			t.Errorf("%s: Load = %v, want an error naming %s", name, err, tc.want)
 		}
+	}
+}
+
+// The session purpose names its key ids as the download purpose does, and a key id may be declared of kind session.
+func TestSessionKeys(t *testing.T) {
+	t.Parallel()
+	c, err := Load(write(t, minimal+"keys:\n  declared:\n    s-0: {provider: file, ref: /k0, kind: session}\n    s-1: {provider: file, ref: /k1, kind: session}\n"+
+		"  session:\n    issuing: s-1\n    accepted: [s-0, s-1]\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s := c.Keys.Session; s.Issuing != "s-1" || len(s.Accepted) != 2 || c.Keys.Declared["s-0"].Kind != "session" {
+		t.Errorf("keys = %+v, want the session purpose s-1 of s-0 and s-1", c.Keys)
 	}
 }
 
