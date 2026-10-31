@@ -56,9 +56,27 @@ func (s *Server) serveDownload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer obj.Close()
+	// The transfer ends with ctx: each read checks it, whatever the store does with it, and the writes are bounded by its deadline.
+	if dl, ok := ctx.Deadline(); ok {
+		_ = http.NewResponseController(w).SetWriteDeadline(dl)
+	}
 	w.Header().Set("Content-Type", "application/octet-stream")
 	// ServeContent answers HEAD, Range (206) and its refusals (416); no modification time is sent.
-	http.ServeContent(w, r, "", time.Time{}, io.NewSectionReader(obj, 0, obj.Size()))
+	http.ServeContent(w, r, "", time.Time{}, io.NewSectionReader(ctxReaderAt{ctx: ctx, r: obj}, 0, obj.Size()))
+}
+
+// ctxReaderAt is r whose reads fail once ctx is done.
+type ctxReaderAt struct {
+	ctx context.Context //nolint:containedctx // the download's context, which bounds every read of its transfer
+	r   io.ReaderAt
+}
+
+func (c ctxReaderAt) ReadAt(p []byte, off int64) (int, error) {
+	if err := c.ctx.Err(); err != nil {
+		return 0, err
+	}
+
+	return c.r.ReadAt(p, off)
 }
 
 // downloadWriter stamps every response it commits as uncached and sent as no referrer, whatever the handler removed before,
@@ -77,6 +95,9 @@ func (d *downloadWriter) WriteHeader(status int) {
 	}
 	d.ResponseWriter.WriteHeader(status)
 }
+
+// Unwrap lets an http.ResponseController reach the connection, to bound a transfer's writes.
+func (d *downloadWriter) Unwrap() http.ResponseWriter { return d.ResponseWriter }
 
 func (d *downloadWriter) Write(b []byte) (int, error) {
 	if d.status == 0 {

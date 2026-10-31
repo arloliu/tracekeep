@@ -140,12 +140,14 @@ func (s *Server) buildBundle(ctx context.Context, job tracepack.UUID, req *expor
 	}
 	defer f.Close()
 	b := &bundle{
-		s: s, bounds: s.Exports.Bounds.withDefaults(), dir: dir, tar: tar.NewWriter(f), file: f,
+		s: s, bounds: s.Exports.Bounds.withDefaults(), dir: dir, file: f,
 		manifest: manifest{
 			Kind: "canonical", Job: job.String(), Selector: req.Selector,
 			Note: "each pack is exported whole, so a pack's file holds the records of its hour outside the window too",
 		},
 	}
+	// The tar's own bytes, headers, padding and trailer, count against the work directory's bound as the JSONL's do.
+	b.tar = tar.NewWriter(&limited{w: f, b: b})
 	caps, err := s.Catalog.ListCaptures(ctx, sel, s.QuietPeriod)
 	if err != nil {
 		return "", 0, err
@@ -184,6 +186,14 @@ func (b *bundle) capture(ctx context.Context, c *catalog.CaptureInfo, from, to i
 	if mc.Capture, err = protojson.Marshal(captureOf(c)); err != nil {
 		return err
 	}
+	// Its completeness first: a withheld capture keeps it, without its packs.
+	comp, err := b.s.Catalog.Completeness(ctx, c.ID)
+	if err != nil {
+		return err
+	}
+	if mc.Completeness, err = protojson.Marshal(completenessOf(inWindow(&comp, meeting{from: from, to: to}))); err != nil {
+		return err
+	}
 	withheld, err := b.s.withholds(ctx, c.ConfigID)
 	if err != nil {
 		return err
@@ -193,13 +203,6 @@ func (b *bundle) capture(ctx context.Context, c *catalog.CaptureInfo, from, to i
 		b.manifest.Captures = append(b.manifest.Captures, mc)
 
 		return nil
-	}
-	comp, err := b.s.Catalog.Completeness(ctx, c.ID)
-	if err != nil {
-		return err
-	}
-	if mc.Completeness, err = protojson.Marshal(completenessOf(inWindow(&comp, meeting{from: from, to: to}))); err != nil {
-		return err
 	}
 	for h := floorHour(from); h <= floorHour(to-1); h++ {
 		mh, err := b.hour(ctx, c.ID, h)
@@ -385,10 +388,6 @@ func (b *bundle) addFile(name, path string) error {
 }
 
 func (b *bundle) add(name string, r io.Reader, size int64) error {
-	if b.written+size > b.bounds.MaxBundleBytes {
-		return fmt.Errorf("%w: a work directory past %d bytes", errBounds, b.bounds.MaxBundleBytes)
-	}
-	b.written += size
 	if err := b.tar.WriteHeader(&tar.Header{Name: name, Mode: 0o644, Size: size, Format: tar.FormatPAX}); err != nil {
 		return err
 	}

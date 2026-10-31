@@ -137,24 +137,50 @@ func API(ctx context.Context, e *Env) error {
 			served <- srv.ServeTLS(ln, "", "")
 		}
 	}()
+	// Workers that end early, with an error or none, end the role through the same draining as a cancellation.
+	var workersEnded bool
+	var workersErr error
 	select {
 	case err := <-served:
-		return fmt.Errorf("service: api: %w", err)
-	case err := <-exporting:
-		return fmt.Errorf("service: api: exports: %w", err)
+		return errors.Join(fmt.Errorf("service: api: %w", err), waitWorkers(stopWorkers, exporting))
+	case workersErr = <-exporting:
+		workersEnded = true
 	case <-ctx.Done():
 	}
+
+	return e.drainAPI(ctx, srv, &inFlight, exportWorkers{stop: stopWorkers, done: exporting, ended: workersEnded, err: workersErr})
+}
+
+// exportWorkers is the api role's export workers: how to stop them, their end, and whether and how they already ended.
+type exportWorkers struct {
+	stop  context.CancelFunc
+	done  <-chan error
+	ended bool
+	err   error
+}
+
+// drainAPI shuts srv down within the bound, waits for its handlers and the export workers, and returns why the role ended.
+func (e *Env) drainAPI(ctx context.Context, srv *http.Server, inFlight *sync.WaitGroup, w exportWorkers) error {
 	sctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), cmp.Or(e.apiShutdown, apiShutdown))
 	defer cancel()
-	err = srv.Shutdown(sctx)
+	err := srv.Shutdown(sctx)
 	if err != nil {
 		// Past the bound, the connections close, which cancels their requests' contexts, and the handlers end.
 		err = errors.Join(fmt.Errorf("service: api: shutdown: %w", err), srv.Close())
 	}
 	inFlight.Wait()
-	err = errors.Join(err, waitWorkers(stopWorkers, exporting))
+	if w.ended {
+		if w.err != nil {
+			err = errors.Join(err, fmt.Errorf("service: api: exports: %w", w.err))
+		}
+	} else {
+		err = errors.Join(err, waitWorkers(w.stop, w.done))
+	}
 	if err != nil {
 		return err
+	}
+	if w.ended && ctx.Err() == nil {
+		return errors.New("service: api: the export workers stopped")
 	}
 
 	return ctx.Err()

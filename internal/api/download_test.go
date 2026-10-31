@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -327,4 +328,144 @@ func TestDownloadBoundedByItsToken(t *testing.T) {
 	if strings.Contains(logs.String(), objectKey) {
 		t.Errorf("the log names the object key: %s", logs.String())
 	}
+}
+
+// slowObjects are objects whose reads each take a while, as a slow disk's would, ignoring any context.
+type slowObjects struct{ store.ObjectStore }
+
+func (s slowObjects) Open(ctx context.Context, key string) (store.Object, error) {
+	obj, err := s.ObjectStore.Open(ctx, key)
+	if err != nil {
+		return nil, err
+	}
+
+	return slowObject{obj}, nil
+}
+
+type slowObject struct{ store.Object }
+
+func (o slowObject) ReadAt(p []byte, off int64) (int, error) {
+	<-time.After(20 * time.Millisecond)
+
+	return o.Object.ReadAt(p, off)
+}
+
+// A transfer slower than its token's expiry plus the margin is cut there, however the store reads.
+func TestDownloadCutAtItsDeadline(t *testing.T) {
+	t.Parallel()
+	c := catalogtest.Open(t, catalog.EngineSQLite)
+	mem := store.NewMem()
+	body := bytes.Repeat([]byte("0123456789abcdef"), 1<<16) // 1 MiB: 32 reads of 32 KiB, 640 ms
+	if err := mem.Put(t.Context(), objectKey, bytes.NewReader(body), int64(len(body))); err != nil {
+		t.Fatal(err)
+	}
+	expiry := time.Now().Add(2 * time.Second).Truncate(time.Second)
+	// The downloads' clock reads the expiry less 300 ms when the request is sent: the transfer has 300 ms and no margin.
+	clock, sent := requestClock(expiry, 300*time.Millisecond)
+	tokens := &auth.Downloads{Keys: downloadKeys(t, c), Now: clock}
+	s := &Server{Catalog: c, Auth: testAuthenticator(nil), Store: slowObjects{mem}, Downloads: Downloads{Tokens: tokens, Now: clock}}
+	srv := httptest.NewServer(s.Handler())
+	t.Cleanup(srv.Close)
+	tok, err := tokens.Sign(t.Context(), objectKey, expiry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, srv.URL+"/download/"+tok, http.NoBody)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sent()
+	resp, err := srv.Client().Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("the download = %d, want admitted", resp.StatusCode)
+	}
+	got, _ := io.ReadAll(resp.Body)
+	if len(got) == 0 || len(got) >= len(body) || !bytes.Equal(got, body[:len(got)]) {
+		t.Errorf("the transfer delivered %d bytes, want a true prefix cut before the end", len(got))
+	}
+}
+
+// closes signals each object's close.
+type closes struct {
+	store.ObjectStore
+	closed chan struct{}
+}
+
+func (c closes) Open(ctx context.Context, key string) (store.Object, error) {
+	obj, err := c.ObjectStore.Open(ctx, key)
+	if err != nil {
+		return nil, err
+	}
+
+	return closingObject{obj, c.closed}, nil
+}
+
+type closingObject struct {
+	store.Object
+	closed chan struct{}
+}
+
+func (o closingObject) Close() error {
+	o.closed <- struct{}{}
+
+	return o.Object.Close()
+}
+
+// A client that stops reading leaves the server's writes blocked: the write deadline ends the transfer anyway, and its object is closed.
+func TestDownloadEndsWithAStalledReader(t *testing.T) {
+	t.Parallel()
+	c := catalogtest.Open(t, catalog.EngineSQLite)
+	mem := store.NewMem()
+	body := bytes.Repeat([]byte("0123456789abcdef"), 1<<19) // 8 MiB, past any socket buffers
+	if err := mem.Put(t.Context(), objectKey, bytes.NewReader(body), int64(len(body))); err != nil {
+		t.Fatal(err)
+	}
+	expiry := time.Now().Add(2 * time.Second).Truncate(time.Second)
+	clock, sent := requestClock(expiry, 300*time.Millisecond)
+	tokens := &auth.Downloads{Keys: downloadKeys(t, c), Now: clock}
+	st := closes{ObjectStore: mem, closed: make(chan struct{}, 1)}
+	s := &Server{Catalog: c, Auth: testAuthenticator(nil), Store: st, Downloads: Downloads{Tokens: tokens, Now: clock}}
+	srv := httptest.NewServer(s.Handler())
+	t.Cleanup(srv.Close)
+	tok, err := tokens.Sign(t.Context(), objectKey, expiry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, srv.URL+"/download/"+tok, http.NoBody)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sent()
+	resp, err := srv.Client().Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close() // never read: the server's writes block
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("the download = %d, want admitted", resp.StatusCode)
+	}
+	select {
+	case <-st.closed:
+	case <-time.After(10 * time.Second):
+		t.Error("a transfer to a reader that stopped outlived its deadline")
+	}
+}
+
+// requestClock is a downloads' clock that reads left before expiry at the moment sent is called, and runs on from there;
+// before it, it reads well before expiry.
+func requestClock(expiry time.Time, left time.Duration) (clock func() time.Time, sent func()) {
+	var at atomic.Int64
+	clock = func() time.Time {
+		if t := at.Load(); t != 0 {
+			return expiry.Add(-left).Add(time.Since(time.Unix(0, t)))
+		}
+
+		return expiry.Add(-time.Hour)
+	}
+
+	return clock, func() { at.Store(time.Now().UnixNano()) }
 }

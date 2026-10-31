@@ -129,3 +129,93 @@ func TestExportCleanupRetriesAFailure(t *testing.T) {
 		}
 	})
 }
+
+// An earlier attempt's object whose deletion keeps failing keeps its job after the later bundle expires and is deleted;
+// once the store deletes it, the job goes too.
+func TestExportCleanupKeepsAJobWithARowLeft(t *testing.T) {
+	t.Parallel()
+	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
+		f := newFixture(t, c)
+		ctx := t.Context()
+		id := newID(t)
+		if err := c.CreateExport(ctx, id, exportOwner, []byte(`{}`), catalog.AuditEntry{Actor: exportOwner, Action: "export-start"}); err != nil {
+			t.Fatal(err)
+		}
+		first, ok, err := c.ClaimExport(ctx, "r1", time.Hour, 3)
+		if err != nil || !ok {
+			t.Fatalf("claim = %v, %v", ok, err)
+		}
+		early := "exports/" + id.String() + "/1.tar"
+		if _, err := c.IntendExport(ctx, first.Attempt, early, -10*time.Minute); err != nil {
+			t.Fatal(err)
+		}
+		if err := f.s.Put(ctx, early, bytes.NewReader([]byte("x")), 1); err != nil {
+			t.Fatal(err)
+		}
+		if err := c.RenewExport(ctx, first.Attempt, -time.Hour); err != nil { // the first lease lapses
+			t.Fatal(err)
+		}
+		second, ok, err := c.ClaimExport(ctx, "r2", time.Hour, 3)
+		if err != nil || !ok || second.Attempt.Fence != 2 {
+			t.Fatalf("second claim = %+v, %v, %v", second, ok, err)
+		}
+		late := "exports/" + id.String() + "/2.tar"
+		if _, err := c.IntendExport(ctx, second.Attempt, late, 10*time.Minute); err != nil {
+			t.Fatal(err)
+		}
+		if err := f.s.Put(ctx, late, bytes.NewReader([]byte("y")), 1); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := c.CompleteExport(ctx, second.Attempt, late, 1, -time.Hour); err != nil {
+			t.Fatal(err)
+		}
+		mem := f.s
+		f.r.Store = &failingDeletes{ObjectStore: mem, fail: map[string]bool{early: true}}
+		var rep ExportReport
+		if err := f.r.ExportCleanup(ctx, f.lease, &rep); err != nil {
+			t.Fatal(err)
+		}
+		if rep.Deleted != 1 || rep.Failed != 1 || rep.Forgotten != 0 || f.exists(t, late) {
+			t.Errorf("report %+v, the bundle there %v; want the bundle deleted, the early object failed, the job kept", rep, f.exists(t, late))
+		}
+		if _, err := c.ExportJob(ctx, id, exportOwner); err != nil {
+			t.Errorf("the job with a row left: %v", err)
+		}
+		f.r.Store = mem
+		rep = ExportReport{}
+		if err := f.r.ExportCleanup(ctx, f.lease, &rep); err != nil || rep.Deleted != 1 || rep.Forgotten != 1 {
+			t.Errorf("the next cycle = %+v, %v; want the early object deleted and the job forgotten", rep, err)
+		}
+	})
+}
+
+// The cleanup waits twice the clock skew past a put deadline or a bundle's deadline: inside it nothing is touched, beyond it both go.
+func TestExportCleanupWaitsTwiceTheSkew(t *testing.T) {
+	t.Parallel()
+	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
+		f := newFixture(t, c)
+		ctx := t.Context()
+		_, inside := f.attempt(t, -3*time.Minute) // its put deadline three minutes past: inside four minutes
+		_, beyond := f.attempt(t, -5*time.Minute)
+		young, youngKey := f.attempt(t, 10*time.Minute)
+		if _, err := c.CompleteExport(ctx, young, youngKey, 1, -3*time.Minute); err != nil {
+			t.Fatal(err)
+		}
+		old, oldKey := f.attempt(t, 10*time.Minute)
+		if _, err := c.CompleteExport(ctx, old, oldKey, 1, -5*time.Minute); err != nil {
+			t.Fatal(err)
+		}
+		var rep ExportReport
+		if err := f.r.ExportCleanup(ctx, f.lease, &rep); err != nil {
+			t.Fatal(err)
+		}
+		for key, want := range map[string]bool{inside: true, beyond: false, youngKey: true, oldKey: false} {
+			if got := f.exists(t, key); got != want {
+				t.Errorf("object %s exists = %v, want %v", key, got, want)
+			}
+		}
+		if objs, _ := c.ExportObjects(ctx, young.Job); len(objs) != 1 || objs[0].State != catalog.ObjectBundle {
+			t.Errorf("the bundle inside the allowance = %+v, want kept", objs)
+		}
+	})
+}
