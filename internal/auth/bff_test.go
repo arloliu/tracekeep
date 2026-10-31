@@ -246,12 +246,17 @@ func TestCallbackRefusals(t *testing.T) {
 		}
 	}
 	// A login left open past its lifetime and the leeway is refused.
+	// Its ID token is still valid, so only the login cookie's expiry refuses it, before any exchange.
 	b := newBrowser()
 	q := startLogin(t, b, h)
-	code := p.grantChallenge(q.Get("code_challenge"), sign(t, s, p.idClaims(c.Now(), q.Get("nonce"))))
+	claims := p.idClaims(c.Now(), q.Get("nonce"))
+	claims["exp"] = c.Now().Add(time.Hour).Unix()
+	code := p.grantChallenge(q.Get("code_challenge"), sign(t, s, claims))
 	late := p.replica(&clock{now: c.Now().Add(12 * time.Minute)}, newSessionKeys("s-1", "s-1"), nil)
-	if w := b.do(late.people.Handler(), http.MethodGet, "/auth/callback?code="+code+"&state="+q.Get("state"), nil); w.Code != 400 {
-		t.Errorf("an expired login: callback = %d, want 400", w.Code)
+	exchanges := p.tokens.Load()
+	if w := b.do(late.people.Handler(), http.MethodGet, "/auth/callback?code="+code+"&state="+q.Get("state"), nil); w.Code != 400 ||
+		!slices.Equal(late.failures.reasons, []string{ReasonLogin}) || p.tokens.Load() != exchanges {
+		t.Errorf("an expired login: callback = %d, reasons %v, %d exchanges; want 400, login, none", w.Code, late.failures.reasons, p.tokens.Load()-exchanges)
 	}
 	// A replayed callback: the IdP refuses the code's second exchange.
 	b = newBrowser()
@@ -285,6 +290,8 @@ func TestTwoCallbacksOfOneCode(t *testing.T) {
 	}
 	code := p.grantChallenge(q.Get("code_challenge"), sign(t, s, p.idClaims(c.Now(), q.Get("nonce"))))
 	entered, release := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	t.Cleanup(func() { once.Do(func() { close(release) }) })
 	p.set(func() { p.tokenEntered, p.tokenBlock = entered, release })
 	target := "/auth/callback?code=" + code + "&state=" + q.Get("state")
 	codes := make(chan int, 2)
@@ -295,10 +302,10 @@ func TestTwoCallbacksOfOneCode(t *testing.T) {
 			codes <- own.do(r.people.Handler(), http.MethodGet, target, nil).Code
 		}()
 	}
-	<-entered
-	<-entered
-	close(release)
-	got := []int{<-codes, <-codes}
+	within(t, entered, "the first exchange")
+	within(t, entered, "the second exchange")
+	once.Do(func() { close(release) })
+	got := []int{within(t, codes, "the first callback"), within(t, codes, "the second callback")}
 	slices.Sort(got)
 	if !slices.Equal(got, []int{http.StatusSeeOther, http.StatusBadGateway}) {
 		t.Errorf("two callbacks of one code = %v, want one signed in and one refused", got)
@@ -388,32 +395,81 @@ func TestSignInWritesNoSecret(t *testing.T) {
 	var buf bytes.Buffer
 	r := p.replica(c, newSessionKeys("s-1", "s-1"), slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})))
 	h := r.people.Handler()
-	bodies := make([]string, 0, 2)
-	secrets := make([]string, 0, 16)
-	for _, refused := range []bool{false, true} {
+	const described = "error-description-sentinel-7f2e"
+	bodies := make([]string, 0, 5)
+	secrets := make([]string, 0, 43)
+	secrets = append(secrets, peopleSecret, "at-sentinel", described)
+	// A sign-in, then each refusal: another state, the IdP's error, an exchange refused, an ID token refused.
+	for _, path := range []string{"ok", "state", "idp-error", "exchange", "nonce"} {
 		b := newBrowser()
 		q := startLogin(t, b, h)
-		idToken := sign(t, s, p.idClaims(c.Now(), q.Get("nonce")))
+		login, err := r.people.cookies.OpenLogin(t.Context(), b.cookies[LoginCookie])
+		if err != nil {
+			t.Fatal(err)
+		}
+		nonce := q.Get("nonce")
+		if path == "nonce" {
+			nonce += "x"
+		}
+		idToken := sign(t, s, p.idClaims(c.Now(), nonce))
 		code := p.grantChallenge(q.Get("code_challenge"), idToken)
-		state := q.Get("state")
-		if refused {
-			state += "x"
+		v := url.Values{"code": {code}, "state": {q.Get("state")}}
+		switch path {
+		case "state":
+			v.Set("state", q.Get("state")+"x")
+		case "idp-error":
+			v.Set("error", "access_denied")
+			v.Set("error_description", described)
+		case "exchange":
+			v.Set("code", code+"x")
+		default: // a sign-in, or the nonce's refusal, which its ID token carries
 		}
-		w := b.do(h, http.MethodGet, "/auth/callback?code="+code+"&state="+state, nil)
+		secrets = append(secrets, code, idToken, q.Get("nonce"), q.Get("state"), q.Get("code_challenge"), b.cookies[LoginCookie], login.Verifier)
+		w := b.do(h, http.MethodGet, "/auth/callback?"+v.Encode(), nil)
 		bodies = append(bodies, w.Body.String())
-		secrets = append(secrets, code, idToken, q.Get("nonce"), q.Get("state"), q.Get("code_challenge"))
-		for _, v := range b.cookies {
-			secrets = append(secrets, v)
-		}
+		secrets = append(secrets, b.cookies[SessionCookie])
 	}
-	secrets = append(secrets, peopleSecret, "at-sentinel")
-	text := buf.String() + strings.Join(bodies, "\n")
-	if !strings.Contains(buf.String(), "auth: refused") || !strings.Contains(buf.String(), "auth: signed in") {
-		t.Fatalf("the log holds no sign-in or refusal: %s", buf.String())
+	r.logins.mu.Lock()
+	labels := strings.Join(r.logins.steps, " ")
+	r.logins.mu.Unlock()
+	r.failures.mu.Lock()
+	labels += " " + strings.Join(r.failures.reasons, " ")
+	r.failures.mu.Unlock()
+	text := buf.String() + strings.Join(bodies, "\n") + labels
+	for _, want := range []string{"auth: refused", "auth: signed in", ReasonExchange, ReasonNonce, ReasonLogin} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("the log, bodies and labels hold no %q: %s", want, text)
+		}
 	}
 	for _, sec := range secrets {
 		if sec != "" && strings.Contains(text, sec) {
-			t.Errorf("the log or a body holds %q", sec)
+			t.Errorf("the log, a body or a metric label holds %q", sec)
 		}
+	}
+}
+
+// Every answer under /auth/ is no-store, the callback's with no referrer, a refused method included;
+// me without a session counts one missing credential.
+func TestAuthAnswersProtected(t *testing.T) {
+	t.Parallel()
+	p, c := newIDP(t), newClock()
+	r := p.replica(c, newSessionKeys("s-1", "s-1"), nil)
+	h := r.people.Handler()
+	for _, tc := range []struct{ method, path string }{
+		{http.MethodPost, "/auth/callback"}, {http.MethodGet, "/auth/callback?code=c&state=s"}, {http.MethodGet, "/auth/unknown"},
+		{http.MethodPut, "/auth/logout"}, {http.MethodGet, "/auth/me"},
+	} {
+		w := newBrowser().do(h, tc.method, tc.path, nil)
+		if w.Header().Get("Cache-Control") != "no-store" {
+			t.Errorf("%s %s = %d without no-store", tc.method, tc.path, w.Code)
+		}
+		if strings.HasPrefix(tc.path, "/auth/callback") && w.Header().Get("Referrer-Policy") != "no-referrer" {
+			t.Errorf("%s %s = %d without no-referrer", tc.method, tc.path, w.Code)
+		}
+	}
+	r.failures.mu.Lock()
+	defer r.failures.mu.Unlock()
+	if n := slices.Index(r.failures.reasons, ReasonMissing); n < 0 || slices.Contains(r.failures.reasons[n+1:], ReasonMissing) {
+		t.Errorf("me without a session counted %v, want one missing", r.failures.reasons)
 	}
 }

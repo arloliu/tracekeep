@@ -129,11 +129,16 @@ func TestCookieRotation(t *testing.T) {
 	if len(dropped.asked) != 0 {
 		t.Errorf("material asked for %v, want none for a key id not accepted", dropped.asked)
 	}
-	// The key id is authenticated: renaming it to another accepted id fails to open.
+	// The key id is authenticated: renamed to another accepted id with the same material, the cookie still fails to open.
+	shared := newSessionKeys("s-1", "s-0", "s-1")
+	shared.material = map[string][]byte{"s-0": old.material["s-0"], "s-1": old.material["s-0"]}
 	raw, _ := base64.RawURLEncoding.DecodeString(v)
 	renamed := bytes.Replace(raw, []byte("s-0"), []byte("s-1"), 1)
-	if _, err := testCookies(switched).OpenSession(t.Context(), base64.RawURLEncoding.EncodeToString(renamed)); err == nil {
-		t.Error("a cookie with its key id renamed opened")
+	if _, err := testCookies(shared).OpenSession(t.Context(), v); err != nil {
+		t.Fatalf("the cookie under its own key id: %v", err)
+	}
+	if _, err := testCookies(shared).OpenSession(t.Context(), base64.RawURLEncoding.EncodeToString(renamed)); err == nil {
+		t.Error("a cookie with its key id renamed opened under the same material")
 	}
 }
 
@@ -198,4 +203,21 @@ func FuzzSessionCookie(f *testing.F) {
 			t.Errorf("OpenSession admitted %q as %+v, not a session sealed", value, s)
 		}
 	})
+}
+
+// Every key id the configuration admits, 128 characters of up to four bytes, seals and opens.
+func TestCookieKeyIDLengths(t *testing.T) {
+	t.Parallel()
+	for _, id := range []string{"s", strings.Repeat("\u20ac", 86), strings.Repeat("\U0001F511", 128)} {
+		k := newSessionKeys(id, id)
+		c := testCookies(k)
+		v, err := c.SealSession(t.Context(), Session{Subject: "p", Expiry: c.Now().Add(time.Hour)})
+		if err != nil {
+			t.Errorf("a key id of %d bytes: %v", len(id), err)
+			continue
+		}
+		if _, err := c.OpenSession(t.Context(), v); err != nil {
+			t.Errorf("a key id of %d bytes does not open: %v", len(id), err)
+		}
+	}
 }

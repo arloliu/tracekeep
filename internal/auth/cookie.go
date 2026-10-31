@@ -24,6 +24,10 @@ const (
 	MaxCookie   = 4096
 	cookieNonce = 12
 	cookieKey   = 32
+	// cookieHead is the version, the purpose and the key id's two-byte length; maxCookieKeyID bounds the key id in bytes,
+	// above the 128 characters of four bytes a key id may hold.
+	cookieHead     = 4
+	maxCookieKeyID = 1024
 )
 
 // A cookie's purpose, which its key and its additional data bind.
@@ -105,10 +109,10 @@ func (c *Cookies) seal(ctx context.Context, purpose byte, payload any) (string, 
 	if err != nil {
 		return "", err
 	}
-	if len(keyID) == 0 || len(keyID) > 255 {
+	if len(keyID) == 0 || len(keyID) > maxCookieKeyID {
 		return "", fmt.Errorf("auth: cookie: key id of %d bytes", len(keyID))
 	}
-	head := append([]byte{cookieVersion, purpose, byte(len(keyID))}, keyID...)
+	head := append([]byte{cookieVersion, purpose, byte(len(keyID) >> 8), byte(len(keyID))}, keyID...)
 	nonce := make([]byte, cookieNonce)
 	_, _ = rand.Read(nonce) // never fails (crypto/rand)
 	out := append(slices.Clone(head), nonce...)
@@ -127,7 +131,7 @@ func (c *Cookies) open(ctx context.Context, purpose byte, value string, payload 
 		return errors.New("a cookie too long")
 	}
 	raw, err := b64.DecodeString(value)
-	if err != nil || len(raw) < 3 {
+	if err != nil || len(raw) < cookieHead {
 		return errors.New("not a cookie")
 	}
 	if raw[0] != cookieVersion {
@@ -136,11 +140,12 @@ func (c *Cookies) open(ctx context.Context, purpose byte, value string, payload 
 	if raw[1] != purpose {
 		return errors.New("a cookie of another purpose")
 	}
-	n := 3 + int(raw[2])
-	if raw[2] == 0 || len(raw) < n+cookieNonce {
+	idLen := int(raw[2])<<8 | int(raw[3])
+	n := cookieHead + idLen
+	if idLen == 0 || idLen > maxCookieKeyID || len(raw) < n+cookieNonce {
 		return errors.New("not a cookie")
 	}
-	keyID := string(raw[3:n])
+	keyID := string(raw[cookieHead:n])
 	material, err := c.Keys.Accepted(ctx, catalog.KindSession, keyID)
 	if err != nil {
 		return err

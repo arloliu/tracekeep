@@ -45,9 +45,18 @@ func (p *People) routes() http.Handler {
 	mux.HandleFunc("GET /auth/me", p.me)
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Cache-Control", "no-store")
+		Protect(w, r)
 		mux.ServeHTTP(w, r)
 	})
+}
+
+// Protect sets the headers every answer under /auth/ carries, before any route or method is matched:
+// Cache-Control: no-store, and Referrer-Policy: no-referrer on the callback, whose URL holds the code and the state.
+func Protect(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
+	if strings.HasPrefix(r.URL.Path, "/auth/callback") {
+		w.Header().Set("Referrer-Policy", "no-referrer")
+	}
 }
 
 // login starts a login: a PKCE verifier, a state and a nonce sealed in the login cookie, and a redirect to the IdP.
@@ -91,7 +100,6 @@ func (p *People) login(w http.ResponseWriter, r *http.Request) {
 // callback finishes a login: the login cookie, always cleared, must hold the state the IdP returns;
 // the code is exchanged, the ID token verified, and the session cookie set.
 func (p *People) callback(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Referrer-Policy", "no-referrer")
 	http.SetCookie(w, p.cookie(LoginCookie, "", -1))
 	q := r.URL.Query()
 	c, err := r.Cookie(LoginCookie)
@@ -148,14 +156,9 @@ func (p *People) logout(w http.ResponseWriter, r *http.Request) {
 
 // me answers the signed-in principal, or 401.
 func (p *People) me(w http.ResponseWriter, r *http.Request) {
-	c, err := r.Cookie(SessionCookie)
+	s, err := p.Session(r)
 	if err != nil {
-		http.Error(w, "not signed in", http.StatusUnauthorized)
-		return
-	}
-	s, err := p.cookies.OpenSession(r.Context(), c.Value)
-	if err != nil {
-		_ = p.refused(&Error{Reason: ReasonSession, Err: err})
+		_ = p.refused(err)
 		http.Error(w, "not signed in", http.StatusUnauthorized)
 		return
 	}
@@ -263,15 +266,33 @@ func ReturnPath(raw string) string {
 	return raw
 }
 
-// SameOrigin reports whether r's Origin is publicURL's origin: its scheme, host and port.
+// SameOrigin reports whether r's Origin is publicURL's origin: its scheme, host and effective port, a default port written or not.
 func SameOrigin(r *http.Request, publicURL string) bool {
-	o := r.Header.Get("Origin")
-	u, err := url.Parse(publicURL)
-	if o == "" || err != nil || u.Scheme == "" || u.Host == "" {
-		return false
+	o, ok := origin(r.Header.Get("Origin"))
+	want, wok := origin(publicURL)
+
+	return ok && wok && o == want
+}
+
+// origin is raw's scheme, host and effective port, lowercased, or false when raw is no http or https URL with a host.
+func origin(raw string) (string, bool) {
+	u, err := url.Parse(raw)
+	if err != nil || u.Hostname() == "" || u.User != nil {
+		return "", false
+	}
+	scheme := strings.ToLower(u.Scheme)
+	port := u.Port()
+	switch {
+	case scheme == "https" && port == "":
+		port = "443"
+	case scheme == "http" && port == "":
+		port = "80"
+	case scheme != "https" && scheme != "http":
+		return "", false
+	default: // a port written
 	}
 
-	return strings.EqualFold(o, u.Scheme+"://"+u.Host)
+	return scheme + "://" + strings.ToLower(u.Hostname()) + ":" + port, true
 }
 
 // randomText is 32 random bytes, base64url.

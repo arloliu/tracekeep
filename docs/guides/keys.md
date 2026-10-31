@@ -13,6 +13,7 @@ A key id names one key of one purpose, for good:
 - `digest`: the HMAC-SHA-256 key of every digest masking writes, one key across captures.
 - `master`: the material each capture's encryption key is derived from.
 - `download`: the key that signs the download tokens the API issues.
+- `session`: the key that seals people's login and session cookies (`api.md` §10.2).
 
 The first use of a key id binds it in the catalog:
 its purpose, the provider reference and version it was read at, and its material's fingerprint.

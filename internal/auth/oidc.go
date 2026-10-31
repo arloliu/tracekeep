@@ -133,10 +133,11 @@ func (v *Verifier) VerifyIDToken(ctx context.Context, raw, clientID, nonce strin
 	if err != nil {
 		return IDToken{}, err
 	}
-	azp, hasAZP := extra["azp"].(string)
+	azpClaim, hasAZP := extra["azp"]
+	azp, isString := azpClaim.(string)
 	switch {
-	case (hasAZP || len(claims.Audience) > 1) && azp != clientID:
-		return IDToken{}, &Error{Reason: ReasonAudience, Subject: claims.Subject, Err: fmt.Errorf("azp %q", azp)}
+	case (hasAZP || len(claims.Audience) > 1) && (!isString || azp != clientID):
+		return IDToken{}, &Error{Reason: ReasonAudience, Subject: claims.Subject, Err: errors.New("azp is not the client id")}
 	case claims.Subject == "":
 		return IDToken{}, refuse(ReasonMalformed, errors.New("no sub"))
 	}

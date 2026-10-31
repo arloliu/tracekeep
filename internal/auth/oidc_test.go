@@ -611,11 +611,22 @@ func TestPanickingFetchEnds(t *testing.T) {
 // its verifier matching the code's S256 challenge.
 func (p *idp) token(w http.ResponseWriter, r *http.Request) {
 	p.tokens.Add(1)
-	if p.tokenEntered != nil {
-		p.tokenEntered <- struct{}{}
+	p.mu.Lock()
+	entered, block := p.tokenEntered, p.tokenBlock
+	p.mu.Unlock()
+	if entered != nil {
+		select {
+		case entered <- struct{}{}:
+		case <-r.Context().Done():
+			return
+		}
 	}
-	if p.tokenBlock != nil {
-		<-p.tokenBlock
+	if block != nil {
+		select {
+		case <-block:
+		case <-r.Context().Done():
+			return
+		}
 	}
 	id, secret, ok := r.BasicAuth()
 	if r.Method != http.MethodPost || !ok || id != peopleClient || secret != peopleSecret || r.PostFormValue("grant_type") != "authorization_code" {
@@ -651,6 +662,20 @@ func (p *idp) grantCode(verifier, idToken string) string {
 	p.mu.Unlock()
 
 	return code
+}
+
+// within waits for ch, failing the test after a bound that only a hung run reaches.
+func within[T any](t *testing.T, ch <-chan T, what string) T {
+	t.Helper()
+	select {
+	case v := <-ch:
+		return v
+	case <-time.After(30 * time.Second):
+		t.Fatalf("%s did not happen", what)
+		var zero T
+
+		return zero
+	}
 }
 
 // grantChallenge issues a code for a login's S256 challenge, which exchanges once for idToken.
