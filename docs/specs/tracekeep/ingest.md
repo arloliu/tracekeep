@@ -162,7 +162,7 @@ the cases prove the decision, the schedules prove the re-reads under the capture
   which serializes registrations of one capture on MariaDB,
   and SQLite has one writer.
   `ListPacks` reports an unresolved suspect as a conflict until `compact` clears it.
-  `ListPacks` and `Export` report a conflict for the window whenever any version of the seq lies in it,
+  `ListPacks` and an export's manifest report a conflict for the window whenever any version of the seq lies in it,
   whichever hour the other version is in.
 - Each flush writes **one new segment** per batch (plus conflict segments) with `Meta.SeqStart` = its first record's seq, `AssignSeq` and `DetectClockSteps` off;
   the producer did both ([SEM §4]).

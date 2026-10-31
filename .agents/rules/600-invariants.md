@@ -54,7 +54,8 @@ Section numbers are those of the specs in `docs/specs/tracekeep/`, whose `README
 
 ## Catalog transactions
 
-- **Lock order is capture row → `leases` row → `counters('membership')` row → `counters('scope_events')` row**, each step optional, and nothing else is locked;
+- **Lock order is capture row → `leases` row → `counters('membership')` row → `counters('scope_events')` row**, each step optional, and nothing else is locked,
+  except by the export transactions, which touch no capture: the export job row, then its `export_objects` row, the compactor's cleanup taking the `leases` row first (`catalog.md` §7.2 *Export transactions*);
   the `leases` row is taken only by a transaction the compactor commits under its lease, which every compactor transaction that changes domain state is;
   the `membership` row by admission and every membership change, renewals included.
   One unexported helper of the catalog runs the prologue, so every transaction that admits, parks, registers, deletes, tombstones or evicts a pack of a capture,

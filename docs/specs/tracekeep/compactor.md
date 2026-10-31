@@ -134,7 +134,8 @@ the object is removed only after that commit.
 Registration and deletion of one key therefore serialize on the capture row before either reads its predicates, on both engines, and have mutually exclusive durable outcomes:
 either the tombstone commits first and the registration's predicate aborts it,
 or the registration commits first and the deletion finds a `packs` row and aborts.
-The lock order is capture row → `leases` row → `counters('membership')` row → `counters('scope_events')` row, each step optional, nothing else is locked (T-32).
+The lock order is capture row → `leases` row → `counters('membership')` row → `counters('scope_events')` row, each step optional, nothing else is locked (T-32),
+except by the export cleanup, which touches no capture: `leases` row → export job row → `export_objects` row (`catalog.md` §7.2 *Export transactions*).
 A download URL's expiry is clamped to its object's **deadline**, the earliest time it may be deleted (§10.1 *Downloads*),
 and retention never evicts an hour before a time an issued URL was promised (T-33).
 The deadline is **one function**, the same in the api role that clamps a URL and in the compactor that deletes,
@@ -163,7 +164,13 @@ so their mutual exclusion (`parking.md` *Retention, admission and parking*) assu
 one configured period in every role and host clocks that agree well within an hour boundary.
 An hour whose eviction a guard refuses (another hour's `packs` row naming one of its keys), like a merged input whose deletion one refuses,
 is left in place, logged and counted every cycle, and the task records no success until an operator decides.
-A completed export bundle under `exports/` is deleted at the end of its retention (default 24 h), its URLs clamped to that time likewise.
+Every export object under `exports/` is deleted here, under the lease, and never by an `api` replica (`api.md` §10.1 *Exports*):
+an attempt's object whose row is still `intended` once its put deadline plus twice the clock skew has passed, since no put of it can then complete,
+and a completed bundle at its deadline plus twice the clock skew, the deadline fixed at its completion as its time plus the bundle retention (default 24 h), its URLs clamped to that deadline likewise.
+Each is first made `deleting` by compare-and-set, so a completion can no longer make it a bundle, then its object is deleted, then its row;
+a job goes only once no row of it is left, so an attempt whose deletion keeps failing keeps its job and is retried;
+a crash between them leaves a `deleting` row the next cycle finishes.
+A deletion that fails is counted (`export_cleanup_failures_total`), logged by job and fence, never by key, and retried the next cycle.
 Retention deletes whole hours older than the eviction horizon:
 in one transaction per hour of one admitted capture it copies the hour's `pack_ranges` union into `evicted_ranges`, deletes the packs, ranges, receipts, the hour's `claim_objects` rows **except survivors** (§8.4) and the scope row, and writes the tombstones;
 then it deletes the hour's claim objects, survivors excepted, from the bucket.

@@ -69,7 +69,7 @@ Phase 3 is done (#33, #34, #35, #36, #39, #41, #43); its closed plan's last text
     fewer allocations in the item walker.
   - tracekeep: the capture key derived once per fetch batch rather than once per record (0.9 µs and 21 allocations a masked record),
     which keeps derived key material for the batch and needs `masking-keys.md` §9 and `ingest.md` §6.1–§6.2 amended first.
-- go-secs is asked to export a filtered JSONL writer; until it does, `Export` refuses `kind=filtered` (T-48).
+- go-secs is asked to export a filtered JSONL writer; until it does, `StartExport` refuses `kind=filtered` (T-48).
 - Configuration retirement waits for the first release that needs it.
 - The veq branch `docs/ve/log-service-decisions` (commit 7b8a019) carries the LS-row amendments and V-35;
   it is not merged yet.

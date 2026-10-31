@@ -25,6 +25,7 @@ Contract changes go through proposals, which the subject [README.md](README.md) 
   a transaction committed under the compactor lease updates the `leases` row next;
   admission and every membership change update the `membership` sentinel row;
   the `scope_events` row is last, only in a transaction that allocates an event seq, and parking touches no counter except when it terminates (T-33);
+  the export transactions are the exception, touching no capture row: each locks its job row, then its `export_objects` row, the cleanup's taking the `leases` row first (§7.2 *Export transactions*);
   nothing else is locked (§7.2; `ingest.md` §6.3; `compactor.md` §8.3).
 - **Aborts**: a failed scope-revision or lease check rolls back the whole transaction, which returns the outcome unretried;
   a tombstone commits before its object is deleted (§7.2; `compactor.md` §8.1, §8.3).
@@ -77,6 +78,8 @@ Contract changes go through proposals, which the subject [README.md](README.md) 
 | `key_bindings` | `key_id`, kind, provider reference and version, material fingerprint | insert-or-compare, fail closed (§9) |
 | `leases` | name, holder, `fence_token`, `until` | compactor singleton, the row `compactor/2` since the cutover's fence (T-43) |
 | `compact_requests` | an operator's `scope merge` or `capture close`: target, requester, time, `state` `pending`/`done`/`failed` with the outcome | executed by the compactor holding the lease at its next cycle, under that lease, and retried until it ends (T-41) |
+| `export_jobs` | job id, owner (`Via` and subject), the request (selector and kind), `state` `queued`/`running`/`done`/`failed`/`cancelled`, `fence`, the holder replica, `lease_until` (the catalog's clock), `attempts`, the bundle's key and size, `created_at`, `ended_at`, `delete_at` (the bundle's deadline), the failure's reason | compare-and-set on (`state`, `fence`); indexed by (`state`, `lease_until`) for claims and (owner, `created_at`) for listings (`api.md` §10.1 *Exports*) |
+| `export_objects` | an attempt's object key, job, fence, `put_deadline` (the catalog's clock), `state` `intended`/`bundle`/`deleting` | written before the put; made `deleting` before its object is deleted, then deleted, by the compactor |
 | `audit_log` | restores, digests, exports, admin changes, by whom | append-only |
 
 `seq` is at most 2^63 − 1, so it fits a signed `BIGINT`; times are `BIGINT` UTC nanoseconds; UUIDs are `BINARY(16)`.
@@ -131,7 +134,8 @@ and they change rows forward only by compare-and-set.
 Parking touches no counter except a termination's, by the operator or by an order's application (T-33):
 for each hour holding a seq it terminated, it upserts that scope with `revision + 1`, creating it when missing, and allocates a `terminated` event as its last statement;
 an hour retention has evicted gets neither, since its scope is gone and its seqs read from `evicted_ranges` and `parked`.
-Every compactor transaction that changes domain state checks the lease (`leases … WHERE holder = ? AND fence_token = ?`, affected rows checked) after the helper, with no exception (T-32).
+Every compactor transaction that changes domain state checks the lease (`leases … WHERE holder = ? AND fence_token = ?`, affected rows checked) after the helper, with no exception (T-32);
+the export cleanup's transactions, which touch no capture and so run no helper, check it first.
 Outside the table, without the helper:
 taking or renewing the compactor lease (`leases`; a worker that lost it does nothing further, §8.1);
 registering, renewing or leaving a membership and activating or retiring a configuration (`rollouts.md` §6.4), each of which updates `counters('membership')` first, judging a lease's lapse by the database's clock as `Admit` does (T-32);
@@ -147,6 +151,23 @@ A failed scope-revision or lease check rolls back the whole transaction (§8.1),
 except the durable write a guard's own outcome names (a tombstone, an `abandoned` intent, a `terminated` version), which commits alone in its place;
 the transaction returns that outcome and is not retried,
 and the caller acts on it: the merge and the close at the next cycle (§8.1, §8.2).
+
+**Export transactions** (`api.md` §10.1 *Exports*) touch no capture, pack or scope row, so they skip the prologue:
+each guards its job row by compare-and-set with an affected-row check, times are the catalog's clock, and the cleanup's take the compactor lease first.
+An **attempt's guard** is the job `running` at the attempt's fence with `lease_until` not passed.
+
+| Transaction (caller) | Guard; affected-row check | Durable outcome |
+|---|---|---|
+| `CreateExport` (`StartExport`) | none | the job `queued` and its `audit_log` row |
+| `ClaimExport` (a worker) | `queued`, or `running` with `lease_until` passed; `attempts` below the bound, else `FailExport` | `running`, `fence + 1`, holder, `lease_until`, `attempts + 1` |
+| `RenewExport` (a worker) | the attempt's guard | `lease_until` moved |
+| `IntendExport` (a worker, before its put) | the attempt's guard | the attempt's `export_objects` row `intended` with its put deadline |
+| `CompleteExport` (a worker) | the attempt's guard, and its `export_objects` row `intended` | `done`, key, size, `ended_at`, `delete_at`; the row `bundle` |
+| `CancelExport` (`CancelExport`) | `queued` or `running`, and the owner's | `cancelled`, `ended_at`, its `audit_log` row |
+| `FailExport` (a worker, or a claim past the bound) | the attempt's guard, or the claim's | `failed`, `ended_at`, the reason |
+| `DoomExportObject` (the compactor, before deleting an object) | the lease; the row `intended` past its put deadline plus twice the clock skew, or `bundle` past its job's `delete_at` plus twice the clock skew | the row `deleting` |
+| `ForgetExportObject` (the compactor, once the object is deleted) | the lease; the row `deleting` | the row deleted |
+| `ForgetExport` (the compactor) | the lease; no `export_objects` row of the job; `done` past `delete_at`, or `failed` or `cancelled` ended past the retention | the job deleted |
 
 ### 7.3 Completeness (LS-10) and the change cursor (LS-11)
 
@@ -180,7 +201,7 @@ and the caller acts on it: the merge and the close at the next cycle (§8.1, §8
   It selects the admitted captures (`open`, `stopped` or `closed`) of that tool and those devices whose span meets the window:
   a capture's **span** runs from `capture_origin_utc_ns` to `highest_seq_ts`, or is the origin alone before any record,
   and for the window only, a capture still `open` has a span without end, since it may yet record.
-- **Read set** (T-48): the packs a human read reads for a capture and an hour, which `QueryRecords`, `FindTransaction` and `Export` share (`api.md` §10.1):
+- **Read set** (T-48): the packs a human read reads for a capture and an hour, which `QueryRecords`, `FindTransaction` and an export's bundle share (`api.md` §10.1):
   the hour's `staged` packs (its last merge's archive and the segments registered after it, or every segment before a merge) and its `excluded` packs, which are read and marked;
   never a `merged` input, which its archive holds, nor a `deleted` pack.
   It is read from one snapshot, each pack with its object key, size, role, state and ranges,

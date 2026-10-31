@@ -13,7 +13,7 @@ The sections below are authoritative; a disagreement is a defect in this summary
 Contract changes go through proposals, which the subject [README.md](README.md) lists.
 
 - **Contract**: protobuf served by connect-go, gRPC for Go clients and JSON over HTTP for the browser, from one definition (§10.1).
-- **Operations**: `ListDevices`, `ListCaptures`, `ListPacks`, `ListScopeChanges`, `PackURL`, `QueryRecords`, `FindTransaction`, `Export`, `Restore`, `Digest`, admin (§10.1 table).
+- **Operations**: `ListDevices`, `ListCaptures`, `ListPacks`, `ListScopeChanges`, `PackURL`, `QueryRecords`, `FindTransaction`, `StartExport` with `GetExport`, `ListExports` and `CancelExport`, `Restore`, `Digest`, admin (§10.1 table).
 - **Selector**: reads name (`tool_id`, devices, window), the device being the gateway's `eqp-hsms` device name;
   omitting the devices selects every device of the tool (§10.1 *Selector*).
 - **`PackURL`**: a download URL that expires before its object can be deleted, or `pack-superseded`; it makes the VE service a privileged reader of packs (T-5).
@@ -48,7 +48,7 @@ gRPC for Go clients, JSON over HTTP for the browser, one definition.
 | `PackURL(pack_id)` | a download URL (expiry clamped to the object's deadline, or `pack-superseded`, *Downloads* below) so the VE reads packs with tracepack's own reader; this makes the VE service a privileged reader of packs that hold ciphertext in place (§13) |
 | `QueryRecords(selector, predicates)` | streamed masked records with their SML, capture by capture and hour by hour, each capture opened with its completeness in the window and closed with its unknown tail, withheld captures and unreadable parts in the stream where they fall; the predicates below (*Records* below) |
 | `FindTransaction(capture, seq, hour)` | tracepack's lookup of the transaction of the record at (capture, seq) in hour, over the read set of each hour it reads: its outcome, its records with their roles and SML, and what it could not read (*Records* below) |
-| `Export(filter, kind)` | an asynchronous job producing a **bundle** (tar) under `exports/`, fetched by a download URL (*Downloads* below): one JSONL file **per source pack**, `tracepack-jsonl/1`, `/2` or `/3` by that pack's `format_minor` 0, 1 or 2 (G5-233, G5-270), plus `manifest.json` naming packs, captures, hours, each pack's incompleteness from its read, conflicts, and the filter. `kind=canonical` uses the canonical exporter unfiltered; `kind=filtered` writes the same record schema with the filter applied and is declared non-canonical in the manifest; it is refused until go-secs exports a filtered writer, since the record schema is tracepack's (T-48). A filtered `.tpk` is an extract, a v1.0 non-goal, and is not offered. A cancelled or failed job deletes its partial objects; a completed bundle is kept for its retention (default 24 h) and then deleted by the compactor (T-33) |
+| `StartExport(selector, kind)`, with its job's `GetExport`, `ListExports` and `CancelExport` (*Exports* below) | an asynchronous job producing a **bundle** (tar) under `exports/`, fetched by a download URL (*Downloads* below): one JSONL file **per source pack**, `tracepack-jsonl/1`, `/2` or `/3` by that pack's `format_minor` 0, 1 or 2 (G5-233, G5-270), plus `manifest.json` naming packs, captures, hours, each pack's incompleteness from its read, conflicts, and the filter. `kind=canonical` uses the canonical exporter unfiltered; `kind=filtered` writes the same record schema with the filter applied and is declared non-canonical in the manifest; it is refused until go-secs exports a filtered writer, since the record schema is tracepack's (T-48). A filtered `.tpk` is an extract, a v1.0 non-goal, and is not offered. The compactor deletes a cancelled or failed job's attempts, and a completed bundle at the end of its retention (default 24 h, T-33) |
 | `Restore(capture, seq, hour)`, `Digest(digest_key_id, inputs)` | `masking-keys.md` §9; `Restore` returns a record only when every non-excluded copy of `(capture, seq)` is equal, in any hour, the hour naming one that holds a copy (otherwise not found); differing versions are refused as a conflict, an acknowledged one included, and none is selectable (T-42); `Digest` digests a list of inputs under one digest key id (T-44) |
 | admin | policies, processing configurations, key ids (no material), retention, thinning status (tracekeep keeps no holds, T-4); until these are typed operations, §10.4's `policy`, `config` and `key` commands serve them through `Admin(words)` |
 | `Admin(words)` | the `tracekeep admin` command those words name, run by the `api` process, its JSON result returned: the transport of §10.4's commands while that process holds a SQLite catalog |
@@ -66,7 +66,7 @@ The typed admin operations of the table above wait for a later phase, with the a
 **Selector.**
 A reader names the connection it wants by (`tool_id`, device),
 the device being the gateway's configured `eqp-hsms` device name (`producer.md` §4.5).
-`ListCaptures`, `ListPacks`, `QueryRecords`, `Export` and `ListScopeChanges` take one selector:
+`ListCaptures`, `ListPacks`, `QueryRecords`, `StartExport` and `ListScopeChanges` take one selector:
 
 ```json
 {
@@ -100,10 +100,12 @@ A refused request carries a Connect code:
 | `unauthenticated` | no credential, or one auth refuses (§10.2 *Failures*, every reason but `forbidden`) |
 | `permission_denied` | `forbidden`: no role of the principal admits the operation |
 | `invalid_argument` | a selector, a cursor or a pack id that does not parse or breaks the bounds above, a `ListScopeChanges` limit above 10,000, a request that does not decode, a `Restore` or `FindTransaction` hour that is not an hour start, a `QueryRecords` predicate or cursor *Records* refuses, or a `Digest` input its checks refuse (`masking-keys.md` §9), naming the input's index |
-| `not_found` | a `PackURL` of a pack the catalog does not know, an evicted one included: eviction deletes its hour's rows (`compactor.md` §8.3); a `Restore` whose hour holds no copy of the record |
-| `failed_precondition` | `pack-superseded`, with the error detail `tracekeep.v1.PackSuperseded` naming the pack; a `Restore` of differing versions, with the detail `tracekeep.v1.RecordConflict`, or of a record that is not restorable; a key refused (`masking-keys.md` §9 *Failures*); a `FindTransaction` of a withheld capture, or of a record that is not a transaction's primary and that nothing read explains |
+| `unimplemented` | an export of `kind=filtered` (T-48) |
+| `not_found` | an export job that is not the principal's or does not exist; a `PackURL` of a pack the catalog does not know, an evicted one included: eviction deletes its hour's rows (`compactor.md` §8.3); a `Restore` whose hour holds no copy of the record |
+| `permission_denied` (exports) | an export operation by a principal with an empty subject |
+| `failed_precondition` | `pack-superseded`, with the error detail `tracekeep.v1.PackSuperseded` naming the pack; a `Restore` of differing versions, with the detail `tracekeep.v1.RecordConflict`, or of a record that is not restorable; a key refused (`masking-keys.md` §9 *Failures*); a `FindTransaction` of a withheld capture, or of a record that is not a transaction's primary and that nothing read explains; a `CancelExport` of a job that has ended |
 | `unavailable` | a `PackURL` before the compactor's first retention record, when no deadline exists (`compactor.md` §8.3), any read the catalog fails, a key unavailable, or a copy of a record whose object cannot be read, which the client retries |
-| `resource_exhausted` | a `Digest` beyond its principal's rate limit, a request message above 16 MiB, refused before it is decoded, or a record read beyond the replica's concurrent reads, a `FindTransaction` hour beyond its pack bound, or tracepack's read limit in a lookup (*Records* below) |
+| `resource_exhausted` | a `Digest` beyond its principal's rate limit, a request message above 16 MiB, refused before it is decoded, or a record read beyond the replica's concurrent reads, a `FindTransaction` hour beyond its pack bound, or tracepack's read limit in a lookup (*Records* below); an export whose selection passes the export bounds (*Exports* below) |
 | `internal` | an audit row that could not be written; nothing is returned |
 
 `Restore` answers the original payload with the record's time and kind; `Digest` answers each input's digest in order with the key id.
@@ -218,6 +220,82 @@ Every read set a read reads is checked, so a resumed stream, whatever its cursor
   A withheld capture, or a record that is not a primary and that nothing read explains, is refused as `failed_precondition`;
   tracepack's read limit is refused as `resource_exhausted`, and an object that cannot be read as `unavailable`.
 
+**Exports.**
+`StartExport(selector, kind)`, `GetExport(job)`, `ListExports()` and `CancelExport(job)` serve the export job of the table above, each checking `exporter`.
+A job belongs to its **owner**, the principal's `Via` and subject together (an mTLS identity, a static token's subject, a service token's `sub`, a person's `sub`),
+so two credential sources never share a job, and a principal with an empty subject is refused every export operation as `permission_denied`;
+only the owner reads, lists or cancels a job, and another's answers `not_found`.
+
+- **Start**: `kind` is `canonical`; `filtered` is refused as `unimplemented` (T-48).
+  The selector is checked as `ListPacks` checks it, its window at most `exports.max_hours` (default 744, a month).
+  The read sets of the selected captures' hours are counted from one snapshot, and a selection above `exports.max_packs` packs (default 10,000) or `exports.max_bytes` of pack objects (default 10 GiB) is refused as `resource_exhausted`;
+  otherwise the job is created `queued`, an `audit_log` row names the owner, the job and the selector, and its id is answered.
+- **Leases**: a job's lease and every comparison with it are the catalog's clock, as the compactor lease's are (`compactor.md` §8.1), never a replica's.
+  A worker claims a `queued` job, or a `running` one whose lease has passed, by compare-and-set:
+  `running`, `fence + 1`, its replica as holder, a lease of `exports.lease` (default 1 min), `attempts + 1`;
+  a job that has had `exports.max_attempts` attempts (default 3) is `failed` instead of claimed.
+  Every later step of the attempt (renewal, intent, completion, failure) requires the job `running` at its fence **with its lease not passed**,
+  so an attempt whose lease lapsed can change nothing even before another claims the job.
+  The worker renews every third of the lease; a renewal refused, or not made before the lease passes, ends the attempt, its put cancelled.
+  Each `api` replica runs at most `exports.max_running` attempts at once (default 1).
+- **The bundle** is built under `exports.work_dir`, one directory an attempt, removed when the attempt ends however it ends, and any left by a crash removed when the replica's workers start:
+  for each selected capture, by origin then id, and each hour of the window, the hour's read set (`catalog.md` §7.3), withheld captures checked at every read set as `QueryRecords` checks them;
+  the **hour is the unit of retry**: its packs are exported one at a time, each whole by tracepack's canonical exporter into a file of its own, `tracepack-jsonl/1`, `/2` or `/3` by its `format_minor`,
+  and only once every pack of the hour is exported are the hour's files added to the tar, as `packs/<capture>/<hour>/<pack_id>.jsonl`;
+  an object found gone discards the hour's files and exports the hour again from its read set read again, once, as a merge in between may have replaced its packs;
+  gone again, the hour's packs are left out and named in the manifest. An exporter's error discards that pack's partial file; its pack is left out and named.
+  A read set without a scope whose hour retention evicted, at the first read or the second, puts the hour in the manifest as evicted,
+  so the manifest says what the bundle holds, apart from the completeness the capture had when the bundle began.
+  The bounds hold over what is read: the packs and object bytes the attempt actually exports, an hour read again included, are counted, and passing `exports.max_packs` or `exports.max_bytes` fails the job;
+  so does a work directory past `exports.max_bundle_bytes` (default 32 GiB), the JSONL being larger than its packs.
+  `manifest.json` comes last: the kind, `canonical`; the job and the selector; `bundle_built_at`, the time it was written;
+  each capture with its completeness in the window as `QueryRecords` opens a capture, read when the bundle reached the capture, its conflicts (`suspect`, `confirmed`, `acknowledged`) included whichever hour holds the other version;
+  each capture's hours the bundle holds, and those it does not, evicted or left out;
+  the withheld captures; each pack with its capture, hour, role, state, `format_minor`, schema, file and its read's incompleteness (tracepack's defects and footer errors); and the packs left out, with their reason.
+  The packs are exported whole, so a pack's file holds records outside the window, which the manifest says.
+  A bundle holds masked packs only, so no clear body: the JSONL carries each payload in base64 and each transport-event or annotation body by name,
+  which the tests check on the unpacked JSONL, every base64 field decoded (payloads, header extensions, annotation bodies, redaction entries), against every baseline carrier, with an unmasked control.
+- **No key**: no error, manifest entry, metric label or log line of an export names an object key, a store's errors made keyless as the records reader makes them (`Keyless`);
+  this phase brings *Downloads* and `PackURL` to the same rule, their store and presigning errors made keyless, and the compactor's export cleanup names a job and a fence, never a key.
+- **The upload**: each attempt puts its own key, `exports/<job_id>/<fence>.tar`, never reused.
+  Before the put, an `export_objects` row names the key in state `intended` with its **put deadline**, the catalog's now plus `exports.put_timeout` (default 10 min), in a transaction under the attempt's guard, else the attempt ends and puts nothing;
+  the put runs under a context ending at that deadline, and a put stopped so leaves nothing visible (`storage.md` §5.2), so no object appears after the deadline.
+- **Completion**: one transaction, under the attempt's guard, finds the attempt's `export_objects` row `intended` and makes it `bundle`, and makes the job `done` with the key and size, the end time,
+  and the bundle's **deadline**, the end plus `exports.retention` (default 24 h), fixed then;
+  a later change of the retention never moves it, so it never shortens what an issued URL was promised.
+  A guard that fails, the row no longer `intended` included, ends the attempt, and its object is left to the cleanup.
+- **Cancel**: a compare-and-set from `queued` or `running` to `cancelled`, audited; a `done`, `failed` or `cancelled` job is refused as `failed_precondition`.
+  Cancel and completion are compare-and-sets of the same job row, so exactly one wins.
+- **Failure**: a selection past the bounds, or an error no attempt can cure, makes the job `failed` with a reason that names no key;
+  any other error ends the attempt, and the lease's expiry starts the next.
+- **Fetch**: `GetExport` and `ListExports` answer each job's state, attempts, times, size and reason,
+  and `GetExport` for a `done` job a download URL issued as *Downloads* below issues one, its deadline the bundle's, each URL audited as a `PackURL` is.
+  A `done` job whose deadline leaves less than the floor answers the state `expired` and no URL, derived at the answer, never stored, and is counted with `download_urls_refused_total`:
+  the refusal *Downloads* calls `pack-superseded`, which a bundle, never replaced, answers as `expired`.
+- **Cleanup** is the compactor's, under its lease (`compactor.md` §8.3), and no `api` replica deletes an export object:
+  an `export_objects` row still `intended` once its put deadline plus twice the clock skew (2 min) has passed is first made `deleting` by compare-and-set, which a completion can then never find `intended`,
+  and only then is its object deleted and its row;
+  a `bundle` row once its job's deadline plus twice the skew has passed is made `deleting` likewise, then its object and its row are deleted;
+  a job is deleted only once it has no `export_objects` row left: a `done` one past its deadline, a `failed` or `cancelled` one once `exports.retention` has passed since it ended,
+  so an attempt whose deletion keeps failing keeps its job, and the cleanup retries it.
+  A crash after `deleting` leaves a row the next cycle finishes: deleting an absent object is no error.
+  A bundle download the API serves ends at its token's expiry plus the margin, at most the bundle's deadline, so no read the API serves outlives the object;
+  a presigned URL is the store's, refused by the store after its expiry, which is the deadline minus the margin.
+
+| Crash or race | Durable | Finished by | A reader sees |
+|---|---|---|---|
+| after the claim, before the intent | the job `running` at fence f | the lease's expiry: the next attempt, fence f + 1 | `running` |
+| after the intent, before or during the put | the row `intended` | the lease's expiry: the next attempt; the cleanup, after the put deadline, marks the row `deleting` and deletes its object, if any | `running` |
+| after the put, before completion | the object and its row `intended` | the next attempt; the cleanup as above | `running` |
+| an attempt whose lease lapsed, still putting | its row `intended`, its put bounded by the deadline | its completion fails on the lease; the cleanup after the deadline | `running`, then the next attempt's state |
+| a completion stalled past the put deadline, the cleanup selecting its row | whichever made the row `bundle` or `deleting` first | the loser fails its guard: a lost completion ends the attempt, a lost cleanup skips the row | `done`, or the next attempt |
+| cancel and completion together | whichever compare-and-set committed | the loser's attempt object, the cleanup | `cancelled` or `done` |
+| the cleanup, after `deleting` | the row `deleting` | the next cleanup cycle | nothing of the object |
+| an earlier attempt's object failing to delete, its job's bundle expiring | the earlier attempt's row, the job | the cleanup, every cycle, until the row is gone; then the job | nothing: the job is past its deadline |
+| retention evicting an hour after the bundle opened its capture | the eviction | the bundle's read of the hour, which finds no scope | the hour in the manifest as evicted |
+| retention shortened after completion | the fixed deadline | the cleanup at that deadline | the bundle until its deadline |
+| a replica restarting | its attempts' leases | their expiry; the replica's workers remove its stale work directories | `running`, then the next attempt's state |
+
 The VE service's configuration names (`tool_id`, device) pairs;
 it lists packs, follows scope changes and fetches `PackURL`s through the selector,
 and needs no knowledge of capture ids beyond what `ListPacks` returns.
@@ -228,7 +306,8 @@ Each object has a **deadline**, the earliest time it may be deleted:
 for every pack, the time retention may first evict its hour (hour end plus the retention period in force, read from the catalog by the one function of §8.3), `staged` and `excluded` packs included,
 and for a merged input the earlier of that and its own merge's `merges.delete_at`, `merges.at` + D fixed at the commit (§8.3);
 for a completed export bundle, the end of its retention.
-The URL expires at the earlier of now plus its lifetime and the deadline minus a margin (default 2 min) that covers clock skew and a read in flight.
+The URL expires at the earlier of now plus its lifetime and the deadline minus a margin (default 2 min) that covers clock skew and a read in flight:
+a download the API serves ends at its token's expiry plus the margin, so a read in flight never outlives the deadline.
 When that leaves less than a floor (default 1 min), issuance is refused with `pack-superseded`:
 the client re-lists, and a merged input's archive is listed in its place, so the VE client handles `pack-superseded` by re-listing.
 D stays above the lifetime, so a URL issued before a merge is untouched by the merge's deletion,
@@ -299,7 +378,7 @@ otherwise it is a URL on the API itself carrying a download token, and the API s
   with the flag on, a bearer token is compared in constant time with each configured static token, read by reference, which names its subject and roles;
   with it off, none is consulted, whatever the IdP's state.
   It is a service credential: people's sign-in never accepts it, so a host where people sign in names an IdP (T-48).
-- **Roles**: `pack-reader` (PackURL), `pack-reader` or `viewer` (ListDevices, ListCaptures, ListPacks, ListScopeChanges, T-41), `viewer` (QueryRecords, FindTransaction), `scorer` (Digest), `exporter`, `restorer`, `admin`, separately granted;
+- **Roles**: `pack-reader` (PackURL), `pack-reader` or `viewer` (ListDevices, ListCaptures, ListPacks, ListScopeChanges, T-41), `viewer` (QueryRecords, FindTransaction), `scorer` (Digest), `exporter` (StartExport, GetExport, ListExports, CancelExport), `restorer`, `admin`, separately granted;
   `ListPacks` is the completeness view the browser shows, and grants no download, which `PackURL` alone issues.
   Each operation names the roles any one of which admits it, `admin` alone admitting admin;
   a principal holding none of them, and any operation the table does not name, is refused as `forbidden`.
@@ -372,8 +451,7 @@ Every answer under `/auth/` carries `Cache-Control: no-store`, and the callback'
   then opens the sealing, then the expiry, allowing the clock tolerance of `auth.oidc.leeway`.
 - **What a cookie admits**: a request authenticated by its session cookie is admitted only
   as a `POST` whose `Origin` is `api.public_url`'s origin (scheme, host and port), so a cross-site page can neither send it nor read its answer, else `csrf`;
-  and only on the operations the browser uses: `ListDevices`, `ListCaptures`, `ListPacks`, `ListScopeChanges`, `QueryRecords` and `FindTransaction` now,
-  and the export job's operations when they land (phase 4.3), else `session-scope`.
+  and only on the operations the browser uses: `ListDevices`, `ListCaptures`, `ListPacks`, `ListScopeChanges`, `QueryRecords`, `FindTransaction`, `StartExport`, `GetExport`, `ListExports` and `CancelExport`, else `session-scope`.
   `PackURL`, `Restore`, `Digest` and `Admin` never admit a cookie.
   The role check follows, as for every principal; the principal's `Via` is `session`.
   `/download/` checks its token and never reads a cookie (§10.1 *Downloads*);
