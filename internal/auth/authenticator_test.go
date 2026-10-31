@@ -264,6 +264,7 @@ func TestAuthorize(t *testing.T) {
 		OpListPacks: {RolePackReader, RoleViewer}, OpPackURL: {RolePackReader},
 		OpDigest: {RoleScorer}, OpRestore: {RoleRestorer}, OpExport: {RoleExporter}, OpAdmin: {RoleAdmin},
 		OpQueryRecords: {RoleViewer}, OpFindTransaction: {RoleViewer},
+		OpStartExport: {RoleExporter}, OpGetExport: {RoleExporter}, OpListExports: {RoleExporter}, OpCancelExport: {RoleExporter},
 	}
 	roles := []string{RolePackReader, RoleScorer, RoleViewer, RoleExporter, RoleRestorer, RoleAdmin}
 	for op, want := range admits {

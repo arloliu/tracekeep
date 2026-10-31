@@ -61,6 +61,18 @@ const (
 	// MachineServiceFindTransactionProcedure is the fully-qualified name of the MachineService's
 	// FindTransaction RPC.
 	MachineServiceFindTransactionProcedure = "/tracekeep.v1.MachineService/FindTransaction"
+	// MachineServiceStartExportProcedure is the fully-qualified name of the MachineService's
+	// StartExport RPC.
+	MachineServiceStartExportProcedure = "/tracekeep.v1.MachineService/StartExport"
+	// MachineServiceGetExportProcedure is the fully-qualified name of the MachineService's GetExport
+	// RPC.
+	MachineServiceGetExportProcedure = "/tracekeep.v1.MachineService/GetExport"
+	// MachineServiceListExportsProcedure is the fully-qualified name of the MachineService's
+	// ListExports RPC.
+	MachineServiceListExportsProcedure = "/tracekeep.v1.MachineService/ListExports"
+	// MachineServiceCancelExportProcedure is the fully-qualified name of the MachineService's
+	// CancelExport RPC.
+	MachineServiceCancelExportProcedure = "/tracekeep.v1.MachineService/CancelExport"
 )
 
 // MachineServiceClient is a client for the tracekeep.v1.MachineService service.
@@ -83,6 +95,14 @@ type MachineServiceClient interface {
 	QueryRecords(context.Context, *connect.Request[v1.QueryRecordsRequest]) (*connect.ServerStreamForClient[v1.QueryRecordsResponse], error)
 	// FindTransaction answers tracepack's lookup of the transaction of one record over the read set of each hour it reads.
 	FindTransaction(context.Context, *connect.Request[v1.FindTransactionRequest]) (*connect.Response[v1.FindTransactionResponse], error)
+	// StartExport starts an export job of the selector's read sets (api.md §10.1 *Exports*).
+	StartExport(context.Context, *connect.Request[v1.StartExportRequest]) (*connect.Response[v1.StartExportResponse], error)
+	// GetExport answers one of the principal's export jobs, with a download URL once it is done.
+	GetExport(context.Context, *connect.Request[v1.GetExportRequest]) (*connect.Response[v1.ExportJob], error)
+	// ListExports answers the principal's export jobs, newest first.
+	ListExports(context.Context, *connect.Request[v1.ListExportsRequest]) (*connect.Response[v1.ListExportsResponse], error)
+	// CancelExport cancels one of the principal's export jobs that has not ended.
+	CancelExport(context.Context, *connect.Request[v1.CancelExportRequest]) (*connect.Response[v1.CancelExportResponse], error)
 }
 
 // NewMachineServiceClient constructs a client for the tracekeep.v1.MachineService service. By
@@ -150,6 +170,30 @@ func NewMachineServiceClient(httpClient connect.HTTPClient, baseURL string, opts
 			connect.WithSchema(machineServiceMethods.ByName("FindTransaction")),
 			connect.WithClientOptions(opts...),
 		),
+		startExport: connect.NewClient[v1.StartExportRequest, v1.StartExportResponse](
+			httpClient,
+			baseURL+MachineServiceStartExportProcedure,
+			connect.WithSchema(machineServiceMethods.ByName("StartExport")),
+			connect.WithClientOptions(opts...),
+		),
+		getExport: connect.NewClient[v1.GetExportRequest, v1.ExportJob](
+			httpClient,
+			baseURL+MachineServiceGetExportProcedure,
+			connect.WithSchema(machineServiceMethods.ByName("GetExport")),
+			connect.WithClientOptions(opts...),
+		),
+		listExports: connect.NewClient[v1.ListExportsRequest, v1.ListExportsResponse](
+			httpClient,
+			baseURL+MachineServiceListExportsProcedure,
+			connect.WithSchema(machineServiceMethods.ByName("ListExports")),
+			connect.WithClientOptions(opts...),
+		),
+		cancelExport: connect.NewClient[v1.CancelExportRequest, v1.CancelExportResponse](
+			httpClient,
+			baseURL+MachineServiceCancelExportProcedure,
+			connect.WithSchema(machineServiceMethods.ByName("CancelExport")),
+			connect.WithClientOptions(opts...),
+		),
 	}
 }
 
@@ -164,6 +208,10 @@ type machineServiceClient struct {
 	digest           *connect.Client[v1.DigestRequest, v1.DigestResponse]
 	queryRecords     *connect.Client[v1.QueryRecordsRequest, v1.QueryRecordsResponse]
 	findTransaction  *connect.Client[v1.FindTransactionRequest, v1.FindTransactionResponse]
+	startExport      *connect.Client[v1.StartExportRequest, v1.StartExportResponse]
+	getExport        *connect.Client[v1.GetExportRequest, v1.ExportJob]
+	listExports      *connect.Client[v1.ListExportsRequest, v1.ListExportsResponse]
+	cancelExport     *connect.Client[v1.CancelExportRequest, v1.CancelExportResponse]
 }
 
 // ListDevices calls tracekeep.v1.MachineService.ListDevices.
@@ -211,6 +259,26 @@ func (c *machineServiceClient) FindTransaction(ctx context.Context, req *connect
 	return c.findTransaction.CallUnary(ctx, req)
 }
 
+// StartExport calls tracekeep.v1.MachineService.StartExport.
+func (c *machineServiceClient) StartExport(ctx context.Context, req *connect.Request[v1.StartExportRequest]) (*connect.Response[v1.StartExportResponse], error) {
+	return c.startExport.CallUnary(ctx, req)
+}
+
+// GetExport calls tracekeep.v1.MachineService.GetExport.
+func (c *machineServiceClient) GetExport(ctx context.Context, req *connect.Request[v1.GetExportRequest]) (*connect.Response[v1.ExportJob], error) {
+	return c.getExport.CallUnary(ctx, req)
+}
+
+// ListExports calls tracekeep.v1.MachineService.ListExports.
+func (c *machineServiceClient) ListExports(ctx context.Context, req *connect.Request[v1.ListExportsRequest]) (*connect.Response[v1.ListExportsResponse], error) {
+	return c.listExports.CallUnary(ctx, req)
+}
+
+// CancelExport calls tracekeep.v1.MachineService.CancelExport.
+func (c *machineServiceClient) CancelExport(ctx context.Context, req *connect.Request[v1.CancelExportRequest]) (*connect.Response[v1.CancelExportResponse], error) {
+	return c.cancelExport.CallUnary(ctx, req)
+}
+
 // MachineServiceHandler is an implementation of the tracekeep.v1.MachineService service.
 type MachineServiceHandler interface {
 	// ListDevices answers, per device of the tool, its latest endpoint, open captures, overlap, last record and whether the window holds a gap.
@@ -231,6 +299,14 @@ type MachineServiceHandler interface {
 	QueryRecords(context.Context, *connect.Request[v1.QueryRecordsRequest], *connect.ServerStream[v1.QueryRecordsResponse]) error
 	// FindTransaction answers tracepack's lookup of the transaction of one record over the read set of each hour it reads.
 	FindTransaction(context.Context, *connect.Request[v1.FindTransactionRequest]) (*connect.Response[v1.FindTransactionResponse], error)
+	// StartExport starts an export job of the selector's read sets (api.md §10.1 *Exports*).
+	StartExport(context.Context, *connect.Request[v1.StartExportRequest]) (*connect.Response[v1.StartExportResponse], error)
+	// GetExport answers one of the principal's export jobs, with a download URL once it is done.
+	GetExport(context.Context, *connect.Request[v1.GetExportRequest]) (*connect.Response[v1.ExportJob], error)
+	// ListExports answers the principal's export jobs, newest first.
+	ListExports(context.Context, *connect.Request[v1.ListExportsRequest]) (*connect.Response[v1.ListExportsResponse], error)
+	// CancelExport cancels one of the principal's export jobs that has not ended.
+	CancelExport(context.Context, *connect.Request[v1.CancelExportRequest]) (*connect.Response[v1.CancelExportResponse], error)
 }
 
 // NewMachineServiceHandler builds an HTTP handler from the service implementation. It returns the
@@ -294,6 +370,30 @@ func NewMachineServiceHandler(svc MachineServiceHandler, opts ...connect.Handler
 		connect.WithSchema(machineServiceMethods.ByName("FindTransaction")),
 		connect.WithHandlerOptions(opts...),
 	)
+	machineServiceStartExportHandler := connect.NewUnaryHandler(
+		MachineServiceStartExportProcedure,
+		svc.StartExport,
+		connect.WithSchema(machineServiceMethods.ByName("StartExport")),
+		connect.WithHandlerOptions(opts...),
+	)
+	machineServiceGetExportHandler := connect.NewUnaryHandler(
+		MachineServiceGetExportProcedure,
+		svc.GetExport,
+		connect.WithSchema(machineServiceMethods.ByName("GetExport")),
+		connect.WithHandlerOptions(opts...),
+	)
+	machineServiceListExportsHandler := connect.NewUnaryHandler(
+		MachineServiceListExportsProcedure,
+		svc.ListExports,
+		connect.WithSchema(machineServiceMethods.ByName("ListExports")),
+		connect.WithHandlerOptions(opts...),
+	)
+	machineServiceCancelExportHandler := connect.NewUnaryHandler(
+		MachineServiceCancelExportProcedure,
+		svc.CancelExport,
+		connect.WithSchema(machineServiceMethods.ByName("CancelExport")),
+		connect.WithHandlerOptions(opts...),
+	)
 	return "/tracekeep.v1.MachineService/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case MachineServiceListDevicesProcedure:
@@ -314,6 +414,14 @@ func NewMachineServiceHandler(svc MachineServiceHandler, opts ...connect.Handler
 			machineServiceQueryRecordsHandler.ServeHTTP(w, r)
 		case MachineServiceFindTransactionProcedure:
 			machineServiceFindTransactionHandler.ServeHTTP(w, r)
+		case MachineServiceStartExportProcedure:
+			machineServiceStartExportHandler.ServeHTTP(w, r)
+		case MachineServiceGetExportProcedure:
+			machineServiceGetExportHandler.ServeHTTP(w, r)
+		case MachineServiceListExportsProcedure:
+			machineServiceListExportsHandler.ServeHTTP(w, r)
+		case MachineServiceCancelExportProcedure:
+			machineServiceCancelExportHandler.ServeHTTP(w, r)
 		default:
 			http.NotFound(w, r)
 		}
@@ -357,4 +465,20 @@ func (UnimplementedMachineServiceHandler) QueryRecords(context.Context, *connect
 
 func (UnimplementedMachineServiceHandler) FindTransaction(context.Context, *connect.Request[v1.FindTransactionRequest]) (*connect.Response[v1.FindTransactionResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("tracekeep.v1.MachineService.FindTransaction is not implemented"))
+}
+
+func (UnimplementedMachineServiceHandler) StartExport(context.Context, *connect.Request[v1.StartExportRequest]) (*connect.Response[v1.StartExportResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("tracekeep.v1.MachineService.StartExport is not implemented"))
+}
+
+func (UnimplementedMachineServiceHandler) GetExport(context.Context, *connect.Request[v1.GetExportRequest]) (*connect.Response[v1.ExportJob], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("tracekeep.v1.MachineService.GetExport is not implemented"))
+}
+
+func (UnimplementedMachineServiceHandler) ListExports(context.Context, *connect.Request[v1.ListExportsRequest]) (*connect.Response[v1.ListExportsResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("tracekeep.v1.MachineService.ListExports is not implemented"))
+}
+
+func (UnimplementedMachineServiceHandler) CancelExport(context.Context, *connect.Request[v1.CancelExportRequest]) (*connect.Response[v1.CancelExportResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("tracekeep.v1.MachineService.CancelExport is not implemented"))
 }

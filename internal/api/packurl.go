@@ -74,7 +74,7 @@ func (s *Server) PackURL(ctx context.Context, req *connect.Request[tkv1.PackURLR
 		return nil, superseded(id)
 	}
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, err)
+		return nil, connect.NewError(connect.CodeInternal, keylessURL(err))
 	}
 	p, _ := PrincipalFrom(ctx)
 	entry := catalog.AuditEntry{
@@ -134,4 +134,18 @@ func superseded(pack tracepack.UUID) error {
 	}
 
 	return err
+}
+
+// errNoURL is a URL that could not be issued, the store's or the signer's text left out, since a store's names the object's key.
+var errNoURL = errors.New("api: the download URL could not be issued")
+
+func keylessURL(err error) error {
+	switch {
+	case errors.Is(err, context.Canceled):
+		return context.Canceled
+	case errors.Is(err, context.DeadlineExceeded):
+		return context.DeadlineExceeded
+	default:
+		return errNoURL
+	}
 }

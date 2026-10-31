@@ -28,6 +28,8 @@ const (
 	scorer2Token  = "a-static-token-of-a-scorer-000000002"
 	adminToken    = "a-static-token-of-an-operator-000001"
 	restorerToken = "a-static-token-of-a-restorer-0000001"
+	exporterToken = "a-static-token-of-an-exporter-000001"
+	nobodyToken   = "a-static-token-with-no-subject-00001"
 )
 
 func testAuthenticator(f auth.Failures) *auth.Authenticator {
@@ -38,6 +40,8 @@ func testAuthenticator(f auth.Failures) *auth.Authenticator {
 		{Token: scorer2Token, Subject: "second-scorer", Roles: []string{auth.RoleScorer}},
 		{Token: adminToken, Subject: "operator", Roles: []string{auth.RoleAdmin}},
 		{Token: restorerToken, Subject: "restorer", Roles: []string{auth.RoleRestorer}},
+		{Token: exporterToken, Subject: "exporter", Roles: []string{auth.RoleExporter}},
+		{Token: nobodyToken, Subject: "", Roles: []string{auth.RoleExporter}},
 	}})
 }
 
