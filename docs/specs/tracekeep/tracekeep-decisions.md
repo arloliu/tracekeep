@@ -106,6 +106,22 @@ Behind store reads and network round trips the difference is small for `ListPack
 For a long `QueryRecords` stream it is about 3 ms per thousand records, which phase 4 should measure again with real records before it settles the stream's batching.
 Runs varied by up to ±16 percent per row.
 
+**Measured again (2026-10-31)** for `QueryRecords`' batching, as the line above asked:
+connect-go v1.21.1 on Go 1.26.10, one process over loopback h2c, the Connect protocol, compression off,
+a server stream of 4,096 records of 1.5 KiB each (a masked record of about 512 bytes with about 1 KiB of SML), random bytes,
+medians of five `testing.B` runs on the same host.
+
+| records per message | stream time | per record |
+|---|---|---|
+| 1 | 17.5 ms | 4.3 µs |
+| 16 | 5.1 ms | 1.2 µs |
+| 64 (96 KiB) | 3.1 ms | 0.75 µs |
+| 256 (384 KiB) | 2.4 ms | 0.59 µs |
+
+One record a message costs about 3.5 µs more per record, as the first measurement found;
+batches of about 100 KiB recover most of it, and quadrupling them gains little more while a browser waits longer for its first message.
+**So a `QueryRecords` message holds items up to 128 KiB encoded** (`api.md` §10.1 *Records*).
+
 ### T-8 — repository name
 
 Repository name (V-29 is provisional).

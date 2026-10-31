@@ -27,6 +27,9 @@ Contract changes go through proposals, which the subject [README.md](README.md) 
   startup never blocks on the IdP (§10.2).
 - **Roles**: `pack-reader`, `scorer`, `viewer`, `exporter`, `restorer`, `admin`, granted separately (§10.2).
 - **Frontend**: `web/` built into the binary and served at `/`; the first pages are the tool and time browser, the record viewer and export (§10.3).
+- **Records**: `QueryRecords` streams masked records with their SML, capture by capture and hour by hour, each capture with its completeness, unknown tail, withholding and unreadable parts,
+  in batches capped in encoded bytes, up to a limit, resumable by a cursor;
+  `FindTransaction` answers tracepack's lookup over the same read set (§10.1 *Records*).
 - **Gate**: connect-go's overhead against plain gRPC is measured before the API is implemented (T-7).
 
 ## 10. API, auth and frontend (requirements 5 and 6)
@@ -43,8 +46,8 @@ gRPC for Go clients, JSON over HTTP for the browser, one definition.
 | `ListPacks(selector)` | per hour and scope: state, revision, packs with their ranges, gaps with time intervals, deferred seqs, declared losses with their action ids, crash gaps, conflicts, unknown tail, `no-data` hours (§7.3) — LS-10 |
 | `ListScopeChanges(after seq, selector)` | `scope_events` (`created`, `settled`, `reopened`, `conflict`, `terminated`, `excluded`, `unmergeable`) after a cursor, paginated, with the epoch — LS-11; one global cursor, returning only the selected tool's and devices' events |
 | `PackURL(pack_id)` | a download URL (expiry clamped to the object's deadline, or `pack-superseded`, *Downloads* below) so the VE reads packs with tracepack's own reader; this makes the VE service a privileged reader of packs that hold ciphertext in place (§13) |
-| `QueryRecords(selector, predicates)` | streamed masked records, via `MergeIterate`; the predicates below, plus capture, seq range and epoch |
-| `FindTransaction(capture, seq, hour)` | tracepack's lookup |
+| `QueryRecords(selector, predicates)` | streamed masked records with their SML, capture by capture and hour by hour, each capture opened with its completeness in the window and closed with its unknown tail, withheld captures and unreadable parts in the stream where they fall; the predicates below (*Records* below) |
+| `FindTransaction(capture, seq, hour)` | tracepack's lookup of the transaction of the record at (capture, seq) in hour, over the read set of each hour it reads: its outcome, its records with their roles and SML, and what it could not read (*Records* below) |
 | `Export(filter, kind)` | an asynchronous job producing a **bundle** (tar) under `exports/`, fetched by a download URL (*Downloads* below): one JSONL file **per source pack**, `tracepack-jsonl/1`, `/2` or `/3` by that pack's `format_minor` 0, 1 or 2 (G5-233, G5-270), plus `manifest.json` naming packs, captures, hours, each pack's incompleteness from its read, conflicts, and the filter. `kind=canonical` uses the canonical exporter unfiltered; `kind=filtered` writes the same record schema with the filter applied and is declared non-canonical in the manifest; it is refused until go-secs exports a filtered writer, since the record schema is tracepack's (T-48). A filtered `.tpk` is an extract, a v1.0 non-goal, and is not offered. A cancelled or failed job deletes its partial objects; a completed bundle is kept for its retention (default 24 h) and then deleted by the compactor (T-33) |
 | `Restore(capture, seq, hour)`, `Digest(digest_key_id, inputs)` | `masking-keys.md` §9; `Restore` returns a record only when every non-excluded copy of `(capture, seq)` is equal, in any hour, the hour naming one that holds a copy (otherwise not found); differing versions are refused as a conflict, an acknowledged one included, and none is selectable (T-42); `Digest` digests a list of inputs under one digest key id (T-44) |
 | admin | policies, processing configurations, key ids (no material), retention, thinning status (tracekeep keeps no holds, T-4); until these are typed operations, §10.4's `policy`, `config` and `key` commands serve them through `Admin(words)` |
@@ -96,11 +99,11 @@ A refused request carries a Connect code:
 |---|---|
 | `unauthenticated` | no credential, or one auth refuses (§10.2 *Failures*, every reason but `forbidden`) |
 | `permission_denied` | `forbidden`: no role of the principal admits the operation |
-| `invalid_argument` | a selector, a cursor or a pack id that does not parse or breaks the bounds above, a `ListScopeChanges` limit above 10,000, a request that does not decode, a `Restore` hour that is not an hour start, or a `Digest` input its checks refuse (`masking-keys.md` §9), naming the input's index |
+| `invalid_argument` | a selector, a cursor or a pack id that does not parse or breaks the bounds above, a `ListScopeChanges` limit above 10,000, a request that does not decode, a `Restore` or `FindTransaction` hour that is not an hour start, a `QueryRecords` predicate or cursor *Records* refuses, or a `Digest` input its checks refuse (`masking-keys.md` §9), naming the input's index |
 | `not_found` | a `PackURL` of a pack the catalog does not know, an evicted one included: eviction deletes its hour's rows (`compactor.md` §8.3); a `Restore` whose hour holds no copy of the record |
-| `failed_precondition` | `pack-superseded`, with the error detail `tracekeep.v1.PackSuperseded` naming the pack; a `Restore` of differing versions, with the detail `tracekeep.v1.RecordConflict`, or of a record that is not restorable; a key refused (`masking-keys.md` §9 *Failures*) |
+| `failed_precondition` | `pack-superseded`, with the error detail `tracekeep.v1.PackSuperseded` naming the pack; a `Restore` of differing versions, with the detail `tracekeep.v1.RecordConflict`, or of a record that is not restorable; a key refused (`masking-keys.md` §9 *Failures*); a `FindTransaction` of a withheld capture, or of a record that is not a transaction's primary and that nothing read explains |
 | `unavailable` | a `PackURL` before the compactor's first retention record, when no deadline exists (`compactor.md` §8.3), any read the catalog fails, a key unavailable, or a copy of a record whose object cannot be read, which the client retries |
-| `resource_exhausted` | a `Digest` beyond its principal's rate limit, or a request message above 16 MiB, refused before it is decoded |
+| `resource_exhausted` | a `Digest` beyond its principal's rate limit, a request message above 16 MiB, refused before it is decoded, or a record read beyond the replica's concurrent reads, a `FindTransaction` hour beyond its pack bound, or tracepack's read limit in a lookup (*Records* below) |
 | `internal` | an audit row that could not be written; nothing is returned |
 
 `Restore` answers the original payload with the record's time and kind; `Digest` answers each input's digest in order with the key id.
@@ -114,22 +117,106 @@ the VE service reads packs that hold ciphertext in place (T-5), one row per URL 
 
 ```json
 {
-  "selector": { "tool_id": "T1", "devices": ["eqp"], "from": "...", "to": "..." },
+  "selector": { "tool_id": "T1", "capture_id": "0192f7a4-5c1e-7d3a-9b2e-4f6a8c0d1e2f", "from": "...", "to": "..." },
   "messages": ["S6F11", "S5F1", "S2F*"],
   "direction": "to_host",
   "kinds": ["data"],
   "include_transport_events": false,
+  "seq_from": 1200,
+  "seq_to": 1800,
   "limit": 5000,
-  "order": "time"
+  "cursor": "..."
 }
 ```
 
-- `messages` takes `SxFy`, with `*` for any function, instead of separate stream and function fields.
+- `messages` takes `SxFy`, with `*` for any function, instead of separate stream and function fields;
+  a stream or function above 255, or any other form, is refused as invalid.
 - `direction` is `to_host` (sent by the equipment) or `to_equipment`,
   named for the tool's side the records are observed on (`producer.md` §4.1).
 - `kinds` selects among data, control, transport-event and annotation records ([FMT] record header `kind`);
-  transport events are excluded unless asked for.
+  transport events are excluded unless asked for, by `include_transport_events` or by naming the kind.
+- `seq_from` and `seq_to`, inclusive, require the selector's `capture_id`, since seqs are a capture's, and select producer seqs, so the close record is outside any range;
+  a reversed range is refused.
+- `limit` counts records only, 5,000 when 0; a limit above 50,000 is refused.
+- `cursor` is the token a previous answer of the same selector and predicates returned;
+  one that does not parse, or that another selector or other predicates issued, is refused.
 - Filtering on payload content (a CEID, an ALID) is left for a later version.
+  Records are ordered by capture, hour and seq (*Records* below), so the earlier `order` predicate is not offered.
+
+**Records.**
+`QueryRecords` and `FindTransaction` read masked packs only (T-48): the read set of each capture and hour (`catalog.md` §7.3),
+never a pack's clear original, which `Restore` alone returns.
+Outside `tracekeep dev`, a capture the read set names withheld streams no record and a `FindTransaction` of it is refused; under `tracekeep dev` nothing is withheld.
+Every read set a read reads is checked, so a resumed stream, whatever its cursor says, reads no withheld capture's pack.
+
+- **Order**: the selected captures in the order of their origin, then capture id;
+  each capture's hours of the window in order, read when the stream reaches them;
+  each hour's records in seq order, every version of a seq together.
+  Captures are never interleaved, so overlapping captures of a device are answered side by side, each with its own markers (§7.3 *Overlap*).
+  An hour is a record's UTC hour (tracepack's), so after a backward clock step a record can follow a higher seq of an earlier hour;
+  the order is hour first, then seq, and says so rather than reordering across hours.
+- **One merge per cluster**: an hour's read set is split into clusters of packs whose **envelopes** overlap, read in envelope order,
+  each one merge of tracepack's in its per-capture seq order,
+  so identical copies of a seq collapse to one and differing versions are each streamed, flagged as a conflict.
+  A pack's envelope runs from the lowest to the highest seq of its ranges,
+  and for an archive or a close pack, which may hold the close sentinel that ranges never name (§7.3), on to the sentinel;
+  a pack without ranges, a close pack's usual form, has the sentinel alone,
+  so a close record always reads after every producer seq of its hour, and an archive and the segments registered after it share a cluster.
+  Overlapping captures are separate merges, since neither of tracepack's merge orders keeps captures apart.
+- **Filters**: the window, the kinds and the direction are tracepack's filter.
+  The `messages` list and the seq range are applied by tracekeep to each record the merge yields, the list as one or-ed predicate from the record's HSMS header;
+  only a list of exact `SxFy` entries alone may also be passed to tracepack's filter, since tracepack would refuse a record a wildcard entry admits.
+  An unobserved record (thinned by the producer) carries no message and matches no `messages` entry;
+  otherwise it is streamed and flagged unobserved.
+- **Items**: a record carries its seq, time, epoch, kind, direction, HSMS header (session id, stream, function, W bit, system bytes) when it has one,
+  its flags (conflict, excluded, unobserved), its masked payload, and, for a data record, its SML (point 4 of T-48).
+  A producer record is flagged excluded when no `staged` pack of its read set holds its seq, by the ranges the read set carries,
+  and a close record when no `staged` archive or close pack is in its read set;
+  a conflict's versions are flagged by the conflict, whose packs and their states the item names.
+  The SML is go-secs' rendering of the decoded SECS-II body as valid UTF-8, each byte that is not (a JIS8 string's, say) written as U+FFFD, the masked payload keeping the bytes;
+  a text above 64 KiB is cut at the last character boundary below it and flagged truncated;
+  a body that does not decode, or a rendering that fails, carries the error's text instead, and the record is streamed all the same.
+- **Markers**: `capture` opens each capture with its `ListCaptures` fields and its **completeness** (§7.3) as far as it meets the window:
+  each gap, evicted run, deferred seq and declared loss whose seqs or time interval meet the window, in seq order, an entry without a seq last,
+  so a client places each by its seqs and times, wherever the stream's own order would put it.
+  A completeness that would take a message past its size is cut to fit and flagged truncated; `ListPacks` gives it whole.
+  `withheld` follows `capture` for a withheld capture, and no record of it follows, only its `unknown_tail`.
+  `incomplete` stands where a read stopped, naming the reason, the packs (at most 100, the rest counted) and the seq or time span the stream lacks:
+  an object gone, a corrupt block, a crash gap or a footer error that tracepack reports, tracepack's read limit or a block above its limit, a cluster above the reader bound below, or an hour retention evicted, before its read or during it.
+  Its detail never names an object key, which a store's errors quote, and neither does a read's error;
+  a store that fails a read, even while a pack is opened, fails the stream as `unavailable`, never reads as a corrupt pack.
+  `unknown_tail` closes each capture with the seq the frontier leaves unknown and whether the capture is still open.
+- **Batches**: each stream message holds items until their encoding in the stream's codec, binary or JSON (payloads in base64), reaches 128 KiB less a kilobyte for its cursor and end, the measurement of T-7;
+  a message never splits the versions of one seq, and a seq's versions larger than the cap travel alone.
+  Each message carries the cursor after its last item.
+- **The end**: the last message is `end`, with the number of records streamed, whether any `incomplete` marker or completeness entry was streamed,
+  and, when the limit stopped the stream, the cursor to continue from.
+  The limit stops the stream only between seqs, so the versions of its last seq may take it past the limit.
+  A stream that stops without `end` was cut short:
+  an error after partial output ends it with its code, and the client continues from the last cursor it received.
+- **The cursor** names the selector's and predicates' digest, the capture, and either its start or the hour and the last seq streamed, all its versions included;
+  it resumes after that seq, or at the capture's start, its markers again, so a merge, which keeps every seq, never moves it.
+  On resumption a registration of a later hour, or above the cursor's seq in its hour, is read;
+  one at or below it, a new version of the cursor's own seq included, is not, and a client re-queries for it.
+- **The snapshot**: each (capture, hour) read set is read from one catalog snapshot when the stream reaches it, and its cluster's packs are opened when the cluster starts.
+  An object found gone, at its open or during the merge, re-reads that hour's read set once and reads it again from the hour's last seq streamed, skipping every seq at or below it, so nothing streamed twice;
+  gone again, or the hour's scope evicted, the rest of the hour is reported `incomplete`.
+  A merged input usually still serves for the deletion delay (`compactor.md` §8.3), but a stream's length is not bounded by it, so the re-read is what a reader relies on.
+- **Bounds**: a replica serves at most `api.records.max_reads` reads at once, `QueryRecords` streams and `FindTransaction` lookups together (default 8), refusing one more as `resource_exhausted` before reading.
+  A `QueryRecords` merge opens at most `api.records.max_readers` packs (default 16), and a cluster above that is not read and is reported `incomplete`;
+  a `FindTransaction` lookup passes an hour's whole read set, and an hour of more than `api.records.max_lookup_packs` packs (default 64) is refused as `resource_exhausted`, naming the hour.
+  A merge holds at most about `api.records.held_bytes` of blocks (default 64 MiB, tracepack's `MaxHeldBytes`, which a block may overrun by an eighth), a lookup also its state (tracepack's `MaxStateBytes`, 64 MiB),
+  and each open pack its window, up to 4 MiB, and its decoded metadata, whose raw size tracepack's budget caps at 64 MiB (T-45).
+  These are counts and tracepack's own budgets, not a ceiling on a read's heap; a replica's memory is sized by `max_reads` times them.
+  Segments of one hour rarely overlap in seq, so an hour left unmergeable (T-45) splits into small clusters.
+- **`FindTransaction(capture, seq, hour)`** runs tracepack's lookup with a pack source answering each hour it asks for with that hour's read set, opened when asked;
+  the objects behind an hour close when the lookup returns,
+  or, once tracekeep reads tracepack's release rule (v0.12.0), when it asks for the next hour, the readers staying referenced until it returns;
+  it reads at most tracepack's default of two hours.
+  It answers the outcome (matched, ambiguous or not found), the transaction's key, each record read with tracepack's roles (the primary, a candidate reply, a possible reply, a same-key or possible primary, a closing or outcome record), whether it is in the window and a valid match, its flags and SML as above,
+  the hours searched, and each gap, conflict and unreadable pack tracepack reports.
+  A withheld capture, or a record that is not a primary and that nothing read explains, is refused as `failed_precondition`;
+  tracepack's read limit is refused as `resource_exhausted`, and an object that cannot be read as `unavailable`.
 
 The VE service's configuration names (`tool_id`, device) pairs;
 it lists packs, follows scope changes and fetches `PackURL`s through the selector,
@@ -209,8 +296,8 @@ otherwise it is a URL on the API itself carrying a download token, and the API s
   with the flag on, a bearer token is compared in constant time with each configured static token, read by reference, which names its subject and roles;
   with it off, none is consulted, whatever the IdP's state.
   It is a service credential: people's sign-in never accepts it, so a host where people sign in names an IdP (T-48).
-- **Roles**: `pack-reader` (ListPacks, PackURL), `pack-reader` or `viewer` (ListDevices, ListCaptures, ListScopeChanges, T-41), `scorer` (Digest), `viewer`, `exporter`, `restorer`, `admin`;
-  separately granted.
+- **Roles**: `pack-reader` (PackURL), `pack-reader` or `viewer` (ListDevices, ListCaptures, ListPacks, ListScopeChanges, T-41), `viewer` (QueryRecords, FindTransaction), `scorer` (Digest), `exporter`, `restorer`, `admin`, separately granted;
+  `ListPacks` is the completeness view the browser shows, and grants no download, which `PackURL` alone issues.
   Each operation names the roles any one of which admits it, `admin` alone admitting admin;
   a principal holding none of them, and any operation the table does not name, is refused as `forbidden`.
   A download served by the API checks its token, not a role (§10.1 *Downloads*).
@@ -282,8 +369,8 @@ Every answer under `/auth/` carries `Cache-Control: no-store`, and the callback'
   then opens the sealing, then the expiry, allowing the clock tolerance of `auth.oidc.leeway`.
 - **What a cookie admits**: a request authenticated by its session cookie is admitted only
   as a `POST` whose `Origin` is `api.public_url`'s origin (scheme, host and port), so a cross-site page can neither send it nor read its answer, else `csrf`;
-  and only on the operations the browser uses: `ListDevices`, `ListCaptures`, `ListPacks` and `ListScopeChanges` now,
-  and `QueryRecords`, `FindTransaction` and the export job's operations when they land (phases 4.2 and 4.3), else `session-scope`.
+  and only on the operations the browser uses: `ListDevices`, `ListCaptures`, `ListPacks`, `ListScopeChanges`, `QueryRecords` and `FindTransaction` now,
+  and the export job's operations when they land (phase 4.3), else `session-scope`.
   `PackURL`, `Restore`, `Digest` and `Admin` never admit a cookie.
   The role check follows, as for every principal; the principal's `Via` is `session`.
   `/download/` checks its token and never reads a cookie (§10.1 *Downloads*);
