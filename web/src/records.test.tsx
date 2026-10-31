@@ -195,6 +195,24 @@ test("an interrupted stream keeps its items, says the code, and continues from t
   expect(screen.getByText("incomplete")).toBeInTheDocument();
 });
 
+test("a completeness cut to fit keeps the list incomplete across a continuation", async () => {
+  const asked: QueryRecordsRequest[] = [];
+  const cutStart: Item = { item: { case: "capture", value: { capture: { captureId: capID, device: "eq-a", state: "open" }, completeness: {}, completenessTruncated: true } } };
+  renderApp(
+    `/records?tool=T-1&${window}`,
+    stream(asked, function* (req) {
+      if (req.cursor === "") {
+        yield { items: [cutStart, record(1n)], cursor: "c1" };
+        throw new ConnectError("the store failed", Code.Unavailable);
+      }
+      yield { items: [record(2n)], cursor: "c2", end: { records: 1n } };
+    }),
+  );
+  await userEvent.click(await screen.findByRole("button", { name: "Continue" }));
+  expect(await screen.findByText(/^2 records in the list/)).toBeInTheDocument();
+  expect(screen.getByText("incomplete")).toBeInTheDocument();
+});
+
 test("a stream that stops without its end is interrupted too", async () => {
   renderApp(
     `/records?tool=T-1&${window}`,
