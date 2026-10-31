@@ -12,6 +12,9 @@
 
 # Build and test outputs.
 /dist/
+# The frontend's build and packages (make web).
+/web/dist/
+/web/node_modules/
 coverage.out
 
 # Editor settings, kept per machine.

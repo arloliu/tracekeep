@@ -5,6 +5,7 @@ package api
 import (
 	"context"
 	"errors"
+	"io/fs"
 	"log/slog"
 	"net/http"
 	"path"
@@ -48,7 +49,9 @@ type Server struct {
 	Records RecordReads
 	// Exports configures the export jobs (api.md §10.1 *Exports*).
 	Exports ExportConfig
-	Dev     bool
+	// Web is the frontend's build, served at every path the other routes leave (api.md §10.3); nil serves none.
+	Web fs.FS
+	Dev bool
 
 	// stall, set only by the package's tests, runs at each stage of a PackURL: read, signed, audited.
 	stall func(stage string)
@@ -114,7 +117,7 @@ const opUnknown = "unknown"
 
 // routes is the HTTP handler serving impl behind the auth middleware, with response compression off (T-7),
 // requests bounded and their decode errors quoting none of their bytes,
-// and the downloads the API serves when it has download tokens.
+// the downloads the API serves when it has download tokens, and the frontend at every other path.
 // Downloads and unclean paths are answered before the mux, which would redirect an unclean path to its clean form,
 // a download's token in the redirect.
 func (s *Server) routes(impl tracekeepv1connect.MachineServiceHandler) http.Handler {
@@ -137,8 +140,10 @@ func (s *Server) routes(impl tracekeepv1connect.MachineServiceHandler) http.Hand
 			s.People.Handler().ServeHTTP(w, r)
 		case strings.HasPrefix(p, "/download/") || path.Clean(p) != p:
 			http.NotFound(&downloadWriter{ResponseWriter: w}, r)
-		default:
+		case strings.HasPrefix(p, "/tracekeep.v1."):
 			mux.ServeHTTP(w, r)
+		default:
+			s.frontend(w, r)
 		}
 	})
 }

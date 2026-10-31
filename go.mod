@@ -2,6 +2,9 @@ module github.com/arloliu/tracekeep
 
 go 1.26.4
 
+// The frontend's npm packages are not Go: ./... never enters them (api.md §10.3).
+ignore ./web/node_modules
+
 require (
 	ariga.io/atlas v1.3.0
 	connectrpc.com/connect v1.21.1
