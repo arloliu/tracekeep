@@ -383,8 +383,10 @@ SH
 	started=$("$WORK/crossing.sh" started)
 	before=$(kubectl -n $NS logs "$b" | grep -c '"auth: signed in"' || true)
 	log "crossing: the login on $a, the callback on $b after $a is deleted"
-	TRACEKEEP_BEFORE_LOGIN="$WORK/crossing.sh route a" \
-		TRACEKEEP_BEFORE_CALLBACK="[ \"\$($WORK/crossing.sh started)\" -gt $started ] || { echo 'crossing: $a did not start the login' >&2; exit 1; }; kubectl -n $NS delete pod $a --wait=true >/dev/null && $WORK/crossing.sh route b" \
+	local crossing
+	crossing=$(printf %q "$WORK/crossing.sh")
+	TRACEKEEP_BEFORE_LOGIN="$crossing route a" \
+		TRACEKEEP_BEFORE_CALLBACK="[ \"\$($crossing started)\" -gt $started ] || { echo 'crossing: $a did not start the login' >&2; exit 1; }; kubectl -n $NS delete pod $a --wait=true >/dev/null && $crossing route b" \
 		playwright "$PUBLIC" -g "finished by another"
 	after=$(kubectl -n $NS logs "$b" | grep -c '"auth: signed in"' || true)
 	kubectl -n $NS patch service $svc --type json -p '[{"op":"remove","path":"/spec/selector/tracekeep-packaging"}]' >/dev/null
