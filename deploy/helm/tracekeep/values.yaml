@@ -26,7 +26,8 @@ serviceAccount:
   name: ""
   annotations: {}
 
-# Each role's Deployment; workDirSize bounds the emptyDir at /work (ingest.work_dir, exports.work_dir and TMPDIR).
+# Each role's Deployment; workDirSize is the emptyDir at /work (ingest.work_dir, exports.work_dir and TMPDIR): its size limit,
+# and its ephemeral-storage request and limit unless resources give them. The kubelet evicts a pod past either; neither stops a write.
 ingest:
   replicas: 2
   # Room for the batches a replica holds (ingest.batch_max_bytes per open scope) and their packs before the put.

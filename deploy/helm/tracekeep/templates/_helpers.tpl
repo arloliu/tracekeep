@@ -95,13 +95,15 @@ and refused when it writes a credential the configuration could take by referenc
 {{- end }}
 {{- end -}}
 
-{{/* A role's resources with an ephemeral-storage request of its work directory's size unless the values give one. */}}
+{{/* A role's resources with an ephemeral-storage request and limit of its work directory's size, unless the values give them. */}}
 {{- define "tracekeep.resources" -}}
 {{- $r := deepCopy (default dict .role.resources) -}}
-{{- $req := deepCopy (default dict $r.requests) -}}
-{{- if not (hasKey $req "ephemeral-storage") -}}
-{{- $_ := set $req "ephemeral-storage" .role.workDirSize -}}
+{{- range $k := list "requests" "limits" -}}
+{{- $m := deepCopy (default dict (get $r $k)) -}}
+{{- if not (hasKey $m "ephemeral-storage") -}}
+{{- $_ := set $m "ephemeral-storage" $.role.workDirSize -}}
 {{- end -}}
-{{- $_ := set $r "requests" $req -}}
+{{- $_ := set $r $k $m -}}
+{{- end -}}
 {{ toYaml $r }}
 {{- end -}}
