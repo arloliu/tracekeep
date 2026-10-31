@@ -1,9 +1,9 @@
 # Configuration guide
 
-Status: current (2026-10-31) — the keys phases 1 to 4.4 read
+Status: current (2026-11-01) — the keys phases 1 to 4.5 read
 
 Every key the service reads, its default, its environment override, and what moving it costs.
-Read when deploying a role, tuning one, or adding a key.
+Read when deploying a role, tuning one, or adding a key; deploying itself is `kubernetes.md` (the Helm chart) and `standalone.md` (the systemd unit).
 
 The configuration is one YAML file, given to every role with `--config`, loaded by `internal/config` with fuda (T-22):
 a key's default applies when the file omits it, an environment variable overrides the file,

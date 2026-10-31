@@ -1,6 +1,6 @@
 # Repository guide
 
-Status: current (2026-10-31) — from seed v21 §11, the bootstrap decisions and the frontend (T-49)
+Status: current (2026-11-01) — from seed v21 §11, the bootstrap decisions, the frontend (T-49) and the packaging (T-50)
 
 How the repository is laid out, how its two modules fit together, and how to build, check and release them.
 Read when setting up a clone, adding a directory, or cutting a release.
@@ -58,7 +58,7 @@ the SDK resolves its own `go.mod`, never the service's graph, so the Makefile ru
 
 ## Setup and checks
 
-1. `mise install` — Go, golangci-lint, Atlas and Node at the versions `mise.toml` pins (T-13);
+1. `mise install` — Go, golangci-lint, Atlas, Node, and the packaging's helm, kind, kubectl, kubeconform and promtool at the versions `mise.toml` pins (T-13);
    `cd web && npm ci` installs the frontend's packages from `web/package-lock.json`,
    and refuses a Node outside `web/package.json`'s engines (`engine-strict`), such as an odd-numbered release another version manager put first on the path.
 2. `make hooks` — once per clone.
@@ -90,6 +90,15 @@ the session cookie and the Origin check hold because the browser sees one origin
 The simulator's tool is `SIM-TOOL`, its device `eqp`.
 
 The pages' tests are Vitest with Testing Library in jsdom, the API answered by a Connect router transport (`.agents/rules/300-testing.md`).
+
+## Packaging
+
+The image (`deploy/image/`), the Helm chart (`deploy/helm/tracekeep/`) and the systemd unit (`deploy/systemd/`) are `architecture.md` §3.3's;
+deploying them is `kubernetes.md` and `standalone.md`.
+A pull request's CI checks them (`make image-check`, `chart-check`, `alerts-check`, `unit-check`);
+the packaging tests, which drive a browser through each, run on `main`, daily and when dispatched (T-50).
+Before a change to the packaging merges, run the cluster leg where Docker is: `make packaging-cluster`, about ten minutes;
+the standalone leg installs a system unit and runs only on a GitHub-hosted runner.
 
 ## Releases
 
