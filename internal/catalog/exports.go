@@ -404,3 +404,21 @@ func (c *Catalog) ForgetExports(ctx context.Context, l Lease, retention time.Dur
 
 	return n, nil
 }
+
+// ExportObjects reads job's attempt object rows, by key.
+func (c *Catalog) ExportObjects(ctx context.Context, job tracepack.UUID) ([]ExportObject, error) {
+	var rows []struct {
+		Key   string `db:"object_key"`
+		Fence int64  `db:"fence"`
+		State string `db:"state"`
+	}
+	if err := sqlx.SelectContext(ctx, c.read, &rows, `SELECT object_key, fence, state FROM export_objects WHERE job_id = ? ORDER BY object_key`, job[:]); err != nil {
+		return nil, fmt.Errorf("catalog: export objects of %s: %w", job, err)
+	}
+	out := make([]ExportObject, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, ExportObject{Key: r.Key, Job: job, Fence: r.Fence, State: r.State})
+	}
+
+	return out, nil
+}

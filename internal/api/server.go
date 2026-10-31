@@ -52,6 +52,8 @@ type Server struct {
 
 	// stall, set only by the package's tests, runs at each stage of a PackURL: read, signed, audited.
 	stall func(stage string)
+	// exportStall, set only by the package's tests, runs at each stage of an export attempt: built, put, and each renewal.
+	exportStall func(stage string)
 }
 
 func (s *Server) stalled(stage string) {
@@ -77,6 +79,15 @@ type Catalog interface {
 	Policy(ctx context.Context, id string, version int64) (catalog.StoredPolicy, bool, error)
 	Completeness(ctx context.Context, capture tracepack.UUID) (catalog.Completeness, error)
 	ReadSet(ctx context.Context, capture tracepack.UUID, hour int64) (catalog.ReadSet, error)
+	CreateExport(ctx context.Context, id tracepack.UUID, owner string, request []byte, audit catalog.AuditEntry) error
+	ClaimExport(ctx context.Context, holder string, lease time.Duration, maxAttempts int) (catalog.Claim, bool, error)
+	RenewExport(ctx context.Context, a catalog.Attempt, lease time.Duration) error
+	IntendExport(ctx context.Context, a catalog.Attempt, key string, putTimeout time.Duration) (int64, error)
+	CompleteExport(ctx context.Context, a catalog.Attempt, key string, size int64, retention time.Duration) (int64, error)
+	FailExport(ctx context.Context, a catalog.Attempt, reason string) error
+	CancelExport(ctx context.Context, job tracepack.UUID, owner string, audit catalog.AuditEntry) error
+	ExportJob(ctx context.Context, job tracepack.UUID, owner string) (catalog.ExportJob, error)
+	ExportJobs(ctx context.Context, owner string, limit int) ([]catalog.ExportJob, error)
 }
 
 // Handler is the HTTP handler serving the machine API.

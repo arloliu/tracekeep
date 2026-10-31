@@ -11,10 +11,10 @@ import (
 // requests by operation and code with their durations, and auth's refusals.
 // Every method records nothing on a nil *API.
 type API struct {
-	authFailures, requests, downloadURLs, restores, digests, logins, readsIncomplete *prometheus.CounterVec
-	downloadsRefused, digestInputs, readsRefused, recordsStreamed                    prometheus.Counter
-	readsInFlight                                                                    prometheus.Gauge
-	duration                                                                         *prometheus.HistogramVec
+	authFailures, requests, downloadURLs, restores, digests, logins, readsIncomplete, exports *prometheus.CounterVec
+	downloadsRefused, digestInputs, readsRefused, recordsStreamed, exportBytes                prometheus.Counter
+	readsInFlight                                                                             prometheus.Gauge
+	duration                                                                                  *prometheus.HistogramVec
 }
 
 // NewAPI registers the api role's collectors on s.
@@ -47,7 +47,12 @@ func NewAPI(s *Server) (*API, error) {
 		Help: "Record versions QueryRecords streamed."})
 	m.readsIncomplete = prometheus.NewCounterVec(prometheus.CounterOpts{Namespace: "tracekeep", Subsystem: "api", Name: "record_reads_incomplete_total",
 		Help: "Parts of record reads that could not be read, by reason."}, []string{"reason"})
+	m.exports = prometheus.NewCounterVec(prometheus.CounterOpts{Namespace: "tracekeep", Subsystem: "api", Name: "exports_total",
+		Help: "Export jobs this replica ended, by outcome: done or failed (api.md §10.1 *Exports*)."}, []string{"outcome"})
+	m.exportBytes = prometheus.NewCounter(prometheus.CounterOpts{Namespace: "tracekeep", Subsystem: "api", Name: "export_bytes_total",
+		Help: "Bytes of the export bundles this replica completed."})
 	for _, c := range []prometheus.Collector{
+		m.exports, m.exportBytes,
 		m.authFailures, m.requests, m.duration, m.downloadURLs, m.downloadsRefused, m.restores, m.digests, m.digestInputs, m.logins,
 		m.readsInFlight, m.readsRefused, m.recordsStreamed, m.readsIncomplete,
 	} {
@@ -152,4 +157,13 @@ func (m *API) ReadIncomplete(reason string) {
 	if m != nil {
 		m.readsIncomplete.WithLabelValues(reason).Inc()
 	}
+}
+
+// Export counts one export job this replica ended with outcome, and size bytes of its bundle when it completed.
+func (m *API) Export(outcome string, size int64) {
+	if m == nil {
+		return
+	}
+	m.exports.WithLabelValues(outcome).Inc()
+	m.exportBytes.Add(float64(size))
 }
