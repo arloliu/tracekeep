@@ -46,6 +46,8 @@ type Server struct {
 	Log     *slog.Logger
 	// Records bounds QueryRecords and FindTransaction; Dev, set by tracekeep dev, withholds no capture (T-48).
 	Records RecordReads
+	// Exports configures the export jobs (api.md §10.1 *Exports*).
+	Exports ExportConfig
 	Dev     bool
 
 	// stall, set only by the package's tests, runs at each stage of a PackURL: read, signed, audited.

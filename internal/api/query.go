@@ -403,7 +403,14 @@ func (s *Server) withholds(ctx context.Context, config *int64) (bool, error) {
 // window is comp as far as it meets the query: its gaps, evicted runs, deferred seqs, declared losses, crash gaps and conflicts,
 // by their times, an unknown time meeting it, and by the seq range when there is one; retained runs are left out.
 func (w *recordWriter) window(comp *catalog.Completeness) *catalog.Completeness {
-	m := meeting{from: w.q.base.From, to: w.q.base.To, seqFrom: w.q.base.SeqFrom, seqTo: w.q.base.SeqTo}
+	out := inWindow(comp, meeting{from: w.q.base.From, to: w.q.base.To, seqFrom: w.q.base.SeqFrom, seqTo: w.q.base.SeqTo})
+	w.lacking = w.lacking || len(out.Gaps)+len(out.Evicted)+len(out.Deferred)+len(out.Losses)+len(out.CrashGaps)+len(out.Conflicts) > 0
+
+	return out
+}
+
+// inWindow is comp as far as it meets m, as window says.
+func inWindow(comp *catalog.Completeness, m meeting) *catalog.Completeness {
 	out := &catalog.Completeness{Frontier: comp.Frontier, HasFrontier: comp.HasFrontier, UnknownTailFrom: comp.UnknownTailFrom}
 	out.Gaps = keep(comp.Gaps, func(g catalog.Gap) bool { return m.times(g.Start, g.End) && m.seqs(g.From, g.To) })
 	out.Evicted = keep(comp.Evicted, func(r catalog.Run) bool { return m.times(r.TSFrom, r.TSTo) && m.seqs(r.SeqFrom, r.SeqTo) })
@@ -418,7 +425,6 @@ func (w *recordWriter) window(comp *catalog.Completeness) *catalog.Completeness 
 	})
 	out.CrashGaps = keep(comp.CrashGaps, func(g catalog.CrashGap) bool { return m.times(g.Start, g.End) })
 	out.Conflicts = keep(comp.Conflicts, func(k catalog.ConflictRange) bool { return m.seqs(k.SeqFrom, k.SeqTo) })
-	w.lacking = w.lacking || len(out.Gaps)+len(out.Evicted)+len(out.Deferred)+len(out.Losses)+len(out.CrashGaps)+len(out.Conflicts) > 0
 
 	return out
 }
