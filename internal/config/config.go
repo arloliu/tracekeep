@@ -147,8 +147,6 @@ type API struct {
 	Listen      string `yaml:"listen" default:":8443" env:"TRACEKEEP_API_LISTEN"`
 	TLSCertFile string `yaml:"tls_cert_file" env:"TRACEKEEP_API_TLS_CERT_FILE"`
 	TLSKeyFile  string `yaml:"tls_key_file" env:"TRACEKEEP_API_TLS_KEY_FILE"`
-	// Plaintext serves HTTP/2 without TLS; only tracekeep dev sets it, never a file.
-	Plaintext bool `yaml:"-"`
 	// PublicURL is the base of the download URLs the API serves itself, as readers reach it.
 	PublicURL string `yaml:"public_url" env:"TRACEKEEP_API_PUBLIC_URL"`
 	// DownloadMargin is kept between a URL's expiry and its object's deadline; a URL that would live less than DownloadFloor is refused (T-33).
@@ -271,7 +269,7 @@ func (c *Config) check(dev bool) error {
 	if u, err := neturl.Parse(c.API.PublicURL); c.API.PublicURL != "" && (err != nil || (u.Scheme != "https" && !dev) || u.Host == "") {
 		errs = append(errs, fmt.Errorf("api.public_url %q must be an https URL", c.API.PublicURL))
 	}
-	errs = append(errs, c.checkPeople(dev)...)
+	errs = append(errs, c.checkPeople()...)
 	if (c.Bus.CertFile == "") != (c.Bus.KeyFile == "") {
 		errs = append(errs, errors.New("bus.cert_file and bus.key_file go together, for mutual TLS"))
 	}
@@ -310,16 +308,13 @@ func Dev(dir, url string, flush time.Duration) (*Config, error) {
 }
 
 // checkPeople refuses people's sign-in without what it needs (api.md §10.2 *People's sign-in*):
-// the service tokens' IdP with another audience, a client secret, an https public URL, a session key, and TLS, which tracekeep dev lacks.
-func (c *Config) checkPeople(dev bool) []error {
+// the service tokens' IdP with another audience, a client secret, an https public URL and a session key.
+func (c *Config) checkPeople() []error {
 	p := c.Auth.People
 	if p.ClientID == "" {
 		return nil
 	}
 	var errs []error
-	if dev {
-		errs = append(errs, errors.New("auth.people: tracekeep dev serves plain HTTP and offers no sign-in"))
-	}
 	if c.Auth.OIDC.Issuer == "" {
 		errs = append(errs, errors.New("auth.people.client_id needs auth.oidc.issuer, the IdP people sign in at"))
 	}

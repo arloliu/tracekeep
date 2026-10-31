@@ -44,7 +44,7 @@ func (s *putting) Put(ctx context.Context, key string, r io.ReadSeeker, size int
 func TestDevLoopbackCapture(t *testing.T) {
 	t.Parallel()
 	ctx := t.Context()
-	d, err := NewDev(ctx, DevOptions{Dir: t.TempDir(), Flush: 200 * time.Millisecond, Rate: 50, API: "127.0.0.1:0", Log: slog.New(slog.DiscardHandler)})
+	d, err := NewDev(ctx, DevOptions{Dir: t.TempDir(), Flush: 200 * time.Millisecond, Rate: 50, API: "127.0.0.1:0", IDP: "127.0.0.1:0", Log: slog.New(slog.DiscardHandler)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -164,7 +164,7 @@ func TestDevRefusesACatalogWithoutRevisions(t *testing.T) {
 		t.Fatal(err)
 	}
 	_ = db.Close()
-	_, err = NewDev(t.Context(), DevOptions{Dir: dir, Flush: time.Second, API: "127.0.0.1:0", Log: slog.New(slog.DiscardHandler)})
+	_, err = NewDev(t.Context(), DevOptions{Dir: dir, Flush: time.Second, API: "127.0.0.1:0", IDP: "127.0.0.1:0", Log: slog.New(slog.DiscardHandler)})
 	if !errors.Is(err, migrations.ErrOtherTool) || !strings.Contains(err.Error(), "fresh --data") {
 		t.Errorf("NewDev over a catalog without revisions = %v, want refused with the way out", err)
 	}

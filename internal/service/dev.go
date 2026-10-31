@@ -9,6 +9,8 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
+	"net/http"
 	"os"
 	"path/filepath"
 	"time"
@@ -39,9 +41,13 @@ type DevOptions struct {
 	Flush time.Duration
 	// Rate is the simulator's forwarded requests per second; 0 runs no simulator.
 	Rate float64
-	// API is where the machine API listens, over HTTP/2 without TLS; empty takes 127.0.0.1:8080.
-	API string
-	Log *slog.Logger
+	// API is where the machine API listens, over TLS; empty takes 127.0.0.1:8080.
+	// IdP is where the test IdP listens; empty takes 127.0.0.1:8444.
+	// Each names localhost, 127.0.0.1 or ::1, and port 0 takes a free port (api.md §10.3 *Development*).
+	API, IDP string
+	// PublicURL is the https URL the browser reaches the API at, such as Vite's server; empty is the API's own address.
+	PublicURL string
+	Log       *slog.Logger
 }
 
 // Dev is tracekeep dev: an embedded bus, a SQLite catalog and an fs store under one directory,
@@ -50,6 +56,9 @@ type Dev struct {
 	Env  *Env
 	bus  *server.Server
 	opts DevOptions
+	// api is the API's listener, bound before the configuration; idp serves the test IdP.
+	api net.Listener
+	idp *http.Server
 }
 
 // NewDev starts the embedded bus, creates the catalog when the directory has none, opens the environment and migrates the bus.
@@ -68,7 +77,7 @@ func NewDev(ctx context.Context, o DevOptions) (*Dev, error) {
 	if err != nil {
 		return nil, errors.Join(err, d.Close())
 	}
-	if err := devAPI(o, cfg); err != nil {
+	if err := d.devAPI(cfg); err != nil {
 		return nil, errors.Join(err, d.Close())
 	}
 	if err := MigrateCatalog(ctx, &cfg.Catalog); err != nil {
@@ -77,6 +86,7 @@ func NewDev(ctx context.Context, o DevOptions) (*Dev, error) {
 	if d.Env, err = Open(ctx, cfg, o.Log); err != nil {
 		return nil, errors.Join(err, d.Close())
 	}
+	d.Env.apiListener = d.api
 	// A dev build is often a workspace build, whose classifier names no version.
 	d.Env.AllowUnversioned, d.Env.Dev = true, true
 	if err := Migrate(ctx, d.Env); err != nil {
@@ -93,10 +103,20 @@ const (
 	devKeyID     = "dev-download-1"
 )
 
-// devAPI configures dev's machine API in cfg: plain HTTP/2 on o.API, a static token admitting pack reads,
-// and a download key, each generated once under o.Dir with mode 0600 and kept across runs.
-func devAPI(o DevOptions, cfg *config.Config) error {
-	cfg.API.Listen, cfg.API.Plaintext, cfg.API.PublicURL = cmp.Or(o.API, "127.0.0.1:8080"), true, ""
+// devAPI configures dev's machine API in cfg: TLS on o.API, people's sign-in at the test IdP on o.IDP, both bound first,
+// a static token admitting pack reads for machine clients, and a download key, each generated once under o.Dir with mode 0600 and kept across runs.
+func (d *Dev) devAPI(cfg *config.Config) error {
+	o := d.opts
+	var apiAddr, idpAddr string
+	var idpLn net.Listener
+	var err error
+	if d.api, apiAddr, err = devListen("api", cmp.Or(o.API, "127.0.0.1:8080")); err != nil {
+		return err
+	}
+	if idpLn, idpAddr, err = devListen("idp", cmp.Or(o.IDP, "127.0.0.1:8444")); err != nil {
+		return err
+	}
+	cfg.API.Listen = d.api.Addr().String()
 	token := filepath.Join(o.Dir, DevTokenFile)
 	if err := generate(token, func() []byte { return []byte(rand.Text() + rand.Text()) }); err != nil {
 		return err
@@ -115,6 +135,9 @@ func devAPI(o DevOptions, cfg *config.Config) error {
 	cfg.Keys = config.Keys{
 		Declared: map[string]config.KeyDeclaration{devKeyID: {Provider: keys.ProviderFile, Ref: key}},
 		Download: config.KeyPurpose{Issuing: devKeyID, Accepted: []string{devKeyID}},
+	}
+	if err := d.devSignIn(cfg, apiAddr, idpLn, idpAddr); err != nil {
+		return errors.Join(err, idpLn.Close())
 	}
 
 	return nil
@@ -212,6 +235,10 @@ func (d *Dev) Close() error {
 	var err error
 	if d.Env != nil {
 		err = d.Env.Close()
+	}
+	err = errors.Join(err, d.closeIDP())
+	if d.api != nil {
+		_ = d.api.Close() // closed already when the api role ran
 	}
 	d.bus.Shutdown()
 	d.bus.WaitForShutdown()

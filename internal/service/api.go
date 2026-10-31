@@ -5,11 +5,13 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/tls"
+	"crypto/x509"
 	"errors"
 	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
+	"os"
 	"sync"
 	"time"
 
@@ -31,7 +33,7 @@ const apiShutdown = 10 * time.Second
 const exportPoll = 2 * time.Second
 
 // API runs the api role until ctx ends (architecture.md §3.1): the machine API and its downloads on api.listen,
-// over TLS with client certificates verified when given, or over HTTP/2 without TLS under tracekeep dev.
+// over TLS with client certificates verified when given.
 // It is ready once its listener is bound and the catalog answers (api.md §10.1 *Downloads*).
 func API(ctx context.Context, e *Env) error {
 	e.ready("api", failing(errStarting))
@@ -45,7 +47,11 @@ func API(ctx context.Context, e *Env) error {
 		}
 	}
 	log := e.Log.With("role", "api")
-	idp := verifier(&c.Auth)
+	client, err := idpClient(c.Auth.OIDC.CAFile)
+	if err != nil {
+		return err
+	}
+	idp := verifier(&c.Auth, client)
 	s := &api.Server{
 		Catalog: e.Catalog, QuietPeriod: c.Compact.QuietPeriod, Store: e.Store, Metrics: m, Log: log, Dev: e.Dev,
 		Auth: authenticator(&c.Auth, idp, nil, m, log),
@@ -78,18 +84,15 @@ func API(ctx context.Context, e *Env) error {
 		ErrorLog: slog.NewLogLogger(log.Handler(), slog.LevelWarn),
 	}
 	srv.Protocols.SetHTTP1(true)
-	if c.API.Plaintext {
-		srv.Protocols.SetUnencryptedHTTP2(true)
-	} else {
-		srv.Protocols.SetHTTP2(true)
-		var err error
-		if srv.TLSConfig, err = serverTLS(&c.API, &c.Auth.MTLS, log); err != nil {
-			return err
-		}
+	srv.Protocols.SetHTTP2(true)
+	if srv.TLSConfig, err = serverTLS(&c.API, &c.Auth.MTLS, log); err != nil {
+		return err
 	}
-	ln, err := net.Listen("tcp", c.API.Listen)
-	if err != nil {
-		return fmt.Errorf("service: api: %w", err)
+	ln := e.apiListener
+	if ln == nil {
+		if ln, err = net.Listen("tcp", c.API.Listen); err != nil {
+			return fmt.Errorf("service: api: %w", err)
+		}
 	}
 	defer ln.Close()
 	e.apiAddr.Store(ln.Addr().String())
@@ -99,10 +102,6 @@ func API(ctx context.Context, e *Env) error {
 	if e.listening != nil {
 		e.listeningOnce.Do(func() { close(e.listening) })
 	}
-	if c.API.Plaintext && s.Downloads.PublicURL == "" {
-		// tracekeep dev's downloads are served where it listens.
-		s.Downloads.PublicURL = "http://" + ln.Addr().String()
-	}
 	if err := e.downloads(ctx, &s.Downloads, m); err != nil {
 		return err
 	}
@@ -110,7 +109,7 @@ func API(ctx context.Context, e *Env) error {
 		return err
 	}
 	if c.Auth.People.ClientID != "" {
-		if s.People, err = e.people(idp, m, log); err != nil {
+		if s.People, err = e.people(idp, client, m, log); err != nil {
 			return err
 		}
 		// The handler reads s.Auth only once the server serves, after this.
@@ -124,19 +123,13 @@ func API(ctx context.Context, e *Env) error {
 		return err
 	}
 	e.ready("api", e.Catalog.Ping)
-	log.Info("api: serving", "listen", ln.Addr().String(), "tls", !c.API.Plaintext, "presigned", s.Downloads.Presigner != nil)
+	log.Info("api: serving", "listen", ln.Addr().String(), "presigned", s.Downloads.Presigner != nil)
 	served := make(chan error, 1)
 	exporting := make(chan error, 1)
 	wctx, stopWorkers := context.WithCancel(ctx)
 	defer stopWorkers()
 	go func() { exporting <- s.RunExports(wctx, c.Replica, exportPoll) }()
-	go func() {
-		if c.API.Plaintext {
-			served <- srv.Serve(ln)
-		} else {
-			served <- srv.ServeTLS(ln, "", "")
-		}
-	}()
+	go func() { served <- srv.ServeTLS(ln, "", "") }()
 	// Workers that end early, with an error or none, end the role through the same draining as a cancellation.
 	var workersEnded bool
 	var workersErr error
@@ -186,8 +179,33 @@ func (e *Env) drainAPI(ctx context.Context, srv *http.Server, inFlight *sync.Wai
 	return ctx.Err()
 }
 
-// verifier is the IdP's verifier of a, shared by service tokens and people's sign-in, or nil without an issuer.
-func verifier(a *config.Auth) *auth.Verifier {
+// idpClient is the client of the IdP's discovery, JWKS and token exchange when auth.oidc.ca_file is set:
+// the system's roots and the file's certificates; a default client otherwise.
+func idpClient(caFile string) (*http.Client, error) {
+	if caFile == "" {
+		return &http.Client{}, nil
+	}
+	b, err := os.ReadFile(caFile)
+	if err != nil {
+		return nil, fmt.Errorf("service: api: auth.oidc.ca_file: %w", err)
+	}
+	pool, err := x509.SystemCertPool()
+	if err != nil {
+		pool = x509.NewCertPool()
+	}
+	if !pool.AppendCertsFromPEM(b) {
+		return nil, fmt.Errorf("service: api: auth.oidc.ca_file %s holds no PEM certificate", caFile)
+	}
+	tr, _ := http.DefaultTransport.(*http.Transport)
+	tr = tr.Clone()
+	tr.TLSClientConfig = &tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS12}
+
+	return &http.Client{Transport: tr}, nil
+}
+
+// verifier is the IdP's verifier of a, fetching with client (nil for the default), shared by service tokens and people's sign-in,
+// or nil without an issuer.
+func verifier(a *config.Auth, client *http.Client) *auth.Verifier {
 	o := a.OIDC
 	if o.Issuer == "" {
 		return nil
@@ -195,12 +213,12 @@ func verifier(a *config.Auth) *auth.Verifier {
 
 	return auth.NewVerifier(auth.OIDCConfig{
 		Issuer: o.Issuer, Audience: o.Audience, PeopleClient: a.People.ClientID, RolesClaim: o.RolesClaim, Roles: o.Roles,
-		TTL: o.JWKSTTL, MinInterval: o.FetchInterval, Leeway: o.Leeway,
+		TTL: o.JWKSTTL, MinInterval: o.FetchInterval, Leeway: o.Leeway, Client: client,
 	})
 }
 
 // people is the configured people's sign-in at idp under the session keys (api.md §10.2 *People's sign-in*).
-func (e *Env) people(idp *auth.Verifier, m *metrics.API, log *slog.Logger) (*auth.People, error) {
+func (e *Env) people(idp *auth.Verifier, client *http.Client, m *metrics.API, log *slog.Logger) (*auth.People, error) {
 	p := e.Config.Auth.People
 	if idp == nil {
 		return nil, errors.New("service: api: auth.people needs auth.oidc.issuer")
@@ -213,7 +231,7 @@ func (e *Env) people(idp *auth.Verifier, m *metrics.API, log *slog.Logger) (*aut
 		ClientID: p.ClientID, ClientSecret: p.ClientSecret, PublicURL: e.Config.API.PublicURL, Scopes: p.Scopes,
 		RolesClaim: p.RolesClaim, Roles: p.Roles,
 		SessionLifetime: p.SessionLifetime, LoginLifetime: p.LoginLifetime, ExchangeTimeout: p.ExchangeTimeout,
-		Now: e.Now, Log: log,
+		Client: client, Now: e.Now, Log: log,
 	}
 	if m != nil {
 		cfg.Failures, cfg.Logins = m, m

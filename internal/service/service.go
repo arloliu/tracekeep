@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -62,7 +63,9 @@ type Env struct {
 	joined func()
 	// apiAddr is the api role's bound address; apiBound, when not nil, runs once it is bound, a test's barrier;
 	// apiShutdown, when not zero, replaces the api role's shutdown bound.
-	apiAddr     atomic.Value
+	apiAddr atomic.Value
+	// apiListener, when set, is the api role's listener, bound by tracekeep dev before it configured the service.
+	apiListener net.Listener
 	apiBound    func()
 	apiShutdown time.Duration
 	// listening is closed once the api role's listener is bound.

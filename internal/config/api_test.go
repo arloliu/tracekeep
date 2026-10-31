@@ -12,7 +12,7 @@ func TestAPIKeys(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if a := c.API; a.Listen != ":8443" || a.DownloadMargin != 2*time.Minute || a.DownloadFloor != time.Minute || a.Plaintext ||
+	if a := c.API; a.Listen != ":8443" || a.DownloadMargin != 2*time.Minute || a.DownloadFloor != time.Minute ||
 		a.DigestRate != 200 || a.DigestBurst != 2000 ||
 		a.Records != (Records{MaxReads: 8, MaxReaders: 16, MaxLookupPacks: 64, HeldBytes: 64 << 20}) ||
 		a.PublicURL != "https://tracekeep.example.invalid:8443" {

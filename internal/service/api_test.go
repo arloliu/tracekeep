@@ -39,10 +39,18 @@ import (
 	"github.com/arloliu/tracekeep/proto/tracekeep/v1/tracekeepv1connect"
 )
 
-// h2c is a client of HTTP/2 without TLS, as dev serves it.
-func h2c() *http.Client {
-	tr := &http.Transport{Protocols: new(http.Protocols)}
-	tr.Protocols.SetUnencryptedHTTP2(true)
+// trusting is a client of HTTP/2 over TLS trusting only the certificate in certFile, as dev's own is.
+func trusting(t *testing.T, certFile string) *http.Client {
+	t.Helper()
+	b, err := os.ReadFile(certFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pool := x509.NewCertPool()
+	if !pool.AppendCertsFromPEM(b) {
+		t.Fatalf("%s holds no certificate", certFile)
+	}
+	tr := &http.Transport{TLSClientConfig: &tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS12}, ForceAttemptHTTP2: true}
 
 	return &http.Client{Transport: tr, Timeout: 10 * time.Second}
 }
@@ -53,7 +61,7 @@ func TestDevServesTheMachineAPI(t *testing.T) {
 	t.Parallel()
 	ctx := t.Context()
 	dir := t.TempDir()
-	d, err := NewDev(ctx, DevOptions{Dir: dir, Flush: 200 * time.Millisecond, Rate: 50, API: "127.0.0.1:0", Log: slog.New(slog.DiscardHandler)})
+	d, err := NewDev(ctx, DevOptions{Dir: dir, Flush: 200 * time.Millisecond, Rate: 50, API: "127.0.0.1:0", IDP: "127.0.0.1:0", Log: slog.New(slog.DiscardHandler)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -78,8 +86,9 @@ func TestDevServesTheMachineAPI(t *testing.T) {
 	if fi, err := os.Stat(filepath.Join(dir, DevTokenFile)); err != nil || fi.Mode().Perm() != 0o600 {
 		t.Errorf("the token file = %v, %v; want mode 0600", fi, err)
 	}
-	base := "http://" + d.Env.APIAddr()
-	cl := tracekeepv1connect.NewMachineServiceClient(h2c(), base)
+	base := d.Env.Config.API.PublicURL
+	client := trusting(t, filepath.Join(dir, DevCertFile))
+	cl := tracekeepv1connect.NewMachineServiceClient(client, base)
 	authed := func(r interface{ Header() http.Header }) {
 		r.Header().Set("Authorization", "Bearer "+string(token))
 	}
@@ -110,13 +119,13 @@ func TestDevServesTheMachineAPI(t *testing.T) {
 	if u.Presigned || !strings.HasPrefix(u.Url, base+"/download/") {
 		t.Fatalf("PackURL = %v, want a URL on the API", u)
 	}
-	resp, err := h2c().Get(u.Url) //nolint:noctx // a test's download
+	resp, err := client.Get(u.Url) //nolint:noctx // a test's download
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer resp.Body.Close()
 	if resp.ProtoMajor != 2 {
-		t.Errorf("dev answered over %s, want HTTP/2 without TLS", resp.Proto)
+		t.Errorf("dev answered over %s, want HTTP/2 over TLS", resp.Proto)
 	}
 	b, err := io.ReadAll(resp.Body)
 	if err != nil || resp.StatusCode != http.StatusOK {
@@ -239,7 +248,6 @@ func TestPresignCheck(t *testing.T) {
 func TestAPIRoleNeedsDownloadKeys(t *testing.T) {
 	t.Parallel()
 	e := devEnv(t)
-	e.Config.API.Plaintext = false
 	e.Config.API.Listen = "127.0.0.1:0"
 	e.Config.API.TLSCertFile, e.Config.API.TLSKeyFile = selfSigned(t)
 	e.Config.Keys.Download.Issuing = ""
@@ -252,7 +260,7 @@ func TestAPIRoleNeedsDownloadKeys(t *testing.T) {
 // devEnv is a dev environment running nothing, its api on a free port.
 func devEnv(t *testing.T) *Env {
 	t.Helper()
-	d, err := NewDev(t.Context(), DevOptions{Dir: t.TempDir(), Flush: time.Second, API: "127.0.0.1:0", Log: slog.New(slog.DiscardHandler)})
+	d, err := NewDev(t.Context(), DevOptions{Dir: t.TempDir(), Flush: time.Second, API: "127.0.0.1:0", IDP: "127.0.0.1:0", Log: slog.New(slog.DiscardHandler)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -360,7 +368,7 @@ func TestAPIRoleOverTLSWithAClientCertificate(t *testing.T) {
 	ca := newClientCA(t)
 	cert, key := selfSigned(t)
 	c := e.Config
-	c.API.Plaintext, c.API.Listen, c.API.TLSCertFile, c.API.TLSKeyFile = false, "127.0.0.1:0", cert, key
+	c.API.Listen, c.API.TLSCertFile, c.API.TLSKeyFile = "127.0.0.1:0", cert, key
 	c.API.PublicURL = "https://127.0.0.1"
 	c.Auth.MTLS.ClientCAFile, c.Auth.MTLS.Subjects = ca.file, map[string][]string{generator: {"pack-reader"}}
 	bound := make(chan struct{})
@@ -482,7 +490,7 @@ func TestAPIRoleStopsWithADownloadInFlight(t *testing.T) {
 	go func() { done <- API(run, e) }()
 	<-bound
 	go func() {
-		resp, err := h2c().Get("http://" + e.APIAddr() + "/download/" + tok) //nolint:noctx // a test's download, cut by the server
+		resp, err := trusting(t, e.Config.API.TLSCertFile).Get(e.Config.API.PublicURL + "/download/" + tok) //nolint:noctx // a test's download, cut by the server
 		if err == nil {
 			_, _ = io.Copy(io.Discard, resp.Body)
 			_ = resp.Body.Close()
@@ -541,10 +549,10 @@ func TestAPIRoleServesSignIn(t *testing.T) {
 	t.Parallel()
 	for _, configured := range []bool{true, false} {
 		e := devEnv(t)
-		e.Config.API.Plaintext = false
 		e.Config.API.Listen = "127.0.0.1:0"
 		e.Config.API.TLSCertFile, e.Config.API.TLSKeyFile = selfSigned(t)
 		e.Config.API.PublicURL = "https://tk.example.invalid"
+		e.Config.Auth.People = config.People{} // dev's own sign-in, replaced below when configured
 		if configured {
 			key := filepath.Join(t.TempDir(), "s-1")
 			if err := os.WriteFile(key, []byte(base64.StdEncoding.EncodeToString([]byte(rand.Text()+rand.Text()))), 0o600); err != nil {
@@ -621,7 +629,7 @@ func TestAPIRoleReloadsItsTLSFiles(t *testing.T) {
 	}
 	install(oldCert, certFile, oldKey, keyFile, oldCA.file, caFile)
 	c := e.Config
-	c.API.Plaintext, c.API.Listen, c.API.TLSCertFile, c.API.TLSKeyFile = false, "127.0.0.1:0", certFile, keyFile
+	c.API.Listen, c.API.TLSCertFile, c.API.TLSKeyFile = "127.0.0.1:0", certFile, keyFile
 	c.API.PublicURL = "https://127.0.0.1"
 	c.Auth.MTLS.ClientCAFile, c.Auth.MTLS.Subjects = caFile, map[string][]string{generator: {"pack-reader"}}
 	bound := make(chan struct{})

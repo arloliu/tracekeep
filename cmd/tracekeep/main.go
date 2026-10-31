@@ -229,7 +229,9 @@ func runDev(ctx context.Context, args []string, stderr io.Writer) error {
 	flush := fs.Duration("flush", 10*time.Second, "ingest's flush interval")
 	rate := fs.Float64("rate", 10, "the simulator's forwarded requests per second; 0 runs no simulator")
 	listen := fs.String("metrics", "", "where to serve /metrics, /healthz and /readyz; empty serves none")
-	apiAddr := fs.String("api", "127.0.0.1:8080", "where to serve the machine API, over HTTP/2 without TLS")
+	apiAddr := fs.String("api", "127.0.0.1:8080", "where to serve the machine API over TLS: localhost, 127.0.0.1 or ::1")
+	idpAddr := fs.String("idp", "127.0.0.1:8444", "where to serve the test IdP people sign in at: localhost, 127.0.0.1 or ::1")
+	publicURL := fs.String("public-url", "", "the https URL the browser reaches the API at, such as Vite's server; empty is the API's own")
 	if err := fs.Parse(args); err != nil {
 		return fmt.Errorf("%w: %w", errUsage, err)
 	}
@@ -244,7 +246,9 @@ func runDev(ctx context.Context, args []string, stderr io.Writer) error {
 		*dir = d
 	}
 	log := slog.New(slog.NewJSONHandler(stderr, nil))
-	d, err := service.NewDev(ctx, service.DevOptions{Dir: *dir, Port: *port, Flush: *flush, Rate: *rate, API: *apiAddr, Log: log})
+	d, err := service.NewDev(ctx, service.DevOptions{
+		Dir: *dir, Port: *port, Flush: *flush, Rate: *rate, API: *apiAddr, IDP: *idpAddr, PublicURL: *publicURL, Log: log,
+	})
 	if err != nil {
 		return err
 	}
@@ -255,7 +259,8 @@ func runDev(ctx context.Context, args []string, stderr io.Writer) error {
 		return err
 	}
 	log.Info("tracekeep dev: running", "data", *dir, "bus", d.URL(), "packs", filepath.Join(*dir, "packs"),
-		"api", "http://"+*apiAddr, "token_file", filepath.Join(*dir, service.DevTokenFile))
+		"api", d.Env.Config.API.PublicURL, "issuer", d.Env.Config.Auth.OIDC.Issuer,
+		"certificate", filepath.Join(*dir, service.DevCertFile), "token_file", filepath.Join(*dir, service.DevTokenFile))
 	err = d.Run(octx)
 	if failed := service.ServeFailed(octx); failed != nil {
 		return errors.Join(failed, err)
