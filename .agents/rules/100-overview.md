@@ -45,7 +45,8 @@ a header or convention both sides need goes into the SDK, never into the service
 | `proto/tracekeep/v1` | the machine API |
 | `migrations/`, `schema.hcl`, `atlas.hcl` | the catalog schema and its Atlas migrations, one directory per engine |
 | `producer/` | the SDK: `producer`, `secsobs`, `busconfig`, `producertest` |
-| `web/` | the frontend: Vite, React, TypeScript |
+| `web/` | the frontend: Vite, React, TypeScript (`api.md` §10.3); its Go package embeds the build, or the fallback page without `-tags webdist` |
+| `internal/devidp` | `tracekeep dev`'s test IdP; imported by `dev` and tests only |
 | `deploy/` | Helm, systemd and compose packaging |
 | `docs/` | specs, plans and guides under `450-doc-lifecycle.md` |
 | `scripts/` | repository checks (`docs-check.py`, `data-check.py`) and git hooks (`hooks/`) |

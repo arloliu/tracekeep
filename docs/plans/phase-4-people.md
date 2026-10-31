@@ -1,6 +1,6 @@
 # Phase 4 — people
 
-Status: active (2026-10-31) — 4.1, 4.2 and 4.3 done; 4.4 next
+Status: active (2026-10-31) — 4.1, 4.2 and 4.3 done; 4.4 in progress
 
 Milestone 4 of the [roadmap](../ROADMAP.md):
 people's sign-in through the API, the first pages, `QueryRecords` and `FindTransaction`, `Export` bundles, and the packaging a standalone host and a cluster run.
@@ -80,7 +80,7 @@ payload-content predicates of `QueryRecords` (`api.md` §10.1), and the eqp-hub 
 | 4.1 — people's sign-in | detailed below | done (#46) |
 | 4.2 — `QueryRecords` and `FindTransaction` | spec first (`api.md` §10.1–§10.2, `catalog.md` §7.3): connect-go's overhead on a long stream measured again with real-shaped synthetic records, which settles the batching (T-7), each batch capped in encoded bytes and holding copies, never callback-owned data; the read set of point 9 with its snapshot, a pack merged or evicted between the selection and its read, and the withheld packs; overlapping captures answered side by side, which neither of tracepack's merge orders gives, so one merge per capture; `SxF*` and seq ranges, which tracepack's filter lacks, applied in tracekeep; capture boundaries, gaps and the unknown tail in the stream, and its terminal incompleteness after partial output; the limit, its default and a cursor stable across a merge and a late registration; memory bounds beyond `MaxHeldBytes` (readers open at once, metadata-heavy unmergeable hours of T-45, concurrent streams); the roles of both operations, and a completeness view for `viewer` that grants no `PackURL`; streaming requests observed by the request metrics; SML beside each record (point 4); `FindTransaction` across an hour boundary, a conflict in the second hour and a backward clock step | done (#48) |
 | 4.3 — `Export` | spec first (`api.md` §10.1, `catalog.md` §7.1–§7.2, `compactor.md` §8.3): the jobs table and its migration on both engines, its transactions and locks; start, get and cancel, each checking `exporter`, which jobs a principal sees, and their audit rows; job ownership by a fenced worker, an upload intent persisted before the put, an attempt key never reused, completion by compare-and-set, cancel against completion; partial and orphaned objects deleted by a durable step that survives a crash and a late put; the bundle's deletion deadline persisted at completion and shared by the URL and the compactor (T-33), the URL's margin and floor; the read set and withheld packs of point 9; the manifest's conflicts (suspect, confirmed, acknowledged) across two hours; `export_jobs{state}` and the cleanup's failures; no clear recipe body in a bundle, checked on the unpacked JSONL (payloads, annotation bodies, header and redaction entries) against every baseline carrier, with an unmasked negative control | done (#49) |
-| 4.4 — frontend | the embedding of point 7 first, then the layout and the sign-in flow over 4.1, then point 4's pages over 4.2 and 4.3 | pending |
+| 4.4 — frontend | detailed below | in-progress |
 | 4.5 — packaging | spec first (`architecture.md`, `operations.md` §10.4): the image (point 11) built after `make web`; the Helm chart under `deploy/helm/` (a Deployment per role, `migrate` as a hook ordered after the bus and the catalog are reachable, probes, alert rules with their runbook links, `work_dir` as a sized `emptyDir`); the systemd unit for `all`, its credentials and directories, and its install and upgrade order (stop, migrate, start, since SQLite has one writer); the CI jobs of point 8 with HTTPS endpoints the browser and the service trust, two `api` replicas with a callback crossing them, a fresh install and an upgrade; the deployment guides | pending |
 | 4.6 — gate | audit every gate case against the test bodies, then one step per gap, as phase 3.6 did | pending |
 
@@ -131,6 +131,26 @@ The sandbox has no Docker, so the migrations are written by hand after the newes
 | 4 | the worker: claim, renew, intent, a put bounded by its deadline, completion; a lost lease, a cancel mid-attempt, a failed attempt retried, the attempts exhausted | done (#49) |
 | 5 | the API: the four operations, the job's owner, the bounds at the start, `kind=filtered` refused, the fetch's URL with the bundle's deadline and `expired`, the audit rows, the roles and the cookie's operations, the metrics; *Downloads*' and `PackURL`'s store and presigning errors made keyless; a download the API serves ended at its token's expiry plus the margin | done (#49) |
 | 6 | the compactor's cleanup: an attempt marked `deleting` after its put deadline, a completion racing it, a bundle at its deadline, ended jobs, a crash after `deleting`, a failure counted and logged without a key; the configuration guide's `exports.*` rows and the runbook | done (#49) |
+
+## Phase 4.4 — frontend
+
+Work on the branch `feat/web/first-pages`, one commit per step, test first;
+the branch merges by pull request once the whole phase passes an external post-implementation review.
+The owner settled the stack and `tracekeep dev`'s sign-in before it started (T-49).
+The pages call only the operations a cookie admits (`api.md` §10.2), all of which 4.1–4.3 serve.
+Playwright waits for the gate's packaging jobs (point 8); this phase tests the pages with Vitest against a fake transport.
+
+| Step | Scope | State |
+|---|---|---|
+| 1 | spec, `api.md` §10.3 and §10.2, the configuration guide, T-49, the rules (`100`, `300`, `500`, `700`): the stack, the embedding by build tag and the fallback, the serving rules (methods, cache, the `index.html` fallback, `/assets/` not found, the headers), sign-in in the pages, the three pages, `tracekeep dev`'s TLS and test IdP, `auth.oidc.ca_file` | in-progress |
+| 2 | `auth.oidc.ca_file` for discovery, the JWKS and the token exchange; `internal/devidp` (discovery, JWKS, the authorization page, single-use codes with PKCE and the client's secret, the ID token with the claims §10.2 checks); `tracekeep dev` over TLS with its certificate, both listeners bound before the configuration (port 0 included), loopback only, the test IdP, a people client and a session key; dev's tests moved to TLS clients trusting its certificate; a sign-in end to end under dev, a replayed code, a wrong verifier, another redirect URL, a non-loopback address refused | pending |
+| 3 | the `web` Go package and the serving rules, before any npm: the fallback without the tag, `web/dist` with it, the routes beside the services, `/auth/` and `/download/`, an unknown service path, methods, cache headers, `index.html` for a client route, `/assets/` not found, the security headers; `go.mod`'s ignore | pending |
+| 4 | `web/` scaffolded: Vite, React, TypeScript, Tailwind v4, shadcn/ui, TanStack Router and Query, ESLint and Vitest; `make web`, `make web-check` and `make build`; `protoc-gen-es` in `make proto` and the generated client tracked; Node in `mise.toml`; the CI job running `make web-check` and `make build` | pending |
+| 5 | the layout and sign-in: `/auth/me`, the sign-in and not-configured pages, the return path, sign-out, `unauthenticated` and `permission_denied`, navigation by role, the time zone switch | pending |
+| 6 | the browser: the tool and window, devices, captures, completeness by hour, links into the records | pending |
+| 7 | the records: the filter bar, the stream into a virtualized list, the markers, the record's panel with SML and its transaction, the end and the next page, an interrupted stream continued from its last cursor, cancellation, a truncated completeness | pending |
+| 8 | exports: the list, a job's page with polling, cancel, the bundle's URL asked for when the download is chosen, `expired`, a new job from a selector | pending |
+| 9 | the guides: frontend development under `tracekeep dev` and Vite, the configuration guide's dev notes and the runbook | pending |
 
 ## Gate cases and their owners
 

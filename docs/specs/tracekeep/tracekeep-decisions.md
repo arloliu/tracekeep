@@ -611,3 +611,17 @@ outside `tracekeep dev`, a pack whose capture's configuration has no policy is w
 the three read an hour's `staged` packs (its archive and the segments registered after a reopen) and its `excluded` packs, never a `merged` input.
 **The image** is a static, distroless build for amd64 and arm64, published as `ghcr.io/arloliu/tracekeep`.
 The plan splits the phase into six sub-phases.
+
+### T-49 — the frontend's stack and `tracekeep dev`'s sign-in (2026-10-31)
+
+Phase 4.4 asked how a developer's browser signs in to `tracekeep dev`, which served plain HTTP with a static token,
+when people's sign-in needs TLS and an IdP and the static token is a service credential (T-48),
+and which components and styling the frontend uses.
+**`tracekeep dev` serves the API over TLS with a self-signed certificate and runs a test IdP of its own**, `internal/devidp`,
+so people sign in under it by the same authorization code flow as in production, and the gate's standalone leg can reuse it;
+the service trusts it through a new `auth.oidc.ca_file`, which a private IdP in production needs as well.
+**The frontend is Vite, React and TypeScript with shadcn/ui on Tailwind CSS v4, TanStack Router, Query and Virtual**,
+and no framework that needs a server, since the build ships embedded in the one binary (`api.md` §10.3).
+Considered and not taken: a loopback principal that `dev` admits without a credential, which leaves the sign-in flow untested locally and loosens dev;
+an external IdP each developer runs, which every developer must set up;
+plain CSS without a component library, and Mantine, for the owner's preference of a current React stack whose components the repository owns.
