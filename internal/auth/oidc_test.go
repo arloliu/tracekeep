@@ -652,3 +652,16 @@ func (p *idp) grantCode(verifier, idToken string) string {
 
 	return code
 }
+
+// grantChallenge issues a code for a login's S256 challenge, which exchanges once for idToken.
+func (p *idp) grantChallenge(challenge, idToken string) string {
+	code := "code-" + rand.Text()
+	p.mu.Lock()
+	if p.grants == nil {
+		p.grants = map[string]grant{}
+	}
+	p.grants[code] = grant{challenge: challenge, idToken: idToken}
+	p.mu.Unlock()
+
+	return code
+}

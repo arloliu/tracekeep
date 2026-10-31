@@ -44,9 +44,10 @@ func API(ctx context.Context, e *Env) error {
 		}
 	}
 	log := e.Log.With("role", "api")
+	idp := verifier(&c.Auth)
 	s := &api.Server{
 		Catalog: e.Catalog, QuietPeriod: c.Compact.QuietPeriod, Store: e.Store, Metrics: m, Log: log,
-		Auth: authenticator(&c.Auth, m, log),
+		Auth: authenticator(&c.Auth, idp, m, log),
 		Downloads: api.Downloads{
 			PublicURL: c.API.PublicURL, Lifetime: c.Store.DownloadLifetime, Margin: c.API.DownloadMargin, Floor: c.API.DownloadFloor,
 			DeleteDelay: c.Compact.DeleteDelay, Now: e.Now,
@@ -97,6 +98,11 @@ func API(ctx context.Context, e *Env) error {
 	if err := e.sessions(ctx); err != nil {
 		return err
 	}
+	if c.Auth.People.ClientID != "" {
+		if s.People, err = e.people(idp, m, log); err != nil {
+			return err
+		}
+	}
 	// The admin commands' keys, after downloads named what a missing download key costs; Restore and Digest share them.
 	if s.Admin, err = e.Admin(""); err != nil {
 		return err
@@ -134,17 +140,50 @@ func API(ctx context.Context, e *Env) error {
 	return ctx.Err()
 }
 
-// authenticator builds the checks of a, counting refusals in m.
-func authenticator(a *config.Auth, m *metrics.API, log *slog.Logger) *auth.Authenticator {
+// verifier is the IdP's verifier of a, shared by service tokens and people's sign-in, or nil without an issuer.
+func verifier(a *config.Auth) *auth.Verifier {
+	o := a.OIDC
+	if o.Issuer == "" {
+		return nil
+	}
+
+	return auth.NewVerifier(auth.OIDCConfig{
+		Issuer: o.Issuer, Audience: o.Audience, PeopleClient: a.People.ClientID, RolesClaim: o.RolesClaim, Roles: o.Roles,
+		TTL: o.JWKSTTL, MinInterval: o.FetchInterval, Leeway: o.Leeway,
+	})
+}
+
+// people is the configured people's sign-in at idp under the session keys (api.md §10.2 *People's sign-in*).
+func (e *Env) people(idp *auth.Verifier, m *metrics.API, log *slog.Logger) (*auth.People, error) {
+	p := e.Config.Auth.People
+	if idp == nil {
+		return nil, errors.New("service: api: auth.people needs auth.oidc.issuer")
+	}
+	k, err := e.Keys()
+	if err != nil {
+		return nil, err
+	}
+	cfg := auth.PeopleConfig{
+		ClientID: p.ClientID, ClientSecret: p.ClientSecret, PublicURL: e.Config.API.PublicURL, Scopes: p.Scopes,
+		RolesClaim: p.RolesClaim, Roles: p.Roles,
+		SessionLifetime: p.SessionLifetime, LoginLifetime: p.LoginLifetime, ExchangeTimeout: p.ExchangeTimeout,
+		Now: e.Now, Log: log,
+	}
+	if m != nil {
+		cfg.Failures, cfg.Logins = m, m
+	}
+
+	return auth.NewPeople(cfg, idp, &auth.Cookies{Keys: k, Leeway: e.Config.Auth.OIDC.Leeway, Now: e.Now}), nil
+}
+
+// authenticator builds the checks of a over idp, counting refusals in m.
+func authenticator(a *config.Auth, idp *auth.Verifier, m *metrics.API, log *slog.Logger) *auth.Authenticator {
 	cfg := auth.AuthenticatorConfig{MTLS: a.MTLS.Subjects, StaticEnabled: a.Static.Enabled, Log: log}
 	if m != nil {
 		cfg.Failures = m
 	}
-	if o := a.OIDC; o.Issuer != "" {
-		cfg.OIDC = auth.NewVerifier(auth.OIDCConfig{
-			Issuer: o.Issuer, Audience: o.Audience, RolesClaim: o.RolesClaim, Roles: o.Roles,
-			TTL: o.JWKSTTL, MinInterval: o.FetchInterval, Leeway: o.Leeway,
-		})
+	if idp != nil {
+		cfg.OIDC = idp
 	}
 	for _, t := range a.Static.Tokens {
 		cfg.Static = append(cfg.Static, auth.StaticToken{Token: t.Token, Subject: t.Subject, Roles: t.Roles})

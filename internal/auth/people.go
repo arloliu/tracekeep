@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"strings"
@@ -28,6 +29,11 @@ type PeopleConfig struct {
 	Client *http.Client
 	// Now is the clock; nil is time.Now.
 	Now func() time.Time
+	// Failures counts each refusal's reason, Logins each step's outcome; nil counts none.
+	Failures Failures
+	Logins   Logins
+	// Log logs refusals and sign-ins, never a credential; nil logs nothing.
+	Log *slog.Logger
 }
 
 // People is the backend-for-frontend's sign-in: it exchanges a login's code at the IdP, verifies the ID token
@@ -37,6 +43,7 @@ type People struct {
 	idp     *Verifier
 	cookies *Cookies
 	client  *http.Client
+	handler http.Handler
 }
 
 // NewPeople returns the sign-in of cfg at idp, sealing its cookies with cookies; it fetches nothing.
@@ -50,8 +57,14 @@ func NewPeople(cfg PeopleConfig, idp *Verifier, cookies *Cookies) *People {
 	if cfg.Now == nil {
 		cfg.Now = time.Now
 	}
+	if cfg.Log == nil {
+		cfg.Log = slog.New(slog.DiscardHandler)
+	}
 
-	return &People{cfg: cfg, idp: idp, cookies: cookies, client: client}
+	p := &People{cfg: cfg, idp: idp, cookies: cookies, client: client}
+	p.handler = p.routes()
+
+	return p
 }
 
 // redirectURL is where the IdP sends the browser back.

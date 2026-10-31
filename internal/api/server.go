@@ -39,7 +39,9 @@ type Server struct {
 	// DigestLimit is Digest's rate limit; nil refuses every Digest.
 	DigestLimit *DigestLimit
 	// Auth checks every request; Metrics records them, nil for none; Log logs failures, nil for none.
-	Auth    *auth.Authenticator
+	Auth *auth.Authenticator
+	// People serves people's sign-in under /auth/; nil serves none, and /auth/ is not found.
+	People  *auth.People
 	Metrics *metrics.API
 	Log     *slog.Logger
 
@@ -110,6 +112,8 @@ func (s *Server) routes(impl tracekeepv1connect.MachineServiceHandler) http.Hand
 			s.download(&downloadWriter{ResponseWriter: w}, r)
 		case strings.HasPrefix(p, "/download/") || path.Clean(p) != p:
 			http.NotFound(&downloadWriter{ResponseWriter: w}, r)
+		case strings.HasPrefix(p, "/auth/") && s.People != nil:
+			s.People.Handler().ServeHTTP(w, r)
 		default:
 			mux.ServeHTTP(w, r)
 		}

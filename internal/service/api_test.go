@@ -531,3 +531,53 @@ func TestAPIRoleResolvesSessionKeysAtStart(t *testing.T) {
 		t.Errorf("API with an old accepted session key unresolvable = %v, want the start failed naming s-0", err)
 	}
 }
+
+// With people's sign-in configured the api role serves /auth/, which answers a login with the IdP unreachable (a closed local port)
+// as unavailable without hanging; without it, /auth/ is not found.
+func TestAPIRoleServesSignIn(t *testing.T) {
+	t.Parallel()
+	for _, configured := range []bool{true, false} {
+		e := devEnv(t)
+		e.Config.API.Plaintext = false
+		e.Config.API.Listen = "127.0.0.1:0"
+		e.Config.API.TLSCertFile, e.Config.API.TLSKeyFile = selfSigned(t)
+		e.Config.API.PublicURL = "https://tk.example.invalid"
+		if configured {
+			key := filepath.Join(t.TempDir(), "s-1")
+			if err := os.WriteFile(key, []byte(base64.StdEncoding.EncodeToString([]byte(rand.Text()+rand.Text()))), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			e.Config.Keys.Declared["s-1"] = config.KeyDeclaration{Provider: keys.ProviderFile, Ref: key, Kind: catalog.KindSession}
+			e.Config.Keys.Session = config.KeyPurpose{Issuing: "s-1", Accepted: []string{"s-1"}}
+			e.Config.Auth.OIDC = config.OIDC{Issuer: "https://127.0.0.1:1", Audience: "tk-services", JWKSTTL: time.Hour, FetchInterval: 10 * time.Second}
+			e.Config.Auth.People = config.People{ClientID: "tk-web", ClientSecret: "s", RolesClaim: "groups",
+				SessionLifetime: 8 * time.Hour, LoginLifetime: 10 * time.Minute, ExchangeTimeout: 10 * time.Second}
+		}
+		bound := make(chan struct{})
+		e.apiBound = func() { close(bound) }
+		ctx, cancel := context.WithCancel(t.Context())
+		done := make(chan error, 1)
+		go func() { done <- API(ctx, e) }()
+		select {
+		case <-bound:
+		case err := <-done:
+			t.Fatalf("configured %t: API = %v", configured, err)
+		}
+		client := &http.Client{Transport: &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}}, //nolint:gosec // the test's own certificate
+			CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+		resp, err := client.Get("https://" + e.APIAddr() + "/auth/login")
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = resp.Body.Close()
+		want := http.StatusNotFound
+		if configured {
+			want = http.StatusServiceUnavailable
+		}
+		if resp.StatusCode != want || configured && resp.Header.Get("Cache-Control") != "no-store" {
+			t.Errorf("configured %t: /auth/login = %d, Cache-Control %q; want %d", configured, resp.StatusCode, resp.Header.Get("Cache-Control"), want)
+		}
+		cancel()
+		<-done //nolint:errcheck // the role's end, its error the cancellation's
+	}
+}
