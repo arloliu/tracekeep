@@ -207,7 +207,7 @@ export function thinningText(t: Thinning): string {
   return `${sf} ${t.source}`;
 }
 
-function Interval({ start, end }: { start: Timestamp | undefined; end: Timestamp | undefined }) {
+export function Interval({ start, end }: { start: Timestamp | undefined; end: Timestamp | undefined }) {
   return (
     <span>
       {start === undefined ? "open" : <Time ts={start} />} – <Time ts={end} />
@@ -289,11 +289,11 @@ function RecordsLink({ search, capture, from, to, children }: { search: Selector
   );
 }
 
-const seqs = (a: bigint | undefined, b: bigint | undefined) =>
+export const seqs = (a: bigint | undefined, b: bigint | undefined) =>
   a === undefined || b === undefined ? "" : a === b ? `seq ${String(a)}` : `seqs ${String(a)}–${String(b)}`;
 
 // facts are a capture's completeness as labelled lists, the empty ones left out.
-function facts(c: Completeness): [string, ReactNode[]][] {
+export function facts(c: Completeness): [string, ReactNode[]][] {
   return [
     ["Frontier", c.frontier === undefined ? [] : [`seq ${String(c.frontier)}`]],
     ["Retained", c.retained.map((r) => <>{seqs(r.seqFrom, r.seqTo)}, <Interval start={r.from} end={r.to} /></>)],
