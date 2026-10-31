@@ -134,9 +134,15 @@ alerts-check: ## The alert rules tested with promtool and their runbook sections
 unit-check: ## The systemd unit verified with systemd-analyze, its user created by its sysusers file
 	@scripts/unit-check.sh
 
+packaging-cluster: ## The cluster leg: kind, the chart and a browser (needs docker, kind, kubectl, helm, go and web's npm ci)
+	@scripts/packaging/cluster.sh
+
+packaging-standalone: ## The standalone leg: installs the unit on this host; refuses outside a GitHub-hosted runner
+	@scripts/packaging/standalone.sh
+
 ##@ CI
 
 ci: check docs-check data-check test ## Every gate, plus the service built without the workspace
 	@GOWORK=off go build ./...
 
-.PHONY: help lint fmt vet check docs-check data-check work hooks test test-latest test-s3 test-vault test-catalog migrate-diff migrate-check proto web web-check build image image-check chart-check alerts-check unit-check bench ci
+.PHONY: help lint fmt vet check docs-check data-check work hooks test test-latest test-s3 test-vault test-catalog migrate-diff migrate-check proto web web-check build image image-check chart-check alerts-check unit-check packaging-cluster packaging-standalone bench ci
