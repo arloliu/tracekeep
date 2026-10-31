@@ -86,13 +86,16 @@ The probes of the Helm chart and the systemd unit's checks read these on the met
 
 The Helm chart ships alert rules (`architecture.md` §3.3), each with its runbook section in `docs/guides/runbook.md` as its `runbook_url` and the metric it reads;
 the thresholds are the chart's values, the defaults below.
-The ingest gauges of shared state (the stream's backlog, a tool's open gaps, the deferred messages) are observed by every ingest replica alike,
-so a rule reads their maximum across replicas, never their sum, and only while `tracekeep_ingest_refreshed_timestamp_seconds` is less than ten minutes old;
-a counter is read by its increase, which a restart's reset does not count.
+The ingest gauges of shared state are observed by every ingest replica alike from a snapshot it refreshes:
+the stream's backlog from the bus (`source="bus"`), a tool's open gaps and the parked messages from the catalog (`source="catalog"`);
+a rule reads their maximum across replicas, never their sum, and only while `tracekeep_ingest_refreshed_timestamp_seconds` of that source is less than ten minutes old.
+The deferred messages (`deferred_messages`, `deferred_oldest_age_seconds`) are each replica's own, computed at each scrape from the deliveries it holds,
+so a rule reads their maximum across replicas with no freshness condition; a deferral moving to another replica restarts its observed age.
+A counter is read by its increase, which a restart's reset does not count.
 
 | Alert | Fires when | Runbook section |
 |---|---|---|
-| `TracekeepDeferredOld` | `tracekeep_ingest_deferred_oldest_age_seconds` above an hour, for any reason | `parked` |
+| `TracekeepDeferredOld` | `tracekeep_ingest_deferred_oldest_age_seconds` above an hour on any replica, for any reason | `parked` |
 | `TracekeepBacklogHigh` | `tracekeep_ingest_stream_backlog_bytes` above a threshold (default 10 GiB) for 15 min | `backlog` |
 | `TracekeepCompactLeaseLost` | no `compact` replica holds the lease (`tracekeep_compact_lease_held`) for 5 min | `lease-lost` |
 | `TracekeepMergeStalled` | the lease holder's merge task has completed no cycle (`tracekeep_compact_last_success_timestamp{task="merge"}`) for two hours, or none since it took the lease two hours ago; a cycle that merged nothing counts as completed, and a scope left unmerged shows as `tracekeep_compact_oldest_unmerged_scope_age_seconds` instead | `merge-stalled` |
