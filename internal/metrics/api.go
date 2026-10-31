@@ -11,9 +11,9 @@ import (
 // requests by operation and code with their durations, and auth's refusals.
 // Every method records nothing on a nil *API.
 type API struct {
-	authFailures, requests, downloadURLs, restores, digests *prometheus.CounterVec
-	downloadsRefused, digestInputs                          prometheus.Counter
-	duration                                                *prometheus.HistogramVec
+	authFailures, requests, downloadURLs, restores, digests, logins *prometheus.CounterVec
+	downloadsRefused, digestInputs                                  prometheus.Counter
+	duration                                                        *prometheus.HistogramVec
 }
 
 // NewAPI registers the api role's collectors on s.
@@ -36,7 +36,9 @@ func NewAPI(s *Server) (*API, error) {
 		Help: "Digest requests by outcome: ok, or the reason it was refused (masking-keys.md §9)."}, []string{"outcome"})
 	m.digestInputs = prometheus.NewCounter(prometheus.CounterOpts{Namespace: "tracekeep", Subsystem: "api", Name: "digest_inputs_total",
 		Help: "Inputs digested by Digest requests answered ok."})
-	for _, c := range []prometheus.Collector{m.authFailures, m.requests, m.duration, m.downloadURLs, m.downloadsRefused, m.restores, m.digests, m.digestInputs} {
+	m.logins = prometheus.NewCounterVec(prometheus.CounterOpts{Namespace: "tracekeep", Subsystem: "api", Name: "logins_total",
+		Help: "People's logins started and callbacks answered, by step and outcome: ok, refused or unavailable (api.md §10.2)."}, []string{"step", "outcome"})
+	for _, c := range []prometheus.Collector{m.authFailures, m.requests, m.duration, m.downloadURLs, m.downloadsRefused, m.restores, m.digests, m.digestInputs, m.logins} {
 		if err := s.Registry().Register(c); err != nil {
 			return nil, fmt.Errorf("metrics: api: %w", err)
 		}
@@ -51,6 +53,14 @@ func (m *API) AuthFailure(reason string) {
 		return
 	}
 	m.authFailures.WithLabelValues(reason).Inc()
+}
+
+// Login counts one step of a person's login with its outcome.
+func (m *API) Login(step, outcome string) {
+	if m == nil {
+		return
+	}
+	m.logins.WithLabelValues(step, outcome).Inc()
 }
 
 // Request records one request of operation answered with code, which took d.

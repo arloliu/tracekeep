@@ -9,6 +9,7 @@ import (
 	neturl "net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/arloliu/fuda"
@@ -237,6 +238,7 @@ func (c *Config) check(dev bool) error {
 	if u, err := neturl.Parse(c.API.PublicURL); c.API.PublicURL != "" && (err != nil || (u.Scheme != "https" && !dev) || u.Host == "") {
 		errs = append(errs, fmt.Errorf("api.public_url %q must be an https URL", c.API.PublicURL))
 	}
+	errs = append(errs, c.checkPeople(dev)...)
 	if (c.Bus.CertFile == "") != (c.Bus.KeyFile == "") {
 		errs = append(errs, errors.New("bus.cert_file and bus.key_file go together, for mutual TLS"))
 	}
@@ -272,4 +274,39 @@ func Dev(dir, url string, flush time.Duration) (*Config, error) {
 	}
 
 	return &c, nil
+}
+
+// checkPeople refuses people's sign-in without what it needs (api.md §10.2 *People's sign-in*):
+// the service tokens' IdP with another audience, a client secret, an https public URL, a session key, and TLS, which tracekeep dev lacks.
+func (c *Config) checkPeople(dev bool) []error {
+	p := c.Auth.People
+	if p.ClientID == "" {
+		return nil
+	}
+	var errs []error
+	if dev {
+		errs = append(errs, errors.New("auth.people: tracekeep dev serves plain HTTP and offers no sign-in"))
+	}
+	if c.Auth.OIDC.Issuer == "" {
+		errs = append(errs, errors.New("auth.people.client_id needs auth.oidc.issuer, the IdP people sign in at"))
+	}
+	if p.ClientID == c.Auth.OIDC.Audience {
+		errs = append(errs, errors.New("auth.people.client_id must differ from auth.oidc.audience, so an ID token never passes as a service token"))
+	}
+	if p.ClientSecretRef == "" || p.ClientSecret == "" {
+		errs = append(errs, errors.New("auth.people.client_secret_ref must name the client's secret"))
+	}
+	if u, err := neturl.Parse(c.API.PublicURL); err != nil || u.Scheme != "https" || u.Host == "" {
+		errs = append(errs, errors.New("auth.people needs api.public_url, an https URL: the redirect URL is under it"))
+	}
+	if c.Keys.Session.Issuing == "" {
+		errs = append(errs, errors.New("auth.people needs a keys.session issuing key id"))
+	}
+	for _, s := range p.Scopes {
+		if s == "" || strings.ContainsAny(s, " \t\r\n") {
+			errs = append(errs, fmt.Errorf("auth.people.scopes: %q is not one scope", s))
+		}
+	}
+
+	return errs
 }

@@ -129,6 +129,54 @@ func TestAuthAndKeysValidation(t *testing.T) {
 	}
 }
 
+// People's sign-in with its defaults, its secret read by reference.
+func TestPeopleSignIn(t *testing.T) {
+	t.Parallel()
+	secret := filepath.Join(t.TempDir(), "secret")
+	if err := os.WriteFile(secret, []byte("client-secret"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	c, err := Load(write(t, minimal+people(secret)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := c.Auth.People
+	if p.ClientID != "tk-web" || p.ClientSecret != "client-secret" || p.RolesClaim != "groups" || p.SessionLifetime != 8*time.Hour ||
+		p.LoginLifetime != 10*time.Minute || p.ExchangeTimeout != 10*time.Second || p.Roles["tk-viewers"][0] != "viewer" {
+		t.Errorf("auth.people = %+v", p)
+	}
+}
+
+// people is a configuration of people's sign-in whose client secret is at secret.
+func people(secret string) string {
+	return "api:\n  public_url: https://tk.example.invalid\n" +
+		"auth:\n  oidc:\n    issuer: https://idp.example.invalid\n    audience: tk-services\n" +
+		"  people:\n    client_id: tk-web\n    client_secret_ref: \"file://" + secret + "\"\n    roles:\n      tk-viewers: [viewer]\n" +
+		"keys:\n  declared:\n    s-1: {provider: file, ref: /k, kind: session}\n  session:\n    issuing: s-1\n    accepted: [s-1]\n"
+}
+
+func TestPeopleSignInValidation(t *testing.T) {
+	t.Parallel()
+	secret := filepath.Join(t.TempDir(), "secret")
+	if err := os.WriteFile(secret, []byte("client-secret"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	base := people(secret)
+	for name, tc := range map[string]struct{ yaml, want string }{
+		"no issuer":            {strings.Replace(base, "    issuer: https://idp.example.invalid\n    audience: tk-services\n", "", 1), "auth.oidc.issuer"},
+		"the service audience": {strings.Replace(base, "audience: tk-services", "audience: tk-web", 1), "auth.oidc.audience"},
+		"no secret":            {strings.Replace(base, "    client_secret_ref: \"file://"+secret+"\"\n", "", 1), "client_secret_ref"},
+		"no public URL":        {strings.Replace(base, "api:\n  public_url: https://tk.example.invalid\n", "", 1), "api.public_url"},
+		"no session key":       {strings.Replace(base, "  session:\n    issuing: s-1\n    accepted: [s-1]\n", "", 1), "keys.session"},
+		"an unknown role":      {strings.Replace(base, "tk-viewers: [viewer]", "tk-viewers: [reader]", 1), `"reader"`},
+		"a scope with a space": {strings.Replace(base, "    client_id: tk-web\n", "    client_id: tk-web\n    scopes: [\"groups email\"]\n", 1), "auth.people.scopes"},
+	} {
+		if _, err := Load(write(t, minimal+tc.yaml)); err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("%s: Load = %v, want an error naming %s", name, err, tc.want)
+		}
+	}
+}
+
 // The session purpose names its key ids as the download purpose does, and a key id may be declared of kind session.
 func TestSessionKeys(t *testing.T) {
 	t.Parallel()

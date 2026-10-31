@@ -7,6 +7,7 @@ import (
 	"errors"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -19,6 +20,7 @@ type sessionKeys struct {
 	issuing  string
 	accepted []string
 	material map[string][]byte
+	mu       sync.Mutex
 	asked    []string
 }
 
@@ -43,7 +45,9 @@ func (k *sessionKeys) Accepted(_ context.Context, kind, keyID string) ([]byte, e
 	if kind != catalog.KindSession || !slices.Contains(k.accepted, keyID) {
 		return nil, errors.New("not accepted")
 	}
+	k.mu.Lock()
 	k.asked = append(k.asked, keyID)
+	k.mu.Unlock()
 
 	return k.material[keyID], nil
 }

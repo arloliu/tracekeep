@@ -19,6 +19,24 @@ type Auth struct {
 	OIDC   OIDC   `yaml:"oidc"`
 	MTLS   MTLS   `yaml:"mtls"`
 	Static Static `yaml:"static"`
+	People People `yaml:"people"`
+}
+
+// People is people's sign-in (api.md §10.2 *People's sign-in*): a client of its own at auth.oidc's IdP; an empty client id configures none.
+type People struct {
+	ClientID string `yaml:"client_id" env:"TRACEKEEP_AUTH_PEOPLE_CLIENT_ID"`
+	// ClientSecretRef names where the client's secret is read from; the secret is never written in the file.
+	ClientSecretRef string `yaml:"client_secret_ref" env:"TRACEKEEP_AUTH_PEOPLE_CLIENT_SECRET_REF"`
+	ClientSecret    string `yaml:"-" refFrom:"ClientSecretRef"`
+	// Scopes are asked for beside openid.
+	Scopes []string `yaml:"scopes"`
+	// RolesClaim names the ID token claim holding a person's group values, and Roles maps each value to the roles it grants.
+	RolesClaim string              `yaml:"roles_claim" default:"groups" env:"TRACEKEEP_AUTH_PEOPLE_ROLES_CLAIM"`
+	Roles      map[string][]string `yaml:"roles"`
+	// SessionLifetime bounds a session, LoginLifetime a started login, ExchangeTimeout the token exchange.
+	SessionLifetime time.Duration `yaml:"session_lifetime" default:"8h" env:"TRACEKEEP_AUTH_PEOPLE_SESSION_LIFETIME" validate:"gt=0"`
+	LoginLifetime   time.Duration `yaml:"login_lifetime" default:"10m" env:"TRACEKEEP_AUTH_PEOPLE_LOGIN_LIFETIME" validate:"gt=0"`
+	ExchangeTimeout time.Duration `yaml:"exchange_timeout" default:"10s" env:"TRACEKEEP_AUTH_PEOPLE_EXCHANGE_TIMEOUT" validate:"gt=0"`
 }
 
 // OIDC is the IdP service tokens are validated against; an empty issuer configures none.
@@ -130,6 +148,9 @@ func (a *Auth) check() []error {
 	}
 	for id, rs := range a.MTLS.Subjects {
 		roles("auth.mtls.subjects."+id, rs)
+	}
+	for v, rs := range a.People.Roles {
+		roles("auth.people.roles."+v, rs)
 	}
 	if a.Static.Enabled {
 		if len(a.Static.Tokens) == 0 {
