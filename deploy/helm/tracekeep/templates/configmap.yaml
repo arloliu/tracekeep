@@ -1,0 +1,9 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "tracekeep.fullname" . }}
+  labels:
+    {{- include "tracekeep.labels" . | nindent 4 }}
+data:
+  config.yaml: |
+    {{- include "tracekeep.config" . | nindent 4 }}

@@ -1,0 +1,87 @@
+# tracekeep's Helm chart (docs/specs/tracekeep/architecture.md §3.3, docs/guides/kubernetes.md).
+
+image:
+  # Nothing publishes the image yet (T-50): build it (make image) and push it to a registry the cluster pulls from.
+  repository: ghcr.io/arloliu/tracekeep
+  # Defaults to the chart's appVersion.
+  tag: ""
+  pullPolicy: IfNotPresent
+imagePullSecrets: []
+
+# config is tracekeep's configuration (docs/guides/configuration.md), rendered as config.yaml for every role.
+# Never write a secret here: name it by its *_ref, a file under /run/secrets/<secret>/ mounted from secrets below,
+# such as catalog.dsn_ref: file:///run/secrets/tracekeep-catalog/dsn.
+# The chart sets the work directories (ingest.work_dir, exports.work_dir) and TMPDIR itself.
+config: {}
+
+# secrets are Secrets of the release's namespace, each mounted read-only at /run/secrets/<name>/ in every pod and the migrate Job.
+secrets: []
+
+# env is added to every container, the migrate Job's included.
+env: []
+
+serviceAccount:
+  create: true
+  # Defaults to the release's full name; with create false, an existing account.
+  name: ""
+  annotations: {}
+
+# Each role's Deployment; workDirSize bounds the emptyDir at /work (ingest.work_dir, exports.work_dir and TMPDIR).
+ingest:
+  replicas: 2
+  # Room for the batches a replica holds (ingest.batch_max_bytes per open scope) and their packs before the put.
+  workDirSize: 4Gi
+  resources: {}
+compact:
+  # One holds the lease; a second waits as a standby.
+  replicas: 1
+  # Room for a merge's output pack.
+  workDirSize: 4Gi
+  resources: {}
+api:
+  replicas: 2
+  # Room for an export's bundle while it is built (exports.max_bundle_bytes).
+  workDirSize: 40Gi
+  resources: {}
+  service:
+    type: ClusterIP
+    port: 443
+    # With type NodePort, the node's port; empty lets the cluster choose.
+    nodePort: null
+    annotations: {}
+
+# The migrate Job, a pre-install and pre-upgrade hook: it fails fast while the bus or the catalog is unreachable and is retried.
+migrate:
+  backoffLimit: 20
+  activeDeadlineSeconds: 900
+  resources: {}
+
+podAnnotations: {}
+podLabels: {}
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 65532
+  runAsGroup: 65532
+  fsGroup: 65532
+  seccompProfile:
+    type: RuntimeDefault
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop: ["ALL"]
+
+# Alert rules as a PrometheusRule (docs/specs/tracekeep/operations.md §10.4); needs the Prometheus Operator's CRDs.
+alerts:
+  enabled: false
+  labels: {}
+  # Each alert's runbook_url is this plus #<section>.
+  runbookURL: https://github.com/arloliu/tracekeep/blob/main/docs/guides/runbook.md
+  backlogBytes: 10737418240
+  # The gateway's rules read the producer's tracepub_ metrics, for a Prometheus that scrapes the gateways too.
+  gateway:
+    enabled: false
