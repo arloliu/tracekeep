@@ -44,6 +44,9 @@ type Server struct {
 	People  *auth.People
 	Metrics *metrics.API
 	Log     *slog.Logger
+	// Records bounds QueryRecords and FindTransaction; Dev, set by tracekeep dev, withholds no capture (T-48).
+	Records RecordReads
+	Dev     bool
 
 	// stall, set only by the package's tests, runs at each stage of a PackURL: read, signed, audited.
 	stall func(stage string)
@@ -70,6 +73,8 @@ type Catalog interface {
 	RecordCopies(ctx context.Context, capture tracepack.UUID, seq uint64) ([]catalog.Copy, error)
 	Configs(ctx context.Context) ([]catalog.ConfigInfo, error)
 	Policy(ctx context.Context, id string, version int64) (catalog.StoredPolicy, bool, error)
+	Completeness(ctx context.Context, capture tracepack.UUID) (catalog.Completeness, error)
+	ReadSet(ctx context.Context, capture tracepack.UUID, hour int64) (catalog.ReadSet, error)
 }
 
 // Handler is the HTTP handler serving the machine API.
@@ -88,7 +93,7 @@ func PrincipalFrom(ctx context.Context) (auth.Principal, bool) {
 // operations are the procedures the service serves; any other path under it is opUnknown, one label, and refused.
 var operations = map[string]bool{
 	auth.OpListDevices: true, auth.OpListCaptures: true, auth.OpListPacks: true, auth.OpListScopeChanges: true, auth.OpPackURL: true,
-	auth.OpRestore: true, auth.OpDigest: true, auth.OpAdmin: true,
+	auth.OpRestore: true, auth.OpDigest: true, auth.OpAdmin: true, auth.OpQueryRecords: true,
 }
 
 const opUnknown = "unknown"
@@ -161,28 +166,48 @@ func refusal(err error) error {
 	return connect.NewError(connect.CodeUnauthenticated, errors.New(e.Reason))
 }
 
-// observe records each handled request's operation, code and duration, and logs a failure and a refused restore.
-func (s *Server) observe() connect.UnaryInterceptorFunc {
-	return func(next connect.UnaryFunc) connect.UnaryFunc {
-		return func(ctx context.Context, req connect.AnyRequest) (connect.AnyResponse, error) {
-			start := time.Now()
-			resp, err := next(ctx, req)
-			op := req.Spec().Procedure[strings.LastIndex(req.Spec().Procedure, "/")+1:]
-			s.Metrics.Request(op, code(err), time.Since(start))
-			if err == nil || s.Log == nil {
-				return resp, err
-			}
-			switch c := connect.CodeOf(err); {
-			case c == connect.CodeInternal || c == connect.CodeUnavailable:
-				s.Log.Error("api: request failed", "operation", op, "error", err)
-			case op == auth.OpRestore:
-				// A refused restore is logged too, its error naming the request and the reason (masking-keys.md §9).
-				s.Log.Warn("api: request refused", "operation", op, "error", err)
-			default: // another operation's refusal is only counted
-			}
+// observe records each handled request's operation, code and duration, a stream's at its end, and logs a failure and a refused restore.
+func (s *Server) observe() connect.Interceptor { return observer{s} }
 
-			return resp, err
-		}
+type observer struct{ s *Server }
+
+func (o observer) WrapUnary(next connect.UnaryFunc) connect.UnaryFunc {
+	return func(ctx context.Context, req connect.AnyRequest) (connect.AnyResponse, error) {
+		start := time.Now()
+		resp, err := next(ctx, req)
+		o.s.observed(req.Spec().Procedure, start, err)
+
+		return resp, err
+	}
+}
+
+func (o observer) WrapStreamingClient(next connect.StreamingClientFunc) connect.StreamingClientFunc {
+	return next
+}
+
+func (o observer) WrapStreamingHandler(next connect.StreamingHandlerFunc) connect.StreamingHandlerFunc {
+	return func(ctx context.Context, conn connect.StreamingHandlerConn) error {
+		start := time.Now()
+		err := next(ctx, conn)
+		o.s.observed(conn.Spec().Procedure, start, err)
+
+		return err
+	}
+}
+
+func (s *Server) observed(procedure string, start time.Time, err error) {
+	op := procedure[strings.LastIndex(procedure, "/")+1:]
+	s.Metrics.Request(op, code(err), time.Since(start))
+	if err == nil || s.Log == nil {
+		return
+	}
+	switch c := connect.CodeOf(err); {
+	case c == connect.CodeInternal || c == connect.CodeUnavailable:
+		s.Log.Error("api: request failed", "operation", op, "error", err)
+	case op == auth.OpRestore:
+		// A refused restore is logged too, its error naming the request and the reason (masking-keys.md §9).
+		s.Log.Warn("api: request refused", "operation", op, "error", err)
+	default: // another operation's refusal is only counted
 	}
 }
 

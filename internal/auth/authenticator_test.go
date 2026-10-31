@@ -263,6 +263,7 @@ func TestAuthorize(t *testing.T) {
 		OpListDevices: {RolePackReader, RoleViewer}, OpListCaptures: {RolePackReader, RoleViewer}, OpListScopeChanges: {RolePackReader, RoleViewer},
 		OpListPacks: {RolePackReader}, OpPackURL: {RolePackReader},
 		OpDigest: {RoleScorer}, OpRestore: {RoleRestorer}, OpExport: {RoleExporter}, OpAdmin: {RoleAdmin},
+		OpQueryRecords: {RoleViewer},
 	}
 	roles := []string{RolePackReader, RoleScorer, RoleViewer, RoleExporter, RoleRestorer, RoleAdmin}
 	for op, want := range admits {
@@ -276,7 +277,7 @@ func TestAuthorize(t *testing.T) {
 			t.Errorf("Authorize(no role, %s) = %v", op, err)
 		}
 	}
-	if err := Authorize(Principal{Subject: "s", Roles: roles}, "QueryRecords"); reason(err) != ReasonForbidden {
+	if err := Authorize(Principal{Subject: "s", Roles: roles}, "Unknown"); reason(err) != ReasonForbidden {
 		t.Errorf("Authorize of an operation the table does not name = %v, want forbidden", err)
 	}
 }

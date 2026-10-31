@@ -11,9 +11,10 @@ import (
 // requests by operation and code with their durations, and auth's refusals.
 // Every method records nothing on a nil *API.
 type API struct {
-	authFailures, requests, downloadURLs, restores, digests, logins *prometheus.CounterVec
-	downloadsRefused, digestInputs                                  prometheus.Counter
-	duration                                                        *prometheus.HistogramVec
+	authFailures, requests, downloadURLs, restores, digests, logins, readsIncomplete *prometheus.CounterVec
+	downloadsRefused, digestInputs, readsRefused, recordsStreamed                    prometheus.Counter
+	readsInFlight                                                                    prometheus.Gauge
+	duration                                                                         *prometheus.HistogramVec
 }
 
 // NewAPI registers the api role's collectors on s.
@@ -38,7 +39,18 @@ func NewAPI(s *Server) (*API, error) {
 		Help: "Inputs digested by Digest requests answered ok."})
 	m.logins = prometheus.NewCounterVec(prometheus.CounterOpts{Namespace: "tracekeep", Subsystem: "api", Name: "logins_total",
 		Help: "People's logins started and callbacks answered, by step and outcome: ok, refused or unavailable (api.md §10.2)."}, []string{"step", "outcome"})
-	for _, c := range []prometheus.Collector{m.authFailures, m.requests, m.duration, m.downloadURLs, m.downloadsRefused, m.restores, m.digests, m.digestInputs, m.logins} {
+	m.readsInFlight = prometheus.NewGauge(prometheus.GaugeOpts{Namespace: "tracekeep", Subsystem: "api", Name: "record_reads_in_flight",
+		Help: "QueryRecords streams and FindTransaction lookups being served (api.md §10.1 *Records*)."})
+	m.readsRefused = prometheus.NewCounter(prometheus.CounterOpts{Namespace: "tracekeep", Subsystem: "api", Name: "record_reads_refused_total",
+		Help: "Record reads refused as resource_exhausted, beyond the replica's concurrent reads."})
+	m.recordsStreamed = prometheus.NewCounter(prometheus.CounterOpts{Namespace: "tracekeep", Subsystem: "api", Name: "records_streamed_total",
+		Help: "Record versions QueryRecords streamed."})
+	m.readsIncomplete = prometheus.NewCounterVec(prometheus.CounterOpts{Namespace: "tracekeep", Subsystem: "api", Name: "record_reads_incomplete_total",
+		Help: "Parts of record reads that could not be read, by reason."}, []string{"reason"})
+	for _, c := range []prometheus.Collector{
+		m.authFailures, m.requests, m.duration, m.downloadURLs, m.downloadsRefused, m.restores, m.digests, m.digestInputs, m.logins,
+		m.readsInFlight, m.readsRefused, m.recordsStreamed, m.readsIncomplete,
+	} {
 		if err := s.Registry().Register(c); err != nil {
 			return nil, fmt.Errorf("metrics: api: %w", err)
 		}
@@ -104,5 +116,40 @@ func (m *API) Digest(outcome string, n int) {
 	m.digests.WithLabelValues(outcome).Inc()
 	if outcome == "ok" {
 		m.digestInputs.Add(float64(n))
+	}
+}
+
+// ReadStarted and ReadEnded track one record read in flight; ReadRefused counts one refused beyond the bound.
+func (m *API) ReadStarted() {
+	if m != nil {
+		m.readsInFlight.Inc()
+	}
+}
+
+// ReadEnded ends one record read in flight.
+func (m *API) ReadEnded() {
+	if m != nil {
+		m.readsInFlight.Dec()
+	}
+}
+
+// ReadRefused counts one record read refused beyond the replica's concurrent reads.
+func (m *API) ReadRefused() {
+	if m != nil {
+		m.readsRefused.Inc()
+	}
+}
+
+// RecordsStreamed counts n record versions streamed.
+func (m *API) RecordsStreamed(n int) {
+	if m != nil {
+		m.recordsStreamed.Add(float64(n))
+	}
+}
+
+// ReadIncomplete counts one part of a record read that could not be read, for reason.
+func (m *API) ReadIncomplete(reason string) {
+	if m != nil {
+		m.readsIncomplete.WithLabelValues(reason).Inc()
 	}
 }

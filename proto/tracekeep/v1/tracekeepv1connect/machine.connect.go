@@ -55,6 +55,9 @@ const (
 	MachineServiceRestoreProcedure = "/tracekeep.v1.MachineService/Restore"
 	// MachineServiceDigestProcedure is the fully-qualified name of the MachineService's Digest RPC.
 	MachineServiceDigestProcedure = "/tracekeep.v1.MachineService/Digest"
+	// MachineServiceQueryRecordsProcedure is the fully-qualified name of the MachineService's
+	// QueryRecords RPC.
+	MachineServiceQueryRecordsProcedure = "/tracekeep.v1.MachineService/QueryRecords"
 )
 
 // MachineServiceClient is a client for the tracekeep.v1.MachineService service.
@@ -73,6 +76,8 @@ type MachineServiceClient interface {
 	Restore(context.Context, *connect.Request[v1.RestoreRequest]) (*connect.Response[v1.RestoreResponse], error)
 	// Digest answers the digest of each input under one digest key id (masking-keys.md §9, T-44).
 	Digest(context.Context, *connect.Request[v1.DigestRequest]) (*connect.Response[v1.DigestResponse], error)
+	// QueryRecords streams the selected captures' masked records with their markers, in batches (api.md §10.1 *Records*).
+	QueryRecords(context.Context, *connect.Request[v1.QueryRecordsRequest]) (*connect.ServerStreamForClient[v1.QueryRecordsResponse], error)
 }
 
 // NewMachineServiceClient constructs a client for the tracekeep.v1.MachineService service. By
@@ -128,6 +133,12 @@ func NewMachineServiceClient(httpClient connect.HTTPClient, baseURL string, opts
 			connect.WithSchema(machineServiceMethods.ByName("Digest")),
 			connect.WithClientOptions(opts...),
 		),
+		queryRecords: connect.NewClient[v1.QueryRecordsRequest, v1.QueryRecordsResponse](
+			httpClient,
+			baseURL+MachineServiceQueryRecordsProcedure,
+			connect.WithSchema(machineServiceMethods.ByName("QueryRecords")),
+			connect.WithClientOptions(opts...),
+		),
 	}
 }
 
@@ -140,6 +151,7 @@ type machineServiceClient struct {
 	packURL          *connect.Client[v1.PackURLRequest, v1.PackURLResponse]
 	restore          *connect.Client[v1.RestoreRequest, v1.RestoreResponse]
 	digest           *connect.Client[v1.DigestRequest, v1.DigestResponse]
+	queryRecords     *connect.Client[v1.QueryRecordsRequest, v1.QueryRecordsResponse]
 }
 
 // ListDevices calls tracekeep.v1.MachineService.ListDevices.
@@ -177,6 +189,11 @@ func (c *machineServiceClient) Digest(ctx context.Context, req *connect.Request[
 	return c.digest.CallUnary(ctx, req)
 }
 
+// QueryRecords calls tracekeep.v1.MachineService.QueryRecords.
+func (c *machineServiceClient) QueryRecords(ctx context.Context, req *connect.Request[v1.QueryRecordsRequest]) (*connect.ServerStreamForClient[v1.QueryRecordsResponse], error) {
+	return c.queryRecords.CallServerStream(ctx, req)
+}
+
 // MachineServiceHandler is an implementation of the tracekeep.v1.MachineService service.
 type MachineServiceHandler interface {
 	// ListDevices answers, per device of the tool, its latest endpoint, open captures, overlap, last record and whether the window holds a gap.
@@ -193,6 +210,8 @@ type MachineServiceHandler interface {
 	Restore(context.Context, *connect.Request[v1.RestoreRequest]) (*connect.Response[v1.RestoreResponse], error)
 	// Digest answers the digest of each input under one digest key id (masking-keys.md §9, T-44).
 	Digest(context.Context, *connect.Request[v1.DigestRequest]) (*connect.Response[v1.DigestResponse], error)
+	// QueryRecords streams the selected captures' masked records with their markers, in batches (api.md §10.1 *Records*).
+	QueryRecords(context.Context, *connect.Request[v1.QueryRecordsRequest], *connect.ServerStream[v1.QueryRecordsResponse]) error
 }
 
 // NewMachineServiceHandler builds an HTTP handler from the service implementation. It returns the
@@ -244,6 +263,12 @@ func NewMachineServiceHandler(svc MachineServiceHandler, opts ...connect.Handler
 		connect.WithSchema(machineServiceMethods.ByName("Digest")),
 		connect.WithHandlerOptions(opts...),
 	)
+	machineServiceQueryRecordsHandler := connect.NewServerStreamHandler(
+		MachineServiceQueryRecordsProcedure,
+		svc.QueryRecords,
+		connect.WithSchema(machineServiceMethods.ByName("QueryRecords")),
+		connect.WithHandlerOptions(opts...),
+	)
 	return "/tracekeep.v1.MachineService/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case MachineServiceListDevicesProcedure:
@@ -260,6 +285,8 @@ func NewMachineServiceHandler(svc MachineServiceHandler, opts ...connect.Handler
 			machineServiceRestoreHandler.ServeHTTP(w, r)
 		case MachineServiceDigestProcedure:
 			machineServiceDigestHandler.ServeHTTP(w, r)
+		case MachineServiceQueryRecordsProcedure:
+			machineServiceQueryRecordsHandler.ServeHTTP(w, r)
 		default:
 			http.NotFound(w, r)
 		}
@@ -295,4 +322,8 @@ func (UnimplementedMachineServiceHandler) Restore(context.Context, *connect.Requ
 
 func (UnimplementedMachineServiceHandler) Digest(context.Context, *connect.Request[v1.DigestRequest]) (*connect.Response[v1.DigestResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("tracekeep.v1.MachineService.Digest is not implemented"))
+}
+
+func (UnimplementedMachineServiceHandler) QueryRecords(context.Context, *connect.Request[v1.QueryRecordsRequest], *connect.ServerStream[v1.QueryRecordsResponse]) error {
+	return connect.NewError(connect.CodeUnimplemented, errors.New("tracekeep.v1.MachineService.QueryRecords is not implemented"))
 }

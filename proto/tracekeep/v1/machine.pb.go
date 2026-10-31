@@ -2390,6 +2390,892 @@ func (x *DigestResponse) GetDigests() [][]byte {
 	return nil
 }
 
+// QueryRecordsRequest selects records (api.md §10.1 *Record predicates of QueryRecords*).
+type QueryRecordsRequest struct {
+	state    protoimpl.MessageState `protogen:"open.v1"`
+	Selector *Selector              `protobuf:"bytes,1,opt,name=selector,proto3" json:"selector,omitempty"`
+	// messages are SxFy entries, SxF* for any function.
+	Messages []string `protobuf:"bytes,2,rep,name=messages,proto3" json:"messages,omitempty"`
+	// direction is to_host, to_equipment or empty for both.
+	Direction string `protobuf:"bytes,3,opt,name=direction,proto3" json:"direction,omitempty"`
+	// kinds are data, control, transport-event and annotation; none selects all but transport events.
+	Kinds                  []string `protobuf:"bytes,4,rep,name=kinds,proto3" json:"kinds,omitempty"`
+	IncludeTransportEvents bool     `protobuf:"varint,5,opt,name=include_transport_events,json=includeTransportEvents,proto3" json:"include_transport_events,omitempty"`
+	// seq_from and seq_to bound the producer seqs, inclusive; they need the selector's capture_id.
+	SeqFrom *uint64 `protobuf:"varint,6,opt,name=seq_from,json=seqFrom,proto3,oneof" json:"seq_from,omitempty"`
+	SeqTo   *uint64 `protobuf:"varint,7,opt,name=seq_to,json=seqTo,proto3,oneof" json:"seq_to,omitempty"`
+	// limit counts records, 5,000 when 0, at most 50,000.
+	Limit uint32 `protobuf:"varint,8,opt,name=limit,proto3" json:"limit,omitempty"`
+	// cursor continues a previous answer of the same selector and predicates.
+	Cursor        string `protobuf:"bytes,9,opt,name=cursor,proto3" json:"cursor,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *QueryRecordsRequest) Reset() {
+	*x = QueryRecordsRequest{}
+	mi := &file_tracekeep_v1_machine_proto_msgTypes[36]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *QueryRecordsRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*QueryRecordsRequest) ProtoMessage() {}
+
+func (x *QueryRecordsRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_tracekeep_v1_machine_proto_msgTypes[36]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use QueryRecordsRequest.ProtoReflect.Descriptor instead.
+func (*QueryRecordsRequest) Descriptor() ([]byte, []int) {
+	return file_tracekeep_v1_machine_proto_rawDescGZIP(), []int{36}
+}
+
+func (x *QueryRecordsRequest) GetSelector() *Selector {
+	if x != nil {
+		return x.Selector
+	}
+	return nil
+}
+
+func (x *QueryRecordsRequest) GetMessages() []string {
+	if x != nil {
+		return x.Messages
+	}
+	return nil
+}
+
+func (x *QueryRecordsRequest) GetDirection() string {
+	if x != nil {
+		return x.Direction
+	}
+	return ""
+}
+
+func (x *QueryRecordsRequest) GetKinds() []string {
+	if x != nil {
+		return x.Kinds
+	}
+	return nil
+}
+
+func (x *QueryRecordsRequest) GetIncludeTransportEvents() bool {
+	if x != nil {
+		return x.IncludeTransportEvents
+	}
+	return false
+}
+
+func (x *QueryRecordsRequest) GetSeqFrom() uint64 {
+	if x != nil && x.SeqFrom != nil {
+		return *x.SeqFrom
+	}
+	return 0
+}
+
+func (x *QueryRecordsRequest) GetSeqTo() uint64 {
+	if x != nil && x.SeqTo != nil {
+		return *x.SeqTo
+	}
+	return 0
+}
+
+func (x *QueryRecordsRequest) GetLimit() uint32 {
+	if x != nil {
+		return x.Limit
+	}
+	return 0
+}
+
+func (x *QueryRecordsRequest) GetCursor() string {
+	if x != nil {
+		return x.Cursor
+	}
+	return ""
+}
+
+// QueryRecordsResponse is one batch: items up to 128 KiB encoded, the cursor after the last, and end on the last batch.
+type QueryRecordsResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Items         []*RecordItem          `protobuf:"bytes,1,rep,name=items,proto3" json:"items,omitempty"`
+	Cursor        string                 `protobuf:"bytes,2,opt,name=cursor,proto3" json:"cursor,omitempty"`
+	End           *QueryEnd              `protobuf:"bytes,3,opt,name=end,proto3,oneof" json:"end,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *QueryRecordsResponse) Reset() {
+	*x = QueryRecordsResponse{}
+	mi := &file_tracekeep_v1_machine_proto_msgTypes[37]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *QueryRecordsResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*QueryRecordsResponse) ProtoMessage() {}
+
+func (x *QueryRecordsResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_tracekeep_v1_machine_proto_msgTypes[37]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use QueryRecordsResponse.ProtoReflect.Descriptor instead.
+func (*QueryRecordsResponse) Descriptor() ([]byte, []int) {
+	return file_tracekeep_v1_machine_proto_rawDescGZIP(), []int{37}
+}
+
+func (x *QueryRecordsResponse) GetItems() []*RecordItem {
+	if x != nil {
+		return x.Items
+	}
+	return nil
+}
+
+func (x *QueryRecordsResponse) GetCursor() string {
+	if x != nil {
+		return x.Cursor
+	}
+	return ""
+}
+
+func (x *QueryRecordsResponse) GetEnd() *QueryEnd {
+	if x != nil {
+		return x.End
+	}
+	return nil
+}
+
+// RecordItem is a record or a marker.
+type RecordItem struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Types that are valid to be assigned to Item:
+	//
+	//	*RecordItem_Capture
+	//	*RecordItem_Record
+	//	*RecordItem_Withheld
+	//	*RecordItem_Incomplete
+	//	*RecordItem_UnknownTail
+	Item          isRecordItem_Item `protobuf_oneof:"item"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RecordItem) Reset() {
+	*x = RecordItem{}
+	mi := &file_tracekeep_v1_machine_proto_msgTypes[38]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RecordItem) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RecordItem) ProtoMessage() {}
+
+func (x *RecordItem) ProtoReflect() protoreflect.Message {
+	mi := &file_tracekeep_v1_machine_proto_msgTypes[38]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RecordItem.ProtoReflect.Descriptor instead.
+func (*RecordItem) Descriptor() ([]byte, []int) {
+	return file_tracekeep_v1_machine_proto_rawDescGZIP(), []int{38}
+}
+
+func (x *RecordItem) GetItem() isRecordItem_Item {
+	if x != nil {
+		return x.Item
+	}
+	return nil
+}
+
+func (x *RecordItem) GetCapture() *CaptureStart {
+	if x != nil {
+		if x, ok := x.Item.(*RecordItem_Capture); ok {
+			return x.Capture
+		}
+	}
+	return nil
+}
+
+func (x *RecordItem) GetRecord() *Record {
+	if x != nil {
+		if x, ok := x.Item.(*RecordItem_Record); ok {
+			return x.Record
+		}
+	}
+	return nil
+}
+
+func (x *RecordItem) GetWithheld() *Withheld {
+	if x != nil {
+		if x, ok := x.Item.(*RecordItem_Withheld); ok {
+			return x.Withheld
+		}
+	}
+	return nil
+}
+
+func (x *RecordItem) GetIncomplete() *Incomplete {
+	if x != nil {
+		if x, ok := x.Item.(*RecordItem_Incomplete); ok {
+			return x.Incomplete
+		}
+	}
+	return nil
+}
+
+func (x *RecordItem) GetUnknownTail() *UnknownTail {
+	if x != nil {
+		if x, ok := x.Item.(*RecordItem_UnknownTail); ok {
+			return x.UnknownTail
+		}
+	}
+	return nil
+}
+
+type isRecordItem_Item interface {
+	isRecordItem_Item()
+}
+
+type RecordItem_Capture struct {
+	Capture *CaptureStart `protobuf:"bytes,1,opt,name=capture,proto3,oneof"`
+}
+
+type RecordItem_Record struct {
+	Record *Record `protobuf:"bytes,2,opt,name=record,proto3,oneof"`
+}
+
+type RecordItem_Withheld struct {
+	Withheld *Withheld `protobuf:"bytes,3,opt,name=withheld,proto3,oneof"`
+}
+
+type RecordItem_Incomplete struct {
+	Incomplete *Incomplete `protobuf:"bytes,4,opt,name=incomplete,proto3,oneof"`
+}
+
+type RecordItem_UnknownTail struct {
+	UnknownTail *UnknownTail `protobuf:"bytes,5,opt,name=unknown_tail,json=unknownTail,proto3,oneof"`
+}
+
+func (*RecordItem_Capture) isRecordItem_Item() {}
+
+func (*RecordItem_Record) isRecordItem_Item() {}
+
+func (*RecordItem_Withheld) isRecordItem_Item() {}
+
+func (*RecordItem_Incomplete) isRecordItem_Item() {}
+
+func (*RecordItem_UnknownTail) isRecordItem_Item() {}
+
+// CaptureStart opens a capture's records with its completeness as far as it meets the window.
+type CaptureStart struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Capture       *Capture               `protobuf:"bytes,1,opt,name=capture,proto3" json:"capture,omitempty"`
+	Completeness  *Completeness          `protobuf:"bytes,2,opt,name=completeness,proto3" json:"completeness,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *CaptureStart) Reset() {
+	*x = CaptureStart{}
+	mi := &file_tracekeep_v1_machine_proto_msgTypes[39]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CaptureStart) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CaptureStart) ProtoMessage() {}
+
+func (x *CaptureStart) ProtoReflect() protoreflect.Message {
+	mi := &file_tracekeep_v1_machine_proto_msgTypes[39]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CaptureStart.ProtoReflect.Descriptor instead.
+func (*CaptureStart) Descriptor() ([]byte, []int) {
+	return file_tracekeep_v1_machine_proto_rawDescGZIP(), []int{39}
+}
+
+func (x *CaptureStart) GetCapture() *Capture {
+	if x != nil {
+		return x.Capture
+	}
+	return nil
+}
+
+func (x *CaptureStart) GetCompleteness() *Completeness {
+	if x != nil {
+		return x.Completeness
+	}
+	return nil
+}
+
+// Record is one version of a masked record.
+type Record struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	Hour  *timestamppb.Timestamp `protobuf:"bytes,1,opt,name=hour,proto3" json:"hour,omitempty"`
+	Seq   uint64                 `protobuf:"varint,2,opt,name=seq,proto3" json:"seq,omitempty"`
+	Time  *timestamppb.Timestamp `protobuf:"bytes,3,opt,name=time,proto3" json:"time,omitempty"`
+	Epoch uint32                 `protobuf:"varint,4,opt,name=epoch,proto3" json:"epoch,omitempty"`
+	// kind is data, control, transport-event or annotation; direction to_host, to_equipment or local.
+	Kind       string      `protobuf:"bytes,5,opt,name=kind,proto3" json:"kind,omitempty"`
+	Direction  string      `protobuf:"bytes,6,opt,name=direction,proto3" json:"direction,omitempty"`
+	Header     *HSMSHeader `protobuf:"bytes,7,opt,name=header,proto3,oneof" json:"header,omitempty"`
+	Conflict   bool        `protobuf:"varint,8,opt,name=conflict,proto3" json:"conflict,omitempty"`
+	Excluded   bool        `protobuf:"varint,9,opt,name=excluded,proto3" json:"excluded,omitempty"`
+	Unobserved bool        `protobuf:"varint,10,opt,name=unobserved,proto3" json:"unobserved,omitempty"`
+	Payload    []byte      `protobuf:"bytes,11,opt,name=payload,proto3" json:"payload,omitempty"`
+	// sml is a data record's SML, valid UTF-8, cut at 64 KiB when sml_truncated; sml_error replaces it when the body does not render.
+	Sml          string `protobuf:"bytes,12,opt,name=sml,proto3" json:"sml,omitempty"`
+	SmlTruncated bool   `protobuf:"varint,13,opt,name=sml_truncated,json=smlTruncated,proto3" json:"sml_truncated,omitempty"`
+	SmlError     string `protobuf:"bytes,14,opt,name=sml_error,json=smlError,proto3" json:"sml_error,omitempty"`
+	// holders are, for a conflict's version, the packs of the read set whose ranges hold the seq, with their states.
+	Holders       []*Holder `protobuf:"bytes,15,rep,name=holders,proto3" json:"holders,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *Record) Reset() {
+	*x = Record{}
+	mi := &file_tracekeep_v1_machine_proto_msgTypes[40]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *Record) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*Record) ProtoMessage() {}
+
+func (x *Record) ProtoReflect() protoreflect.Message {
+	mi := &file_tracekeep_v1_machine_proto_msgTypes[40]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use Record.ProtoReflect.Descriptor instead.
+func (*Record) Descriptor() ([]byte, []int) {
+	return file_tracekeep_v1_machine_proto_rawDescGZIP(), []int{40}
+}
+
+func (x *Record) GetHour() *timestamppb.Timestamp {
+	if x != nil {
+		return x.Hour
+	}
+	return nil
+}
+
+func (x *Record) GetSeq() uint64 {
+	if x != nil {
+		return x.Seq
+	}
+	return 0
+}
+
+func (x *Record) GetTime() *timestamppb.Timestamp {
+	if x != nil {
+		return x.Time
+	}
+	return nil
+}
+
+func (x *Record) GetEpoch() uint32 {
+	if x != nil {
+		return x.Epoch
+	}
+	return 0
+}
+
+func (x *Record) GetKind() string {
+	if x != nil {
+		return x.Kind
+	}
+	return ""
+}
+
+func (x *Record) GetDirection() string {
+	if x != nil {
+		return x.Direction
+	}
+	return ""
+}
+
+func (x *Record) GetHeader() *HSMSHeader {
+	if x != nil {
+		return x.Header
+	}
+	return nil
+}
+
+func (x *Record) GetConflict() bool {
+	if x != nil {
+		return x.Conflict
+	}
+	return false
+}
+
+func (x *Record) GetExcluded() bool {
+	if x != nil {
+		return x.Excluded
+	}
+	return false
+}
+
+func (x *Record) GetUnobserved() bool {
+	if x != nil {
+		return x.Unobserved
+	}
+	return false
+}
+
+func (x *Record) GetPayload() []byte {
+	if x != nil {
+		return x.Payload
+	}
+	return nil
+}
+
+func (x *Record) GetSml() string {
+	if x != nil {
+		return x.Sml
+	}
+	return ""
+}
+
+func (x *Record) GetSmlTruncated() bool {
+	if x != nil {
+		return x.SmlTruncated
+	}
+	return false
+}
+
+func (x *Record) GetSmlError() string {
+	if x != nil {
+		return x.SmlError
+	}
+	return ""
+}
+
+func (x *Record) GetHolders() []*Holder {
+	if x != nil {
+		return x.Holders
+	}
+	return nil
+}
+
+// HSMSHeader is a record's HSMS message header.
+type HSMSHeader struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	SessionId     uint32                 `protobuf:"varint,1,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
+	Stream        uint32                 `protobuf:"varint,2,opt,name=stream,proto3" json:"stream,omitempty"`
+	Function      uint32                 `protobuf:"varint,3,opt,name=function,proto3" json:"function,omitempty"`
+	W             bool                   `protobuf:"varint,4,opt,name=w,proto3" json:"w,omitempty"`
+	SystemBytes   []byte                 `protobuf:"bytes,5,opt,name=system_bytes,json=systemBytes,proto3" json:"system_bytes,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *HSMSHeader) Reset() {
+	*x = HSMSHeader{}
+	mi := &file_tracekeep_v1_machine_proto_msgTypes[41]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *HSMSHeader) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*HSMSHeader) ProtoMessage() {}
+
+func (x *HSMSHeader) ProtoReflect() protoreflect.Message {
+	mi := &file_tracekeep_v1_machine_proto_msgTypes[41]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use HSMSHeader.ProtoReflect.Descriptor instead.
+func (*HSMSHeader) Descriptor() ([]byte, []int) {
+	return file_tracekeep_v1_machine_proto_rawDescGZIP(), []int{41}
+}
+
+func (x *HSMSHeader) GetSessionId() uint32 {
+	if x != nil {
+		return x.SessionId
+	}
+	return 0
+}
+
+func (x *HSMSHeader) GetStream() uint32 {
+	if x != nil {
+		return x.Stream
+	}
+	return 0
+}
+
+func (x *HSMSHeader) GetFunction() uint32 {
+	if x != nil {
+		return x.Function
+	}
+	return 0
+}
+
+func (x *HSMSHeader) GetW() bool {
+	if x != nil {
+		return x.W
+	}
+	return false
+}
+
+func (x *HSMSHeader) GetSystemBytes() []byte {
+	if x != nil {
+		return x.SystemBytes
+	}
+	return nil
+}
+
+// Holder is a pack holding a seq, with its state.
+type Holder struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	PackId        string                 `protobuf:"bytes,1,opt,name=pack_id,json=packId,proto3" json:"pack_id,omitempty"`
+	State         string                 `protobuf:"bytes,2,opt,name=state,proto3" json:"state,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *Holder) Reset() {
+	*x = Holder{}
+	mi := &file_tracekeep_v1_machine_proto_msgTypes[42]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *Holder) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*Holder) ProtoMessage() {}
+
+func (x *Holder) ProtoReflect() protoreflect.Message {
+	mi := &file_tracekeep_v1_machine_proto_msgTypes[42]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use Holder.ProtoReflect.Descriptor instead.
+func (*Holder) Descriptor() ([]byte, []int) {
+	return file_tracekeep_v1_machine_proto_rawDescGZIP(), []int{42}
+}
+
+func (x *Holder) GetPackId() string {
+	if x != nil {
+		return x.PackId
+	}
+	return ""
+}
+
+func (x *Holder) GetState() string {
+	if x != nil {
+		return x.State
+	}
+	return ""
+}
+
+// Withheld follows the capture's start when its configuration has no policy; none of its records follow.
+type Withheld struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *Withheld) Reset() {
+	*x = Withheld{}
+	mi := &file_tracekeep_v1_machine_proto_msgTypes[43]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *Withheld) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*Withheld) ProtoMessage() {}
+
+func (x *Withheld) ProtoReflect() protoreflect.Message {
+	mi := &file_tracekeep_v1_machine_proto_msgTypes[43]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use Withheld.ProtoReflect.Descriptor instead.
+func (*Withheld) Descriptor() ([]byte, []int) {
+	return file_tracekeep_v1_machine_proto_rawDescGZIP(), []int{43}
+}
+
+// Incomplete names what a read could not read.
+type Incomplete struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Hour          *timestamppb.Timestamp `protobuf:"bytes,1,opt,name=hour,proto3" json:"hour,omitempty"`
+	Reason        string                 `protobuf:"bytes,2,opt,name=reason,proto3" json:"reason,omitempty"`
+	Detail        string                 `protobuf:"bytes,3,opt,name=detail,proto3" json:"detail,omitempty"`
+	Packs         []string               `protobuf:"bytes,4,rep,name=packs,proto3" json:"packs,omitempty"`
+	SeqFrom       *uint64                `protobuf:"varint,5,opt,name=seq_from,json=seqFrom,proto3,oneof" json:"seq_from,omitempty"`
+	SeqTo         *uint64                `protobuf:"varint,6,opt,name=seq_to,json=seqTo,proto3,oneof" json:"seq_to,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *Incomplete) Reset() {
+	*x = Incomplete{}
+	mi := &file_tracekeep_v1_machine_proto_msgTypes[44]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *Incomplete) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*Incomplete) ProtoMessage() {}
+
+func (x *Incomplete) ProtoReflect() protoreflect.Message {
+	mi := &file_tracekeep_v1_machine_proto_msgTypes[44]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use Incomplete.ProtoReflect.Descriptor instead.
+func (*Incomplete) Descriptor() ([]byte, []int) {
+	return file_tracekeep_v1_machine_proto_rawDescGZIP(), []int{44}
+}
+
+func (x *Incomplete) GetHour() *timestamppb.Timestamp {
+	if x != nil {
+		return x.Hour
+	}
+	return nil
+}
+
+func (x *Incomplete) GetReason() string {
+	if x != nil {
+		return x.Reason
+	}
+	return ""
+}
+
+func (x *Incomplete) GetDetail() string {
+	if x != nil {
+		return x.Detail
+	}
+	return ""
+}
+
+func (x *Incomplete) GetPacks() []string {
+	if x != nil {
+		return x.Packs
+	}
+	return nil
+}
+
+func (x *Incomplete) GetSeqFrom() uint64 {
+	if x != nil && x.SeqFrom != nil {
+		return *x.SeqFrom
+	}
+	return 0
+}
+
+func (x *Incomplete) GetSeqTo() uint64 {
+	if x != nil && x.SeqTo != nil {
+		return *x.SeqTo
+	}
+	return 0
+}
+
+// UnknownTail closes a capture: the first seq above the frontier, and whether the capture is still open.
+type UnknownTail struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	From          *uint64                `protobuf:"varint,1,opt,name=from,proto3,oneof" json:"from,omitempty"`
+	Open          bool                   `protobuf:"varint,2,opt,name=open,proto3" json:"open,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *UnknownTail) Reset() {
+	*x = UnknownTail{}
+	mi := &file_tracekeep_v1_machine_proto_msgTypes[45]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *UnknownTail) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*UnknownTail) ProtoMessage() {}
+
+func (x *UnknownTail) ProtoReflect() protoreflect.Message {
+	mi := &file_tracekeep_v1_machine_proto_msgTypes[45]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use UnknownTail.ProtoReflect.Descriptor instead.
+func (*UnknownTail) Descriptor() ([]byte, []int) {
+	return file_tracekeep_v1_machine_proto_rawDescGZIP(), []int{45}
+}
+
+func (x *UnknownTail) GetFrom() uint64 {
+	if x != nil && x.From != nil {
+		return *x.From
+	}
+	return 0
+}
+
+func (x *UnknownTail) GetOpen() bool {
+	if x != nil {
+		return x.Open
+	}
+	return false
+}
+
+// QueryEnd ends a stream: the records streamed, whether any incomplete marker or completeness entry was, and the cursor when the limit stopped it.
+type QueryEnd struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Records       uint64                 `protobuf:"varint,1,opt,name=records,proto3" json:"records,omitempty"`
+	Incomplete    bool                   `protobuf:"varint,2,opt,name=incomplete,proto3" json:"incomplete,omitempty"`
+	Cursor        string                 `protobuf:"bytes,3,opt,name=cursor,proto3" json:"cursor,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *QueryEnd) Reset() {
+	*x = QueryEnd{}
+	mi := &file_tracekeep_v1_machine_proto_msgTypes[46]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *QueryEnd) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*QueryEnd) ProtoMessage() {}
+
+func (x *QueryEnd) ProtoReflect() protoreflect.Message {
+	mi := &file_tracekeep_v1_machine_proto_msgTypes[46]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use QueryEnd.ProtoReflect.Descriptor instead.
+func (*QueryEnd) Descriptor() ([]byte, []int) {
+	return file_tracekeep_v1_machine_proto_rawDescGZIP(), []int{46}
+}
+
+func (x *QueryEnd) GetRecords() uint64 {
+	if x != nil {
+		return x.Records
+	}
+	return 0
+}
+
+func (x *QueryEnd) GetIncomplete() bool {
+	if x != nil {
+		return x.Incomplete
+	}
+	return false
+}
+
+func (x *QueryEnd) GetCursor() string {
+	if x != nil {
+		return x.Cursor
+	}
+	return ""
+}
+
 var File_tracekeep_v1_machine_proto protoreflect.FileDescriptor
 
 const file_tracekeep_v1_machine_proto_rawDesc = "" +
@@ -2598,7 +3484,90 @@ const file_tracekeep_v1_machine_proto_rawDesc = "" +
 	"\boriginal\x18\x03 \x01(\fR\boriginal\"N\n" +
 	"\x0eDigestResponse\x12\"\n" +
 	"\rdigest_key_id\x18\x01 \x01(\tR\vdigestKeyId\x12\x18\n" +
-	"\adigests\x18\x02 \x03(\fR\adigests2\xc1\x04\n" +
+	"\adigests\x18\x02 \x03(\fR\adigests\"\xd5\x02\n" +
+	"\x13QueryRecordsRequest\x122\n" +
+	"\bselector\x18\x01 \x01(\v2\x16.tracekeep.v1.SelectorR\bselector\x12\x1a\n" +
+	"\bmessages\x18\x02 \x03(\tR\bmessages\x12\x1c\n" +
+	"\tdirection\x18\x03 \x01(\tR\tdirection\x12\x14\n" +
+	"\x05kinds\x18\x04 \x03(\tR\x05kinds\x128\n" +
+	"\x18include_transport_events\x18\x05 \x01(\bR\x16includeTransportEvents\x12\x1e\n" +
+	"\bseq_from\x18\x06 \x01(\x04H\x00R\aseqFrom\x88\x01\x01\x12\x1a\n" +
+	"\x06seq_to\x18\a \x01(\x04H\x01R\x05seqTo\x88\x01\x01\x12\x14\n" +
+	"\x05limit\x18\b \x01(\rR\x05limit\x12\x16\n" +
+	"\x06cursor\x18\t \x01(\tR\x06cursorB\v\n" +
+	"\t_seq_fromB\t\n" +
+	"\a_seq_to\"\x95\x01\n" +
+	"\x14QueryRecordsResponse\x12.\n" +
+	"\x05items\x18\x01 \x03(\v2\x18.tracekeep.v1.RecordItemR\x05items\x12\x16\n" +
+	"\x06cursor\x18\x02 \x01(\tR\x06cursor\x12-\n" +
+	"\x03end\x18\x03 \x01(\v2\x16.tracekeep.v1.QueryEndH\x00R\x03end\x88\x01\x01B\x06\n" +
+	"\x04_end\"\xae\x02\n" +
+	"\n" +
+	"RecordItem\x126\n" +
+	"\acapture\x18\x01 \x01(\v2\x1a.tracekeep.v1.CaptureStartH\x00R\acapture\x12.\n" +
+	"\x06record\x18\x02 \x01(\v2\x14.tracekeep.v1.RecordH\x00R\x06record\x124\n" +
+	"\bwithheld\x18\x03 \x01(\v2\x16.tracekeep.v1.WithheldH\x00R\bwithheld\x12:\n" +
+	"\n" +
+	"incomplete\x18\x04 \x01(\v2\x18.tracekeep.v1.IncompleteH\x00R\n" +
+	"incomplete\x12>\n" +
+	"\funknown_tail\x18\x05 \x01(\v2\x19.tracekeep.v1.UnknownTailH\x00R\vunknownTailB\x06\n" +
+	"\x04item\"\x7f\n" +
+	"\fCaptureStart\x12/\n" +
+	"\acapture\x18\x01 \x01(\v2\x15.tracekeep.v1.CaptureR\acapture\x12>\n" +
+	"\fcompleteness\x18\x02 \x01(\v2\x1a.tracekeep.v1.CompletenessR\fcompleteness\"\xfa\x03\n" +
+	"\x06Record\x12.\n" +
+	"\x04hour\x18\x01 \x01(\v2\x1a.google.protobuf.TimestampR\x04hour\x12\x10\n" +
+	"\x03seq\x18\x02 \x01(\x04R\x03seq\x12.\n" +
+	"\x04time\x18\x03 \x01(\v2\x1a.google.protobuf.TimestampR\x04time\x12\x14\n" +
+	"\x05epoch\x18\x04 \x01(\rR\x05epoch\x12\x12\n" +
+	"\x04kind\x18\x05 \x01(\tR\x04kind\x12\x1c\n" +
+	"\tdirection\x18\x06 \x01(\tR\tdirection\x125\n" +
+	"\x06header\x18\a \x01(\v2\x18.tracekeep.v1.HSMSHeaderH\x00R\x06header\x88\x01\x01\x12\x1a\n" +
+	"\bconflict\x18\b \x01(\bR\bconflict\x12\x1a\n" +
+	"\bexcluded\x18\t \x01(\bR\bexcluded\x12\x1e\n" +
+	"\n" +
+	"unobserved\x18\n" +
+	" \x01(\bR\n" +
+	"unobserved\x12\x18\n" +
+	"\apayload\x18\v \x01(\fR\apayload\x12\x10\n" +
+	"\x03sml\x18\f \x01(\tR\x03sml\x12#\n" +
+	"\rsml_truncated\x18\r \x01(\bR\fsmlTruncated\x12\x1b\n" +
+	"\tsml_error\x18\x0e \x01(\tR\bsmlError\x12.\n" +
+	"\aholders\x18\x0f \x03(\v2\x14.tracekeep.v1.HolderR\aholdersB\t\n" +
+	"\a_header\"\x90\x01\n" +
+	"\n" +
+	"HSMSHeader\x12\x1d\n" +
+	"\n" +
+	"session_id\x18\x01 \x01(\rR\tsessionId\x12\x16\n" +
+	"\x06stream\x18\x02 \x01(\rR\x06stream\x12\x1a\n" +
+	"\bfunction\x18\x03 \x01(\rR\bfunction\x12\f\n" +
+	"\x01w\x18\x04 \x01(\bR\x01w\x12!\n" +
+	"\fsystem_bytes\x18\x05 \x01(\fR\vsystemBytes\"7\n" +
+	"\x06Holder\x12\x17\n" +
+	"\apack_id\x18\x01 \x01(\tR\x06packId\x12\x14\n" +
+	"\x05state\x18\x02 \x01(\tR\x05state\"\n" +
+	"\n" +
+	"\bWithheld\"\xd6\x01\n" +
+	"\n" +
+	"Incomplete\x12.\n" +
+	"\x04hour\x18\x01 \x01(\v2\x1a.google.protobuf.TimestampR\x04hour\x12\x16\n" +
+	"\x06reason\x18\x02 \x01(\tR\x06reason\x12\x16\n" +
+	"\x06detail\x18\x03 \x01(\tR\x06detail\x12\x14\n" +
+	"\x05packs\x18\x04 \x03(\tR\x05packs\x12\x1e\n" +
+	"\bseq_from\x18\x05 \x01(\x04H\x00R\aseqFrom\x88\x01\x01\x12\x1a\n" +
+	"\x06seq_to\x18\x06 \x01(\x04H\x01R\x05seqTo\x88\x01\x01B\v\n" +
+	"\t_seq_fromB\t\n" +
+	"\a_seq_to\"C\n" +
+	"\vUnknownTail\x12\x17\n" +
+	"\x04from\x18\x01 \x01(\x04H\x00R\x04from\x88\x01\x01\x12\x12\n" +
+	"\x04open\x18\x02 \x01(\bR\x04openB\a\n" +
+	"\x05_from\"\\\n" +
+	"\bQueryEnd\x12\x18\n" +
+	"\arecords\x18\x01 \x01(\x04R\arecords\x12\x1e\n" +
+	"\n" +
+	"incomplete\x18\x02 \x01(\bR\n" +
+	"incomplete\x12\x16\n" +
+	"\x06cursor\x18\x03 \x01(\tR\x06cursor2\x9a\x05\n" +
 	"\x0eMachineService\x12R\n" +
 	"\vListDevices\x12 .tracekeep.v1.ListDevicesRequest\x1a!.tracekeep.v1.ListDevicesResponse\x12U\n" +
 	"\fListCaptures\x12!.tracekeep.v1.ListCapturesRequest\x1a\".tracekeep.v1.ListCapturesResponse\x12L\n" +
@@ -2606,7 +3575,8 @@ const file_tracekeep_v1_machine_proto_rawDesc = "" +
 	"\x10ListScopeChanges\x12%.tracekeep.v1.ListScopeChangesRequest\x1a&.tracekeep.v1.ListScopeChangesResponse\x12F\n" +
 	"\aPackURL\x12\x1c.tracekeep.v1.PackURLRequest\x1a\x1d.tracekeep.v1.PackURLResponse\x12F\n" +
 	"\aRestore\x12\x1c.tracekeep.v1.RestoreRequest\x1a\x1d.tracekeep.v1.RestoreResponse\x12C\n" +
-	"\x06Digest\x12\x1b.tracekeep.v1.DigestRequest\x1a\x1c.tracekeep.v1.DigestResponseB=Z;github.com/arloliu/tracekeep/proto/tracekeep/v1;tracekeepv1b\x06proto3"
+	"\x06Digest\x12\x1b.tracekeep.v1.DigestRequest\x1a\x1c.tracekeep.v1.DigestResponse\x12W\n" +
+	"\fQueryRecords\x12!.tracekeep.v1.QueryRecordsRequest\x1a\".tracekeep.v1.QueryRecordsResponse0\x01B=Z;github.com/arloliu/tracekeep/proto/tracekeep/v1;tracekeepv1b\x06proto3"
 
 var (
 	file_tracekeep_v1_machine_proto_rawDescOnce sync.Once
@@ -2620,7 +3590,7 @@ func file_tracekeep_v1_machine_proto_rawDescGZIP() []byte {
 	return file_tracekeep_v1_machine_proto_rawDescData
 }
 
-var file_tracekeep_v1_machine_proto_msgTypes = make([]protoimpl.MessageInfo, 36)
+var file_tracekeep_v1_machine_proto_msgTypes = make([]protoimpl.MessageInfo, 47)
 var file_tracekeep_v1_machine_proto_goTypes = []any{
 	(*Selector)(nil),                 // 0: tracekeep.v1.Selector
 	(*ListDevicesRequest)(nil),       // 1: tracekeep.v1.ListDevicesRequest
@@ -2658,34 +3628,45 @@ var file_tracekeep_v1_machine_proto_goTypes = []any{
 	(*DigestRequest)(nil),            // 33: tracekeep.v1.DigestRequest
 	(*DigestInput)(nil),              // 34: tracekeep.v1.DigestInput
 	(*DigestResponse)(nil),           // 35: tracekeep.v1.DigestResponse
-	(*timestamppb.Timestamp)(nil),    // 36: google.protobuf.Timestamp
+	(*QueryRecordsRequest)(nil),      // 36: tracekeep.v1.QueryRecordsRequest
+	(*QueryRecordsResponse)(nil),     // 37: tracekeep.v1.QueryRecordsResponse
+	(*RecordItem)(nil),               // 38: tracekeep.v1.RecordItem
+	(*CaptureStart)(nil),             // 39: tracekeep.v1.CaptureStart
+	(*Record)(nil),                   // 40: tracekeep.v1.Record
+	(*HSMSHeader)(nil),               // 41: tracekeep.v1.HSMSHeader
+	(*Holder)(nil),                   // 42: tracekeep.v1.Holder
+	(*Withheld)(nil),                 // 43: tracekeep.v1.Withheld
+	(*Incomplete)(nil),               // 44: tracekeep.v1.Incomplete
+	(*UnknownTail)(nil),              // 45: tracekeep.v1.UnknownTail
+	(*QueryEnd)(nil),                 // 46: tracekeep.v1.QueryEnd
+	(*timestamppb.Timestamp)(nil),    // 47: google.protobuf.Timestamp
 }
 var file_tracekeep_v1_machine_proto_depIdxs = []int32{
-	36, // 0: tracekeep.v1.Selector.from:type_name -> google.protobuf.Timestamp
-	36, // 1: tracekeep.v1.Selector.to:type_name -> google.protobuf.Timestamp
+	47, // 0: tracekeep.v1.Selector.from:type_name -> google.protobuf.Timestamp
+	47, // 1: tracekeep.v1.Selector.to:type_name -> google.protobuf.Timestamp
 	0,  // 2: tracekeep.v1.ListDevicesRequest.selector:type_name -> tracekeep.v1.Selector
 	3,  // 3: tracekeep.v1.ListDevicesResponse.devices:type_name -> tracekeep.v1.Device
-	36, // 4: tracekeep.v1.Device.last_record:type_name -> google.protobuf.Timestamp
+	47, // 4: tracekeep.v1.Device.last_record:type_name -> google.protobuf.Timestamp
 	0,  // 5: tracekeep.v1.ListCapturesRequest.selector:type_name -> tracekeep.v1.Selector
 	6,  // 6: tracekeep.v1.ListCapturesResponse.captures:type_name -> tracekeep.v1.Capture
-	36, // 7: tracekeep.v1.Capture.origin:type_name -> google.protobuf.Timestamp
-	36, // 8: tracekeep.v1.Capture.last_record:type_name -> google.protobuf.Timestamp
+	47, // 7: tracekeep.v1.Capture.origin:type_name -> google.protobuf.Timestamp
+	47, // 8: tracekeep.v1.Capture.last_record:type_name -> google.protobuf.Timestamp
 	7,  // 9: tracekeep.v1.Capture.thinning:type_name -> tracekeep.v1.Thinning
 	8,  // 10: tracekeep.v1.Capture.unregistered:type_name -> tracekeep.v1.UnregisteredInterval
-	36, // 11: tracekeep.v1.UnregisteredInterval.start:type_name -> google.protobuf.Timestamp
-	36, // 12: tracekeep.v1.UnregisteredInterval.end:type_name -> google.protobuf.Timestamp
+	47, // 11: tracekeep.v1.UnregisteredInterval.start:type_name -> google.protobuf.Timestamp
+	47, // 12: tracekeep.v1.UnregisteredInterval.end:type_name -> google.protobuf.Timestamp
 	0,  // 13: tracekeep.v1.ListPacksRequest.selector:type_name -> tracekeep.v1.Selector
 	11, // 14: tracekeep.v1.ListPacksResponse.cursor:type_name -> tracekeep.v1.Cursor
 	12, // 15: tracekeep.v1.ListPacksResponse.hours:type_name -> tracekeep.v1.Hour
 	16, // 16: tracekeep.v1.ListPacksResponse.captures:type_name -> tracekeep.v1.CaptureCompleteness
-	36, // 17: tracekeep.v1.Hour.hour:type_name -> google.protobuf.Timestamp
+	47, // 17: tracekeep.v1.Hour.hour:type_name -> google.protobuf.Timestamp
 	13, // 18: tracekeep.v1.Hour.scopes:type_name -> tracekeep.v1.Scope
 	19, // 19: tracekeep.v1.Hour.deferred:type_name -> tracekeep.v1.Deferred
 	21, // 20: tracekeep.v1.Hour.losses:type_name -> tracekeep.v1.DeclaredLoss
 	14, // 21: tracekeep.v1.Scope.packs:type_name -> tracekeep.v1.Pack
 	15, // 22: tracekeep.v1.Pack.ranges:type_name -> tracekeep.v1.Range
-	36, // 23: tracekeep.v1.Range.from:type_name -> google.protobuf.Timestamp
-	36, // 24: tracekeep.v1.Range.to:type_name -> google.protobuf.Timestamp
+	47, // 23: tracekeep.v1.Range.from:type_name -> google.protobuf.Timestamp
+	47, // 24: tracekeep.v1.Range.to:type_name -> google.protobuf.Timestamp
 	6,  // 25: tracekeep.v1.CaptureCompleteness.capture:type_name -> tracekeep.v1.Capture
 	17, // 26: tracekeep.v1.CaptureCompleteness.completeness:type_name -> tracekeep.v1.Completeness
 	15, // 27: tracekeep.v1.Completeness.retained:type_name -> tracekeep.v1.Range
@@ -2695,44 +3676,61 @@ var file_tracekeep_v1_machine_proto_depIdxs = []int32{
 	21, // 31: tracekeep.v1.Completeness.losses:type_name -> tracekeep.v1.DeclaredLoss
 	22, // 32: tracekeep.v1.Completeness.crash_gaps:type_name -> tracekeep.v1.CrashGap
 	23, // 33: tracekeep.v1.Completeness.conflicts:type_name -> tracekeep.v1.Conflict
-	36, // 34: tracekeep.v1.Run.from:type_name -> google.protobuf.Timestamp
-	36, // 35: tracekeep.v1.Run.to:type_name -> google.protobuf.Timestamp
-	36, // 36: tracekeep.v1.Deferred.time:type_name -> google.protobuf.Timestamp
-	36, // 37: tracekeep.v1.Gap.start:type_name -> google.protobuf.Timestamp
-	36, // 38: tracekeep.v1.Gap.end:type_name -> google.protobuf.Timestamp
-	36, // 39: tracekeep.v1.DeclaredLoss.from:type_name -> google.protobuf.Timestamp
-	36, // 40: tracekeep.v1.DeclaredLoss.to:type_name -> google.protobuf.Timestamp
-	36, // 41: tracekeep.v1.CrashGap.start:type_name -> google.protobuf.Timestamp
-	36, // 42: tracekeep.v1.CrashGap.end:type_name -> google.protobuf.Timestamp
+	47, // 34: tracekeep.v1.Run.from:type_name -> google.protobuf.Timestamp
+	47, // 35: tracekeep.v1.Run.to:type_name -> google.protobuf.Timestamp
+	47, // 36: tracekeep.v1.Deferred.time:type_name -> google.protobuf.Timestamp
+	47, // 37: tracekeep.v1.Gap.start:type_name -> google.protobuf.Timestamp
+	47, // 38: tracekeep.v1.Gap.end:type_name -> google.protobuf.Timestamp
+	47, // 39: tracekeep.v1.DeclaredLoss.from:type_name -> google.protobuf.Timestamp
+	47, // 40: tracekeep.v1.DeclaredLoss.to:type_name -> google.protobuf.Timestamp
+	47, // 41: tracekeep.v1.CrashGap.start:type_name -> google.protobuf.Timestamp
+	47, // 42: tracekeep.v1.CrashGap.end:type_name -> google.protobuf.Timestamp
 	11, // 43: tracekeep.v1.ListScopeChangesRequest.after:type_name -> tracekeep.v1.Cursor
 	0,  // 44: tracekeep.v1.ListScopeChangesRequest.selector:type_name -> tracekeep.v1.Selector
 	26, // 45: tracekeep.v1.ListScopeChangesResponse.events:type_name -> tracekeep.v1.ScopeEvent
 	11, // 46: tracekeep.v1.ListScopeChangesResponse.next:type_name -> tracekeep.v1.Cursor
-	36, // 47: tracekeep.v1.ScopeEvent.hour:type_name -> google.protobuf.Timestamp
-	36, // 48: tracekeep.v1.ScopeEvent.at:type_name -> google.protobuf.Timestamp
-	36, // 49: tracekeep.v1.PackURLResponse.expires:type_name -> google.protobuf.Timestamp
-	36, // 50: tracekeep.v1.RestoreRequest.hour:type_name -> google.protobuf.Timestamp
-	36, // 51: tracekeep.v1.RestoreResponse.time:type_name -> google.protobuf.Timestamp
+	47, // 47: tracekeep.v1.ScopeEvent.hour:type_name -> google.protobuf.Timestamp
+	47, // 48: tracekeep.v1.ScopeEvent.at:type_name -> google.protobuf.Timestamp
+	47, // 49: tracekeep.v1.PackURLResponse.expires:type_name -> google.protobuf.Timestamp
+	47, // 50: tracekeep.v1.RestoreRequest.hour:type_name -> google.protobuf.Timestamp
+	47, // 51: tracekeep.v1.RestoreResponse.time:type_name -> google.protobuf.Timestamp
 	34, // 52: tracekeep.v1.DigestRequest.inputs:type_name -> tracekeep.v1.DigestInput
-	1,  // 53: tracekeep.v1.MachineService.ListDevices:input_type -> tracekeep.v1.ListDevicesRequest
-	4,  // 54: tracekeep.v1.MachineService.ListCaptures:input_type -> tracekeep.v1.ListCapturesRequest
-	9,  // 55: tracekeep.v1.MachineService.ListPacks:input_type -> tracekeep.v1.ListPacksRequest
-	24, // 56: tracekeep.v1.MachineService.ListScopeChanges:input_type -> tracekeep.v1.ListScopeChangesRequest
-	27, // 57: tracekeep.v1.MachineService.PackURL:input_type -> tracekeep.v1.PackURLRequest
-	30, // 58: tracekeep.v1.MachineService.Restore:input_type -> tracekeep.v1.RestoreRequest
-	33, // 59: tracekeep.v1.MachineService.Digest:input_type -> tracekeep.v1.DigestRequest
-	2,  // 60: tracekeep.v1.MachineService.ListDevices:output_type -> tracekeep.v1.ListDevicesResponse
-	5,  // 61: tracekeep.v1.MachineService.ListCaptures:output_type -> tracekeep.v1.ListCapturesResponse
-	10, // 62: tracekeep.v1.MachineService.ListPacks:output_type -> tracekeep.v1.ListPacksResponse
-	25, // 63: tracekeep.v1.MachineService.ListScopeChanges:output_type -> tracekeep.v1.ListScopeChangesResponse
-	28, // 64: tracekeep.v1.MachineService.PackURL:output_type -> tracekeep.v1.PackURLResponse
-	31, // 65: tracekeep.v1.MachineService.Restore:output_type -> tracekeep.v1.RestoreResponse
-	35, // 66: tracekeep.v1.MachineService.Digest:output_type -> tracekeep.v1.DigestResponse
-	60, // [60:67] is the sub-list for method output_type
-	53, // [53:60] is the sub-list for method input_type
-	53, // [53:53] is the sub-list for extension type_name
-	53, // [53:53] is the sub-list for extension extendee
-	0,  // [0:53] is the sub-list for field type_name
+	0,  // 53: tracekeep.v1.QueryRecordsRequest.selector:type_name -> tracekeep.v1.Selector
+	38, // 54: tracekeep.v1.QueryRecordsResponse.items:type_name -> tracekeep.v1.RecordItem
+	46, // 55: tracekeep.v1.QueryRecordsResponse.end:type_name -> tracekeep.v1.QueryEnd
+	39, // 56: tracekeep.v1.RecordItem.capture:type_name -> tracekeep.v1.CaptureStart
+	40, // 57: tracekeep.v1.RecordItem.record:type_name -> tracekeep.v1.Record
+	43, // 58: tracekeep.v1.RecordItem.withheld:type_name -> tracekeep.v1.Withheld
+	44, // 59: tracekeep.v1.RecordItem.incomplete:type_name -> tracekeep.v1.Incomplete
+	45, // 60: tracekeep.v1.RecordItem.unknown_tail:type_name -> tracekeep.v1.UnknownTail
+	6,  // 61: tracekeep.v1.CaptureStart.capture:type_name -> tracekeep.v1.Capture
+	17, // 62: tracekeep.v1.CaptureStart.completeness:type_name -> tracekeep.v1.Completeness
+	47, // 63: tracekeep.v1.Record.hour:type_name -> google.protobuf.Timestamp
+	47, // 64: tracekeep.v1.Record.time:type_name -> google.protobuf.Timestamp
+	41, // 65: tracekeep.v1.Record.header:type_name -> tracekeep.v1.HSMSHeader
+	42, // 66: tracekeep.v1.Record.holders:type_name -> tracekeep.v1.Holder
+	47, // 67: tracekeep.v1.Incomplete.hour:type_name -> google.protobuf.Timestamp
+	1,  // 68: tracekeep.v1.MachineService.ListDevices:input_type -> tracekeep.v1.ListDevicesRequest
+	4,  // 69: tracekeep.v1.MachineService.ListCaptures:input_type -> tracekeep.v1.ListCapturesRequest
+	9,  // 70: tracekeep.v1.MachineService.ListPacks:input_type -> tracekeep.v1.ListPacksRequest
+	24, // 71: tracekeep.v1.MachineService.ListScopeChanges:input_type -> tracekeep.v1.ListScopeChangesRequest
+	27, // 72: tracekeep.v1.MachineService.PackURL:input_type -> tracekeep.v1.PackURLRequest
+	30, // 73: tracekeep.v1.MachineService.Restore:input_type -> tracekeep.v1.RestoreRequest
+	33, // 74: tracekeep.v1.MachineService.Digest:input_type -> tracekeep.v1.DigestRequest
+	36, // 75: tracekeep.v1.MachineService.QueryRecords:input_type -> tracekeep.v1.QueryRecordsRequest
+	2,  // 76: tracekeep.v1.MachineService.ListDevices:output_type -> tracekeep.v1.ListDevicesResponse
+	5,  // 77: tracekeep.v1.MachineService.ListCaptures:output_type -> tracekeep.v1.ListCapturesResponse
+	10, // 78: tracekeep.v1.MachineService.ListPacks:output_type -> tracekeep.v1.ListPacksResponse
+	25, // 79: tracekeep.v1.MachineService.ListScopeChanges:output_type -> tracekeep.v1.ListScopeChangesResponse
+	28, // 80: tracekeep.v1.MachineService.PackURL:output_type -> tracekeep.v1.PackURLResponse
+	31, // 81: tracekeep.v1.MachineService.Restore:output_type -> tracekeep.v1.RestoreResponse
+	35, // 82: tracekeep.v1.MachineService.Digest:output_type -> tracekeep.v1.DigestResponse
+	37, // 83: tracekeep.v1.MachineService.QueryRecords:output_type -> tracekeep.v1.QueryRecordsResponse
+	76, // [76:84] is the sub-list for method output_type
+	68, // [68:76] is the sub-list for method input_type
+	68, // [68:68] is the sub-list for extension type_name
+	68, // [68:68] is the sub-list for extension extendee
+	0,  // [0:68] is the sub-list for field type_name
 }
 
 func init() { file_tracekeep_v1_machine_proto_init() }
@@ -2750,13 +3748,25 @@ func file_tracekeep_v1_machine_proto_init() {
 	file_tracekeep_v1_machine_proto_msgTypes[20].OneofWrappers = []any{}
 	file_tracekeep_v1_machine_proto_msgTypes[21].OneofWrappers = []any{}
 	file_tracekeep_v1_machine_proto_msgTypes[22].OneofWrappers = []any{}
+	file_tracekeep_v1_machine_proto_msgTypes[36].OneofWrappers = []any{}
+	file_tracekeep_v1_machine_proto_msgTypes[37].OneofWrappers = []any{}
+	file_tracekeep_v1_machine_proto_msgTypes[38].OneofWrappers = []any{
+		(*RecordItem_Capture)(nil),
+		(*RecordItem_Record)(nil),
+		(*RecordItem_Withheld)(nil),
+		(*RecordItem_Incomplete)(nil),
+		(*RecordItem_UnknownTail)(nil),
+	}
+	file_tracekeep_v1_machine_proto_msgTypes[40].OneofWrappers = []any{}
+	file_tracekeep_v1_machine_proto_msgTypes[44].OneofWrappers = []any{}
+	file_tracekeep_v1_machine_proto_msgTypes[45].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_tracekeep_v1_machine_proto_rawDesc), len(file_tracekeep_v1_machine_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   36,
+			NumMessages:   47,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

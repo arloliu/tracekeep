@@ -46,7 +46,7 @@ func API(ctx context.Context, e *Env) error {
 	log := e.Log.With("role", "api")
 	idp := verifier(&c.Auth)
 	s := &api.Server{
-		Catalog: e.Catalog, QuietPeriod: c.Compact.QuietPeriod, Store: e.Store, Metrics: m, Log: log,
+		Catalog: e.Catalog, QuietPeriod: c.Compact.QuietPeriod, Store: e.Store, Metrics: m, Log: log, Dev: e.Dev,
 		Auth: authenticator(&c.Auth, idp, nil, m, log),
 		Downloads: api.Downloads{
 			PublicURL: c.API.PublicURL, Lifetime: c.Store.DownloadLifetime, Margin: c.API.DownloadMargin, Floor: c.API.DownloadFloor,
