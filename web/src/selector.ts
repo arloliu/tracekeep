@@ -52,7 +52,7 @@ export function validateSelector(search: Record<string, unknown>): SelectorSearc
     out.to = to;
   } else {
     const last = scalar(search.last);
-    if (last !== undefined && last in presets) out.last = last as Preset;
+    if (last !== undefined && Object.hasOwn(presets, last)) out.last = last as Preset;
   }
   return out;
 }

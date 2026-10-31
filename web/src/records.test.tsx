@@ -48,6 +48,8 @@ function stream(asked: QueryRecordsRequest[], answer: (req: QueryRecordsRequest,
   };
 }
 
+const drain = () => new Promise((r) => setTimeout(r, 0));
+
 async function* each(batches: Iterable<Batch> | AsyncIterable<Batch>) {
   for await (const b of batches) yield b;
 }
@@ -189,6 +191,8 @@ test("an interrupted stream keeps its items, says the code, and continues from t
   expect(await screen.findByText(/^3 records in the list/)).toBeInTheDocument();
   expect(asked.map((r) => r.cursor)).toEqual(["", "c2"]);
   expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  // The capture's gap came before the interruption; the continuation's end, counting only its own items, does not unsay it.
+  expect(screen.getByText("incomplete")).toBeInTheDocument();
 });
 
 test("a stream that stops without its end is interrupted too", async () => {
@@ -227,7 +231,7 @@ test("changing a filter cancels the stream, which is not shown as a failure", as
   void router.navigate({ to: "/records", search: (s) => ({ ...s, tool: "T-2" }) });
   await waitFor(() => { expect(aborted).toBe(true); });
   await waitFor(() => { expect(asked.map((r) => r.selector?.toolId)).toEqual(["T-1", "T-2"]); });
-  await new Promise((r) => setTimeout(r, 20)); // the old stream's rejection has landed
+  await drain(); // the old stream's rejection reaches its catch by microtasks, all run before the next task
   expect(screen.getByText("Reading… 1 record in the list.")).toBeInTheDocument();
   expect(screen.queryByText(/Interrupted/)).not.toBeInTheDocument();
   release();
@@ -242,9 +246,10 @@ test("a preset's window is fixed when the page opens, so the stream starts once"
       yield { items: [start(), record(1n)], cursor: "c1", end: { records: 1n } };
     }),
   );
-  expect(await screen.findByText(/^1 record in the list; complete/)).toBeInTheDocument();
-  await userEvent.click(screen.getByRole("button", { name: "Time zone" })); // the page renders again
-  await new Promise((r) => setTimeout(r, 20));
+  expect(await screen.findByText(/^1 record in the list/)).toBeInTheDocument();
+  // The page renders again; a new request would reset the list in that render, before any request.
+  await userEvent.click(screen.getByRole("button", { name: "Time zone" }));
+  expect(screen.getByText(/^1 record in the list/)).toBeInTheDocument();
   expect(asked).toHaveLength(1);
   const sel = asked[0]?.selector;
   expect(Number((sel?.to?.seconds ?? 0n) - (sel?.from?.seconds ?? 0n))).toBe(6 * 3600);

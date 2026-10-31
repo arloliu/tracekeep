@@ -156,6 +156,7 @@ describe("the selector in the URL", () => {
     expect(validateSelector({ tool: 123, devices: "eq-a", last: "2h", from: "nope", to: "2026-10-31T00:00:00Z", junk: 1 })).toEqual({ tool: "123", devices: ["eq-a"] });
     expect(validateSelector({ tool: "T", from: "2026-10-31T01:00:00Z", to: "2026-10-31T00:00:00Z", last: "24h" })).toEqual({ tool: "T", last: "24h" });
     expect(validateSelector({ devices: ["a", "a", 7] })).toEqual({ devices: ["a", "7"] });
+    expect(validateSelector({ tool: "T", last: "constructor" })).toEqual({ tool: "T" }); // no inherited name is a preset
   });
 
   test("a preset ends at now, and from and to win", () => {

@@ -62,7 +62,8 @@ the SDK resolves its own `go.mod`, never the service's graph, so the Makefile ru
    `cd web && npm ci` installs the frontend's packages from `web/package-lock.json`.
 2. `make hooks` — once per clone.
 3. `make ci` — lint, vet, docs-check, data-check and the tests of both modules, then the service built with `GOWORK=off`;
-   it needs no Node. `make web-check` — the frontend's lint, type check and tests, which CI's `web` job runs with `make build`.
+   it needs no Node.
+   `make web-check` — the frontend's lint, type check and tests, which CI's `web` job runs with `make build`.
 
 `.agents/rules/500-workflow.md` lists every make target and the checks before a commit.
 

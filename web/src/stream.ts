@@ -21,7 +21,7 @@ export interface Stream {
   status: "streaming" | "ended" | "interrupted";
   // error is why an interrupted stream stopped.
   error?: ConnectError;
-  // end is the last page's end; incomplete is set once any page's end says so.
+  // end is the last page's end; incomplete is set once any item or page's end says so.
   end?: QueryEnd;
   incomplete: boolean;
   // cursor is the last batch's, which an interrupted stream continues from; it never leaves the page.
@@ -35,10 +35,21 @@ function initial(req: RecordsRequest): Stream {
   return { rows: [], status: "streaming", incomplete: false, cursor: "", run: { req, cursor: "" }, capture: "" };
 }
 
+// lacks tells whether an item says the answer is incomplete, as the server's end counts it:
+// an incomplete marker, or a capture's completeness with any missing entry.
+function lacks(item: RecordItem): boolean {
+  if (item.item.case === "incomplete") return true;
+  if (item.item.case !== "capture") return false;
+  const c = item.item.value.completeness;
+  return c !== undefined && c.gaps.length + c.evicted.length + c.deferred.length + c.losses.length + c.crashGaps.length + c.conflicts.length > 0;
+}
+
 function append(s: Stream, res: QueryRecordsResponse): Stream {
   let capture = s.capture;
+  let incomplete = s.incomplete;
   const rows = res.items.map((item) => {
     if (item.item.case === "capture") capture = item.item.value.capture?.captureId ?? "";
+    incomplete = incomplete || lacks(item);
     return { item, capture };
   });
   return {
@@ -47,7 +58,8 @@ function append(s: Stream, res: QueryRecordsResponse): Stream {
     capture,
     cursor: res.cursor !== "" ? res.cursor : s.cursor,
     end: res.end ?? s.end,
-    incomplete: s.incomplete || (res.end?.incomplete ?? false),
+    // A continuation's end counts only its own items, so the list keeps what earlier pages said.
+    incomplete: incomplete || (res.end?.incomplete ?? false),
   };
 }
 
@@ -68,16 +80,21 @@ export function useRecordStream(req: RecordsRequest) {
       try {
         for await (const res of machine.queryRecords({ ...run.req, cursor: run.cursor }, { signal: ctl.signal })) {
           if (ctl.signal.aborted) return;
-          setS((prev) => append(prev, res));
+          // A batch queued before a reset's cleanup aborted this run never joins the new list.
+          setS((prev) => (prev.run === run ? append(prev, res) : prev));
         }
         if (ctl.signal.aborted) return;
         setS((prev) =>
-          prev.end ? { ...prev, status: "ended" } : { ...prev, status: "interrupted", error: new ConnectError("the stream stopped before its end", Code.Unavailable) },
+          prev.run !== run
+            ? prev
+            : prev.end
+              ? { ...prev, status: "ended" }
+              : { ...prev, status: "interrupted", error: new ConnectError("the stream stopped before its end", Code.Unavailable) },
         );
       } catch (e) {
         if (ctl.signal.aborted) return;
         whenUnauthenticated(client, e);
-        setS((prev) => ({ ...prev, status: "interrupted", error: ConnectError.from(e) }));
+        setS((prev) => (prev.run === run ? { ...prev, status: "interrupted", error: ConnectError.from(e) } : prev));
       }
     })();
     return () => {

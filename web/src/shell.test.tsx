@@ -1,7 +1,7 @@
 import { Code, ConnectError } from "@connectrpc/connect";
 import { screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { beforeEach, expect, test } from "vitest";
+import { beforeEach, expect, test, vi } from "vitest";
 
 import { whenUnauthenticated } from "@/auth";
 import { formatTime } from "@/time";
@@ -75,9 +75,27 @@ test("the zone switch shows UTC and is remembered", async () => {
 });
 
 test("a session far from its expiry is not asked again", async () => {
+  vi.useFakeTimers({ shouldAdvanceTime: true });
   const calls = stubFetch();
   renderApp("/");
   await screen.findByRole("button", { name: "Sign out" });
-  await new Promise((r) => setTimeout(r, 50));
+  await vi.advanceTimersByTimeAsync(24 * 3_600_000);
   expect(calls.filter((c) => c.url === "/auth/me")).toHaveLength(1);
+  vi.useRealTimers();
+});
+
+test("a session no role maps is signed in and admitted to nothing", async () => {
+  stubFetch({ "/auth/me": () => json({ subject: "carol", roles: null, expiry: "2099-01-01T00:00:00Z" }) });
+  renderApp("/");
+  expect(await screen.findByText("Your roles do not admit this page; it needs viewer.")).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Sign out" })).toBeInTheDocument();
+  expect(screen.queryByRole("link", { name: "Records" })).not.toBeInTheDocument();
+});
+
+test("a refused sign-out says so and keeps the page signed in", async () => {
+  stubFetch({ "/auth/logout": () => new Response("refused", { status: 403 }) });
+  renderApp("/");
+  await userEvent.click(await screen.findByRole("button", { name: "Sign out" }));
+  expect(await screen.findByRole("alert")).toHaveTextContent("Sign-out failed (403); you are still signed in.");
+  expect(screen.queryByRole("link", { name: "Sign in" })).not.toBeInTheDocument();
 });
