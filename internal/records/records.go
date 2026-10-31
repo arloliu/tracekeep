@@ -313,7 +313,7 @@ func (g *group) add(it *tracepack.Item) error {
 	if !g.hr.q.admits(&rec) {
 		return nil
 	}
-	rec.Excluded = excluded(g.rs, seq)
+	rec.Excluded = Excluded(g.rs, seq)
 	if rec.Conflict {
 		rec.Holders = holders(g.rs, seq)
 	}
@@ -359,9 +359,9 @@ func (q *Query) admits(rec *Record) bool {
 	return false
 }
 
-// excluded tells whether no staged pack of rs holds seq: by its ranges for a producer seq,
+// Excluded tells whether no staged pack of rs holds seq: by its ranges for a producer seq,
 // by a staged archive or close pack for the close record.
-func excluded(rs *catalog.ReadSet, seq uint64) bool {
+func Excluded(rs *catalog.ReadSet, seq uint64) bool {
 	for _, p := range rs.Packs {
 		if p.State != catalog.PackStaged {
 			continue

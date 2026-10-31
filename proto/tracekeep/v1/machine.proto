@@ -27,6 +27,8 @@ service MachineService {
   rpc Digest(DigestRequest) returns (DigestResponse);
   // QueryRecords streams the selected captures' masked records with their markers, in batches (api.md §10.1 *Records*).
   rpc QueryRecords(QueryRecordsRequest) returns (stream QueryRecordsResponse);
+  // FindTransaction answers tracepack's lookup of the transaction of one record over the read set of each hour it reads.
+  rpc FindTransaction(FindTransactionRequest) returns (FindTransactionResponse);
 }
 
 // Selector names the connections a read wants (api.md §10.1 *Selector*).
@@ -413,4 +415,74 @@ message QueryEnd {
   uint64 records = 1;
   bool incomplete = 2;
   string cursor = 3;
+}
+
+// FindTransactionRequest names a transaction's primary by capture, seq and the hour holding it.
+message FindTransactionRequest {
+  string capture_id = 1;
+  uint64 seq = 2;
+  // hour is an hour's start.
+  google.protobuf.Timestamp hour = 3;
+}
+
+// FindTransactionResponse is the lookup's outcome and what it read (api.md §10.1 *Records*).
+message FindTransactionResponse {
+  // outcome is matched, ambiguous or not-found.
+  string outcome = 1;
+  TransactionKey key = 2;
+  // window_end is the seq ending the reply window, absent when the window did not close.
+  optional uint64 window_end = 3;
+  repeated TransactionRecord records = 4;
+  repeated TransactionGap gaps = 5;
+  // hours are the hours searched to their end.
+  repeated google.protobuf.Timestamp hours = 6;
+  repeated TransactionConflict conflicts = 7;
+  repeated UnreadablePack unreadable = 8;
+}
+
+// TransactionKey is the primary's key.
+message TransactionKey {
+  uint32 epoch = 1;
+  string direction = 2;
+  uint32 session_id = 3;
+  bytes system_bytes = 4;
+  optional uint32 stream = 5;
+  uint32 function = 6;
+  optional bool w = 7;
+}
+
+// TransactionRecord is a record the lookup read, with tracepack's roles: primary, candidate (a reply), possible-reply, same-key-primary, possible-primary, closing, outcome;
+// valid marks a valid match.
+message TransactionRecord {
+  Record record = 1;
+  repeated string roles = 2;
+  bool in_window = 3;
+  bool valid = 4;
+}
+
+// TransactionGap is what the lookup could not decide from, with tracepack's reason.
+message TransactionGap {
+  string reason = 1;
+  repeated google.protobuf.Timestamp hours = 2;
+  optional string pack_id = 3;
+  optional uint64 seq = 4;
+  string detail = 5;
+}
+
+// TransactionConflict is a seq read in differing versions, each version's packs.
+message TransactionConflict {
+  uint64 seq = 1;
+  repeated Holders versions = 2;
+}
+
+// Holders are the packs holding one version.
+message Holders {
+  repeated string pack_ids = 1;
+}
+
+// UnreadablePack is a pack whose footer the lookup could not use.
+message UnreadablePack {
+  google.protobuf.Timestamp hour = 1;
+  string pack_id = 2;
+  string error = 3;
 }

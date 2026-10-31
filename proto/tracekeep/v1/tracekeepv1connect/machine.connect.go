@@ -58,6 +58,9 @@ const (
 	// MachineServiceQueryRecordsProcedure is the fully-qualified name of the MachineService's
 	// QueryRecords RPC.
 	MachineServiceQueryRecordsProcedure = "/tracekeep.v1.MachineService/QueryRecords"
+	// MachineServiceFindTransactionProcedure is the fully-qualified name of the MachineService's
+	// FindTransaction RPC.
+	MachineServiceFindTransactionProcedure = "/tracekeep.v1.MachineService/FindTransaction"
 )
 
 // MachineServiceClient is a client for the tracekeep.v1.MachineService service.
@@ -78,6 +81,8 @@ type MachineServiceClient interface {
 	Digest(context.Context, *connect.Request[v1.DigestRequest]) (*connect.Response[v1.DigestResponse], error)
 	// QueryRecords streams the selected captures' masked records with their markers, in batches (api.md §10.1 *Records*).
 	QueryRecords(context.Context, *connect.Request[v1.QueryRecordsRequest]) (*connect.ServerStreamForClient[v1.QueryRecordsResponse], error)
+	// FindTransaction answers tracepack's lookup of the transaction of one record over the read set of each hour it reads.
+	FindTransaction(context.Context, *connect.Request[v1.FindTransactionRequest]) (*connect.Response[v1.FindTransactionResponse], error)
 }
 
 // NewMachineServiceClient constructs a client for the tracekeep.v1.MachineService service. By
@@ -139,6 +144,12 @@ func NewMachineServiceClient(httpClient connect.HTTPClient, baseURL string, opts
 			connect.WithSchema(machineServiceMethods.ByName("QueryRecords")),
 			connect.WithClientOptions(opts...),
 		),
+		findTransaction: connect.NewClient[v1.FindTransactionRequest, v1.FindTransactionResponse](
+			httpClient,
+			baseURL+MachineServiceFindTransactionProcedure,
+			connect.WithSchema(machineServiceMethods.ByName("FindTransaction")),
+			connect.WithClientOptions(opts...),
+		),
 	}
 }
 
@@ -152,6 +163,7 @@ type machineServiceClient struct {
 	restore          *connect.Client[v1.RestoreRequest, v1.RestoreResponse]
 	digest           *connect.Client[v1.DigestRequest, v1.DigestResponse]
 	queryRecords     *connect.Client[v1.QueryRecordsRequest, v1.QueryRecordsResponse]
+	findTransaction  *connect.Client[v1.FindTransactionRequest, v1.FindTransactionResponse]
 }
 
 // ListDevices calls tracekeep.v1.MachineService.ListDevices.
@@ -194,6 +206,11 @@ func (c *machineServiceClient) QueryRecords(ctx context.Context, req *connect.Re
 	return c.queryRecords.CallServerStream(ctx, req)
 }
 
+// FindTransaction calls tracekeep.v1.MachineService.FindTransaction.
+func (c *machineServiceClient) FindTransaction(ctx context.Context, req *connect.Request[v1.FindTransactionRequest]) (*connect.Response[v1.FindTransactionResponse], error) {
+	return c.findTransaction.CallUnary(ctx, req)
+}
+
 // MachineServiceHandler is an implementation of the tracekeep.v1.MachineService service.
 type MachineServiceHandler interface {
 	// ListDevices answers, per device of the tool, its latest endpoint, open captures, overlap, last record and whether the window holds a gap.
@@ -212,6 +229,8 @@ type MachineServiceHandler interface {
 	Digest(context.Context, *connect.Request[v1.DigestRequest]) (*connect.Response[v1.DigestResponse], error)
 	// QueryRecords streams the selected captures' masked records with their markers, in batches (api.md §10.1 *Records*).
 	QueryRecords(context.Context, *connect.Request[v1.QueryRecordsRequest], *connect.ServerStream[v1.QueryRecordsResponse]) error
+	// FindTransaction answers tracepack's lookup of the transaction of one record over the read set of each hour it reads.
+	FindTransaction(context.Context, *connect.Request[v1.FindTransactionRequest]) (*connect.Response[v1.FindTransactionResponse], error)
 }
 
 // NewMachineServiceHandler builds an HTTP handler from the service implementation. It returns the
@@ -269,6 +288,12 @@ func NewMachineServiceHandler(svc MachineServiceHandler, opts ...connect.Handler
 		connect.WithSchema(machineServiceMethods.ByName("QueryRecords")),
 		connect.WithHandlerOptions(opts...),
 	)
+	machineServiceFindTransactionHandler := connect.NewUnaryHandler(
+		MachineServiceFindTransactionProcedure,
+		svc.FindTransaction,
+		connect.WithSchema(machineServiceMethods.ByName("FindTransaction")),
+		connect.WithHandlerOptions(opts...),
+	)
 	return "/tracekeep.v1.MachineService/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case MachineServiceListDevicesProcedure:
@@ -287,6 +312,8 @@ func NewMachineServiceHandler(svc MachineServiceHandler, opts ...connect.Handler
 			machineServiceDigestHandler.ServeHTTP(w, r)
 		case MachineServiceQueryRecordsProcedure:
 			machineServiceQueryRecordsHandler.ServeHTTP(w, r)
+		case MachineServiceFindTransactionProcedure:
+			machineServiceFindTransactionHandler.ServeHTTP(w, r)
 		default:
 			http.NotFound(w, r)
 		}
@@ -326,4 +353,8 @@ func (UnimplementedMachineServiceHandler) Digest(context.Context, *connect.Reque
 
 func (UnimplementedMachineServiceHandler) QueryRecords(context.Context, *connect.Request[v1.QueryRecordsRequest], *connect.ServerStream[v1.QueryRecordsResponse]) error {
 	return connect.NewError(connect.CodeUnimplemented, errors.New("tracekeep.v1.MachineService.QueryRecords is not implemented"))
+}
+
+func (UnimplementedMachineServiceHandler) FindTransaction(context.Context, *connect.Request[v1.FindTransactionRequest]) (*connect.Response[v1.FindTransactionResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("tracekeep.v1.MachineService.FindTransaction is not implemented"))
 }
