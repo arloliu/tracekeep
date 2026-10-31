@@ -36,5 +36,7 @@ api:
     nodePort: 30443
 alerts:
   enabled: true
+  # Short, so the alert tests name each rule's runbook section.
+  runbookURL: rb
   gateway:
     enabled: true
