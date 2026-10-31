@@ -12,7 +12,7 @@ tests:
   - {eval_time: 3m, alertname: TracekeepDeferredOld, exp_alerts: []}
   - eval_time: 6m
     alertname: TracekeepDeferredOld
-    exp_alerts: [{exp_labels: {severity: warning}, exp_annotations: {summary: "A message has been deferred for more than an hour.", runbook_url: "rb#parked"}}]
+    exp_alerts: [{exp_labels: {severity: warning, reason: cannot-screen}, exp_annotations: {summary: "A message has been deferred for more than an hour (cannot-screen).", runbook_url: "rb#parked"}}]
 - name: deferred younger than an hour on each of two replicas
   interval: 1m
   input_series:
@@ -161,10 +161,10 @@ tests:
 - name: declared losses on a tool, counted across a restart's reset
   interval: 1m
   input_series:
-  - {series: 'tracekeep_ingest_declared_losses_total{instance="a",tool_id="T-2"}', values: '5x10 0 2'}
+  - {series: 'tracekeep_ingest_declared_losses_total{instance="a",tool_id="T-2"}', values: '5x40 0 2'}
   alert_rule_test:
-  - {eval_time: 5m, alertname: TracekeepGapsGrowing, exp_alerts: []}
-  - eval_time: 12m
+  - {eval_time: 35m, alertname: TracekeepGapsGrowing, exp_alerts: []}
+  - eval_time: 42m
     alertname: TracekeepGapsGrowing
     exp_alerts: [{exp_labels: {severity: warning, tool_id: T-2}, exp_annotations: {summary: "Tool T-2: open gaps or declared losses increasing.", runbook_url: "rb#gaps-and-losses"}}]
 
@@ -230,3 +230,55 @@ tests:
   - eval_time: 3m
     alertname: TracepubDropping
     exp_alerts: [{exp_labels: {severity: warning, job: gw, instance: gw-1}, exp_annotations: {summary: "Producer gw-1 is dropping records.", runbook_url: "rb#producer-drops"}}]
+
+- name: a refused merge whose counter first appears at one
+  interval: 1m
+  input_series:
+  - {series: 'tracekeep_compact_merges_total{instance="a",outcome="refused"}', values: '_x5 1x20'}
+  alert_rule_test:
+  - {eval_time: 3m, alertname: TracekeepMergeRefused, exp_alerts: []}
+  - eval_time: 10m
+    alertname: TracekeepMergeRefused
+    exp_alerts: [{exp_labels: {severity: warning}, exp_annotations: {summary: "A merge was refused over the reader's metadata budget.", runbook_url: "rb#merge-over-budget"}}]
+- name: a tool's first declared loss
+  interval: 1m
+  input_series:
+  - {series: 'tracekeep_ingest_declared_losses_total{instance="a",tool_id="T-3"}', values: '_x5 2x40'}
+  alert_rule_test:
+  - eval_time: 10m
+    alertname: TracekeepGapsGrowing
+    exp_alerts: [{exp_labels: {severity: warning, tool_id: T-3}, exp_annotations: {summary: "Tool T-3: open gaps or declared losses increasing.", runbook_url: "rb#gaps-and-losses"}}]
+  - {eval_time: 40m, alertname: TracekeepGapsGrowing, exp_alerts: []}
+- name: a key's first refusal
+  interval: 1m
+  input_series:
+  - {series: 'tracekeep_key_resolutions_total{instance="a",kind="digest",outcome="refused"}', values: '_x5 1x20'}
+  alert_rule_test:
+  - eval_time: 8m
+    alertname: TracekeepKeyRefused
+    exp_alerts: [{exp_labels: {severity: critical}, exp_annotations: {summary: "A key resolution was refused.", runbook_url: "rb#key-refused"}}]
+  - {eval_time: 20m, alertname: TracekeepKeyRefused, exp_alerts: []}
+- name: a producer's first drop
+  interval: 1m
+  input_series:
+  - {series: 'tracepub_records_dropped_total{job="gw",instance="gw-1",reason="bus_down"}', values: '_x5 3x20'}
+  alert_rule_test:
+  - eval_time: 8m
+    alertname: TracepubDropping
+    exp_alerts: [{exp_labels: {severity: warning, job: gw, instance: gw-1}, exp_annotations: {summary: "Producer gw-1 is dropping records.", runbook_url: "rb#producer-drops"}}]
+- name: a producer that appears connected, never having published
+  interval: 1m
+  input_series:
+  - {series: 'tracepub_bus_connected{job="gw",instance="gw-4"}', values: '1x30'}
+  alert_rule_test:
+  - {eval_time: 5m, alertname: TracepubToolSilent, exp_alerts: []}
+  - eval_time: 12m
+    alertname: TracepubToolSilent
+    exp_alerts: [{exp_labels: {severity: warning, job: gw, instance: gw-4}, exp_annotations: {summary: "Producer gw-4 is connected and has published nothing for ten minutes.", runbook_url: "rb#tool-silent"}}]
+- name: a producer's first publication
+  interval: 1m
+  input_series:
+  - {series: 'tracepub_bus_connected{job="gw",instance="gw-5"}', values: '1x30'}
+  - {series: 'tracepub_records_published_total{job="gw",instance="gw-5"}', values: '_x8 4x22'}
+  alert_rule_test:
+  - {eval_time: 12m, alertname: TracepubToolSilent, exp_alerts: []}

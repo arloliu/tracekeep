@@ -2,7 +2,8 @@
 The alert rules of operations.md §10.4, each linked to its runbook section.
 Ingest's gauges of shared state are observed by every ingest replica alike: a rule reads their maximum, never their sum,
 over the replicas (instance) whose own snapshot of that source was refreshed within ten minutes;
-a counter is read by its increase, which a reset does not count.
+a counter is read by its increase, which a reset does not count, or, for a series created by its first event and so never seen at zero,
+by its being positive where it did not exist a window ago.
 */ -}}
 {{- if .Values.alerts.enabled }}
 {{- $runbook := .Values.alerts.runbookURL }}
@@ -20,12 +21,12 @@ spec:
   - name: tracekeep
     rules:
     - alert: TracekeepDeferredOld
-      expr: max(tracekeep_ingest_deferred_oldest_age_seconds) > 3600
+      expr: max by (reason) (tracekeep_ingest_deferred_oldest_age_seconds) > 3600
       for: 5m
       labels:
         severity: warning
       annotations:
-        summary: A message has been deferred for more than an hour.
+        summary: "A message has been deferred for more than an hour ({{ "{{" }} $labels.reason {{ "}}" }})."
         runbook_url: {{ $runbook }}#parked
     - alert: TracekeepBacklogHigh
       expr: |
@@ -74,7 +75,9 @@ spec:
         summary: The merge task has completed no cycle for two hours.
         runbook_url: {{ $runbook }}#merge-stalled
     - alert: TracekeepMergeRefused
-      expr: sum(increase(tracekeep_compact_merges_total{outcome="refused"}[1h])) > 0
+      expr: |
+        sum(increase(tracekeep_compact_merges_total{outcome="refused"}[1h])) > 0
+        or sum(tracekeep_compact_merges_total{outcome="refused"} unless tracekeep_compact_merges_total{outcome="refused"} offset 1h) > 0
       labels:
         severity: warning
       annotations:
@@ -93,20 +96,25 @@ spec:
             )
         ) > 0
         or sum by (tool_id) (increase(tracekeep_ingest_declared_losses_total[30m])) > 0
+        or sum by (tool_id) (tracekeep_ingest_declared_losses_total unless tracekeep_ingest_declared_losses_total offset 30m) > 0
       labels:
         severity: warning
       annotations:
         summary: "Tool {{ "{{" }} $labels.tool_id {{ "}}" }}: open gaps or declared losses increasing."
         runbook_url: {{ $runbook }}#gaps-and-losses
     - alert: TracekeepKeyRefused
-      expr: sum(increase(tracekeep_key_resolutions_total{outcome="refused"}[10m])) > 0
+      expr: |
+        sum(increase(tracekeep_key_resolutions_total{outcome="refused"}[10m])) > 0
+        or sum(tracekeep_key_resolutions_total{outcome="refused"} unless tracekeep_key_resolutions_total{outcome="refused"} offset 10m) > 0
       labels:
         severity: critical
       annotations:
         summary: A key resolution was refused.
         runbook_url: {{ $runbook }}#key-refused
     - alert: TracekeepKeysUnavailable
-      expr: sum(increase(tracekeep_key_resolutions_total{outcome="unavailable"}[5m])) > 0
+      expr: |
+        sum(increase(tracekeep_key_resolutions_total{outcome="unavailable"}[5m])) > 0
+        or sum(tracekeep_key_resolutions_total{outcome="unavailable"} unless tracekeep_key_resolutions_total{outcome="unavailable"} offset 5m) > 0
       for: 5m
       labels:
         severity: critical
@@ -118,10 +126,15 @@ spec:
   - name: tracepub
     rules:
     - alert: TracepubToolSilent
-      # Connected through the last ten minutes and nothing published in them; a producer that never published has no counter, which counts as unchanged.
+      # Connected through the last ten minutes (and seen ten minutes ago) with nothing published in them;
+      # a producer that never published has no counter, which counts as unchanged, and a first publication counts as one.
       expr: |
         min_over_time(tracepub_bus_connected[10m]) == 1
-        unless on(job, instance) (increase(tracepub_records_published_total[10m]) > 0)
+        and on(job, instance) tracepub_bus_connected offset 10m
+        unless on(job, instance) (
+          increase(tracepub_records_published_total[10m]) > 0
+          or (tracepub_records_published_total unless tracepub_records_published_total offset 10m)
+        )
       for: 1m
       labels:
         severity: warning
@@ -129,7 +142,9 @@ spec:
         summary: "Producer {{ "{{" }} $labels.instance {{ "}}" }} is connected and has published nothing for ten minutes."
         runbook_url: {{ $runbook }}#tool-silent
     - alert: TracepubDropping
-      expr: sum by (job, instance) (increase(tracepub_records_dropped_total[5m])) > 0
+      expr: |
+        sum by (job, instance) (increase(tracepub_records_dropped_total[5m])) > 0
+        or sum by (job, instance) (tracepub_records_dropped_total unless tracepub_records_dropped_total offset 5m) > 0
       labels:
         severity: warning
       annotations:
