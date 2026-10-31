@@ -2,7 +2,8 @@ import { createRootRoute, createRoute, createRouter, type RouterHistory } from "
 
 import { Browser } from "@/browser";
 import { Allowed } from "@/me";
-import { validateSelector } from "@/selector";
+import { Records } from "@/records";
+import { validateRecords, validateSelector } from "@/selector";
 import { Shell } from "@/shell";
 
 const rootRoute = createRootRoute({ component: Shell });
@@ -21,10 +22,10 @@ const browserRoute = createRoute({
 const recordsRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/records",
-  validateSearch: validateSelector,
+  validateSearch: validateRecords,
   component: () => (
     <Allowed role="viewer">
-      <p className="text-muted-foreground">The records come next.</p>
+      <Records />
     </Allowed>
   ),
 });

@@ -90,3 +90,42 @@ export function recentTools(): string[] {
 export function rememberTool(tool: string) {
   localStorage.setItem(recentKey, JSON.stringify([tool, ...recentTools().filter((t) => t !== tool)].slice(0, recentMax)));
 }
+
+export const kinds = ["data", "control", "transport-event", "annotation"] as const;
+export const directions = ["to_host", "to_equipment"] as const;
+
+// RecordsSearch adds QueryRecords' predicates to the selector (api.md §10.1 *QueryRecords*);
+// seqs stay decimal strings, since a uint64 above 2^53 is no JSON number.
+export interface RecordsSearch extends SelectorSearch {
+  messages?: string[];
+  dir?: (typeof directions)[number];
+  kinds?: (typeof kinds)[number][];
+  events?: boolean;
+  seqFrom?: string;
+  seqTo?: string;
+}
+
+const list = (v: unknown) => (Array.isArray(v) ? v : v === undefined ? [] : [v]).map(scalar).filter((s): s is string => s !== undefined);
+const seq = (v: unknown) => {
+  const s = scalar(v);
+  return s !== undefined && /^\d{1,20}$/.test(s) && BigInt(s) < 2n ** 64n ? BigInt(s).toString() : undefined;
+};
+
+// validateRecords keeps the selector and the predicates the records page understands; seqs only with a capture, as the server asks.
+export function validateRecords(search: Record<string, unknown>): RecordsSearch {
+  const out: RecordsSearch = validateSelector(search);
+  const messages = list(search.messages);
+  if (messages.length > 0) out.messages = messages;
+  const dir = scalar(search.dir);
+  if (directions.some((d) => d === dir)) out.dir = dir as RecordsSearch["dir"];
+  const ks = list(search.kinds).filter((k): k is (typeof kinds)[number] => kinds.some((x) => x === k));
+  if (ks.length > 0) out.kinds = [...new Set(ks)];
+  if (search.events === true || search.events === "true") out.events = true;
+  if (out.capture !== undefined) {
+    const from = seq(search.seqFrom);
+    const to = seq(search.seqTo);
+    if (from !== undefined) out.seqFrom = from;
+    if (to !== undefined) out.seqTo = to;
+  }
+  return out;
+}
