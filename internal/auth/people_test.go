@@ -186,3 +186,29 @@ func TestIDTokenIsNoServiceToken(t *testing.T) {
 		t.Errorf("a service token: %v", err)
 	}
 }
+
+// A refresh whose discovery names no usable endpoints keeps the cached pair until its own expiry, never extending it,
+// while the keys it fetched still serve service tokens.
+func TestEndpointsSurviveAnEndpointlessRefresh(t *testing.T) {
+	t.Parallel()
+	p, c := newIDP(t), newClock()
+	p.newKey(t, "k1")
+	v := p.verifier(c)
+	want, err := v.Endpoints(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.advance(time.Minute) // past the fetch interval, within the TTL
+	p.set(func() { p.tokenEndpoint = "-" })
+	k2 := p.newKey(t, "k2")
+	if _, err := v.Verify(t.Context(), sign(t, k2, p.claims(c.Now()))); err != nil {
+		t.Fatalf("a service token under a new kid, refreshing: %v", err)
+	}
+	if got, err := v.Endpoints(t.Context()); err != nil || got != want {
+		t.Errorf("Endpoints after an endpointless refresh = %+v, %v; want the cached %+v", got, err, want)
+	}
+	c.advance(time.Hour) // past the cached pair's own TTL
+	if _, err := v.Endpoints(t.Context()); reason(err) != ReasonIDPUnavailable {
+		t.Errorf("Endpoints past their TTL with discovery naming none = %v, want idp-unavailable", err)
+	}
+}

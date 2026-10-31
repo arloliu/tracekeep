@@ -60,13 +60,15 @@ type Verifier struct {
 
 	mu sync.Mutex
 	// keys verify until until; inflight, while a fetch runs, is closed when it ends.
-	keys      []jose.JSONWebKey
-	endpoints Endpoints
-	until     time.Time
-	attempted time.Time
-	tried     bool
-	lastErr   error
-	inflight  chan struct{}
+	keys  []jose.JSONWebKey
+	until time.Time
+	// endpoints serve logins until endpointsUntil; a fetch whose discovery names no usable pair keeps them, never extended.
+	endpoints      Endpoints
+	endpointsUntil time.Time
+	attempted      time.Time
+	tried          bool
+	lastErr        error
+	inflight       chan struct{}
 	// onWait, set only by the package's tests, runs when a request starts waiting on the fetch in flight.
 	onWait func()
 }
@@ -258,7 +260,7 @@ func (v *Verifier) Endpoints(ctx context.Context) (Endpoints, error) {
 	err := v.await(ctx, func() bool {
 		e = v.endpoints
 
-		return v.cfg.Now().Before(v.until) && e.Authorization != "" && e.Token != ""
+		return v.cfg.Now().Before(v.endpointsUntil) && e.Authorization != "" && e.Token != ""
 	}, func() error {
 		err := v.lastErr
 		if err == nil {
@@ -351,7 +353,10 @@ func (v *Verifier) refresh(ctx context.Context, done chan struct{}) {
 		v.mu.Lock()
 		defer v.mu.Unlock()
 		if err == nil {
-			v.keys, v.endpoints, v.until, v.lastErr = keys, endpoints, v.cfg.Now().Add(v.cfg.TTL), nil
+			v.keys, v.until, v.lastErr = keys, v.cfg.Now().Add(v.cfg.TTL), nil
+			if endpoints.Authorization != "" && endpoints.Token != "" {
+				v.endpoints, v.endpointsUntil = endpoints, v.until
+			}
 		} else {
 			v.lastErr = err
 		}
