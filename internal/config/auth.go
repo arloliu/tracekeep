@@ -43,6 +43,8 @@ type People struct {
 type OIDC struct {
 	Issuer   string `yaml:"issuer" env:"TRACEKEEP_AUTH_OIDC_ISSUER"`
 	Audience string `yaml:"audience" env:"TRACEKEEP_AUTH_OIDC_AUDIENCE"`
+	// CAFile holds PEM certificates trusted beside the system's roots for discovery, the JWKS and the token exchange.
+	CAFile string `yaml:"ca_file" env:"TRACEKEEP_AUTH_OIDC_CA_FILE"`
 	// RolesClaim names the claim holding a token's role values, and Roles maps each value to the roles it grants.
 	RolesClaim string              `yaml:"roles_claim" default:"roles" env:"TRACEKEEP_AUTH_OIDC_ROLES_CLAIM"`
 	Roles      map[string][]string `yaml:"roles"`
