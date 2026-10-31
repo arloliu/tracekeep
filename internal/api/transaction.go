@@ -70,9 +70,8 @@ func lookupFailed(capture tracepack.UUID, seq uint64, err error) error {
 	}
 }
 
-// hourSource answers each hour a lookup asks for with that hour's read set, opened when asked.
-// shortcut: the objects close when the lookup returns, since the v0.9.0 tracepack requires keep its readers valid until then;
-// close an hour's when the lookup asks for the next once tracepack's release rule (v0.12.0) is adopted.
+// hourSource answers each hour a lookup asks for with that hour's read set, opened when asked;
+// the objects of an hour close when the lookup asks for the next or returns, tracepack's release rule, the readers kept until it returns.
 type hourSource struct {
 	s       *Server
 	capture tracepack.UUID
@@ -84,6 +83,7 @@ type hourSource struct {
 
 // Readers implements tracepack.PackSource.
 func (src *hourSource) Readers(ctx context.Context, hour int64) ([]*tracepack.Reader, error) {
+	src.close() // no read of an earlier hour follows this call
 	rs, err := src.s.Catalog.ReadSet(ctx, src.capture, hour)
 	if err != nil {
 		return nil, err
@@ -123,6 +123,7 @@ func (src *hourSource) close() {
 	for _, o := range src.objs {
 		_ = o.Close()
 	}
+	src.objs = nil
 }
 
 var outcomeText = map[tracepack.TxOutcome]string{tracepack.TxMatched: "matched", tracepack.TxAmbiguous: "ambiguous", tracepack.TxNotFound: "not-found"}

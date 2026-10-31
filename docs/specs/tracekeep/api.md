@@ -212,8 +212,7 @@ Every read set a read reads is checked, so a resumed stream, whatever its cursor
   These are counts and tracepack's own budgets, not a ceiling on a read's heap; a replica's memory is sized by `max_reads` times them.
   Segments of one hour rarely overlap in seq, so an hour left unmergeable (T-45) splits into small clusters.
 - **`FindTransaction(capture, seq, hour)`** runs tracepack's lookup with a pack source answering each hour it asks for with that hour's read set, opened when asked;
-  the objects behind an hour close when the lookup returns,
-  or, once tracekeep reads tracepack's release rule (v0.12.0), when it asks for the next hour, the readers staying referenced until it returns;
+  the objects behind an hour close when the lookup asks for the next hour or returns, tracepack's release rule, the readers staying referenced until it returns;
   it reads at most tracepack's default of two hours.
   It answers the outcome (matched, ambiguous or not found), the transaction's key, each record read with tracepack's roles (the primary, a candidate reply, a possible reply, a same-key or possible primary, a closing or outcome record), whether it is in the window and a valid match, its flags and SML as above,
   the hours searched, and each gap, conflict and unreadable pack tracepack reports.
