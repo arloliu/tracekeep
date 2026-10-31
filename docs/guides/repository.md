@@ -1,6 +1,6 @@
 # Repository guide
 
-Status: current (2026-10-25) — from seed v21 §11 and the bootstrap decisions
+Status: current (2026-10-31) — from seed v21 §11, the bootstrap decisions and the frontend (T-49)
 
 How the repository is laid out, how its two modules fit together, and how to build, check and release them.
 Read when setting up a clone, adding a directory, or cutting a release.
@@ -58,14 +58,40 @@ the SDK resolves its own `go.mod`, never the service's graph, so the Makefile ru
 
 ## Setup and checks
 
-1. `mise install` — Go, golangci-lint and Atlas at the versions `mise.toml` pins (T-13).
+1. `mise install` — Go, golangci-lint, Atlas and Node at the versions `mise.toml` pins (T-13);
+   `cd web && npm ci` installs the frontend's packages from `web/package-lock.json`.
 2. `make hooks` — once per clone.
-3. `make ci` — lint, vet, docs-check, data-check and the tests of both modules, then the service built with `GOWORK=off`.
+3. `make ci` — lint, vet, docs-check, data-check and the tests of both modules, then the service built with `GOWORK=off`;
+   it needs no Node. `make web-check` — the frontend's lint, type check and tests, which CI's `web` job runs with `make build`.
 
 `.agents/rules/500-workflow.md` lists every make target and the checks before a commit.
+
+## The frontend
+
+`web/` is the pages people use (`api.md` §10.3): Vite, React and TypeScript, its client generated from `proto/` into `web/src/gen/` by `make proto`.
+The binary embeds it by build tag:
+`make build` runs `make web` and builds `dist/tracekeep` with `-tags webdist`, embedding `web/dist`;
+a build without the tag, `go build ./...` and `make ci` included, embeds a page saying the frontend was not built, so Go needs no Node.
+
+To work on the pages, run dev with Vite's server as its public URL, and Vite with dev's certificate:
+
+```
+tracekeep dev --data tmp/dev --public-url https://localhost:5173
+cd web && TRACEKEEP_DEV_DATA=../tmp/dev npm run dev
+```
+
+Then open `https://localhost:5173`, trusting dev's certificate (`tmp/dev/tls/cert.pem`) by an exception or by importing it,
+and sign in at dev's test IdP with any subject and roles.
+Vite serves the pages with hot reload and proxies `/auth/`, `/download/` and the services to dev's API,
+`https://127.0.0.1:8080` unless `TRACEKEEP_DEV_API` names another `--api`;
+the session cookie and the Origin check hold because the browser sees one origin, the public URL.
+The simulator's tool is `SIM-TOOL`, its device `eqp`.
+
+The pages' tests are Vitest with Testing Library in jsdom, the API answered by a Connect router transport (`.agents/rules/300-testing.md`).
 
 ## Releases
 
 - **The SDK**: tag `producer/vX.Y.Z` on a commit where the `producer/` module passes its tests with `GOWORK=off`.
-- **The service**: raise its requirement on the SDK to a tagged version first;
+- **The service**: built by `make build`, so the binary carries the frontend;
+  raise its requirement on the SDK to a tagged version first;
   `GOWORK=off go build ./...` must pass (`make ci` runs it), so the release never depends on the workspace.
