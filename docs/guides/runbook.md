@@ -17,8 +17,8 @@ Read when an alert names an incident; each alert the Helm chart ships links its 
 | `backlog` (`TracekeepBacklogHigh`) | `tracekeep_ingest_stream_backlog_bytes`, `tracekeep_ingest_consumer_ack_pending`, `tracekeep_ingest_put_seconds` | restore ingest's throughput: replicas, the store, the catalog | none: past the stream's limit, producers drop |
 | `lease-lost` (`TracekeepCompactLeaseLost`) | `tracekeep_compact_lease_held` | bring a `compact` replica up and ready | none: merges, closes, deletions and retention wait |
 | `merge-stalled` (`TracekeepMergeStalled`) | `tracekeep_compact_last_success_timestamp{task="merge"}`, `tracekeep_compact_cycle_seconds` | fix what fails the merge cycle (its log line) | none: segments accumulate unmerged |
-| `gaps-and-losses` (`TracekeepGapsGrowing`) | `tracekeep_ingest_open_gaps{tool_id}`, `tracekeep_ingest_declared_losses_total{tool_id}` | find the producer's or the bus's fault for the tool | the gaps stay, said by every read |
-| `keys-unavailable` (`TracekeepKeysUnavailable`) | `tracekeep_key_resolutions_total{outcome="unavailable"}`, `tracekeep_key_provider_errors_total{reason}` | restore the key provider's reachability or credentials | records that need an uncached key stay deferred |
+| `gaps-and-losses` (`TracekeepGapsGrowing`) | `tracekeep_ingest_open_gaps{tool_id}`, `tracekeep_ingest_declared_losses_total{tool_id}`, `tracekeep_ingest_last_declared_loss_timestamp_seconds{tool_id}` | find the producer's or the bus's fault for the tool | the gaps stay, said by every read |
+| `keys-unavailable` (`TracekeepKeysUnavailable`) | `tracekeep_key_last_problem_timestamp_seconds{outcome="unavailable"}`, `tracekeep_key_resolutions_total{outcome="unavailable"}`, `tracekeep_key_provider_errors_total{reason}` | restore the key provider's reachability or credentials | records that need an uncached key stay deferred |
 | `tool-silent` (`TracepubToolSilent`) | the gateway's `tracepub_records_published_total`, `tracepub_bus_connected` | check the tool's traffic and the gateway's capture | none |
 | `producer-drops` (`TracepubDropping`) | the gateway's `tracepub_records_dropped_total{reason}` | remove the drop's reason at the gateway or the bus | the dropped seqs stay gaps |
 
@@ -106,7 +106,7 @@ a scope that stays unmerged shows instead in `tracekeep_compact_oldest_unmerged_
 
 ## gaps-and-losses
 
-**Alert** `TracekeepGapsGrowing`: on a tool, the holes in its open captures (`tracekeep_ingest_open_gaps`) grew over 30 minutes, or ingest declared seqs lost (`tracekeep_ingest_declared_losses_total`).
+**Alert** `TracekeepGapsGrowing`: on a tool, the holes in its open captures (`tracekeep_ingest_open_gaps`) grew over 30 minutes, or ingest declared a seq of it lost within them (`tracekeep_ingest_last_declared_loss_timestamp_seconds`, `tracekeep_ingest_declared_losses_total`).
 
 1. `tracekeep status` and the browser's completeness for the tool show which captures, hours and seqs.
 2. Gaps come from the producer: its drops (`producer-drops`) or a bus it could not reach; check the gateway's metrics for the tool.

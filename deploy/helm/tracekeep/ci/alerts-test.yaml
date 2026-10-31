@@ -121,16 +121,6 @@ tests:
   - eval_time: 3h10m
     alertname: TracekeepMergeStalled
     exp_alerts: [{exp_labels: {severity: warning, cause: no-cycle-since-lease}, exp_annotations: {summary: "The merge task has completed no cycle for two hours.", runbook_url: "rb#merge-stalled"}}]
-- name: a refused merge
-  interval: 1m
-  input_series:
-  - {series: 'tracekeep_compact_merges_total{instance="a",outcome="refused"}', values: '0 0 0 1 1 1'}
-  alert_rule_test:
-  - {eval_time: 2m, alertname: TracekeepMergeRefused, exp_alerts: []}
-  - eval_time: 5m
-    alertname: TracekeepMergeRefused
-    exp_alerts: [{exp_labels: {severity: warning}, exp_annotations: {summary: "A merge was refused over the reader's metadata budget.", runbook_url: "rb#merge-over-budget"}}]
-
 - name: open gaps growing on a tool, fresh, two replicas
   interval: 1m
   input_series:
@@ -158,35 +148,6 @@ tests:
   - {series: 'tracekeep_ingest_refreshed_timestamp_seconds{instance="b",source="catalog"}', values: '0+60x40'}
   alert_rule_test:
   - {eval_time: 35m, alertname: TracekeepGapsGrowing, exp_alerts: []}
-- name: declared losses on a tool, counted across a restart's reset
-  interval: 1m
-  input_series:
-  - {series: 'tracekeep_ingest_declared_losses_total{instance="a",tool_id="T-2"}', values: '5x40 0 2'}
-  alert_rule_test:
-  - {eval_time: 35m, alertname: TracekeepGapsGrowing, exp_alerts: []}
-  - eval_time: 42m
-    alertname: TracekeepGapsGrowing
-    exp_alerts: [{exp_labels: {severity: warning, tool_id: T-2}, exp_annotations: {summary: "Tool T-2: open gaps or declared losses increasing.", runbook_url: "rb#gaps-and-losses"}}]
-
-- name: a key refused
-  interval: 1m
-  input_series:
-  - {series: 'tracekeep_key_resolutions_total{instance="a",kind="session",outcome="refused"}', values: '0 0 1 1'}
-  - {series: 'tracekeep_key_resolutions_total{instance="a",kind="session",outcome="resolved"}', values: '0 5 9 12'}
-  alert_rule_test:
-  - eval_time: 3m
-    alertname: TracekeepKeyRefused
-    exp_alerts: [{exp_labels: {severity: critical}, exp_annotations: {summary: "A key resolution was refused.", runbook_url: "rb#key-refused"}}]
-- name: keys unavailable for five minutes
-  interval: 1m
-  input_series:
-  - {series: 'tracekeep_key_resolutions_total{instance="a",kind="digest",outcome="unavailable"}', values: '0+1x15'}
-  alert_rule_test:
-  - {eval_time: 3m, alertname: TracekeepKeysUnavailable, exp_alerts: []}
-  - eval_time: 8m
-    alertname: TracekeepKeysUnavailable
-    exp_alerts: [{exp_labels: {severity: critical}, exp_annotations: {summary: "Key resolutions have been unavailable for five minutes.", runbook_url: "rb#keys-unavailable"}}]
-
 - name: a connected producer publishing
   interval: 1m
   input_series:
@@ -231,33 +192,6 @@ tests:
     alertname: TracepubDropping
     exp_alerts: [{exp_labels: {severity: warning, job: gw, instance: gw-1}, exp_annotations: {summary: "Producer gw-1 is dropping records.", runbook_url: "rb#producer-drops"}}]
 
-- name: the first refused merge, its counter exposed from zero
-  interval: 1m
-  input_series:
-  - {series: 'tracekeep_compact_merges_total{instance="a",outcome="refused"}', values: '0x5 1x20'}
-  alert_rule_test:
-  - {eval_time: 3m, alertname: TracekeepMergeRefused, exp_alerts: []}
-  - eval_time: 10m
-    alertname: TracekeepMergeRefused
-    exp_alerts: [{exp_labels: {severity: warning}, exp_annotations: {summary: "A merge was refused over the reader's metadata budget.", runbook_url: "rb#merge-over-budget"}}]
-- name: a tool's first declared loss, its counter exposed from zero since the tool wrote
-  interval: 1m
-  input_series:
-  - {series: 'tracekeep_ingest_declared_losses_total{instance="a",tool_id="T-3"}', values: '0x5 2x40'}
-  alert_rule_test:
-  - eval_time: 10m
-    alertname: TracekeepGapsGrowing
-    exp_alerts: [{exp_labels: {severity: warning, tool_id: T-3}, exp_annotations: {summary: "Tool T-3: open gaps or declared losses increasing.", runbook_url: "rb#gaps-and-losses"}}]
-  - {eval_time: 40m, alertname: TracekeepGapsGrowing, exp_alerts: []}
-- name: a key's first refusal, its counter exposed from zero
-  interval: 1m
-  input_series:
-  - {series: 'tracekeep_key_resolutions_total{instance="a",kind="digest",outcome="refused"}', values: '0x5 1x20'}
-  alert_rule_test:
-  - eval_time: 8m
-    alertname: TracekeepKeyRefused
-    exp_alerts: [{exp_labels: {severity: critical}, exp_annotations: {summary: "A key resolution was refused.", runbook_url: "rb#key-refused"}}]
-  - {eval_time: 20m, alertname: TracekeepKeyRefused, exp_alerts: []}
 - name: a producer's drops, the first of a reason seen only from the second
   interval: 1m
   input_series:
@@ -282,18 +216,64 @@ tests:
   - {series: 'tracepub_records_published_total{job="gw",instance="gw-5"}', values: '_x8 4x22'}
   alert_rule_test:
   - {eval_time: 12m, alertname: TracepubToolSilent, exp_alerts: []}
-- name: a cold Prometheus scraping an old refusal counter fires nothing
+
+# Events read by their stamped time (each value the event's time, in the test's seconds from zero).
+- name: a refused merge, alerting for an hour
   interval: 1m
   input_series:
-  - {series: 'tracekeep_key_resolutions_total{instance="a",kind="digest",outcome="refused"}', values: '1x30'}
+  - {series: 'tracekeep_compact_last_merge_timestamp_seconds{instance="a",outcome="refused"}', values: '_x5 300x80'}
   alert_rule_test:
-  - {eval_time: 3m, alertname: TracekeepKeyRefused, exp_alerts: []}
-  - {eval_time: 20m, alertname: TracekeepKeyRefused, exp_alerts: []}
-- name: a process restarted under the same labels, its first refusal counted from its zero
+  - {eval_time: 3m, alertname: TracekeepMergeRefused, exp_alerts: []}
+  - eval_time: 10m
+    alertname: TracekeepMergeRefused
+    exp_alerts: [{exp_labels: {severity: warning}, exp_annotations: {summary: "A merge was refused over the reader's metadata budget.", runbook_url: "rb#merge-over-budget"}}]
+  - {eval_time: 70m, alertname: TracekeepMergeRefused, exp_alerts: []}
+- name: a declared loss on a tool, before any of its segments
   interval: 1m
   input_series:
-  - {series: 'tracekeep_key_resolutions_total{instance="a",kind="digest",outcome="refused"}', values: '1x10 0 1x10'}
+  - {series: 'tracekeep_ingest_last_declared_loss_timestamp_seconds{instance="a",tool_id="T-3"}', values: '_x5 300x40'}
   alert_rule_test:
-  - eval_time: 13m
+  - eval_time: 10m
+    alertname: TracekeepGapsGrowing
+    exp_alerts: [{exp_labels: {severity: warning, tool_id: T-3}, exp_annotations: {summary: "Tool T-3: open gaps or declared losses increasing.", runbook_url: "rb#gaps-and-losses"}}]
+  - {eval_time: 40m, alertname: TracekeepGapsGrowing, exp_alerts: []}
+- name: a key refused
+  interval: 1m
+  input_series:
+  - {series: 'tracekeep_key_last_problem_timestamp_seconds{instance="a",kind="digest",outcome="refused"}', values: '_x5 300x20'}
+  alert_rule_test:
+  - eval_time: 8m
     alertname: TracekeepKeyRefused
     exp_alerts: [{exp_labels: {severity: critical}, exp_annotations: {summary: "A key resolution was refused.", runbook_url: "rb#key-refused"}}]
+  - {eval_time: 20m, alertname: TracekeepKeyRefused, exp_alerts: []}
+- name: a cold Prometheus scraping an old refusal fires nothing
+  interval: 1m
+  input_series:
+  - {series: 'tracekeep_key_last_problem_timestamp_seconds{instance="a",kind="digest",outcome="refused"}', values: '0x30'}
+  alert_rule_test:
+  - {eval_time: 12m, alertname: TracekeepKeyRefused, exp_alerts: []}
+- name: a refusal by a process restarted between two scrapes
+  interval: 1m
+  input_series:
+  # The old process's last refusal at 60 s; the new one, its counter's reset never scraped, refuses at 900 s.
+  - {series: 'tracekeep_key_last_problem_timestamp_seconds{instance="a",kind="digest",outcome="refused"}', values: '60x14 900x10'}
+  alert_rule_test:
+  - {eval_time: 13m, alertname: TracekeepKeyRefused, exp_alerts: []}
+  - eval_time: 16m
+    alertname: TracekeepKeyRefused
+    exp_alerts: [{exp_labels: {severity: critical}, exp_annotations: {summary: "A key resolution was refused.", runbook_url: "rb#key-refused"}}]
+- name: keys unavailable for five minutes
+  interval: 1m
+  input_series:
+  - {series: 'tracekeep_key_last_problem_timestamp_seconds{instance="a",kind="digest",outcome="unavailable"}', values: '0+60x15'}
+  alert_rule_test:
+  - {eval_time: 3m, alertname: TracekeepKeysUnavailable, exp_alerts: []}
+  - eval_time: 8m
+    alertname: TracekeepKeysUnavailable
+    exp_alerts: [{exp_labels: {severity: critical}, exp_annotations: {summary: "Key resolutions have been unavailable for five minutes.", runbook_url: "rb#keys-unavailable"}}]
+- name: keys unavailable twice, two minutes apart, then resolving
+  interval: 1m
+  input_series:
+  - {series: 'tracekeep_key_last_problem_timestamp_seconds{instance="a",kind="digest",outcome="unavailable"}', values: '_x2 120 120 240x18'}
+  alert_rule_test:
+  - {eval_time: 8m, alertname: TracekeepKeysUnavailable, exp_alerts: []}

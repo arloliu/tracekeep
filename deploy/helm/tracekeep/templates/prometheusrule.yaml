@@ -2,8 +2,8 @@
 The alert rules of operations.md §10.4, each linked to its runbook section.
 Ingest's gauges of shared state are observed by every ingest replica alike: a rule reads their maximum, never their sum,
 over the replicas (instance) whose own snapshot of that source was refreshed within ten minutes;
-a counter is read by its increase, which a reset does not count; tracekeep exposes the counters these rules read from zero,
-so a first event is an increase too.
+an event (a key refused or unavailable, a merge refused, a declared loss) is read by the time tracekeep stamped on its last occurrence,
+which no scrape can miss as it can a counter's first increment or an unsampled reset; a gateway's counter is read by its increase.
 */ -}}
 {{- if .Values.alerts.enabled }}
 {{- $runbook := .Values.alerts.runbookURL }}
@@ -75,8 +75,7 @@ spec:
         summary: The merge task has completed no cycle for two hours.
         runbook_url: {{ $runbook }}#merge-stalled
     - alert: TracekeepMergeRefused
-      expr: |
-        sum(increase(tracekeep_compact_merges_total{outcome="refused"}[1h])) > 0
+      expr: min(time() - tracekeep_compact_last_merge_timestamp_seconds{outcome="refused"}) < 3600
       labels:
         severity: warning
       annotations:
@@ -94,23 +93,22 @@ spec:
               and on(instance) (time() - 1800 - tracekeep_ingest_refreshed_timestamp_seconds{source="catalog"} offset 30m) < 600
             )
         ) > 0
-        or sum by (tool_id) (increase(tracekeep_ingest_declared_losses_total[30m])) > 0
+        or min by (tool_id) (time() - tracekeep_ingest_last_declared_loss_timestamp_seconds) < 1800
       labels:
         severity: warning
       annotations:
         summary: "Tool {{ "{{" }} $labels.tool_id {{ "}}" }}: open gaps or declared losses increasing."
         runbook_url: {{ $runbook }}#gaps-and-losses
     - alert: TracekeepKeyRefused
-      expr: |
-        sum(increase(tracekeep_key_resolutions_total{outcome="refused"}[10m])) > 0
+      expr: min(time() - tracekeep_key_last_problem_timestamp_seconds{outcome="refused"}) < 600
       labels:
         severity: critical
       annotations:
         summary: A key resolution was refused.
         runbook_url: {{ $runbook }}#key-refused
     - alert: TracekeepKeysUnavailable
-      expr: |
-        sum(increase(tracekeep_key_resolutions_total{outcome="unavailable"}[5m])) > 0
+      # Unavailable through five minutes: each of their two-minute stretches holds an unavailable use.
+      expr: min(time() - tracekeep_key_last_problem_timestamp_seconds{outcome="unavailable"}) < 120
       for: 5m
       labels:
         severity: critical
