@@ -26,3 +26,5 @@ coverage.out
 
 # Personal Claude Code overrides, kept per machine.
 /.claude/settings.local.json
+/web/test-results/
+/web/playwright-report/
