@@ -93,7 +93,8 @@ so one replica's stale snapshot neither fires a rule nor is vouched for by anoth
 The deferred messages (`deferred_messages`, `deferred_oldest_age_seconds`) are each replica's own, computed at each scrape from the deliveries it holds,
 so a rule reads their maximum across replicas with no freshness condition; a deferral moving to another replica restarts its observed age.
 An event (a key refused or unavailable, a merge refused, a declared loss) is read by the time tracekeep stamps on its last occurrence,
-which no scrape misses as it can miss a counter's first increment or a reset between two scrapes, and which an old value never makes recent;
+which a scrape of the process that stamped it reads whatever the counter's history, a first increment or a reset between two scrapes included, and which an old value never makes recent;
+the rules compare it with Prometheus's own clock, so they assume the pods' clocks and Prometheus's are synchronized (NTP), and a stamp a process loses before any scrape reads it is lost with the process;
 a gateway's counter is read by its increase, and the SDK reports a drop reason's counter from its first drop, so a reason's first drop after a producer starts counts from the second.
 `TracekeepDeferredOld` keeps the deferral's `reason`, which its runbook section starts from.
 
