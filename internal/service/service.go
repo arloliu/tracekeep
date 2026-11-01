@@ -189,14 +189,24 @@ func connect(b *config.Bus) (*nats.Conn, error) {
 	return nc, nil
 }
 
+// openStore returns a nil interface on error, never a nil pointer in one, which Close would call.
 func openStore(s *config.Store) (store.ObjectStore, error) {
 	if s.Kind == "fs" {
-		return store.NewFS(s.Dir)
-	}
+		fs, err := store.NewFS(s.Dir)
+		if err != nil {
+			return nil, err
+		}
 
-	return s3store.New(s3store.Config{
+		return fs, nil
+	}
+	st, err := s3store.New(s3store.Config{
 		Endpoint: s.S3.Endpoint, Region: s.S3.Region, Bucket: s.S3.Bucket, AccessKeyID: s.S3.AccessKeyID, SecretAccessKey: s.S3.SecretAccessKey,
 	})
+	if err != nil {
+		return nil, err
+	}
+
+	return st, nil
 }
 
 func (e *Env) now() time.Time {

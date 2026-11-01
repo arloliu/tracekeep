@@ -100,7 +100,7 @@ keys:
   download: {issuing: download-1, accepted: [download-1]}
 YAML
 	sudo chown root:tracekeep $ETC/config.yaml && sudo chmod 0640 $ETC/config.yaml
-	sudo install -d -m 0750 -o tracekeep -g tracekeep /var/lib/tracekeep
+	sudo install -d -m 0750 -o tracekeep -g tracekeep /var/lib/tracekeep /var/lib/tracekeep/packs
 	sudo systemctl daemon-reload
 }
 
@@ -167,7 +167,7 @@ fi
 log "upgrade from $TRACEKEEP_BASELINE to $(git rev-parse --short HEAD)"
 sudo systemctl stop tracekeep
 sudo rm -rf /var/lib/tracekeep
-sudo install -d -m 0750 -o tracekeep -g tracekeep /var/lib/tracekeep
+sudo install -d -m 0750 -o tracekeep -g tracekeep /var/lib/tracekeep /var/lib/tracekeep/packs
 # A fresh bus: the baseline's install starts from nothing.
 docker rm -f tracekeep-nats >/dev/null
 docker run -d --name tracekeep-nats -p 127.0.0.1:4222:4222 "$NATS_IMAGE" -js >/dev/null
