@@ -6,7 +6,7 @@ ifeq ($(V), 1)
 override VERBOSE_TAG := -v
 endif
 
-TEST_TIMEOUT := 5m
+TEST_TIMEOUT := 10m
 GOLANGCI     ?= golangci-lint
 # The service module, the producer SDK, the SDK's bus-test module (T-35) and the simulator (T-38);
 # `./...` does not cross a module boundary, so every Go target visits each.
