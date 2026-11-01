@@ -396,6 +396,51 @@ SH
 	log "crossing: $a started the login, $b signed the person in"
 }
 
+# restart_clean: every role's pods rolled by a restart, as an upgrade or a node drain stops them; a stop signal is a clean end,
+# so every container the restart stopped exited 0, read from its pod's last status, which a watch sees before the pod is deleted.
+restart_clean() {
+	local old watch out
+	old=$(kubectl -n $NS get pods -l app.kubernetes.io/instance=$RELEASE -o jsonpath='{.items[*].metadata.name}')
+	[ -n "$old" ] || die "restart: no pod of $RELEASE to restart"
+	kubectl -n $NS get pods -l app.kubernetes.io/instance=$RELEASE -o json -w > "$WORK/restart.json" &
+	watch=$!
+	for _ in $(seq 30); do [ -s "$WORK/restart.json" ] && break; sleep 1; done
+	[ -s "$WORK/restart.json" ] || die "restart: the pods' watch did not start"
+	for d in ingest compact api; do kubectl -n $NS rollout restart deploy/$FULL-$d >/dev/null; done
+	for d in ingest compact api; do kubectl -n $NS rollout status deploy/$FULL-$d --timeout=300s >/dev/null; done
+	# shellcheck disable=SC2086 # old is a list of pod names
+	kubectl -n $NS wait --for=delete $(printf 'pod/%s ' $old) --timeout=180s >/dev/null
+	kill "$watch" 2>/dev/null || true
+	wait "$watch" 2>/dev/null || true
+	# shellcheck disable=SC2086 # old is a list of pod names
+	out=$(python3 - "$WORK/restart.json" $old <<'PY'
+import json, sys
+text, old = open(sys.argv[1]).read(), set(sys.argv[2:])
+dec, i, ended = json.JSONDecoder(), 0, {}
+while True:
+    while i < len(text) and text[i].isspace():
+        i += 1
+    if i >= len(text):
+        break
+    try:
+        obj, i = dec.raw_decode(text, i)
+    except json.JSONDecodeError:
+        break  # the watch killed mid-object
+    for p in obj.get("items", [obj]):
+        name = p["metadata"]["name"]
+        for c in (p.get("status") or {}).get("containerStatuses") or []:
+            t = (c.get("state") or {}).get("terminated")
+            if name in old and t:
+                ended[name + "/" + c["name"]] = t.get("exitCode")
+bad = [f"{k} exited {v}" for k, v in sorted(ended.items()) if v != 0]
+bad += [f"{p}: no terminated status seen" for p in sorted(old - {k.split("/")[0] for k in ended})]
+print("; ".join(bad) if bad else len(ended))
+sys.exit(1 if bad else 0)
+PY
+) || die "restart: a stopped container did not end cleanly: $out"
+	log "restart: the $out containers it stopped exited 0"
+}
+
 # stop_traffic stops the simulator and waits for it to end.
 stop_traffic() {
 	for p in "${pids[@]}"; do
@@ -423,6 +468,7 @@ TRACEKEEP_ISSUER=$ISSUER \
 	TRACEKEEP_IDP_STOP="kubectl -n $NS scale deploy/dex --replicas=0 >/dev/null && for _ in \$(seq 120); do [ -z \"\$(kubectl -n $NS get pods -l app=dex -o name)\" ] && exit 0; sleep 1; done; exit 1" \
 	TRACEKEEP_IDP_START="kubectl -n $NS scale deploy/dex --replicas=1 >/dev/null && kubectl -n $NS rollout status deploy/dex --timeout=300s >/dev/null" \
 	playwright "$PUBLIC" -g "outage of the IdP"
+restart_clean
 
 if [ -z "${TRACEKEEP_BASELINE:-}" ]; then
 	log "upgrade skipped: no baseline (no strict ancestor on main with the chart whose packaging run passed)"
