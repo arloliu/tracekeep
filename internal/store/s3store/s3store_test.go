@@ -54,30 +54,35 @@ func TestPresignGet(t *testing.T) {
 // newStore returns a store on a bucket of its own, emptied and removed when the test ends.
 func newStore(t *testing.T) *s3store.Store {
 	t.Helper()
-	endpoint := os.Getenv(envEndpoint)
-	if endpoint == "" {
+	s, _ := newBucket(t, true)
+
+	return s
+}
+
+// newBucket returns a store on a bucket of its own and the bucket's name; the bucket is emptied when the test ends,
+// and removed then when remove is set, as a test that removes it itself does not.
+func newBucket(t *testing.T, remove bool) (*s3store.Store, string) {
+	t.Helper()
+	if os.Getenv(envEndpoint) == "" {
 		t.Skipf("%s not set: no S3-compatible store to test against", envEndpoint)
 	}
 	bucket := "tk-" + strings.ToLower(rand.Text())
-	s, err := s3store.New(s3store.Config{
-		Endpoint: endpoint, Bucket: bucket,
-		AccessKeyID: os.Getenv(envKey), SecretAccessKey: os.Getenv(envSecret),
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	s := storeOn(t, bucket, os.Getenv(envSecret))
 	if _, err := s.Client().CreateBucket(t.Context(), &s3.CreateBucketInput{Bucket: &bucket}); err != nil {
 		t.Fatalf("create bucket: %v", err)
 	}
 	t.Cleanup(func() {
 		ctx := context.Background()
 		_ = s.List(ctx, "", func(info store.ObjectInfo) error { return s.Delete(ctx, info.Key) })
+		if !remove {
+			return
+		}
 		if _, err := s.Client().DeleteBucket(ctx, &s3.DeleteBucketInput{Bucket: &bucket}); err != nil {
 			t.Errorf("delete bucket: %v", err)
 		}
 	})
 
-	return s
+	return s, bucket
 }
 
 func fetch(t *testing.T, s *s3store.Store, key string) ([]byte, int) {
@@ -103,20 +108,92 @@ func fetch(t *testing.T, s *s3store.Store, key string) ([]byte, int) {
 	return body, resp.StatusCode
 }
 
-// A missing bucket is a misconfiguration, never a missing key: a delete in it fails instead of succeeding quietly.
+// A missing bucket is a misconfiguration, never a missing key: Stat, Open, a ranged read and a delete in it fail as store errors,
+// where a missing key in a bucket that exists is store.ErrNotFound. Denied access is a store error too.
+// A HEAD's 404 carries no body naming the bucket, so Stat and Open are where a store could blur the two.
 func TestMissingBucketIsNotAMissingKey(t *testing.T) {
 	t.Parallel()
-	newStore(t) // skips without a store to test against
-	missing, err := s3store.New(s3store.Config{
-		Endpoint: os.Getenv(envEndpoint), Bucket: "tk-missing-" + strings.ToLower(rand.Text()),
-		AccessKeyID: os.Getenv(envKey), SecretAccessKey: os.Getenv(envSecret),
+	ctx := t.Context()
+	s, bucket := newBucket(t, true) // skips without a store to test against
+	data := []byte("pack bytes")
+	if err := s.Put(ctx, "archive/c1/p1", bytes.NewReader(data), int64(len(data))); err != nil {
+		t.Fatal(err)
+	}
+	notFound := func(what string, err error) {
+		t.Helper()
+		if !errors.Is(err, store.ErrNotFound) {
+			t.Errorf("%s = %v, want store.ErrNotFound", what, err)
+		}
+	}
+	storeError := func(what string, err error) {
+		t.Helper()
+		if err == nil || errors.Is(err, store.ErrNotFound) {
+			t.Errorf("%s = %v, want a store error, not store.ErrNotFound", what, err)
+		}
+	}
+
+	_, err := s.Stat(ctx, "archive/c1/none")
+	notFound("Stat of a missing key", err)
+	_, err = s.Open(ctx, "archive/c1/none")
+	notFound("Open of a missing key", err)
+	notFound("a ranged read of a removed key", readRemoved(t, s, "archive/c1/p1", ""))
+
+	missing := storeOn(t, "tk-missing-"+strings.ToLower(rand.Text()), os.Getenv(envSecret))
+	_, err = missing.Stat(ctx, "archive/c1/p1")
+	storeError("Stat in a missing bucket", err)
+	_, err = missing.Open(ctx, "archive/c1/p1")
+	storeError("Open in a missing bucket", err)
+	storeError("Delete in a missing bucket", missing.Delete(ctx, "staging/x"))
+	gone, goneBucket := newBucket(t, false)
+	if err := gone.Put(ctx, "archive/c1/p1", bytes.NewReader(data), int64(len(data))); err != nil {
+		t.Fatal(err)
+	}
+	storeError("a ranged read in a removed bucket", readRemoved(t, gone, "archive/c1/p1", goneBucket))
+
+	if err := s.Put(ctx, "archive/c1/p1", bytes.NewReader(data), int64(len(data))); err != nil {
+		t.Fatal(err)
+	}
+	denied := storeOn(t, bucket, "not-the-secret")
+	_, err = denied.Stat(ctx, "archive/c1/p1")
+	storeError("Stat denied", err)
+	_, err = denied.Open(ctx, "archive/c1/p1")
+	storeError("Open denied", err)
+	storeError("Delete denied", denied.Delete(ctx, "archive/c1/p1"))
+}
+
+// readRemoved opens key, removes it, and its bucket too when bucket names it, then reads the object it opened by range.
+func readRemoved(t *testing.T, s *s3store.Store, key, bucket string) error {
+	t.Helper()
+	ctx := t.Context()
+	o, err := s.Open(ctx, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer o.Close()
+	if err := s.Delete(ctx, key); err != nil {
+		t.Fatal(err)
+	}
+	if bucket != "" {
+		if _, err := s.Client().DeleteBucket(ctx, &s3.DeleteBucketInput{Bucket: &bucket}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	_, err = o.ReadAt(make([]byte, 4), 0)
+
+	return err
+}
+
+// storeOn returns a store on bucket, which need not exist, signing with secret.
+func storeOn(t *testing.T, bucket, secret string) *s3store.Store {
+	t.Helper()
+	s, err := s3store.New(s3store.Config{
+		Endpoint: os.Getenv(envEndpoint), Bucket: bucket, AccessKeyID: os.Getenv(envKey), SecretAccessKey: secret,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := missing.Delete(t.Context(), "staging/x"); err == nil {
-		t.Error("Delete in a missing bucket succeeded")
-	}
+
+	return s
 }
 
 // A presigned URL never outlives until, and the expiry PresignGet returns is when it stops reading: its signed date plus its lifetime.
