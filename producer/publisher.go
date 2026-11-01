@@ -366,7 +366,7 @@ func (pb *publisher) publishReserved(st *capState, pd *pending, now time.Time) b
 	if pastEnd(st.cap, time.Now()) { // building or the claim put may have crossed End's deadline
 		return false
 	}
-	ctx, cancel := context.WithDeadline(context.Background(), pb.attemptDeadline(time.Now(), st.cap))
+	ctx, cancel := context.WithDeadline(pb.p.stop, pb.attemptDeadline(time.Now(), st.cap))
 	defer cancel()
 	start := time.Now()
 	_, err := pb.bus.Publish(ctx, &pd.msg.msg)
@@ -486,7 +486,7 @@ func (pb *publisher) putClaim(c *claimObject, cp *core.Capture, horizon time.Tim
 	if !horizon.IsZero() && horizon.Before(dl) {
 		dl = horizon
 	}
-	ctx, cancel := context.WithDeadline(context.Background(), dl)
+	ctx, cancel := context.WithDeadline(pb.p.stop, dl)
 	defer cancel()
 	if pb.objects == nil {
 		objs, err := pb.bus.Objects(ctx, pb.p.bucket)
@@ -670,6 +670,9 @@ func (pb *publisher) dropEntry(e *core.Entry, reason core.DropReason) {
 
 // failed records a failed publish: the bus counts as down until a publish succeeds.
 func (pb *publisher) failed(err error) {
+	if pb.p.stop.Err() != nil {
+		return // Close cancelled the attempt: no sign of the bus
+	}
 	if !pb.busDown {
 		pb.p.log.Warn("producer: traffic bus unreachable", "error", err)
 	}

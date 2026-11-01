@@ -74,13 +74,15 @@ type Producer struct {
 	gaugeSet chan struct{}
 
 	events chan func()
-	quit   chan struct{}
+	// stop is cancelled by Close, ending every wait of the producer's own goroutines; quit is its Done.
+	stop   context.Context
+	cancel context.CancelFunc
+	quit   <-chan struct{}
 	// wg joins the goroutines that emit events; the sink, joined by sinkDone, stops after them.
-	wg        sync.WaitGroup
-	sinkQuit  chan struct{}
-	sinkDone  chan struct{}
-	closeOnce sync.Once
-	sinkOnce  sync.Once
+	wg       sync.WaitGroup
+	sinkQuit chan struct{}
+	sinkDone chan struct{}
+	sinkOnce sync.Once
 }
 
 type options struct {
@@ -157,7 +159,6 @@ func New(cfg Config, opts ...Option) (*Producer, error) {
 		metrics:  o.metrics,
 		recorder: recorderName(),
 		now:      core.Now,
-		quit:     make(chan struct{}),
 		sinkQuit: make(chan struct{}),
 		sinkDone: make(chan struct{}),
 		gaugeSet: make(chan struct{}, 1),
@@ -165,6 +166,8 @@ func New(cfg Config, opts ...Option) (*Producer, error) {
 		lifeSem:  make(chan struct{}, 1),
 		rotateAt: o.rotateAt,
 	}
+	p.stop, p.cancel = context.WithCancel(context.Background())
+	p.quit = p.stop.Done()
 	p.conn = nb
 	if nb != nil {
 		// nats.go calls back on its own goroutine; the sink keeps a slow Logger from stalling it.
@@ -214,9 +217,10 @@ func WithMetrics(m Metrics) Option {
 
 // Close stops the producer's goroutines and closes the connection New dialed;
 // call it after End, whose drain it does not wait for.
+// It cancels whatever its goroutines wait on, a publish, a claim-object operation or a fault rotation, rather than wait it out.
 // The sink stops last, once nothing emits, so current_capture is left as the last lifecycle call set it.
 func (p *Producer) Close() error {
-	p.closeOnce.Do(func() { close(p.quit) })
+	p.cancel()
 	p.wg.Wait()
 	p.sinkOnce.Do(func() { close(p.sinkQuit) })
 	<-p.sinkDone
@@ -243,15 +247,8 @@ func (p *Producer) preflightOnConnect(nb *natsBus) {
 			return
 		}
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), p.tun.PublishTimeout)
+	ctx, cancel := context.WithTimeout(p.stop, p.tun.PublishTimeout)
 	defer cancel()
-	go func() {
-		select {
-		case <-p.quit:
-			cancel()
-		case <-ctx.Done():
-		}
-	}()
 	problems, err := p.Preflight(ctx)
 	log := sinkLogger{p}
 	if err != nil {

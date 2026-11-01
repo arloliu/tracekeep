@@ -211,7 +211,7 @@ func TestFaultRotates(t *testing.T) {
 	second := e.Cap
 	// The start is queued before its capture is installed: wait for the fault rotation to finish,
 	// or the next fault could signal the old capture and be discarded as stale.
-	if !p.lockLife(time.Now().Add(10 * time.Second)) {
+	if !p.lockLife(time.Now().Add(10*time.Second), nil) {
 		t.Fatal("the fault rotation kept the lifecycle lock")
 	}
 	p.unlockLife()
