@@ -162,6 +162,19 @@ func (r *replica) pending(t *testing.T) uint64 {
 	return info.State.Msgs
 }
 
+// settled is pending once it reaches want, or after 10s: an inline record's acknowledgement is not confirmed,
+// so the server may remove its message a moment after the flush returned.
+func (r *replica) settled(t *testing.T, want uint64) uint64 {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		if n := r.pending(t); n == want || time.Now().After(deadline) {
+			return n
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
 // A capture's start and records travel the whole way: pulled, admitted, batched, written, registered and acknowledged,
 // the stream then holding none of them.
 func TestIngesterEndToEnd(t *testing.T) {

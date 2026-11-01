@@ -551,7 +551,7 @@ func TestStopBetweenAFetchAndTheDueBatches(t *testing.T) {
 		if got, err := c.Capture(t.Context(), capture); err != nil || got.HighestSeq != 1 {
 			t.Errorf("capture %+v, %v; want the due batch registered", got, err)
 		}
-		if n := r.pending(t); n != 0 {
+		if n := r.settled(t, 0); n != 0 {
 			t.Errorf("the stream holds %d messages, want both acknowledged", n)
 		}
 	})
