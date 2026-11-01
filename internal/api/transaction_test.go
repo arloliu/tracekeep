@@ -2,6 +2,7 @@ package api
 
 import (
 	"slices"
+	"strings"
 	"testing"
 
 	"connectrpc.com/connect"
@@ -111,6 +112,37 @@ func TestFindTransaction(t *testing.T) {
 		}
 		if got.GetOutcome() != "matched" || !valid(got, 6) {
 			t.Errorf("a reply after a backward clock step = %v, roles %v; want matched", got.GetOutcome(), roles(got))
+		}
+	})
+}
+
+// A primary no record bounds leaves the window open: the gap names the hours scheduled as timestamps, not in its text.
+func TestFindTransactionOpenWindow(t *testing.T) {
+	t.Parallel()
+	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
+		m := newMasked(t, c)
+		m.srv.Dev = true
+		capture := m.admitUnmasked(t)
+		m.put(t, capture, hour, []tracepack.Record{message(1, hour*nsPerHour+1, 1, true, true, 7)}, nil, nil)
+		got, err := find(m, t, capture, 1, viewerToken)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var open *tkv1.TransactionGap
+		for _, g := range got.GetGaps() {
+			if g.GetReason() == tracepack.TxGapOpenWindow.String() {
+				open = g
+			}
+		}
+		if open == nil {
+			t.Fatalf("gaps %v; want an open window", got.GetGaps())
+		}
+		want := []*timestamppb.Timestamp{hourTS(hour), hourTS(hour + 1)}
+		if !slices.EqualFunc(open.GetHours(), want, func(a, b *timestamppb.Timestamp) bool { return a.AsTime().Equal(b.AsTime()) }) {
+			t.Errorf("open window hours = %v, want %v", open.GetHours(), want)
+		}
+		if strings.ContainsAny(open.GetDetail(), "0123456789") {
+			t.Errorf("open window detail %q names an hour as a number", open.GetDetail())
 		}
 	})
 }

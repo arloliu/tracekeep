@@ -121,8 +121,11 @@ test("a selected record shows its header, SML, holders and transaction, looked u
           looked.push(req);
           return {
             outcome: "matched", windowEnd: 9n, hours: [hour],
-            records: [{ record: { seq: 7n, kind: "data", direction: "to_host", header: { stream: 6, function: 11, w: true } }, roles: ["primary"], inWindow: true, valid: true }],
-            gaps: [{ reason: "evicted", seq: 9n }],
+            records: [
+              { record: { seq: 7n, kind: "data", direction: "to_host", header: { stream: 6, function: 11, w: true } }, roles: ["primary"], inWindow: false },
+              { record: { seq: 9n, kind: "data", direction: "to_equipment", header: { stream: 6, function: 12 } }, roles: ["closing"], inWindow: false },
+            ],
+            gaps: [{ reason: "evicted", seq: 9n }, { reason: "open-window", hours: [hour], detail: "no record read in the hours scheduled bounds the window" }],
           };
         },
       },
@@ -138,8 +141,13 @@ test("a selected record shows its header, SML, holders and transaction, looked u
   expect(within(panel).getByText("The SML was cut at 64 KiB.")).toBeInTheDocument();
   expect(within(panel).getByText("pack-1 (staged)")).toBeInTheDocument();
   expect(await within(panel).findByText("matched")).toBeInTheDocument();
-  expect(within(panel).getByText(/primary ✓/)).toBeInTheDocument();
+  // The primary is never inside its own reply window, so it carries no such note; a record past the window does.
+  expect(within(panel).getByText(/— primary$/)).toBeInTheDocument();
+  expect(within(panel).getByText(/closing \(outside the reply window\)/)).toBeInTheDocument();
   expect(within(panel).getByText(/Gap: evicted, seq 9/)).toBeInTheDocument();
+  const open = within(panel).getByText(/Gap: open-window/);
+  expect(within(open).getByRole("time")).toHaveAttribute("datetime", "2026-10-31T08:00:00.000Z");
+  expect(open).toHaveTextContent(/: no record read in the hours scheduled bounds the window$/);
   expect(looked[0]?.captureId).toBe(capID);
   expect(looked[0]?.seq).toBe(7n);
   expect(looked[0]?.hour?.seconds).toBe(hour.seconds);

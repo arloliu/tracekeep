@@ -16,6 +16,9 @@ import (
 )
 
 // errLookupPacks refuses an hour of more packs than a lookup passes at once.
+// lookupHours is the hours a lookup schedules from the request's hour on: tracepack's default.
+const lookupHours = tracepack.DefaultTxMaxHours
+
 var errLookupPacks = errors.New("an hour of more packs than a lookup reads at once")
 
 // FindTransaction implements tracekeepv1connect.MachineServiceHandler (api.md §10.1 *Records*).
@@ -45,12 +48,12 @@ func (s *Server) FindTransaction(ctx context.Context, req *connect.Request[tkv1.
 	src := &hourSource{s: s, capture: capture, limit: cmp.Or(s.Records.MaxLookupPacks, 64), sets: map[int64]*catalog.ReadSet{}, readers: map[tracepack.UUID]*tracepack.Reader{}}
 	defer src.close()
 	key := tracepack.TxKey{CaptureID: capture, Seq: req.Msg.GetSeq(), Hour: floorHour(nanos(h))}
-	res, err := tracepack.FindTransaction(ctx, src, key, tracepack.TxOptions{MaxHeldBytes: cmp.Or(s.Records.HeldBytes, 64<<20)})
+	res, err := tracepack.FindTransaction(ctx, src, key, tracepack.TxOptions{MaxHeldBytes: cmp.Or(s.Records.HeldBytes, 64<<20), MaxHours: lookupHours})
 	if err != nil {
 		return nil, lookupFailed(capture, req.Msg.GetSeq(), err)
 	}
 
-	return connect.NewResponse(src.response(&res)), nil
+	return connect.NewResponse(src.response(&res, key.Hour)), nil
 }
 
 // lookupFailed maps a lookup's error to its Connect code.
@@ -137,8 +140,9 @@ var roleBits = []struct {
 	{tracepack.TxClosing, "closing"}, {tracepack.TxOutcomeRecord, "outcome"},
 }
 
-// response is res on the wire, each record with its flags and SML as QueryRecords streams them.
-func (src *hourSource) response(res *tracepack.TxResult) *tkv1.FindTransactionResponse {
+// response is res on the wire, each record with its flags and SML as QueryRecords streams them;
+// first is the lookup's first hour.
+func (src *hourSource) response(res *tracepack.TxResult, first int64) *tkv1.FindTransactionResponse {
 	out := &tkv1.FindTransactionResponse{
 		Outcome: outcomeText[res.Outcome], WindowEnd: res.WindowEnd,
 		Key: &tkv1.TransactionKey{
@@ -164,7 +168,13 @@ func (src *hourSource) response(res *tracepack.TxResult) *tkv1.FindTransactionRe
 			id := g.Pack.String()
 			tg.PackId = &id
 		}
-		if g.Err != nil {
+		if g.Reason == tracepack.TxGapOpenWindow {
+			// tracepack names the hours scheduled only in its text, as epoch hours; the page shows them from Hours.
+			for hr := first; hr < first+lookupHours; hr++ {
+				tg.Hours = append(tg.Hours, hourTS(hr))
+			}
+			tg.Detail = "no record read in the hours scheduled bounds the window"
+		} else if g.Err != nil {
 			tg.Detail = g.Err.Error()
 		}
 		out.Gaps = append(out.Gaps, tg)

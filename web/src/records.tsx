@@ -461,13 +461,20 @@ function Transaction({ capture, r }: { capture: string; r: TkRecord }) {
               <li key={i}>
                 seq {String(t.record?.seq ?? 0n)} {t.record?.header ? message(t.record.header) : t.record?.kind} {t.record?.direction} — {t.roles.join(", ")}
                 {t.valid && " ✓"}
-                {!t.inWindow && " (outside the reply window)"}
+                {!t.inWindow && !t.roles.includes("primary") && " (outside the reply window)"}
               </li>
             ))}
           </ul>
           {q.data.gaps.map((g, i) => (
             <p key={i} className="text-warn">
-              Gap: {g.reason}{g.packId !== undefined && `, pack ${g.packId}`}{g.seq !== undefined && `, seq ${String(g.seq)}`}{g.detail && `: ${g.detail}`}
+              Gap: {g.reason}
+              {g.hours.map((h, j) => (
+                <span key={j}>
+                  {j === 0 ? ", hours " : ", "}
+                  <Time ts={h} />
+                </span>
+              ))}
+              {g.packId !== undefined && `, pack ${g.packId}`}{g.seq !== undefined && `, seq ${String(g.seq)}`}{g.detail && `: ${g.detail}`}
             </p>
           ))}
           {q.data.conflicts.map((c) => (

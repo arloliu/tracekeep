@@ -216,7 +216,7 @@ Every read set a read reads is checked, so a resumed stream, whatever its cursor
   the objects behind an hour close when the lookup asks for the next hour or returns, tracepack's release rule, the readers staying referenced until it returns;
   it reads at most tracepack's default of two hours.
   It answers the outcome (matched, ambiguous or not found), the transaction's key, each record read with tracepack's roles (the primary, a candidate reply, a possible reply, a same-key or possible primary, a closing or outcome record), whether it is in the window and a valid match, its flags and SML as above,
-  the hours searched, and each gap, conflict and unreadable pack tracepack reports.
+  the hours searched, and each gap, conflict and unreadable pack tracepack reports, the gap of a window no record read bounds naming the hours scheduled.
   A withheld capture, or a record that is not a primary and that nothing read explains, is refused as `failed_precondition`;
   tracepack's read limit is refused as `resource_exhausted`, and an object that cannot be read as `unavailable`.
 
