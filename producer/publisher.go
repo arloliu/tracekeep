@@ -480,7 +480,7 @@ func (pb *publisher) retryOrDrop(pd *pending, now time.Time, reason core.DropRea
 // putClaim makes sure the claim object holds exactly c's payload, never overwriting another version,
 // within τ and, when horizon is set, before it:
 // an existing object with the same digest and record header is reused only after a full read-back,
-// since an uncertain earlier put can leave metadata without every chunk.
+// since an uncertain earlier put can leave metadata without every chunk (producer.md §4.2 *Uncertain uploads*).
 func (pb *publisher) putClaim(c *claimObject, cp *core.Capture, horizon time.Time) error {
 	dl := pb.attemptDeadline(time.Now(), cp)
 	if !horizon.IsZero() && horizon.Before(dl) {
@@ -514,6 +514,11 @@ func (pb *publisher) putClaim(c *claimObject, cp *core.Capture, horizon time.Tim
 		if err == nil && len(data) == len(c.payload) && tpbus.PayloadDigest(data) == c.digest {
 			pb.claimPuts["reused"]++
 			return nil
+		}
+		// Only a read that proves the object incomplete or wrong replaces it; one that merely failed keeps it for the next attempt.
+		if err != nil && !errors.Is(err, ErrObjectIncomplete) {
+			pb.claimPuts["error"]++
+			return err
 		}
 		if err := pb.objects.Delete(ctx, c.meta.Name); err != nil {
 			pb.claimPuts["error"]++

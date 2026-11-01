@@ -322,6 +322,49 @@ func TestUncertainClaimIsReadBackAndReplaced(t *testing.T) {
 	}
 }
 
+// A read-back that fails without proof, as a timeout does, keeps the candidate and is tried again later;
+// only the next read, which proves the object short, deletes it and puts it again.
+func TestTransientClaimReadKeepsTheCandidate(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t, producer.Tunables{})
+	h.bus.SetMaxPayload(tpbus.MinMaxPayload + 100)
+	c := h.begin()
+	payload := frame(1000)
+	var putOnce, getOnce sync.Once
+	h.bus.FailPutsUncertain(func(string) bool {
+		first := false
+		putOnce.Do(func() { first = true })
+
+		return first
+	})
+	h.bus.FailObjects(func(op, _ string) error {
+		var err error
+		if op == "get" {
+			getOnce.Do(func() { err = context.DeadlineExceeded })
+		}
+
+		return err
+	})
+	h.observe(payload)
+
+	h.wait(2)
+	data, _, _ := h.bus.Object(bucket, c.ID.String()+".1")
+	if !bytes.Equal(data, payload) {
+		t.Fatalf("object holds %d bytes after the retries, want the whole %d", len(data), len(payload))
+	}
+	name := c.ID.String() + ".1"
+	id, _ := tpbus.MsgID(c.ID, 1)
+	var got []string
+	for _, op := range h.bus.Ops() {
+		if strings.HasSuffix(op, " "+name) || strings.HasSuffix(op, " "+id) {
+			got = append(got, strings.Fields(op)[0])
+		}
+	}
+	if want := []string{"info", "put", "info", "get", "info", "get", "delete", "put", "publish-async"}; !slices.Equal(got, want) {
+		t.Errorf("operations on seq 1 = %v, want %v", got, want)
+	}
+}
+
 // The start goes by the synchronous publish, the records above it by the asynchronous one.
 func TestStartIsPublishedSynchronously(t *testing.T) {
 	t.Parallel()

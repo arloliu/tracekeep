@@ -26,6 +26,9 @@ const (
 // ErrObjectNotFound reports a claim object that does not exist.
 var ErrObjectNotFound = errors.New("producer: object not found")
 
+// ErrObjectIncomplete reports a claim object a read-back proves incomplete or wrong: chunks missing, or content off its digest.
+var ErrObjectIncomplete = errors.New("producer: object incomplete")
+
 // ErrStreamNotFound reports a stream that does not exist.
 var ErrStreamNotFound = errors.New("producer: stream not found")
 
@@ -88,7 +91,8 @@ type Objects interface {
 	GetInfo(ctx context.Context, name string) (ObjectInfo, error)
 	// Put stores data as the object meta names; the object is complete only when Put returns nil.
 	Put(ctx context.Context, meta ObjectMeta, data []byte) (ObjectInfo, error)
-	// Get reads the whole object back.
+	// Get reads the whole object back; an error wrapping ErrObjectIncomplete proves it incomplete or wrong,
+	// while any other error proves nothing, and the SDK keeps the object and reads it again later.
 	Get(ctx context.Context, name string) ([]byte, error)
 	// Delete removes the object.
 	Delete(ctx context.Context, name string) error
