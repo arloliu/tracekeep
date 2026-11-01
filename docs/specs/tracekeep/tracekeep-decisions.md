@@ -638,3 +638,16 @@ and a release workflow that pushes it waits for a later phase; a deployment buil
 a packaging fault a pull request introduces is found on `main` and fixed forward.
 Considered and not taken: tracekeep's own test IdP packaged as a binary, which is no real IdP and would widen what may start it; Keycloak, whose size and start time cost every run;
 optional subcharts, which pin versions the clusters already own; an `edge` image on every merge; the packaging tests on every pull request.
+
+### T-51 — tracepack v0.13.0: an unknown layout waits, a quarantine needs evidence (2026-11-01)
+
+tracepack v0.13.0 gives its errors a public taxonomy and reports a bus message of a `Tpk-Layout` it does not know as `bus.ErrUnsupportedLayout`, a newer producer's message, instead of `bus.ErrMalformed`.
+**Ingest defers such a message**: nak with delay, the `unsupported-layout` alert, never terminated, never a seq gap, never parked, since it has no version to park,
+and its claim object kept until its hour's retention as any other (`ingest.md` §6.1);
+consumers that know a layout are deployed before any producer emits it (`rollouts.md`), so the message waits for the upgrade and is lost only to the stream's own retention.
+This replaces the malformed disposition of an unknown layout, which counted a message no consumer could yet read as a seq gap.
+An absent `Tpk-Layout` is deferred too, as tracepack's check reads it.
+**The reconciler quarantines on evidence of the object's bytes only**: `Verify` failing with `ErrNotTracepack`, `ErrCorrupt`, `ErrNotFinalized` or `ErrReadLimit` quarantines the object;
+any other error, `ErrUnsupportedFormat` and the store's own read failing included, leaves the key for the next pass (`storage.md` §5.4),
+where every error but the store's quarantined before, a newer module's pack included; since v0.13.0 marks every fault of a pack's bytes with a sentinel, the store's read errors need no tag of tracekeep's own.
+Considered and not taken: parking the message, which needs the version the unknown layout hides; terminating it after a bound, which turns a deployment's order into a loss.

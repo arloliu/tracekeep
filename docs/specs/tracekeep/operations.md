@@ -48,7 +48,7 @@ Contract changes go through proposals, which the subject [README.md](README.md) 
 | `deferred list [--capture]` | what is waiting, since when, why: the unresolved parked versions (`parking`, `parked`, `evicted-hour`) by capture and reason, each group's count and oldest parking time; an indefinite deferral is parked (`ingest.md` §6.1), and a short delay that never parks lives only in ingest's metrics |
 
 **Runbook**: one section per named incident
-(`capture-rejected`, `descriptor-conflict`, `claim-conflict`, `write-failure`, `incompatible-configuration`, `seq-conflict`, `beyond-retention`, `capture_fault`, `key-binding-mismatch`, `key-refused`, `cannot-screen`, `damaged-input`, `merge-over-budget`, `parked`, `bus-incarnation-changed`),
+(`capture-rejected`, `descriptor-conflict`, `claim-conflict`, `write-failure`, `incompatible-configuration`, `seq-conflict`, `beyond-retention`, `capture_fault`, `key-binding-mismatch`, `key-refused`, `cannot-screen`, `damaged-input`, `merge-over-budget`, `parked`, `bus-incarnation-changed`, `unsupported-layout`),
 each row of a compact table incident → metric → recovery command → terminal alternative
 (for example `cannot-screen`: `cannot_screen_total` → fix the consumer or the policy, then let the parked consumer retry after `parking.redelivery_delay` → `capture terminate`),
 each with the alert that raises it, the metric to look at, the admin command that resolves it, and what is lost if it is ignored;
@@ -101,6 +101,7 @@ a gateway's counter is read by its increase, and the SDK reports a drop reason's
 | Alert | Fires when | Runbook section |
 |---|---|---|
 | `TracekeepDeferredOld` | `tracekeep_ingest_deferred_oldest_age_seconds` above an hour on any replica, for any reason | `parked` |
+| `TracekeepLayoutUnsupported` | a message of a `Tpk-Layout` this release does not know deferred on any replica for 5 min (`tracekeep_ingest_deferred_messages{reason="unsupported-layout"}`) | `unsupported-layout` |
 | `TracekeepBacklogHigh` | `tracekeep_ingest_stream_backlog_bytes` above a threshold (default 10 GiB) for 15 min | `backlog` |
 | `TracekeepCompactLeaseLost` | no `compact` replica holds the lease (`tracekeep_compact_lease_held`) for 5 min | `lease-lost` |
 | `TracekeepMergeStalled` | the lease holder's merge task (`tracekeep_compact_last_success_timestamp{task="merge"}` of the replica whose `tracekeep_compact_lease_held` is 1, never a standby's) has completed no cycle for two hours, or none since it took the lease two hours ago, each its own rule labelled by `cause`; a cycle that merged nothing counts as completed, and a scope left unmerged shows as `tracekeep_compact_oldest_unmerged_scope_age_seconds` instead | `merge-stalled` |

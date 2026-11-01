@@ -128,7 +128,11 @@ For a key the catalog does not know and that has no **tombstone** (§8.3):
 1. `tracepack.Verify` the object in full;
    one that is not `finalized-consistent`,
    **or whose `VerifyReport.WriterDefects` is not empty** (cross-block seq order, hour span, `seq_start` defects, which `Verify` reports beside the outcome), is quarantined:
-   reported, never registered, never deleted automatically;
+   reported, never registered, never deleted automatically.
+   `Verify` failing quarantines the object only on evidence of its own bytes, by tracepack's reading-calls table:
+   `ErrNotTracepack`, `ErrCorrupt` (its checksums and footer included), `ErrNotFinalized` (a store's put is atomic, so a listed object is never still being written),
+   or `ErrReadLimit` under the default budget every reader opens with;
+   any other error, `ErrUnsupportedFormat` (a newer module's pack) and a failed read of the store's object included, leaves the key for the next pass and is logged (T-51);
 2. read every record (block by block, through the `Reader`) to obtain the **exact seq set** with the time of each run's endpoints, the capture, hour, `format_minor` and coverage;
    block summaries carry only first and last seq, which do not give membership;
 3. check that the key spells the pack's capture and `pack_id`, and for a segment key its `seq_first` (an archive key has none, [STO §3]);

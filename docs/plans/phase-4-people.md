@@ -82,6 +82,7 @@ payload-content predicates of `QueryRecords` (`api.md` §10.1), and the eqp-hub 
 | 4.3 — `Export` | spec first (`api.md` §10.1, `catalog.md` §7.1–§7.2, `compactor.md` §8.3): the jobs table and its migration on both engines, its transactions and locks; start, get and cancel, each checking `exporter`, which jobs a principal sees, and their audit rows; job ownership by a fenced worker, an upload intent persisted before the put, an attempt key never reused, completion by compare-and-set, cancel against completion; partial and orphaned objects deleted by a durable step that survives a crash and a late put; the bundle's deletion deadline persisted at completion and shared by the URL and the compactor (T-33), the URL's margin and floor; the read set and withheld packs of point 9; the manifest's conflicts (suspect, confirmed, acknowledged) across two hours; `export_jobs{state}` and the cleanup's failures; no clear recipe body in a bundle, checked on the unpacked JSONL (payloads, annotation bodies, header and redaction entries) against every baseline carrier, with an unmasked negative control | done (#49) |
 | 4.4 — frontend | detailed below | done (#52) |
 | 4.5 — packaging | detailed below | done (#53) |
+| tracepack v0.13.0 | adopted before the gate (T-51): an unknown layout deferred with an alert, the reconciler's quarantine on positive evidence, both modules' requirements | in progress |
 | 4.6 — gate | audit every gate case against the test bodies, then one step per gap, as phase 3.6 did | pending |
 
 ## Phase 4.1 — people's sign-in
