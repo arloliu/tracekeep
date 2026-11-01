@@ -81,7 +81,7 @@ func TestDevServesTheMachineAPI(t *testing.T) {
 	go func() { done <- d.Run(run) }()
 	t.Cleanup(func() {
 		stop()
-		<-done //nolint:errcheck // the run's end, its error the cancellation's
+		<-done //nolint:errcheck // the run's end, its result not checked here
 	})
 	<-bound
 	token, err := os.ReadFile(filepath.Join(dir, DevTokenFile))
@@ -383,7 +383,7 @@ func TestAPIRoleOverTLSWithAClientCertificate(t *testing.T) {
 	go func() { done <- API(run, e) }()
 	t.Cleanup(func() {
 		stop()
-		<-done //nolint:errcheck // the role's end, its error the cancellation's
+		<-done //nolint:errcheck // the role's end, its result not checked here
 	})
 	<-bound
 	pemCert, err := os.ReadFile(cert)
@@ -700,7 +700,7 @@ func TestAPIRoleServesSignIn(t *testing.T) {
 		}
 		cancel()
 		select {
-		case <-done: //nolint:errcheck // the role's end, its error the cancellation's
+		case <-done: //nolint:errcheck // the role's end, its result not checked here
 		case <-time.After(30 * time.Second):
 			t.Fatalf("configured %t: the api role did not stop", configured)
 		}
@@ -746,7 +746,7 @@ func TestAPIRoleReloadsItsTLSFiles(t *testing.T) {
 	go func() { done <- API(run, e) }()
 	t.Cleanup(func() {
 		stop()
-		<-done //nolint:errcheck // the role's end, its error the cancellation's
+		<-done //nolint:errcheck // the role's end, its result not checked here
 	})
 	<-bound
 	// read lists packs over a new connection that trusts only server's certificate and presents cert.

@@ -103,7 +103,7 @@ func TestAdminThroughTheRunningService(t *testing.T) {
 	go func() { done <- service.API(run, e) }()
 	t.Cleanup(func() {
 		stop()
-		<-done //nolint:errcheck // the role's end, its error the cancellation's
+		<-done //nolint:errcheck // the role's end, its result not checked here
 		_ = e.Close()
 	})
 	select {
