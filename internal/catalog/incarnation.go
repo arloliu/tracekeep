@@ -36,6 +36,7 @@ type Incarnation struct {
 // Incarnate returns the live incarnation of role, recording stream as its first one when the catalog has none;
 // a live incarnation of another stream or creation time returns ErrIncarnationChanged.
 // A later incarnation is only ever recorded by adopting the stream, never here.
+// The catalog keeps one live incarnation per role: a creation that loses a race to another replica's reads the winner's row.
 func (c *Catalog) Incarnate(ctx context.Context, role, stream string, createdNS int64) (Incarnation, error) {
 	var inc Incarnation
 	err := c.inTx(ctx, func(tx *sqlx.Tx) error {
@@ -44,12 +45,18 @@ func (c *Catalog) Incarnate(ctx context.Context, role, stream string, createdNS 
 			WHERE role = ? AND retired_at IS NULL`, role)
 		switch {
 		case errors.Is(err, sql.ErrNoRows):
+			c.hook(hookIncarnationChecked)
 			if err := tx.GetContext(ctx, &inc.ID, `SELECT COALESCE(MAX(incarnation_id), 0) + 1 FROM bus_streams`); err != nil {
 				return err
 			}
+			c.hook(hookIncarnationAllocated)
 			inc.Role, inc.Stream, inc.CreatedNS = role, stream, createdNS
 			_, err := tx.ExecContext(ctx, `INSERT INTO bus_streams (incarnation_id, role, stream_name, created_ns, last_seq_seen) VALUES (?, ?, ?, ?, 0)`,
 				inc.ID, role, stream, createdNS)
+			if c.d.duplicate(err) {
+				// Another replica recorded the role's live incarnation, or took the id, after the check: the retry reads its row.
+				return fmt.Errorf("%w: %w", errLostRace, err)
+			}
 
 			return err
 		case err != nil:

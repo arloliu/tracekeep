@@ -1,7 +1,7 @@
 // Package migrations embeds the catalog's Atlas migrations, one directory per engine with its atlas.sum (docs/specs/tracekeep/catalog.md §7.4),
 // and applies them with Atlas's executor, recording each revision in the service's own table, so a deployment needs no Atlas binary.
 // They are generated from schema.hcl by scripts/catalog.sh and never edited by hand,
-// except the counters' seed and a MariaDB spelling Atlas gets wrong, each marked in its file.
+// except the counters' seed, a MariaDB spelling Atlas gets wrong and the live role's key, each marked in its file.
 package migrations
 
 import (
