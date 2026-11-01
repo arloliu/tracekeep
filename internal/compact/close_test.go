@@ -110,7 +110,10 @@ func (f *fixture) closeObject(t *testing.T, capture tracepack.UUID) ([]byte, tra
 	}
 	var recs []tracepack.Record
 	_, err = rd.Iterate(t.Context(), tracepack.Query{Payloads: true}, func(it *tracepack.Item) error {
-		recs = append(recs, it.Record)
+		// An Item is valid only during the call: its payload is the reader's pooled block buffer, so it is kept as a copy.
+		r := it.Record
+		r.Payload = slices.Clone(r.Payload)
+		recs = append(recs, r)
 		return nil
 	})
 	if err != nil {

@@ -104,7 +104,10 @@ func records(t *testing.T, st store.ObjectStore, key string) []tracepack.Record 
 	}
 	var out []tracepack.Record
 	collect := func(it *tracepack.Item) error {
-		out = append(out, it.Record)
+		// An Item is valid only during the call: its payload is the reader's pooled block buffer, so it is kept as a copy.
+		r := it.Record
+		r.Payload = slices.Clone(r.Payload)
+		out = append(out, r)
 		return nil
 	}
 	if _, err := r.Iterate(t.Context(), tracepack.Query{Payloads: true}, collect); err != nil {
