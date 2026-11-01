@@ -3,6 +3,7 @@ package producer
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
 	"errors"
@@ -56,7 +57,7 @@ var _ Bus = (*natsBus)(nil)
 
 type natsFuture struct{ f jetstream.PubAckFuture }
 
-// natsObjects is a claim bucket: its object store, and the stream that holds it, whose chunks Get counts.
+// natsObjects is a claim bucket: its object store, and the stream that holds it, whose chunks Get reads.
 type natsObjects struct {
 	os     jetstream.ObjectStore
 	s      jetstream.Stream
@@ -463,29 +464,40 @@ func (o natsObjects) Put(ctx context.Context, meta ObjectMeta, data []byte) (Obj
 }
 
 // Get implements Objects.
-// A read of an object whose chunks were purged waits for them until its deadline, like one that times out,
-// so the chunks are counted first: fewer than the metadata names, or content off its digest, is ErrObjectIncomplete.
+// It reads the chunks off the stream one request each, every one under ctx:
+// nats.go's object reader waits out its deadline once delivery stalls, whatever ctx does (v1.55.0 jetstream/object.go).
+// A missing chunk, or content off the metadata's size or digest, is ErrObjectIncomplete.
 func (o natsObjects) Get(ctx context.Context, name string) ([]byte, error) {
 	info, err := o.os.GetInfo(ctx, name)
-	if err == nil {
-		subject := "$O." + o.bucket + ".C." + info.NUID // nats.go's chunk subject (v1.55.0 jetstream/object.go)
-		var si *jetstream.StreamInfo
-		if si, err = o.s.Info(ctx, jetstream.WithSubjectFilter(subject)); err == nil && si.State.Subjects[subject] < uint64(info.Chunks) {
-			return nil, fmt.Errorf("%s: %d of %d chunks: %w", name, si.State.Subjects[subject], info.Chunks, ErrObjectIncomplete)
-		}
-	}
-	var data []byte
-	if err == nil {
-		data, err = o.os.GetBytes(ctx, name)
-	}
-	switch {
-	case errors.Is(err, jetstream.ErrObjectNotFound):
+	if errors.Is(err, jetstream.ErrObjectNotFound) {
 		return nil, fmt.Errorf("%s: %w", name, ErrObjectNotFound)
-	case errors.Is(err, jetstream.ErrDigestMismatch):
-		return nil, fmt.Errorf("%s: %w: %w", name, ErrObjectIncomplete, err)
-	default:
-		return data, err
 	}
+	if err != nil {
+		return nil, err
+	}
+	subject := "$O." + o.bucket + ".C." + info.NUID // nats.go's chunk subject
+	var data []byte
+	seq := uint64(1)
+	for i := range info.Chunks {
+		m, err := o.s.GetMsg(ctx, seq, jetstream.WithGetMsgSubject(subject))
+		if errors.Is(err, jetstream.ErrMsgNotFound) {
+			return nil, fmt.Errorf("%s: %d of %d chunks: %w", name, i, info.Chunks, ErrObjectIncomplete)
+		}
+		if err != nil {
+			return nil, err
+		}
+		if uint64(len(data)+len(m.Data)) > info.Size {
+			return nil, fmt.Errorf("%s: chunks over its %d bytes: %w", name, info.Size, ErrObjectIncomplete)
+		}
+		data = append(data, m.Data...)
+		seq = m.Sequence + 1
+	}
+	sum := sha256.Sum256(data)
+	if want, err := jetstream.DecodeObjectDigest(info.Digest); err != nil || uint64(len(data)) != info.Size || !bytes.Equal(sum[:], want) {
+		return nil, fmt.Errorf("%s: %w: %w", name, ErrObjectIncomplete, jetstream.ErrDigestMismatch)
+	}
+
+	return data, nil
 }
 
 // Delete implements Objects.
