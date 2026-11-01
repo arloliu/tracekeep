@@ -76,7 +76,8 @@ everything per capture is served by `tracekeep status` and the admin commands, n
 | keys (every role that resolves a key; `kind` the only per-key label, never a key id, a reference or a credential) | `key_resolutions_total{kind,outcome=cached,resolved,unavailable,refused,cancelled}`, `key_last_problem_timestamp_seconds{kind,outcome=refused,unavailable}`, `key_provider_seconds{provider,op=login,renew,read}`, `key_provider_errors_total{provider,reason=unreachable,deadline,auth,missing,malformed,server}`, `key_credential_expiry_timestamp{provider}` (the current token's expiry, for a provider with credentials) |
 | catalog | pool usage, transaction retries (`busy`, `deadlock`), migration version |
 
-Health: `/healthz` (process) and `/readyz` (catalog reachable, lease state for `compact`, consumer bound for `ingest`);
+Health: `/healthz` (process) and `/readyz` (catalog reachable, lease state for `compact`, consumer bound for `ingest`; for `api` failing once it starts to stop, before it stops accepting);
+a role stopped by a signal that drains within its bound exits 0.
 `tracekeep status` lists `pending` captures by capture id first, outside any per-tool grouping
 (they have no tool yet), then prints per tool the last record time, open captures, deferred messages and backlog.
 Deferred messages are the tool's unresolved parked versions, as `deferred list` counts them;
