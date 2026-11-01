@@ -158,6 +158,8 @@ type exportWorkers struct {
 // drainAPI shuts srv down within the bound and waits for its handlers and the export workers;
 // it returns nil on a stop that drained cleanly, and otherwise why the role failed.
 func (e *Env) drainAPI(ctx context.Context, srv *http.Server, inFlight *sync.WaitGroup, w exportWorkers) error {
+	// Unready before the listener closes, so probes take the replica out of rotation rather than find it refusing.
+	e.ready("api", failing(errStopping))
 	sctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), cmp.Or(e.apiShutdown, apiShutdown))
 	defer cancel()
 	err := srv.Shutdown(sctx)

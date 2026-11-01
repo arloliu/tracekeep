@@ -76,9 +76,10 @@ type Env struct {
 // refreshInterval is how often ingest's metrics read the catalog and the bus.
 const refreshInterval = 30 * time.Second
 
-// Readiness of a role, before it runs and after it ends.
+// Readiness of a role, before it runs, while it drains and after it ends.
 var (
 	errStarting = errors.New("service: the role is starting")
+	errStopping = errors.New("service: the role is stopping")
 	errStopped  = errors.New("service: the role has stopped")
 )
 
