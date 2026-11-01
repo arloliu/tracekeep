@@ -74,47 +74,70 @@ func build(t *testing.T, m *masked, capture tracepack.UUID) (map[string][]byte, 
 	return files, man
 }
 
-// leaks are the carriers' secrets found in the JSONL files, every string value also base64-decoded.
-func leaks(t *testing.T, files map[string][]byte, cs []maskingtest.Carrier) []string {
+// scanned is what a scan of a bundle read: the JSONL record lines, the redaction entries the JSONL headers hold,
+// and each carrier's secret it found, as name:secret.
+type scanned struct {
+	records, entries int
+	found            []string
+}
+
+// scan reads a bundle's JSONL files and manifest.json for cs's secrets, in every line, every key and string value,
+// and every string base64-decoded, counting the record lines and the headers' redaction entries.
+func scan(t *testing.T, files map[string][]byte, cs []maskingtest.Carrier) scanned {
 	t.Helper()
-	var found []string
+	var out scanned
+	look := func(line []byte, v any) {
+		blobs := [][]byte{line}
+		walk(v, func(s string) {
+			blobs = append(blobs, []byte(s))
+			if d, err := base64.StdEncoding.DecodeString(s); err == nil {
+				blobs = append(blobs, d)
+			}
+		})
+		for _, c := range cs {
+			for _, secret := range c.Secrets {
+				if slices.ContainsFunc(blobs, func(b []byte) bool { return bytes.Contains(b, secret) }) {
+					out.found = append(out.found, c.Name+":"+string(secret))
+				}
+			}
+		}
+	}
 	for name, b := range files {
+		if name == "manifest.json" {
+			var v any
+			if err := json.Unmarshal(b, &v); err != nil {
+				t.Fatalf("manifest.json: %v", err)
+			}
+			look(b, v)
+		}
 		if !strings.HasSuffix(name, ".jsonl") {
 			continue
 		}
 		sc := bufio.NewScanner(bytes.NewReader(b))
 		sc.Buffer(nil, 64<<20)
 		for sc.Scan() {
-			var v any
+			var v map[string]any
 			if err := json.Unmarshal(sc.Bytes(), &v); err != nil {
-				t.Fatalf("%s: a line that is not JSON: %v", name, err)
+				t.Fatalf("%s: a line that is not a JSON object: %v", name, err)
 			}
-			blobs := [][]byte{sc.Bytes()}
-			walk(v, func(s string) {
-				blobs = append(blobs, []byte(s))
-				if d, err := base64.StdEncoding.DecodeString(s); err == nil {
-					blobs = append(blobs, d)
-				}
-			})
-			for _, c := range cs {
-				for _, secret := range c.Secrets {
-					for _, blob := range blobs {
-						if bytes.Contains(blob, secret) {
-							found = append(found, c.Name+":"+string(secret))
-						}
-					}
-				}
+			if _, header := v["schema"]; header {
+				md, _ := v["metadata"].(map[string]any)
+				entries, _ := md["redaction"].([]any)
+				out.entries += len(entries)
+			} else if _, ok := v["seq"]; ok {
+				out.records++
 			}
+			look(sc.Bytes(), v)
 		}
 		if err := sc.Err(); err != nil {
 			t.Fatalf("%s: %v", name, err)
 		}
 	}
 
-	return found
+	return out
 }
 
-// walk calls fn with every string value in v.
+// walk calls fn with every string value in v and every key of its objects.
 func walk(v any, fn func(string)) {
 	switch x := v.(type) {
 	case string:
@@ -124,22 +147,29 @@ func walk(v any, fn func(string)) {
 			walk(e, fn)
 		}
 	case map[string]any:
-		for _, e := range x {
+		for k, e := range x {
+			fn(k)
 			walk(e, fn)
 		}
 	default:
 	}
 }
 
-// A bundle of a masked capture holds each pack's JSONL and a manifest naming it, and no carrier's secret,
-// every base64 field decoded; the same records unmasked, under tracekeep dev, show every secret: the scan can fail.
+// A bundle of a masked capture holds each pack's JSONL and a manifest naming it, and no carrier's secret, TooDeep's included,
+// every base64 field decoded; the scan counts every record and redaction entry written.
+// The control, records unmasked under tracekeep dev with clear text in a redaction entry and in a header extension too,
+// shows every secret: the scan can fail on each, the headers' included.
 func TestExportBundleHoldsNoClearBody(t *testing.T) {
 	t.Parallel()
 	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
 		m := newMasked(t, c)
 		capture := m.admitActive(t)
 		cs := carriers(t)
-		ms, entries := m.mask(t, capture, captured(recordsOf(cs, hour)))
+		inEntry := maskingtest.Carrier{Name: "redaction entry", Secrets: [][]byte{[]byte("SECRET-IN-AN-ENTRY")}}
+		inExtension := maskingtest.Carrier{Name: "header extension", Secrets: [][]byte{[]byte("SECRET-IN-AN-EXTENSION")}}
+		search := append(slices.Clone(cs), maskingtest.TooDeep(), inEntry, inExtension)
+		rs := captured(recordsOf(cs, hour))
+		ms, entries := m.mask(t, capture, rs)
 		p := m.put(t, capture, hour, ms, entries, m.policy())
 		files, man := build(t, m, capture)
 		if len(man.Captures) != 1 || len(man.Captures[0].Hours) != 1 || len(man.Captures[0].Hours[0].Packs) != 1 {
@@ -149,22 +179,72 @@ func TestExportBundleHoldsNoClearBody(t *testing.T) {
 		if mp.PackID != p.ID.String() || mp.Schema != "tracepack-jsonl/2" || len(files[mp.File]) == 0 || man.BundleBuiltAt == "" {
 			t.Errorf("pack entry %+v, file %d bytes, built at %q", mp, len(files[mp.File]), man.BundleBuiltAt)
 		}
-		if got := leaks(t, files, cs); len(got) != 0 {
-			t.Errorf("clear secrets of %v in the bundle", got)
+		if got := scan(t, files, search); len(got.found) != 0 || got.records != len(rs) || got.entries != len(entries) || len(entries) == 0 {
+			t.Errorf("scan = %+v; want no secret, %d records and %d redaction entries read", got, len(rs), len(entries))
 		}
 
 		unmasked := m.admitUnmasked(t)
-		m.put(t, unmasked, hour, captured(recordsOf(cs, hour)), nil, nil)
+		plain := captured(recordsOf(append(slices.Clone(cs), maskingtest.TooDeep()), hour))
+		// One record more, masked, whose first redaction entry names its domain in clear text.
+		mx, ex := m.mask(t, unmasked, captured([]tracepack.Record{recordAt(&cs[0], hour, uint64(len(plain)+1))}))
+		ex[0].Domain = string(inEntry.Secrets[0])
+		plain = append(plain, mx...)
+		m.extensions = []tracepack.RawEntry{{Tag: 0x8001, Type: 7, Value: inExtension.Secrets[0]}} // a private tag of type bytes
+		m.put(t, unmasked, hour, plain, ex, m.policy())
 		m.srv.Dev = true
 		files, _ = build(t, m, unmasked)
-		// Every secret of every carrier, the data records' found only in their base64 payloads: the scan can fail on each.
-		got := leaks(t, files, cs)
-		for _, c := range cs {
+		// Every secret, the data records' found only in their base64 payloads: the scan can fail on each.
+		got := scan(t, files, search)
+		for _, c := range search {
 			for _, secret := range c.Secrets {
-				if !slices.Contains(got, c.Name+":"+string(secret)) {
+				if !slices.Contains(got.found, c.Name+":"+string(secret)) {
 					t.Errorf("the unmasked control does not show %s's secret %q: the scan cannot fail on it", c.Name, secret)
 				}
 			}
+		}
+		if got.records != len(plain) || got.entries != len(ex) {
+			t.Errorf("the control's scan read %d records and %d redaction entries, want %d and %d", got.records, got.entries, len(plain), len(ex))
+		}
+	})
+}
+
+// A tool's export holding a withheld capture beside a masked one: the withheld capture is named and holds no pack,
+// and the scan reads every record and redaction entry of the masked one, and no secret.
+func TestExportOfAToolHoldsNoClearBody(t *testing.T) {
+	t.Parallel()
+	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
+		m := newMasked(t, c)
+		cs := carriers(t)
+		capture := m.admitActive(t)
+		rs := captured(recordsOf(cs, hour))
+		ms, entries := m.mask(t, capture, rs)
+		m.put(t, capture, hour, ms, entries, m.policy())
+		withheld := m.admitUnmasked(t) // bound to a configuration without a policy, activated after the masked capture's
+		m.put(t, withheld, hour, captured(recordsOf(cs, hour)), nil, nil)
+		req := &exportRequest{Kind: "canonical", Selector: exportSelector{ToolID: tool, From: hour * nsPerHour, To: (hour + 1) * nsPerHour}}
+		path, _, err := m.srv.buildBundle(t.Context(), newID(t), req, t.TempDir())
+		if err != nil {
+			t.Fatal(err)
+		}
+		files := unpacked(t, path)
+		var man manifest
+		if err := json.Unmarshal(files["manifest.json"], &man); err != nil {
+			t.Fatal(err)
+		}
+		withholding := 0
+		for _, mc := range man.Captures {
+			if mc.Withheld {
+				withholding++
+				if len(mc.Hours) != 0 {
+					t.Errorf("the withheld capture holds hours %+v", mc.Hours)
+				}
+			}
+		}
+		if len(man.Captures) != 2 || withholding != 1 {
+			t.Errorf("manifest captures = %+v, want two, one withheld", man.Captures)
+		}
+		if got := scan(t, files, append(cs, maskingtest.TooDeep())); len(got.found) != 0 || got.records != len(rs) || got.entries != len(entries) {
+			t.Errorf("scan = %+v; want no secret, %d records and %d redaction entries read", got, len(rs), len(entries))
 		}
 	})
 }

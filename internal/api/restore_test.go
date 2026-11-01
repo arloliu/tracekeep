@@ -44,6 +44,8 @@ type masked struct {
 	logs     *bytes.Buffer
 	// patch, when set, rewrites the next pack put writes, which it writes uncompressed.
 	patch func([]byte) []byte
+	// extensions, when set, are header entries of tags tracepack does not know that the next pack put writes holds.
+	extensions []tracepack.RawEntry
 }
 
 // maskingKeys declares d-1 (digest) and m-1 (master) as 0600 files under t's directory, resolved through c's bindings.
@@ -177,7 +179,8 @@ func (m *masked) put(t *testing.T, capture tracepack.UUID, h int64, rs []tracepa
 	}
 	meta.FlushIntervalNs, meta.ScopeGeneration = &interval, new(uint64)
 	meta.Classifiers, meta.MaxFrameLens = []string{"test"}, []uint64{1 << 20}
-	meta.RedactionPolicy, meta.Redaction = rp, entries
+	meta.RedactionPolicy, meta.Redaction, meta.Unknown = rp, entries, m.extensions
+	m.extensions = nil
 	id := newID(t)
 	var buf bytes.Buffer
 	facts := tracepack.PackFacts{DurableRecorder: true, AnyRedacted: len(entries) > 0}

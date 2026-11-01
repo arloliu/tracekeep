@@ -198,7 +198,7 @@ func TestExportOfConflictsAcrossHours(t *testing.T) {
 		m := newMasked(t, c)
 		capture := m.admitActive(t)
 		cs := carriers(t)[:1]
-		threeConflicts(t, m, capture, &cs[0])
+		records, entries := threeConflicts(t, m, capture, &cs[0])
 		workers(t, m)
 		id := capture.String()
 		req := &tkv1.StartExportRequest{Kind: "canonical", Selector: &tkv1.Selector{ToolId: tool, CaptureId: &id, From: hourTS(hour), To: hourTS(hour + 2)}}
@@ -236,8 +236,8 @@ func TestExportOfConflictsAcrossHours(t *testing.T) {
 				t.Errorf("seq %s's versions are in %v, want two, each in its own pack's file", seq, fs)
 			}
 		}
-		if got := leaks(t, files, cs); len(got) != 0 {
-			t.Errorf("the stored bundle shows %v", got)
+		if got := scan(t, files, cs); len(got.found) != 0 || got.records != records || got.entries != entries {
+			t.Errorf("the stored bundle's scan = %+v; want no secret, %d records and %d redaction entries read", got, records, entries)
 		}
 	})
 }
@@ -296,16 +296,18 @@ func holdersOf(t *testing.T, files map[string][]byte, hours []manifestHour) map[
 }
 
 // threeConflicts puts carrier c's records of capture, masked, over two hours, with seqs 3, 5 and 7 in both:
-// 3 left suspect, 5 acknowledged and 7 confirmed by a comparison that found its versions differ.
-func threeConflicts(t *testing.T, m *masked, capture tracepack.UUID, c *maskingtest.Carrier) {
+// 3 left suspect, 5 acknowledged and 7 confirmed by a comparison that found its versions differ;
+// it returns how many records and redaction entries it wrote.
+func threeConflicts(t *testing.T, m *masked, capture tracepack.UUID, c *maskingtest.Carrier) (records, entries int) {
 	t.Helper()
 	put := func(h int64, seqs ...uint64) {
 		rs := make([]tracepack.Record, 0, len(seqs))
 		for _, s := range seqs {
 			rs = append(rs, recordAt(c, h, s))
 		}
-		ms, entries := m.mask(t, capture, captured(rs))
-		m.put(t, capture, h, ms, entries, m.policy())
+		ms, es := m.mask(t, capture, captured(rs))
+		m.put(t, capture, h, ms, es, m.policy())
+		records, entries = records+len(ms), entries+len(es)
 	}
 	put(hour, 1, 2, 3, 5, 7)
 	for _, seq := range []uint64{3, 5, 7} {
@@ -329,6 +331,8 @@ func threeConflicts(t *testing.T, m *masked, capture tracepack.UUID, c *maskingt
 	if _, err := m.c.AcknowledgeConflict(t.Context(), capture, 5, "op", "a1"); err != nil {
 		t.Fatal(err)
 	}
+
+	return records, entries
 }
 
 // awaitOwned waits, bounded, for owner's job to reach a state other than queued and running, and returns it.
