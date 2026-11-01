@@ -30,6 +30,7 @@ cleanup() {
 	if [ $rc -ne 0 ]; then
 		sudo systemctl status tracekeep --no-pager >&2 || true
 		sudo journalctl -u tracekeep --no-pager -n 80 >&2 || true
+		page_context
 	fi
 	exit $rc
 }

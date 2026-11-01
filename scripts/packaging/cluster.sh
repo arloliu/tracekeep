@@ -30,7 +30,8 @@ cleanup() {
 	if [ $rc -ne 0 ]; then
 		log "failed; the cluster's state:"
 		kubectl -n $NS get pods -o wide 2>/dev/null || true
-		for d in api ingest compact; do kubectl -n $NS logs deploy/$FULL-$d --tail=40 2>/dev/null || true; done
+		for d in api ingest compact; do kubectl -n $NS logs -l app.kubernetes.io/component=$d --prefix --tail=40 2>/dev/null || true; done
+		page_context
 	fi
 	[ -n "${TRACEKEEP_KEEP:-}" ] || kind delete cluster --name $CLUSTER >/dev/null 2>&1 || true
 	[ ! -d "$WORK/src-baseline" ] || git worktree remove --force "$WORK/src-baseline" >/dev/null 2>&1 || true

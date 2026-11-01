@@ -59,7 +59,9 @@ test("a person browses a tool, reads its records and a transaction, and exports 
   // A primary of the simulator's (S1F3 W), whose transaction the lookup matches with its reply.
   await page.getByRole("button", { name: /^Seq \d+$/ }).filter({ hasText: "S1F3 W" }).first().click();
   const panel = page.getByRole("complementary", { name: "Selected" });
-  await expect(panel.getByText("matched")).toBeVisible();
+  await expect(panel.getByText("matched")).toBeVisible().catch(async (e: unknown) => {
+    throw new Error(`the transaction is not matched; the panel reads:\n${await panel.innerText()}`, { cause: e });
+  });
 
   await page.getByRole("link", { name: "Export this selection…" }).click();
   await page.getByRole("button", { name: "Start export" }).click();

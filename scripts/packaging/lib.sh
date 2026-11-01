@@ -85,6 +85,11 @@ YAML
 
 # playwright url [args...]: the browser tests against url, trusting the CA, the tests' host names mapped to this host;
 # TRACEKEEP_BEFORE_LOGIN and TRACEKEEP_BEFORE_CALLBACK, when the caller sets them, are the crossing test's commands.
+# page_context prints what each failed browser test saw: Playwright's snapshot of the page at the failure.
+page_context() {
+	find web/test-results -name error-context.md -exec sh -c 'echo "== $1"; cat "$1"' _ {} \; 2>/dev/null || true
+}
+
 playwright() {
 	local url=$1 home=$WORK/browser
 	shift
