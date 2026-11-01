@@ -113,8 +113,8 @@ func run(ctx context.Context, c *config) error {
 	if c.opts.Replay {
 		var sent, skipped int
 		sent, skipped, runErr = sim.ReplayPack(ctx, l, c.pack, c.speed)
-		// Asked before the wait below, which the duration also ends: a replay that failed earlier stays a failure.
-		if errors.Is(context.Cause(ctx), errDurationEnded) {
+		// Asked before the wait below, which the duration also ends: a replay that failed earlier, or for another cause, stays a failure.
+		if errors.Is(context.Cause(ctx), errDurationEnded) && (errors.Is(runErr, context.DeadlineExceeded) || errors.Is(runErr, errDurationEnded)) {
 			runErr = nil
 		}
 		log.Info("tracekeep-sim: replayed", "frames", sent, "malformed", skipped)

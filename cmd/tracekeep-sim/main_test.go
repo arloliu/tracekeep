@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"io/fs"
 	"path/filepath"
 	"strings"
@@ -44,6 +45,16 @@ func TestTimedReplayEndsInSuccess(t *testing.T) {
 	c.pack, c.speed, c.duration = writePack(t), 1e-6, 100*time.Millisecond
 	if err := run(t.Context(), c); err != nil {
 		t.Errorf("run = %v, want nil when the duration ends the replay", err)
+	}
+}
+
+func TestTimedReplayKeepsAnUnrelatedFailure(t *testing.T) {
+	t.Parallel()
+	c := simConfig("replay")
+	// The duration has ended before the replay starts, so a missing pack fails with the duration's cause set.
+	c.pack, c.duration = filepath.Join(t.TempDir(), "missing.tp"), time.Nanosecond
+	if err := run(t.Context(), c); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("run = %v, want the missing pack's error though the duration ended", err)
 	}
 }
 
