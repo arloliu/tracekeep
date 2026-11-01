@@ -98,19 +98,31 @@ async function openRecords(page: Page) {
   return end;
 }
 
-// expectMatched opens a primary of the simulator's (S1F3 W) and sees its SML and its transaction matched:
-// the primary, and its reply a valid candidate.
+// expectMatched opens the simulator's primaries (S1F3 W) in turn until one's transaction is matched, and sees its SML,
+// the primary, and its reply a valid candidate. A primary observed before its predecessor carries ordering-uncertain (producer.md §4.2),
+// which the lookup does not guess past: it may be not found, but only with that gap shown; any other outcome fails.
 async function expectMatched(page: Page) {
-  await page.getByRole("button", { name: /^Seq \d+$/ }).filter({ hasText: "S1F3 W" }).first().click();
   const panel = page.getByRole("complementary", { name: "Selected" });
-  await expect(panel.locator("pre")).not.toBeEmpty();
-  await expect(panel.getByText("matched")).toBeVisible().catch(async (e: unknown) => {
-    throw new Error(`the transaction is not matched; the panel reads:\n${await panel.innerText()}`, { cause: e });
-  });
-  const tx = panel.getByRole("list", { name: "Transaction records" }).getByRole("listitem");
-  await expect(tx.filter({ hasText: /— primary$/ })).toHaveCount(1);
-  await expect(tx.filter({ hasText: /candidate.*✓/ }).first()).toBeVisible();
-  return panel;
+  const primaries = page.getByRole("button", { name: /^Seq \d+$/ }).filter({ hasText: "S1F3 W" });
+  const unmatched: string[] = [];
+  for (let i = 0; i < 5; i++) {
+    const primary = primaries.nth(i);
+    const seq = (await primary.getAttribute("aria-label")) ?? "";
+    await primary.click();
+    await expect(panel.getByRole("heading", { name: seq, exact: true })).toBeVisible();
+    await expect(panel.locator("pre")).not.toBeEmpty();
+    await expect(panel.getByText(/^Outcome: /)).toBeVisible();
+    const text = await panel.innerText();
+    if (/^Outcome: matched\b/m.test(text)) {
+      const tx = panel.getByRole("list", { name: "Transaction records" }).getByRole("listitem");
+      await expect(tx.filter({ hasText: /— primary$/ })).toHaveCount(1);
+      await expect(tx.filter({ hasText: /candidate.*✓/ }).first()).toBeVisible();
+      return panel;
+    }
+    if (!/^Gap: ordering-uncertain\b/m.test(text)) throw new Error(`the transaction of ${seq} is not matched, and no gap says why; the panel reads:\n${text}`);
+    unmatched.push(text);
+  }
+  throw new Error(`no transaction matched among five primaries, each ordering-uncertain:\n${unmatched.join("\n---\n")}`);
 }
 
 // While the leg's simulator still sends (TRACEKEEP_LIVE), a primary's transaction is looked up and matched, as on a running tool.

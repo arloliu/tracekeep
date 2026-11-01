@@ -188,8 +188,13 @@ A local `tracekeep dev` at be45de3 matches every primary in milliseconds at the 
 and tracepack's lookup is unchanged from v0.12.0 but for its errors,
 so the cause lies in what only the cluster has (MariaDB, MinIO, two replicas of each role) or the run was a flake;
 the failed run kept no page, so step 1 first makes a failure show it.
-The next run on `main`, at e4921e9, passed both legs, the cluster's fresh install included, so the failure did not reproduce:
-the diagnostics stay, and a fresh install now browses once the simulator has stopped and its last records flushed, as the upgrade already did,
+The next run on `main`, at e4921e9, passed both legs, the cluster's fresh install included;
+a later branch run failed the same way against that baseline, and the page the diagnostics now print named the cause:
+the first S1F3 of the capture carried ordering-uncertain, observed before its predecessor (`producer.md` §4.2),
+and tracepack's lookup does not guess past such a primary, so it is not found, with the gap that says why.
+That is the lookup working, not failing: the browser test now opens primaries until one is matched, and any not matched must show that gap.
+Why the capture's first request is observed before the records allocated ahead of it is a question for the SDK, carried after the gate.
+A fresh install also looks a transaction up while the simulator sends, then browses once it has stopped and its last records flushed, as the upgrade already did,
 so the records read to a complete end.
 
 | Step | Scope | State |
