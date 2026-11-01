@@ -482,6 +482,8 @@ func TestQuarantines(t *testing.T) {
 		{fmt.Errorf("x: %w", tracepack.ErrReadLimit), true},
 		{fmt.Errorf("x: %w", tracepack.ErrUnsupportedFormat), false},
 		{io.ErrUnexpectedEOF, false},
+		{fmt.Errorf("x: %w", tracepack.ErrSourceRead), false},
+		{fmt.Errorf("x: %w: %w", tracepack.ErrSourceRead, tracepack.ErrCorrupt), false},
 		{errors.New("connection reset"), false},
 		{store.ErrNotFound, false},
 	} {
@@ -498,9 +500,12 @@ func TestOrphanReadFailureRetried(t *testing.T) {
 		b := segment(t, f.admit(t), []uint64{1}, false)
 		f.put(t, b.key, b.data)
 		f.pass(t)
-		f.r.Store = &failingReads{ObjectStore: f.s, err: errors.New("connection reset")}
-		if rep := f.pass(t); len(rep.Quarantined)+len(rep.Adopted) != 0 {
-			t.Fatalf("pass with failing reads = %+v, want nothing settled", rep)
+		// A store error that itself wraps one of tracepack's sentinels is still the store's read, not the object's bytes.
+		for _, err := range []error{errors.New("connection reset"), fmt.Errorf("store: %w", tracepack.ErrCorrupt)} {
+			f.r.Store = &failingReads{ObjectStore: f.s, err: err}
+			if rep := f.pass(t); len(rep.Quarantined)+len(rep.Adopted) != 0 {
+				t.Fatalf("pass with reads failing %v = %+v, want nothing settled", err, rep)
+			}
 		}
 		f.r.Store = f.s
 		if rep := f.pass(t); !slices.Equal(rep.Adopted, []string{b.key}) {

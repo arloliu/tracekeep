@@ -39,7 +39,7 @@ func TestReadRawInline(t *testing.T) {
 	if r.Version.Capture != capture || r.Version.Seq != 7 || r.TS != 5000 || r.Version.Digest != sha256.Sum256(payload) {
 		t.Errorf("raw %+v", r)
 	}
-	if [headerLen]byte(body[:headerLen]) != r.Version.Header {
+	if [tpbus.RecordHeaderLen]byte(body[:tpbus.RecordHeaderLen]) != r.Version.Header {
 		t.Error("the version's header is not the body's first 44 bytes")
 	}
 	if _, f := ReadRaw(&env, body, 6000); !f.Expired {
@@ -53,7 +53,7 @@ func TestReadRawClaimCheck(t *testing.T) {
 	env, body := message(t, tracepack.UUID{2}, 3, 5000, payload)
 	env.PayloadRef = "claims/" + env.MsgID
 	env.PayloadDigest = tpbus.PayloadDigest(payload)
-	r, f := ReadRaw(&env, body[:headerLen], 0)
+	r, f := ReadRaw(&env, body[:tpbus.RecordHeaderLen], 0)
 	if !f.MsgIDOK || !f.ClaimCheck || r.Version.Digest != sha256.Sum256(payload) {
 		t.Errorf("facts %+v, digest %x", f, r.Version.Digest)
 	}
@@ -98,7 +98,7 @@ func TestReadRawMalformed(t *testing.T) {
 	t.Parallel()
 	env, body := message(t, tracepack.UUID{3}, 1, 5000, []byte("x"))
 	cases := map[string]func(e *tpbus.Envelope, b []byte) []byte{
-		"short body": func(_ *tpbus.Envelope, b []byte) []byte { return b[:headerLen-1] },
+		"short body": func(_ *tpbus.Envelope, b []byte) []byte { return b[:tpbus.RecordHeaderLen-1] },
 		"message id": func(e *tpbus.Envelope, b []byte) []byte { e.MsgID = "nonsense"; return b },
 		"claim digest": func(e *tpbus.Envelope, b []byte) []byte {
 			e.PayloadRef, e.PayloadDigest = "claims/"+e.MsgID, "MD5=abc"

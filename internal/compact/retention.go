@@ -2,7 +2,6 @@ package compact
 
 import (
 	"context"
-	"encoding/binary"
 	"encoding/hex"
 	"errors"
 	"strconv"
@@ -59,9 +58,6 @@ func (o ObjectBucket) Delete(ctx context.Context, name string) error {
 	return nil
 }
 
-// headerLen is the length of a record header, the body of a claim-check message.
-const headerLen = 44
-
 // attribute attributes the claim object info of bucket by its name, <capture_id>.<seq>, and the SDK's metadata:
 // the record's 44-byte header, whose seq and time must match the name and the time metadata, and the hour of that time.
 // It returns nil for an object the SDK did not write, which only an operator deletes (compactor.md §8.4).
@@ -71,11 +67,12 @@ func attribute(info ClaimInfo) *catalog.ClaimObject {
 		return nil
 	}
 	header, err := hex.DecodeString(info.Metadata[producer.ObjectMetaRecordHeader])
-	if err != nil || len(header) != headerLen || binary.LittleEndian.Uint64(header[:8]) != seq {
+	rec, ok := tpbus.PeekHeader(header)
+	if err != nil || !ok || len(header) != tpbus.RecordHeaderLen || rec.Seq != seq {
 		return nil
 	}
 	ts, err := strconv.ParseInt(info.Metadata[producer.ObjectMetaTSUTCNs], 16, 64)
-	if err != nil || ts != int64(binary.LittleEndian.Uint64(header[8:16])) { //nolint:gosec // ts_utc_ns is signed little-endian, header bytes 8–15
+	if err != nil || ts != rec.TSUTCNs {
 		return nil
 	}
 

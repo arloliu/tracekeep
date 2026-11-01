@@ -133,6 +133,7 @@ For a key the catalog does not know and that has no **tombstone** (§8.3):
    `ErrNotTracepack`, `ErrCorrupt` (its checksums and footer included), `ErrNotFinalized` (a store's put is atomic, so a listed object is never still being written),
    or `ErrReadLimit` under the default budget every reader opens with;
    any other error, `ErrUnsupportedFormat` (a newer module's pack) and a failed read of the store's object included, leaves the key for the next pass and is logged (T-51);
+   a failed read is told first, by `ErrSourceRead` (tracepack v0.14.0), as the table orders it, so a store error that itself wraps a sentinel never quarantines;
 2. read every record (block by block, through the `Reader`) to obtain the **exact seq set** with the time of each run's endpoints, the capture, hour, `format_minor` and coverage;
    block summaries carry only first and last seq, which do not give membership;
 3. check that the key spells the pack's capture and `pack_id`, and for a segment key its `seq_first` (an archive key has none, [STO §3]);

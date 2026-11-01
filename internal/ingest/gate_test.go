@@ -440,8 +440,8 @@ func TestResolutionInputs(t *testing.T) {
 		empty := dataRecord(1, now)
 		empty.Payload = nil
 		m := inline(t, tracepack.UUID{n + 1}, empty, nil)
-		if len(m.Body) != headerLen {
-			t.Fatalf("body of %d bytes, want %d", len(m.Body), headerLen)
+		if len(m.Body) != tpbus.RecordHeaderLen {
+			t.Fatalf("body of %d bytes, want %d", len(m.Body), tpbus.RecordHeaderLen)
 		}
 		if _, dec := dispose(t, x, m); dec.Action != ActNak || dec.Reason != ReasonUnknownCapture {
 			t.Errorf("a body of exactly 44 bytes = %+v, want read as a record of an unknown capture", dec)
