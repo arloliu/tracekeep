@@ -35,6 +35,7 @@ type Membership struct {
 func (c *Catalog) ActivateConfig(ctx context.Context, content []byte) (int64, error) {
 	var id int64
 	err := c.inTx(ctx, func(tx *sqlx.Tx) error {
+		id = 0
 		if err := c.lockMembership(ctx, tx); err != nil {
 			return err
 		}
@@ -105,6 +106,7 @@ func (c *Catalog) RetireConfig(ctx context.Context, id int64, quiescent []tracep
 func (c *Catalog) Register(ctx context.Context, replica string, configs []int64, ttl time.Duration) (Membership, error) {
 	m := Membership{Replica: replica}
 	err := c.inTx(ctx, func(tx *sqlx.Tx) error {
+		m.Generation = 0
 		if err := c.lockMembership(ctx, tx); err != nil {
 			return err
 		}

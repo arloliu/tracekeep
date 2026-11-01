@@ -51,6 +51,7 @@ type Staging struct {
 func (c *Catalog) StageConfig(ctx context.Context, s Staging) (int64, error) {
 	var id int64
 	err := c.inTx(ctx, func(tx *sqlx.Tx) error {
+		id = 0
 		// The sentinel serializes the allocation of configuration ids with every activation and binding.
 		if err := c.lockMembership(ctx, tx); err != nil {
 			return err
@@ -139,6 +140,7 @@ func (c *Catalog) storeConfig(ctx context.Context, tx *sqlx.Tx, content []byte, 
 func (c *Catalog) ActivateStaged(ctx context.Context, id int64, check func(content []byte) error, audit *AuditEntry) (bool, error) {
 	var changed bool
 	err := c.inTx(ctx, func(tx *sqlx.Tx) error {
+		changed = false
 		if err := c.lockMembership(ctx, tx); err != nil {
 			return err
 		}

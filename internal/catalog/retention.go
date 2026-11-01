@@ -110,6 +110,7 @@ func (c *Catalog) Retention(ctx context.Context) (Retention, error) {
 func (c *Catalog) RecordRetention(ctx context.Context, l Lease, period, hold time.Duration, now int64) (Retention, error) {
 	var out Retention
 	err := c.inTx(ctx, func(tx *sqlx.Tx) error {
+		out = Retention{}
 		if err := c.checkLease(ctx, tx, l); err != nil {
 			return err
 		}

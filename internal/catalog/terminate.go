@@ -19,6 +19,7 @@ import (
 func (c *Catalog) ApplyOrder(ctx context.Context, d *Identity) (Resolution, error) {
 	var r Resolution
 	err := outcome(c.inTx(ctx, func(tx *sqlx.Tx) error {
+		r = 0
 		if _, err := c.lockCapture(ctx, tx, d.Version.Capture); err != nil {
 			return err
 		}

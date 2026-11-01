@@ -54,6 +54,7 @@ func (c *Catalog) DeleteCandidates(ctx context.Context, now int64, delay time.Du
 func (c *Catalog) DeletePack(ctx context.Context, l Lease, d Deletable, now int64, delay time.Duration) (bool, error) {
 	deleted := false
 	err := outcome(c.inTx(ctx, func(tx *sqlx.Tx) error {
+		deleted = false
 		if _, err := c.lockCapture(ctx, tx, d.Capture); err != nil {
 			return err
 		}

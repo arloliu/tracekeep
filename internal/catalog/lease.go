@@ -27,6 +27,7 @@ type Lease struct {
 func (c *Catalog) TakeLease(ctx context.Context, name, holder string, ttl time.Duration) (Lease, bool, error) {
 	l := Lease{Name: name, Holder: holder}
 	err := c.inTx(ctx, func(tx *sqlx.Tx) error {
+		l.Fence = 0
 		res, err := tx.ExecContext(ctx, `UPDATE leases SET holder = ?, fence_token = fence_token + 1, until_ns = `+c.d.nowNS+` + ?
 			WHERE name = ? AND until_ns < `+c.d.nowNS, holder, ttl.Nanoseconds(), name)
 		if err := affected(res, err, ErrLeaseLost); err != nil {

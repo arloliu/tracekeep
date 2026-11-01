@@ -23,6 +23,7 @@ func (c *Catalog) AcknowledgeConflict(ctx context.Context, capture tracepack.UUI
 	at := int64(seq) //nolint:gosec // checked below 2^63 by the caller's parse at most; a larger seq matches no row
 	var n int
 	err := outcome(c.inTx(ctx, func(tx *sqlx.Tx) error {
+		n = 0
 		if _, err := c.lockCapture(ctx, tx, capture); err != nil {
 			return err
 		}
@@ -198,6 +199,7 @@ func (c *Catalog) DecideRequest(ctx context.Context, l Lease, q Request) (string
 	}
 	var result string
 	err := outcome(c.inTx(ctx, func(tx *sqlx.Tx) error {
+		result = ""
 		row, err := c.lockCapture(ctx, tx, q.Capture)
 		if err != nil {
 			return err

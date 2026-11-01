@@ -110,6 +110,7 @@ const (
 func (c *Catalog) CloseIntent(ctx context.Context, l Lease, in *Intent) (CloseOutcome, error) {
 	var out CloseOutcome
 	err := outcome(c.inTx(ctx, func(tx *sqlx.Tx) error {
+		out = 0
 		row, err := c.lockCapture(ctx, tx, in.Capture)
 		if err != nil {
 			return err
@@ -265,6 +266,7 @@ func (c *Catalog) PublishClose(ctx context.Context, l Lease, p *Pack, horizonHou
 	}
 	var state string
 	err := outcome(c.inTx(ctx, func(tx *sqlx.Tx) error {
+		state = ""
 		out, evs, err := c.registerIn(ctx, tx, p, Registration{Lease: &l, HorizonHour: horizonHour}, nil)
 		if err != nil {
 			return err

@@ -142,7 +142,7 @@ func (c *Catalog) RegisterPackGaps(ctx context.Context, p *Pack, r Registration)
 	err := outcome(c.inTx(ctx, func(tx *sqlx.Tx) error {
 		var evs []event
 		var err error
-		gaps = 0
+		out, gaps = 0, 0
 		out, evs, err = c.registerIn(ctx, tx, p, r, &gaps)
 		if err == nil && out != Registered && out != BeyondHorizon && out != LostToTermination {
 			err = errRollback

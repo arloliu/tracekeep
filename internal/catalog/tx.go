@@ -82,6 +82,7 @@ type captureRow struct {
 
 // inTx runs fn in a write transaction, re-running it whole on a deadlock or a busy database,
 // so its guards are read again; any other error rolls it back and is returned.
+// fn resets on entry every result it records outside itself: a rolled-back attempt's results are not the committed one's.
 func (c *Catalog) inTx(ctx context.Context, fn func(tx *sqlx.Tx) error) error {
 	for attempt := 1; ; attempt++ {
 		err := c.attempt(ctx, fn)
@@ -121,6 +122,11 @@ func (c *Catalog) attempt(ctx context.Context, fn func(tx *sqlx.Tx) error) error
 		return errors.Join(err, rollback(tx))
 	}
 	c.hook(hookBeforeCommit)
+	if c.testCommit != nil {
+		if err := c.testCommit(); err != nil {
+			return errors.Join(err, rollback(tx))
+		}
+	}
 
 	return tx.Commit()
 }

@@ -83,6 +83,7 @@ const (
 func (c *Catalog) RecordConflict(ctx context.Context, l Lease, s Suspect, differ bool) (ConflictOutcome, error) {
 	var out ConflictOutcome
 	err := outcome(c.inTx(ctx, func(tx *sqlx.Tx) error {
+		out = 0
 		if _, err := c.lockCapture(ctx, tx, s.Capture); err != nil {
 			return err
 		}
