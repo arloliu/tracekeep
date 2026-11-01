@@ -169,6 +169,8 @@ type Records struct {
 	MaxLookupPacks int `yaml:"max_lookup_packs" default:"64" env:"TRACEKEEP_API_RECORDS_MAX_LOOKUP_PACKS" validate:"gte=1"`
 	// HeldBytes are the block bytes one merge holds, tracepack's MaxHeldBytes.
 	HeldBytes int64 `yaml:"held_bytes" default:"67108864" env:"TRACEKEEP_API_RECORDS_HELD_BYTES" validate:"gte=1048576"`
+	// SendTimeout ends a QueryRecords stream whose send makes no progress this long, freeing its read slot.
+	SendTimeout time.Duration `yaml:"send_timeout" default:"1m" env:"TRACEKEEP_API_RECORDS_SEND_TIMEOUT" validate:"gt=0,lte=24h"`
 }
 
 // Exports configures the export jobs the api replicas run and the compactor cleans up (api.md §10.1 *Exports*).

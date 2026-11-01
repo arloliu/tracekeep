@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"connectrpc.com/connect"
 	"github.com/arloliu/go-secs/tracepack"
@@ -42,6 +43,8 @@ type RecordReads struct {
 	MaxReaders, MaxLookupPacks int
 	// HeldBytes is tracepack's MaxHeldBytes for each merge (default 64 MiB).
 	HeldBytes int64
+	// SendTimeout ends a QueryRecords stream whose send makes no progress this long (default 1 min).
+	SendTimeout time.Duration
 
 	once  sync.Once
 	slots chan struct{}
@@ -74,7 +77,13 @@ func (s *Server) reader() *records.Reader {
 }
 
 // QueryRecords implements tracekeepv1connect.MachineServiceHandler.
-func (s *Server) QueryRecords(ctx context.Context, req *connect.Request[tkv1.QueryRecordsRequest], stream *connect.ServerStream[tkv1.QueryRecordsResponse]) error {
+// A stream whose send made no progress for the send timeout ends as deadline_exceeded, whatever the failed send reported.
+func (s *Server) QueryRecords(ctx context.Context, req *connect.Request[tkv1.QueryRecordsRequest], stream *connect.ServerStream[tkv1.QueryRecordsResponse]) (err error) {
+	defer func() {
+		if err != nil && sendStalled(ctx) {
+			err = connect.NewError(connect.CodeDeadlineExceeded, errors.New("api: the stream's send made no progress for the send timeout"))
+		}
+	}()
 	q, err := parseQuery(req.Msg)
 	if err != nil {
 		return err

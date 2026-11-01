@@ -141,6 +141,8 @@ func (s *Server) routes(impl tracekeepv1connect.MachineServiceHandler) http.Hand
 			s.People.Handler().ServeHTTP(w, r)
 		case strings.HasPrefix(p, "/download/") || path.Clean(p) != p:
 			http.NotFound(&downloadWriter{ResponseWriter: w}, r)
+		case p == tracekeepv1connect.MachineServiceQueryRecordsProcedure:
+			mux.ServeHTTP(s.watchSends(w, r))
 		case strings.HasPrefix(p, "/tracekeep.v1."):
 			mux.ServeHTTP(w, r)
 		default:
