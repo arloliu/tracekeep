@@ -75,23 +75,25 @@ func (a Action) String() string {
 
 // Reasons name a disposition for its metric, its alert and the nak delay.
 const (
-	ReasonMalformed       = "malformed"
-	ReasonAlreadyStaged   = "already-staged"
-	ReasonTerminated      = "terminated"
-	ReasonCaptureRejected = "capture-rejected"
-	ReasonConflict        = "descriptor-conflict"
-	ReasonClaimMissing    = "claim-missing"
-	ReasonClaimConflict   = "claim-conflict"
-	ReasonUnknownCapture  = "unknown-capture"
-	ReasonDeferredAged    = "deferred-expired"
-	ReasonBeyondRetention = "beyond-retention"
-	ReasonIncompatible    = "incompatible-configuration"
-	ReasonInvalidRecord   = "invalid-record"
-	ReasonInvariant       = "invariant"
-	ReasonWriteFailure    = "write-failure"
-	ReasonCannotScreen    = "cannot-screen"
-	ReasonKeyRefused      = "key-refused"
-	ReasonKeyUnavailable  = "key-unavailable"
+	ReasonMalformed = "malformed"
+	// ReasonUnsupportedLayout defers a message of a Tpk-Layout this release does not read until one that does takes it (T-51).
+	ReasonUnsupportedLayout = "unsupported-layout"
+	ReasonAlreadyStaged     = "already-staged"
+	ReasonTerminated        = "terminated"
+	ReasonCaptureRejected   = "capture-rejected"
+	ReasonConflict          = "descriptor-conflict"
+	ReasonClaimMissing      = "claim-missing"
+	ReasonClaimConflict     = "claim-conflict"
+	ReasonUnknownCapture    = "unknown-capture"
+	ReasonDeferredAged      = "deferred-expired"
+	ReasonBeyondRetention   = "beyond-retention"
+	ReasonIncompatible      = "incompatible-configuration"
+	ReasonInvalidRecord     = "invalid-record"
+	ReasonInvariant         = "invariant"
+	ReasonWriteFailure      = "write-failure"
+	ReasonCannotScreen      = "cannot-screen"
+	ReasonKeyRefused        = "key-refused"
+	ReasonKeyUnavailable    = "key-unavailable"
 )
 
 // IncidentKeyBindingMismatch is the incident of a refused key whose material no longer matches its binding,
@@ -211,6 +213,8 @@ const (
 type Facts struct {
 	// Raw: Tpk-Layout 1 and a body of at least 44 bytes; Nats-Msg-Id parses to (capture, seq).
 	LayoutOK, MsgIDOK bool
+	// LayoutUnknown: a Tpk-Layout other than 1, an absent one included, a newer producer's message (T-51).
+	LayoutUnknown bool
 	// Expired: ts_utc_ns, read at body offset 8, is older than the retention horizon.
 	Expired bool
 	// ClaimCheck: the message carries a claim reference.
@@ -246,8 +250,11 @@ type Facts struct {
 
 // Decide returns the disposition of the delivery f describes, or the next step it needs (ingest.md §6.1).
 // It performs no I/O and holds no lock; the order of its checks is §6.1's:
-// layout and length, resolution before framing, framing, admission before any age decision, age, then the waits.
+// layout (an unknown one deferred), length, resolution before framing, framing, admission before any age decision, age, then the waits.
 func Decide(f *Facts) Decision {
+	if f.LayoutUnknown {
+		return nak(ReasonUnsupportedLayout, true)
+	}
 	if !f.LayoutOK || !f.MsgIDOK {
 		return terminate(ReasonMalformed, true)
 	}

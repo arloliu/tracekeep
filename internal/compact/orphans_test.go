@@ -5,6 +5,8 @@ import (
 	"context"
 	"crypto/rand"
 	"errors"
+	"fmt"
+	"io"
 	"log/slog"
 	"math"
 	"slices"
@@ -352,8 +354,11 @@ func TestOrphanQuarantined(t *testing.T) {
 		misnamed := segment(t, capture, []uint64{3}, false)
 		other := newID(t)
 		misnamed.key, _ = tracepack.SegmentKey("", tool, capture, 3, other)
+		// Verify fails on an object that is no pack at all (ErrNotTracepack): evidence of its bytes, quarantined too.
+		junk, _ := tracepack.SegmentKey("", tool, capture, 4, newID(t))
 		f.put(t, corrupt.key, corrupt.data)
 		f.put(t, misnamed.key, misnamed.data)
+		f.put(t, junk, bytes.Repeat([]byte("not a pack "), 64))
 		f.pass(t)
 		rep := f.pass(t)
 		keys := make([]string, 0, len(rep.Quarantined))
@@ -361,10 +366,10 @@ func TestOrphanQuarantined(t *testing.T) {
 			keys = append(keys, q.Key)
 		}
 		slices.Sort(keys)
-		want := []string{corrupt.key, misnamed.key}
+		want := []string{corrupt.key, misnamed.key, junk}
 		slices.Sort(want)
 		if !slices.Equal(keys, want) || len(rep.Adopted) != 0 {
-			t.Fatalf("pass = %+v, want both quarantined", rep)
+			t.Fatalf("pass = %+v, want all three quarantined", rep)
 		}
 		for _, k := range want {
 			if !f.present(t, k) {
@@ -463,6 +468,29 @@ func TestTombstonedKeyKeptFromAStaleHolder(t *testing.T) {
 }
 
 // A read the store fails is retried by the next pass, never taken for a damaged object.
+// Verify's errors quarantine an orphan only when they are about its bytes; a newer format or a failed read waits for the next pass.
+func TestQuarantines(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		err  error
+		want bool
+	}{
+		{fmt.Errorf("x: %w", tracepack.ErrChecksum), true},
+		{fmt.Errorf("x: %w", tracepack.ErrInvalidFooter), true},
+		{fmt.Errorf("x: %w", tracepack.ErrNotFinalized), true},
+		{fmt.Errorf("x: %w", tracepack.ErrNotTracepack), true},
+		{fmt.Errorf("x: %w", tracepack.ErrReadLimit), true},
+		{fmt.Errorf("x: %w", tracepack.ErrUnsupportedFormat), false},
+		{io.ErrUnexpectedEOF, false},
+		{errors.New("connection reset"), false},
+		{store.ErrNotFound, false},
+	} {
+		if got := quarantines(tc.err); got != tc.want {
+			t.Errorf("quarantines(%v) = %v, want %v", tc.err, got, tc.want)
+		}
+	}
+}
+
 func TestOrphanReadFailureRetried(t *testing.T) {
 	t.Parallel()
 	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {

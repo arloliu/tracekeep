@@ -92,7 +92,8 @@ func TestDecide(t *testing.T) {
 		want  Decision
 		steps []Step
 	}{
-		{"unknown layout or short body", Facts{MsgIDOK: true}, nil, Decision{Action: ActTerminate, Reason: ReasonMalformed, Alert: true}, nil},
+		{"unknown layout: deferred, never a seq gap", Facts{LayoutUnknown: true}, nil, Decision{Action: ActNak, Reason: ReasonUnsupportedLayout, Alert: true}, nil},
+		{"short body", Facts{MsgIDOK: true}, nil, Decision{Action: ActTerminate, Reason: ReasonMalformed, Alert: true}, nil},
 		{"bad Nats-Msg-Id", Facts{LayoutOK: true}, nil, Decision{Action: ActTerminate, Reason: ReasonMalformed, Alert: true}, nil},
 		{"version already staged: no framing, no admission", raw, world{{StepResolve, func(f *Facts) { f.Resolution = ResolvedStaged }}},
 			Decision{Action: ActAck, Reason: ReasonAlreadyStaged}, []Step{StepResolve}},

@@ -34,13 +34,17 @@ type Raw struct {
 }
 
 // ReadRaw reads env and body as far as resolution needs, and returns the raw facts:
-// the layout and length checked first, then the version, whose capture and seq come from Nats-Msg-Id
+// the layout and length checked first (a layout other than 1 is LayoutUnknown, deferred, not malformed), then the version, whose capture and seq come from Nats-Msg-Id
 // and whose digest is the claim's Tpk-Payload-Digest or the SHA-256 of the inline payload.
 // A record older than horizonNS (UTC nanoseconds) is expired.
 func ReadRaw(env *tpbus.Envelope, body []byte, horizonNS int64) (Raw, Facts) {
 	var r Raw
 	var f Facts
-	if env.Layout != "1" || len(body) < headerLen {
+	if env.Layout != tpbus.Layout1 {
+		f.LayoutUnknown = true
+		return r, f
+	}
+	if len(body) < headerLen {
 		return r, f
 	}
 	f.LayoutOK = true

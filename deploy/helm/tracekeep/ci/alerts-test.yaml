@@ -20,6 +20,24 @@ tests:
   - {series: 'tracekeep_ingest_deferred_oldest_age_seconds{instance="b",reason="unknown-capture"}', values: '2000x10'}
   alert_rule_test:
   - {eval_time: 8m, alertname: TracekeepDeferredOld, exp_alerts: []}
+- name: a message of an unknown layout deferred on one of two replicas
+  interval: 1m
+  input_series:
+  - {series: 'tracekeep_ingest_deferred_messages{instance="a",reason="unsupported-layout"}', values: '3x10'}
+  - {series: 'tracekeep_ingest_deferred_messages{instance="b",reason="unsupported-layout"}', values: '0x10'}
+  - {series: 'tracekeep_ingest_deferred_messages{instance="b",reason="unknown-capture"}', values: '5x10'}
+  alert_rule_test:
+  - {eval_time: 3m, alertname: TracekeepLayoutUnsupported, exp_alerts: []}
+  - eval_time: 6m
+    alertname: TracekeepLayoutUnsupported
+    exp_alerts: [{exp_labels: {severity: critical}, exp_annotations: {summary: "Ingest defers messages of a bus layout this release does not read.", runbook_url: "rb#unsupported-layout"}}]
+- name: no unknown layout deferred
+  interval: 1m
+  input_series:
+  - {series: 'tracekeep_ingest_deferred_messages{instance="a",reason="unsupported-layout"}', values: '0x10'}
+  - {series: 'tracekeep_ingest_deferred_messages{instance="a",reason="unknown-capture"}', values: '5x10'}
+  alert_rule_test:
+  - {eval_time: 8m, alertname: TracekeepLayoutUnsupported, exp_alerts: []}
 
 - name: backlog, two replicas each under the threshold do not add up
   interval: 1m

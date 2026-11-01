@@ -59,12 +59,25 @@ func TestReadRawClaimCheck(t *testing.T) {
 	}
 }
 
+// A message of another layout, or none, is a newer producer's: deferred with an alert, never a seq gap (T-51).
+func TestReadRawUnknownLayout(t *testing.T) {
+	t.Parallel()
+	env, body := message(t, tracepack.UUID{3}, 1, 7000, []byte("x"))
+	for _, layout := range []string{"2", ""} {
+		e := env
+		e.Layout = layout
+		_, f := ReadRaw(&e, body, 0)
+		if d := Decide(&f); !f.LayoutUnknown || d.Action != ActNak || d.Reason != ReasonUnsupportedLayout || !d.Alert {
+			t.Errorf("layout %q: facts %+v, disposition %+v, want an alerted deferral", layout, f, d)
+		}
+	}
+}
+
 // What cannot be read before framing is malformed: Decide terminates it without looking further.
 func TestReadRawMalformed(t *testing.T) {
 	t.Parallel()
 	env, body := message(t, tracepack.UUID{3}, 1, 5000, []byte("x"))
 	cases := map[string]func(e *tpbus.Envelope, b []byte) []byte{
-		"layout":     func(e *tpbus.Envelope, b []byte) []byte { e.Layout = "2"; return b },
 		"short body": func(_ *tpbus.Envelope, b []byte) []byte { return b[:headerLen-1] },
 		"message id": func(e *tpbus.Envelope, b []byte) []byte { e.MsgID = "nonsense"; return b },
 		"claim digest": func(e *tpbus.Envelope, b []byte) []byte {

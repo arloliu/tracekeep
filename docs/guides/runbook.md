@@ -53,12 +53,25 @@ Two populations wait, found and retried differently:
   with each group's count and oldest parking time; the parked consumer redelivers them every `parking.redelivery_delay`.
 
 1. Read the reason from the alert's `reason` label, then resolve it by its own section: `cannot-screen`, `incompatible-configuration`, `key-refused` or `keys-unavailable`;
+   an `unsupported-layout` is its own section's;
    an `unknown-capture` waits for its capture's start, which the producer sends at its next rotation;
    a `write-failure` is the store's or the catalog's, whose errors are in ingest's log.
 2. Once the cause is gone, each waiting message resolves at its next delivery.
 
 **If ignored**: the messages wait, their seqs gaps in their captures, until an operator terminates them with `capture terminate`, which declares them lost;
 retention ends nothing that is parked.
+
+## unsupported-layout
+
+**Alert** `TracekeepLayoutUnsupported`: ingest receives messages whose `Tpk-Layout` this release does not read, a newer producer's (`ingest.md` §6.1, T-51).
+It defers each with its backoff and writes nothing; no seq is a gap yet, and a claim object the message names is kept until its hour's retention.
+The replica's log names each message (`msg_id`) with the reason `unsupported-layout` (`tracekeep_ingest_deferred_messages{reason="unsupported-layout"}`).
+
+1. Deploy a tracekeep release that reads the layout: consumers go before any producer emits a new layout (`rollouts.md`), so this is a rollout out of order.
+2. If no such release exists, roll the producer back to the layout this one reads; the messages already published wait for a release that reads them.
+3. Once a replica reads the layout, each message is ingested at its next delivery.
+
+**If ignored**: the messages wait on the traffic stream, its backlog growing, until the stream's own retention removes them; their seqs are then gaps.
 
 ## backlog
 

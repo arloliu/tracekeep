@@ -211,7 +211,7 @@ func (r *Compactor) write(ctx context.Context, w *os.File, lease catalog.Lease, 
 			return tracepack.MergeReport{}, nil, fmt.Errorf("compact: open input %s: %w", in.Key, err)
 		}
 		opened = append(opened, obj)
-		inputs = append(inputs, tracepack.MergeInput{ReaderAt: reading{obj}, Size: obj.Size()})
+		inputs = append(inputs, tracepack.MergeInput{ReaderAt: obj, Size: obj.Size()})
 	}
 	conflicts := []tracepack.Conflict{}
 	report, err := tracepack.Merge(ctx, w, inputs, tracepack.MergeOptions{
