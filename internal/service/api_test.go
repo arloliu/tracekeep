@@ -22,6 +22,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -34,6 +35,7 @@ import (
 	"github.com/arloliu/tracekeep/internal/catalog"
 	"github.com/arloliu/tracekeep/internal/config"
 	"github.com/arloliu/tracekeep/internal/keys"
+	"github.com/arloliu/tracekeep/internal/metrics"
 	"github.com/arloliu/tracekeep/internal/store"
 	tkv1 "github.com/arloliu/tracekeep/proto/tracekeep/v1"
 	"github.com/arloliu/tracekeep/proto/tracekeep/v1/tracekeepv1connect"
@@ -511,6 +513,61 @@ func TestAPIRoleStopsWithADownloadInFlight(t *testing.T) {
 	}
 	if !b.closed.Load() {
 		t.Error("the role returned while the download's handler still held its object")
+	}
+}
+
+// closeProbe is a listener that runs onClose at its first Close, the moment the server stops accepting.
+type closeProbe struct {
+	net.Listener
+	once    sync.Once
+	onClose func()
+}
+
+func (p *closeProbe) Close() error {
+	p.once.Do(p.onClose)
+
+	return p.Listener.Close()
+}
+
+// A stopping api role is unready before its listener closes, so no probe sends it traffic it will not accept.
+func TestAPIRoleUnreadyBeforeItsListenerCloses(t *testing.T) {
+	t.Parallel()
+	e := devEnv(t)
+	e.Metrics = metrics.NewServer()
+	readyz := func() int {
+		rec := httptest.NewRecorder()
+		e.Metrics.Handler().ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/readyz", http.NoBody))
+
+		return rec.Code
+	}
+	atClose := make(chan int, 1)
+	e.apiListener = &closeProbe{Listener: e.apiListener, onClose: func() { atClose <- readyz() }}
+	bound := make(chan struct{})
+	e.apiBound = func() { close(bound) }
+	run, stop := context.WithCancel(t.Context())
+	done := make(chan error, 1)
+	go func() { done <- API(run, e) }()
+	ended := sync.OnceValue(func() error { return <-done })
+	t.Cleanup(func() {
+		stop()
+		_ = ended()
+	})
+	<-bound
+	// An answered request: the role serves, its readiness the catalog's.
+	resp, err := trusting(t, e.Config.API.TLSCertFile).Get(e.Config.API.PublicURL + "/download/x") //nolint:noctx // a test's probe
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	if code := readyz(); code != http.StatusOK {
+		t.Fatalf("/readyz while serving = %d, want 200", code)
+	}
+	stop()
+	if code := <-atClose; code != http.StatusServiceUnavailable {
+		t.Errorf("/readyz as the listener closes = %d, want 503", code)
+	}
+	if err := ended(); err != nil {
+		t.Errorf("API on a stop = %v, want nil", err)
 	}
 }
 
