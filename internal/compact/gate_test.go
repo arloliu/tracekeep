@@ -158,10 +158,11 @@ func TestCopiesFromAFollower(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		cons, err := s.CreateOrUpdateConsumer(ctx, jetstream.ConsumerConfig{Durable: "t", AckPolicy: jetstream.AckExplicitPolicy})
-		if err != nil {
-			t.Fatal(err)
-		}
+		var cons jetstream.Consumer
+		testbus.Retry(t, func(ctx context.Context) (err error) {
+			cons, err = s.CreateOrUpdateConsumer(ctx, jetstream.ConsumerConfig{Durable: "t", AckPolicy: jetstream.AckExplicitPolicy})
+			return err
+		})
 		b := &streams{js: js, parked: s, inc: inc, cons: cons}
 		capture := newID(t)
 		acked := b.copyOf(t, c, capture, 1)

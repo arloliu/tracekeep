@@ -273,20 +273,40 @@ func AwaitStream(t testing.TB, js jetstream.JetStream, s jetstream.Stream) {
 	}, nil)
 }
 
-// Retry runs f, an idempotent request, until it succeeds, giving each of three attempts its own 10 s deadline:
-// a request to a cluster just formed may get no reply in time, a new replicated stream's election running or the request lost.
-// An error other than a deadline fails the test at once.
+// Retry runs f, an idempotent request, until it succeeds, giving each of five attempts its own 10 s deadline
+// and waiting a second before the next:
+// a request to a cluster just formed may get no reply in time, a new replicated stream's election running or the request lost,
+// and a placement may find a peer the meta leader has not yet heard from, which it reports as offline.
+// Any other error fails the test at once, as does the test's end.
 func Retry(t testing.TB, f func(ctx context.Context) error) {
 	t.Helper()
-	for attempt := 1; ; attempt++ {
-		ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
-		err := f(ctx)
+	if err := attempt(t.Context(), time.Second, f); err != nil {
+		t.Fatal(err)
+	}
+}
+
+const retryAttempts = 5
+
+// errCodeNoPeers is nats-server's JSClusterNoPeersErrF, a placement with too few peers online; nats.go names no constant for it.
+const errCodeNoPeers jetstream.ErrorCode = 10005
+
+// attempt is Retry returning the error that ends it, waiting wait between attempts.
+func attempt(ctx context.Context, wait time.Duration, f func(ctx context.Context) error) error {
+	for n := 1; ; n++ {
+		actx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		err := f(actx)
 		cancel()
-		if err == nil {
-			return
+		var api *jetstream.APIError
+		passing := errors.Is(err, context.DeadlineExceeded) || errors.As(err, &api) && api.ErrorCode == errCodeNoPeers
+		if err == nil || !passing || n == retryAttempts {
+			return err
 		}
-		if !errors.Is(err, context.DeadlineExceeded) || attempt == 3 {
-			t.Fatal(err)
+		timer := time.NewTimer(wait)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return fmt.Errorf("%w after %w", ctx.Err(), err)
+		case <-timer.C:
 		}
 	}
 }
