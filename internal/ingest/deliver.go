@@ -418,6 +418,10 @@ func (d *Delivery) identity() *catalog.Identity {
 // deferralID names the delivery's deferral in the ingest metrics: its message id and its version,
 // since two versions of one seq share the message id and each is settled on its own.
 func (d *Delivery) deferralID() string {
+	if !d.Facts.MsgIDOK {
+		// No version was read (an unknown layout, a malformed message): the stream's own position names the message.
+		return fmt.Sprintf("stream/%d/%d", d.Msg.Incarnation, d.Msg.StreamSeq)
+	}
 	v := &d.Raw.Version
 
 	return fmt.Sprintf("%s/%x/%x", d.Msg.Env.MsgID, v.Header, v.Digest[:8])
