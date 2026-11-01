@@ -2,6 +2,7 @@ package catalog
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 
 	"github.com/jmoiron/sqlx"
@@ -97,4 +98,19 @@ func (c *Catalog) ReadSet(ctx context.Context, capture tracepack.UUID, hour int6
 	}
 
 	return out, nil
+}
+
+// NextReadHour is the first hour of capture in [from, to] with a scope or an evicted range, the hours whose read set holds anything;
+// ok is false when there is none. Both are found by their tables' primary keys, so a read never steps through an empty stretch.
+func (c *Catalog) NextReadHour(ctx context.Context, capture tracepack.UUID, from, to int64) (hour int64, ok bool, err error) {
+	var next sql.NullInt64
+	err = c.read.GetContext(ctx, &next, `SELECT MIN(hour) FROM (
+		SELECT MIN(hour) AS hour FROM scopes WHERE capture_id = ? AND hour BETWEEN ? AND ?
+		UNION ALL SELECT MIN(hour) FROM evicted_ranges WHERE capture_id = ? AND hour BETWEEN ? AND ?) AS hours`,
+		capture[:], from, to, capture[:], from, to)
+	if err != nil {
+		return 0, false, fmt.Errorf("catalog: next read hour of %s from %d: %w", capture, from, err)
+	}
+
+	return next.Int64, next.Valid, nil
 }
