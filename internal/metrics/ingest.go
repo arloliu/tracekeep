@@ -20,7 +20,7 @@ type Ingest struct {
 	// lastLoss is when each tool's last seq was declared lost, an event an alert reads whatever the counter's history (operations.md §10.4).
 	lastLoss                                     *prometheus.GaugeVec
 	now                                          func() time.Time
-	redelivered, inProgress                      prometheus.Counter
+	redelivered, inProgress, flushStalls         prometheus.Counter
 	put, registration, mask                      prometheus.Histogram
 	refreshFailures, cannotScreen, keyMismatches prometheus.Counter
 	snap                                         *snapshot
@@ -50,6 +50,8 @@ func NewIngest(s *Server, now func() time.Time) (*Ingest, error) {
 			Help: "Deliveries that were redeliveries."}),
 		inProgress: prometheus.NewCounter(prometheus.CounterOpts{Namespace: "tracekeep", Subsystem: "ingest", Name: "in_progress_acks_total",
 			Help: "In-progress acknowledgements sent for held messages."}),
+		flushStalls: prometheus.NewCounter(prometheus.CounterOpts{Namespace: "tracekeep", Subsystem: "ingest", Name: "flush_stalls_total",
+			Help: "Local file work of a flush that outlasted its bound, waited for rather than interrupted."}),
 		put: prometheus.NewHistogram(prometheus.HistogramOpts{Namespace: "tracekeep", Subsystem: "ingest", Name: "put_seconds",
 			Help: "The put of a segment to the store.", Buckets: prometheus.ExponentialBuckets(0.01, 2, 12)}),
 		registration: prometheus.NewHistogram(prometheus.HistogramOpts{Namespace: "tracekeep", Subsystem: "ingest", Name: "registration_seconds",
@@ -66,7 +68,7 @@ func NewIngest(s *Server, now func() time.Time) (*Ingest, error) {
 		deferred: &deferrals{byID: map[string]deferral{}, now: now},
 	}
 	for _, c := range []prometheus.Collector{
-		m.messages, m.segments, m.segmentBytes, m.conflicts, m.losses, m.lastLoss, m.gapObservations, m.redelivered, m.inProgress, m.put, m.registration, m.mask,
+		m.messages, m.segments, m.segmentBytes, m.conflicts, m.losses, m.lastLoss, m.gapObservations, m.redelivered, m.inProgress, m.flushStalls, m.put, m.registration, m.mask,
 		m.refreshFailures, m.cannotScreen, m.keyMismatches, m.snap, m.deferred,
 	} {
 		if err := s.Registry().Register(c); err != nil {
@@ -122,6 +124,14 @@ func (m *Ingest) InProgress(n int) {
 		return
 	}
 	m.inProgress.Add(float64(n))
+}
+
+// FlushStall counts one flush's local file work outlasting its bound.
+func (m *Ingest) FlushStall() {
+	if m == nil {
+		return
+	}
+	m.flushStalls.Inc()
 }
 
 // CannotScreen counts one record masking could not screen.

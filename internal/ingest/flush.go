@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"slices"
@@ -44,6 +45,10 @@ type Flusher struct {
 	Now func() time.Time
 	// Metrics records the put and registration of each segment; nil records none.
 	Metrics *metrics.Ingest
+	// Log reports local file work that outlasts its flush's bound; nil logs nothing.
+	Log *slog.Logger
+	// LocalStore reports a Store whose calls are local file work, the fs store's, which a context does not interrupt.
+	LocalStore bool
 	// Reader is what the working file is reopened with: zero takes the budgets every reader of a pack opens with.
 	Reader tracepack.ReaderOptions
 
@@ -132,11 +137,17 @@ func (f *Flusher) Flush(ctx context.Context, b *Batch) (Flushed, error) {
 		}
 	}()
 	for i := range segs {
-		w, err := f.writeFile(b, &capture, &cfg, &segs[i])
+		err := f.local(ctx, "write", func() error {
+			w, err := f.writeFile(b, &capture, &cfg, &segs[i])
+			if err == nil {
+				files = append(files, w)
+			}
+
+			return err
+		})
 		if err != nil {
 			return Flushed{}, err
 		}
-		files = append(files, w)
 	}
 	horizon := f.HorizonHour()
 	var out Flushed
@@ -169,6 +180,23 @@ func (f *Flusher) Flush(ctx context.Context, b *Batch) (Flushed, error) {
 	}
 
 	return out, nil
+}
+
+// local runs fn, local file work a context does not interrupt (ingest.md §6.2): it starts only while ctx lasts,
+// and once ctx ends before fn returns, it is reported stalled and still waited for, so nothing outlives the flush that owns its files.
+func (f *Flusher) local(ctx context.Context, work string, fn func() error) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	stalled := context.AfterFunc(ctx, func() {
+		f.Metrics.FlushStall()
+		if f.Log != nil {
+			f.Log.Warn("ingest: flush stalled past its bound", "work", work)
+		}
+	})
+	defer stalled()
+
+	return fn()
 }
 
 // CleanWorkDir removes the working files a crashed process left: their messages were never acknowledged (storage.md §5.1).
@@ -246,7 +274,14 @@ func (f *Flusher) register(ctx context.Context, b *Batch, capture *catalog.Captu
 		return 0, err
 	}
 	started := time.Now()
-	if err := f.Store.Put(ctx, key, w.file, w.size); err != nil {
+	put := func() error { return f.Store.Put(ctx, key, w.file, w.size) }
+	if f.LocalStore {
+		err = f.local(ctx, "put", put)
+	} else {
+		err = put()
+	}
+	if err != nil {
+		// An unknown outcome: an object the put may have made is left to the reconciler and the orphan pass (storage.md §5.4).
 		return 0, err
 	}
 	f.Metrics.Put(time.Since(started))

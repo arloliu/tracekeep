@@ -1,0 +1,399 @@
+package ingest
+
+import (
+	"context"
+	"errors"
+	"io"
+	"log/slog"
+	"slices"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/arloliu/go-secs/tracepack"
+	"github.com/arloliu/tracekeep/internal/catalog"
+	"github.com/arloliu/tracekeep/internal/catalog/catalogtest"
+	"github.com/arloliu/tracekeep/internal/metrics"
+	"github.com/arloliu/tracekeep/internal/store"
+)
+
+// guard ends a double's wait that no context ended, so a missing bound fails the test instead of hanging it.
+const guard = 5 * time.Second
+
+// bound is the ack wait or stop budget the tests give a flush; only its end matters, never its length.
+const bound = 100 * time.Millisecond
+
+var errNotEnded = errors.New("not ended by its context")
+
+// stallingPut is a store whose puts never answer: each returns only once its context ends.
+// A durable one makes the object first, so what is lost is the answer.
+type stallingPut struct {
+	store.ObjectStore
+	durable bool
+
+	mu          sync.Mutex
+	puts, ended int
+	deletes     int
+}
+
+func (s *stallingPut) Put(ctx context.Context, key string, r io.ReadSeeker, size int64) error {
+	if s.durable {
+		if err := s.ObjectStore.Put(context.WithoutCancel(ctx), key, r, size); err != nil {
+			return err
+		}
+	}
+	s.mu.Lock()
+	s.puts++
+	s.mu.Unlock()
+	t := time.NewTimer(guard)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		s.mu.Lock()
+		s.ended++
+		s.mu.Unlock()
+		return ctx.Err()
+	case <-t.C:
+		return errNotEnded
+	}
+}
+
+func (s *stallingPut) Delete(ctx context.Context, key string) error {
+	s.mu.Lock()
+	s.deletes++
+	s.mu.Unlock()
+
+	return s.ObjectStore.Delete(ctx, key)
+}
+
+func (s *stallingPut) counts() (puts, ended, deletes int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	return s.puts, s.ended, s.deletes
+}
+
+// stallingAck is a message whose confirmed acknowledgement never answers, returning only once its context ends.
+type stallingAck struct{ *msg }
+
+func (m stallingAck) DoubleAck(ctx context.Context) error {
+	t := time.NewTimer(guard)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		_ = m.do("double-ack ended")
+		return ctx.Err()
+	case <-t.C:
+		return errNotEnded
+	}
+}
+
+// add disposes m, which must be batched, and batches it with the handle h.
+func (p *pipeline) add(t *testing.T, m Message, h Msg) {
+	t.Helper()
+	d, dec := dispose(t, p.x, m)
+	if dec.Action != ActBatch {
+		t.Fatalf("seq %d disposed %+v, want batched", d.Raw.Version.Seq, dec)
+	}
+	p.b.Add(Entry{D: d, Msg: h}, time.Unix(0, now))
+}
+
+// lockCapture holds the capture's row in a transaction of its own on the catalog's writer, so every write of the capture waits,
+// on SQLite for the one write connection, on MariaDB for the row; release ends it.
+func lockCapture(t *testing.T, c *catalog.Catalog, capture tracepack.UUID) (release func()) {
+	t.Helper()
+	w, _ := c.Pools()
+	tx, err := w.BeginTx(t.Context(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.ExecContext(t.Context(), `UPDATE captures SET data_revision = data_revision WHERE capture_id = ?`, capture[:]); err != nil {
+		_ = tx.Rollback()
+		t.Fatal(err)
+	}
+	var once sync.Once
+	release = func() { once.Do(func() { _ = tx.Rollback() }) }
+	timer := time.AfterFunc(guard, release) // the guard: a registration no context ends goes on after it
+	t.Cleanup(func() { timer.Stop() })
+	t.Cleanup(release)
+
+	return release
+}
+
+// A flush whose remote call never answers is given up at the ack wait, each call ended by its context in turn:
+// the store's put, a put made durable whose answer is lost, the catalog's registration, a confirmed acknowledgement.
+// Whatever the outcome, nothing is acknowledged before its registration, a message not acknowledged is nak'd,
+// and an object the flush may have put is kept for the reconciler, never deleted by the flush (ingest.md §6.2).
+func TestFlushRemoteCallsEndWithTheirContext(t *testing.T) {
+	t.Parallel()
+	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
+		nak := []string{"nak " + firstNakDelay.String()}
+		for _, tc := range []struct {
+			name string
+			// stall sets the stall up once the batch is held, and returns the store the flush puts to when it is not p's.
+			stall func(t *testing.T, p *pipeline, capture tracepack.UUID) *stallingPut
+			// claimCheck acknowledges by DoubleAck, and the second message's never answers.
+			claimCheck bool
+			objects    int
+			registered bool
+			want       [][]string // each message's disposition, in seq order
+		}{
+			{
+				name:  "put",
+				stall: func(_ *testing.T, p *pipeline, _ tracepack.UUID) *stallingPut { return &stallingPut{ObjectStore: p.st} },
+				want:  [][]string{nak, nak, nak, nak},
+			},
+			{
+				name: "durable put whose answer is lost",
+				stall: func(_ *testing.T, p *pipeline, _ tracepack.UUID) *stallingPut {
+					return &stallingPut{ObjectStore: p.st, durable: true}
+				},
+				objects: 1, want: [][]string{nak, nak, nak, nak},
+			},
+			{
+				name: "registration",
+				stall: func(t *testing.T, p *pipeline, capture tracepack.UUID) *stallingPut {
+					lockCapture(t, p.cat, capture)
+					return nil
+				},
+				objects: 1, want: [][]string{nak, nak, nak, nak},
+			},
+			{
+				name:       "confirmed acknowledgement",
+				claimCheck: true, objects: 1, registered: true,
+				want: [][]string{{"double-ack"}, append([]string{"double-ack ended"}, nak...), nak, nak},
+			},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				p := newPipeline(t, c)
+				g := p.ingester(slog.New(slog.DiscardHandler))
+				g.AckWait = bound
+				capture := tracepack.UUID{0xc1, byte(len(tc.name))}
+				msgs := traffic(t, capture)
+				if tc.claimCheck {
+					msgs = confirmedTraffic(t, p.cl, capture)
+				}
+				hs := make([]*msg, len(msgs))
+				for i, m := range msgs {
+					hs[i] = &msg{}
+					var h Msg = hs[i]
+					if tc.claimCheck && i == 1 {
+						h = stallingAck{hs[i]}
+					}
+					p.add(t, m, h)
+				}
+				var st *stallingPut
+				if tc.stall != nil {
+					if st = tc.stall(t, p, capture); st != nil {
+						p.f.Store = st
+					}
+				}
+
+				err := g.flush(t.Context(), p.b.All())
+				if !errors.Is(err, context.DeadlineExceeded) {
+					t.Fatalf("flush = %v, want the ack wait's deadline", err)
+				}
+				if st != nil {
+					if puts, ended, deletes := st.counts(); puts != 1 || ended != 1 || deletes != 0 {
+						t.Errorf("puts %d, ended by their context %d, deletes %d; want the put ended by its context and nothing deleted", puts, ended, deletes)
+					}
+				}
+				for i, h := range hs {
+					if got := h.done(); !slices.Equal(got, tc.want[i]) {
+						t.Errorf("message %d: %v, want %v", i, got, tc.want[i])
+					}
+				}
+				if ks := storedKeys(t, p.st); len(ks) != tc.objects {
+					t.Errorf("objects %v, want %d kept for the reconciler", ks, tc.objects)
+				}
+				if got, err := c.Capture(t.Context(), capture); err != nil || got.HasHighestSeq != tc.registered {
+					t.Errorf("capture %+v, %v; want registered %v", got, err, tc.registered)
+				}
+			})
+		}
+	})
+}
+
+// A commit whose answer is lost leaves its segment registered and its object kept, and acknowledges nothing:
+// the messages are nak'd and written again at their redelivery, the merge deduplicating them.
+func TestFlushCommitWhoseAnswerIsLost(t *testing.T) {
+	t.Parallel()
+	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
+		p := newPipeline(t, c)
+		g := p.ingester(slog.New(slog.DiscardHandler))
+		g.AckWait = time.Hour
+		p.f.hooks[hookAfterRegister] = func() error { return context.DeadlineExceeded }
+		capture := tracepack.UUID{0xc1, 0x10}
+		hs := p.deliver(t, confirmedTraffic(t, p.cl, capture))
+		if err := g.flush(t.Context(), p.b.All()); !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("flush = %v, want the lost answer", err)
+		}
+		for i, h := range hs {
+			if got := h.done(); !slices.Equal(got, []string{"nak " + firstNakDelay.String()}) {
+				t.Errorf("message %d: %v, want nak'd", i, got)
+			}
+		}
+		if ks := storedKeys(t, p.st); len(ks) != 1 {
+			t.Errorf("objects %v, want the registered segment kept", ks)
+		}
+		if got, err := c.Capture(t.Context(), capture); err != nil || !got.HasHighestSeq {
+			t.Errorf("capture %+v, %v; want the segment registered", got, err)
+		}
+	})
+}
+
+// stallLog signals each flush stall it is told of.
+type stallLog struct {
+	slog.Handler
+	stalled chan struct{}
+}
+
+func (h stallLog) Handle(_ context.Context, r slog.Record) error {
+	if strings.Contains(r.Message, "stalled") {
+		select {
+		case h.stalled <- struct{}{}:
+		default:
+		}
+	}
+
+	return nil
+}
+
+func (h stallLog) Enabled(context.Context, slog.Level) bool { return true }
+
+// Local file work is not interrupted: a working file's write that outlasts the ack wait is reported stalled while it runs,
+// the flush waits for it, and only then gives the batch up, its messages nak'd and nothing put.
+func TestFlushWaitsForStalledLocalWork(t *testing.T) {
+	t.Parallel()
+	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
+		p := newPipeline(t, c)
+		g := p.ingester(slog.New(slog.DiscardHandler))
+		g.AckWait = bound
+		s := metrics.NewServer()
+		m, err := metrics.NewIngest(s, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		stalled := make(chan struct{}, 1)
+		p.f.Metrics, p.f.Log = m, slog.New(stallLog{Handler: slog.DiscardHandler, stalled: stalled})
+		var returned bool
+		p.f.hooks[hookWrite] = func() error { // the write, blocked inside the working file's abstraction until its stall is reported
+			p.f.hooks[hookWrite] = nil
+			timer := time.NewTimer(guard)
+			defer timer.Stop()
+			select {
+			case <-stalled:
+			case <-timer.C:
+			}
+			returned = true
+
+			return nil
+		}
+		hs := p.deliver(t, traffic(t, tracepack.UUID{0xc1, 0x11}))
+
+		err = g.flush(t.Context(), p.b.All())
+		if !returned || !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("flush = %v, the write returned %v; want the flush given up after the write returned", err, returned)
+		}
+		if body := scrape(t, s); !strings.Contains(body, "tracekeep_ingest_flush_stalls_total 1") {
+			t.Errorf("no stall counted:\n%s", grep(body, "flush_stalls"))
+		}
+		for i, h := range hs {
+			if got := h.done(); !slices.Equal(got, []string{"nak " + firstNakDelay.String()}) {
+				t.Errorf("message %d: %v, want nak'd", i, got)
+			}
+		}
+		if ks := storedKeys(t, p.st); len(ks) != 0 {
+			t.Errorf("objects %v, want none put", ks)
+		}
+	})
+}
+
+// grep is the lines of body that hold s.
+func grep(body, s string) string {
+	var out []string
+	for l := range strings.Lines(body) {
+		if strings.Contains(l, s) {
+			out = append(out, l)
+		}
+	}
+
+	return strings.Join(out, "")
+}
+
+// beatingMsg is a message whose nak is followed by a heartbeat tick, as one can be during a flush's naks.
+type beatingMsg struct {
+	*msg
+	beat func()
+}
+
+func (m beatingMsg) NakWithDelay(d time.Duration) error {
+	err := m.msg.NakWithDelay(d)
+	m.beat()
+
+	return err
+}
+
+// A batch given up is no longer kept in progress: a tick during its naks sends no progress for its messages,
+// which would hold them for another ack wait.
+func TestGivenUpBatchLeavesTheHeartbeat(t *testing.T) {
+	t.Parallel()
+	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
+		p := newPipeline(t, c)
+		g := p.ingester(slog.New(slog.DiscardHandler))
+		g.AckWait = bound
+		msgs := traffic(t, tracepack.UUID{0xc1, 0x12})
+		hs := make([]*msg, len(msgs))
+		for i, m := range msgs {
+			hs[i] = &msg{}
+			p.add(t, m, beatingMsg{msg: hs[i], beat: g.beat})
+		}
+		p.f.Store = &stallingPut{ObjectStore: p.st}
+		if err := g.flush(t.Context(), g.take(p.b.All)); !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("flush = %v, want the ack wait's deadline", err)
+		}
+		for i, h := range hs {
+			if got := h.done(); slices.Contains(got, "in-progress") {
+				t.Errorf("message %d: %v, want no progress once given up", i, got)
+			}
+		}
+	})
+}
+
+// On a stop, the batches still due share one budget: once a put that never answers has spent it,
+// the next batch is given up without a put of its own, every message is left to redelivery and nothing is registered.
+func TestStopSharesOneBudget(t *testing.T) {
+	t.Parallel()
+	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
+		r := newReplica(t, c)
+		st := &stallingPut{ObjectStore: r.st}
+		r.g.Flusher.Store = st
+		r.g.AckWait, r.g.StopTimeout = time.Hour, bound
+		captures := []tracepack.UUID{{0xc1, 0x13}, {0xc1, 0x14}}
+		for _, capture := range captures {
+			r.publish(t, inline(t, capture, startRecord(t, now), descriptorOf(t, "eqp")), nil)
+			r.publish(t, inline(t, capture, dataRecord(1, now+1), nil), nil)
+		}
+		if err := r.g.Step(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+		ctx, cancel := context.WithCancel(t.Context())
+		cancel() // the stop: every batch is still due
+
+		if err := r.g.Run(ctx); !errors.Is(err, context.Canceled) {
+			t.Fatalf("Run = %v, want the stop's budget spent", err)
+		}
+		if puts, ended, deletes := st.counts(); puts != 1 || ended != 1 || deletes != 0 {
+			t.Errorf("puts %d, ended by their context %d, deletes %d; want one put, ended by the shared budget", puts, ended, deletes)
+		}
+		if n := r.pending(t); n != 4 {
+			t.Errorf("the stream holds %d messages, want all 4 left to redelivery", n)
+		}
+		for _, capture := range captures {
+			if got, err := c.Capture(t.Context(), capture); err != nil || got.HasHighestSeq {
+				t.Errorf("capture %+v, %v; want nothing registered", got, err)
+			}
+		}
+	})
+}

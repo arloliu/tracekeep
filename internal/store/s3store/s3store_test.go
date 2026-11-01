@@ -263,3 +263,43 @@ func TestPresignStaysInsideUntil(t *testing.T) {
 		t.Errorf("PresignGet until a past time = %v, want ErrNoLifetime", err)
 	}
 }
+
+// A service that takes a put's body and never answers holds no call past its bound:
+// the response-header timeout ends a call whose context has no deadline, and a context's end ends any other.
+// A local server stands in for the service, so this runs without one.
+func TestPutEndsWhenTheServiceNeverAnswers(t *testing.T) {
+	t.Parallel()
+	release := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(io.Discard, r.Body)
+		guard := time.NewTimer(10 * time.Second) // a call no bound ends is answered after it, and the test fails
+		defer guard.Stop()
+		select {
+		case <-release:
+		case <-guard.C:
+		}
+	}))
+	t.Cleanup(srv.Close)
+	t.Cleanup(func() { close(release) })
+	data := []byte("pack bytes")
+	s, err := s3store.New(s3store.Config{
+		Endpoint: srv.URL, Bucket: "packs", AccessKeyID: "ak", SecretAccessKey: "sk", ResponseHeaderTimeout: 50 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	//nolint:usetesting // a call without a deadline is the case
+	if err := s.Put(context.Background(), "staging/a", bytes.NewReader(data), int64(len(data))); err == nil || !strings.Contains(err.Error(), "timeout awaiting response headers") {
+		t.Errorf("Put without a deadline = %v, want the response-header timeout", err)
+	}
+
+	s, err = s3store.New(s3store.Config{Endpoint: srv.URL, Bucket: "packs", AccessKeyID: "ak", SecretAccessKey: "sk", ResponseHeaderTimeout: time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond)
+	defer cancel()
+	if err := s.Put(ctx, "staging/b", bytes.NewReader(data), int64(len(data))); !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("Put under a deadline = %v, want the deadline", err)
+	}
+}

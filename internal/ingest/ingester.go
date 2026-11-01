@@ -70,6 +70,11 @@ type Ingester struct {
 	// Heartbeat is the consumer's ack wait over three: while Run runs, every held message,
 	// those of a flush in progress included, is kept in progress this often (architecture.md §3.1).
 	Heartbeat time.Duration
+	// AckWait is the consumer's ack wait: a batch's flush not done within it is given up, its messages nak'd (ingest.md §6.2).
+	// Zero gives no bound.
+	AckWait time.Duration
+	// StopTimeout is the budget the batches still due share once Run's context ends (ingest.stop_timeout); zero gives none.
+	StopTimeout time.Duration
 	// Now is the clock the batches and the lease are judged by.
 	Now func() time.Time
 	// Metrics records the role's metrics; nil records none.
@@ -106,12 +111,14 @@ func (g *Ingester) Join(ctx context.Context) error {
 	return nil
 }
 
-// Run steps until ctx ends, then flushes what it holds;
+// Run steps until ctx ends, then flushes what it holds within the stop budget, StopTimeout from ctx's end;
 // a stream that is no longer its incarnation ends it at once, the held deliveries abandoned unacknowledged.
 func (g *Ingester) Run(ctx context.Context) error {
 	if g.Heartbeat <= 0 {
 		return errors.New("ingest: no heartbeat")
 	}
+	stopping, release := stopBudget(ctx, g.StopTimeout)
+	defer release()
 	beat, stop := context.WithCancel(context.WithoutCancel(ctx))
 	ticker := time.NewTicker(g.Heartbeat)
 	beating := make(chan struct{})
@@ -145,7 +152,33 @@ func (g *Ingester) Run(ctx context.Context) error {
 		}
 	}
 
-	return g.flush(context.WithoutCancel(ctx), g.take(g.Batcher.All))
+	return g.flush(stopping, g.take(g.Batcher.All))
+}
+
+// stopBudget is a context that outlives ctx by budget, the one budget every flush still due at a stop shares (ingest.md §6.2),
+// and its release; with no budget it ends only at its release.
+func stopBudget(ctx context.Context, budget time.Duration) (context.Context, context.CancelFunc) {
+	out, cancel := context.WithCancel(context.WithoutCancel(ctx))
+	if budget <= 0 {
+		return out, cancel
+	}
+	var mu sync.Mutex
+	var timer *time.Timer
+	armed := context.AfterFunc(ctx, func() {
+		mu.Lock()
+		defer mu.Unlock()
+		timer = time.AfterFunc(budget, cancel)
+	})
+
+	return out, func() {
+		armed()
+		mu.Lock()
+		if timer != nil {
+			timer.Stop()
+		}
+		mu.Unlock()
+		cancel()
+	}
 }
 
 // Step renews the membership, fetches one batch of messages within the lease, disposes of each,
@@ -442,20 +475,14 @@ func (g *Ingester) park(ctx context.Context, e Entry, reason string, delivered u
 
 // flush flushes each batch, the heartbeat keeping those it has not finished in progress
 // (batches taken from the batcher by take, whose messages the heartbeat already holds);
-// a batch that fails is nak'd, but for the messages it acknowledged, and written again at its redelivery.
+// a batch that fails, or is not done within the ack wait, is nak'd, but for the messages it acknowledged, and written again at its redelivery.
 func (g *Ingester) flush(ctx context.Context, batches []*Batch) error {
-	defer func() {
-		g.mu.Lock()
-		g.flushing = nil
-		g.mu.Unlock()
-	}()
+	defer g.hold(nil)
 	var errs []error
 	for i, b := range batches {
-		msgs := entries(batches[i:])
-		g.mu.Lock()
-		g.flushing = msgs
-		g.mu.Unlock()
-		out, err := g.Flusher.Flush(ctx, b)
+		g.hold(entries(batches[i:]))
+		out, err := g.flushBatch(ctx, b)
+		g.hold(entries(batches[i+1:])) // b's messages are settled below: progress would hold a nak'd one for another ack wait
 		var refused *refusalError
 		switch {
 		case err != nil:
@@ -492,6 +519,24 @@ func (g *Ingester) flush(ctx context.Context, batches []*Batch) error {
 	}
 
 	return errors.Join(errs...)
+}
+
+// flushBatch flushes b within the ack wait: a flush that has not registered and acknowledged by then is given up (ingest.md §6.2).
+func (g *Ingester) flushBatch(ctx context.Context, b *Batch) (Flushed, error) {
+	if g.AckWait > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, g.AckWait)
+		defer cancel()
+	}
+
+	return g.Flusher.Flush(ctx, b)
+}
+
+// hold hands the messages of the batches being flushed to the heartbeat.
+func (g *Ingester) hold(flushing []Entry) {
+	g.mu.Lock()
+	g.flushing = flushing
+	g.mu.Unlock()
 }
 
 // settled resolves the entries a flush acknowledged.

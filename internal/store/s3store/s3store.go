@@ -3,10 +3,12 @@
 package s3store
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"net/url"
 	"strconv"
 	"sync"
@@ -22,6 +24,9 @@ import (
 
 // readAhead is the least a ranged read fetches, so the small reads that walk a pack's structure share a request.
 const readAhead = 64 << 10
+
+// defaultResponseHeaderTimeout is a request's wait for its response's headers once it is sent, its body included, when Config sets none.
+const defaultResponseHeaderTimeout = time.Minute
 
 // defaultRegion is signed into requests when Config names none; S3-compatible stores accept any.
 const defaultRegion = "us-east-1"
@@ -43,6 +48,9 @@ type Config struct {
 	// shortcut: static credentials only; add the SDK's default chain when a deployment authenticates by role.
 	AccessKeyID     string
 	SecretAccessKey string
+	// ResponseHeaderTimeout bounds the wait for a response's headers once a request is sent, so a call whose context has no deadline still ends;
+	// zero takes a minute.
+	ResponseHeaderTimeout time.Duration
 }
 
 // Store is an ObjectStore on one bucket.
@@ -68,9 +76,12 @@ func New(cfg Config) (*Store, error) {
 	if region == "" {
 		region = defaultRegion
 	}
+	headers := cmp.Or(cfg.ResponseHeaderTimeout, defaultResponseHeaderTimeout)
 	client := s3.New(s3.Options{
 		Region:      region,
 		Credentials: credentials.NewStaticCredentialsProvider(cfg.AccessKeyID, cfg.SecretAccessKey, ""),
+		// A service that never answers would otherwise hold a call whose context has no deadline forever.
+		HTTPClient: awshttp.NewBuildableClient().WithTransportOptions(func(tr *http.Transport) { tr.ResponseHeaderTimeout = headers }),
 	}, func(o *s3.Options) {
 		if cfg.Endpoint == "" {
 			return
