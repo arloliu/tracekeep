@@ -154,6 +154,9 @@ Contract changes go through proposals, which the subject [README.md](README.md) 
     A pack registered after the snapshot is not seen, and the answer holds as of the snapshot;
     a pack merged after it stays readable for D (`compactor.md` §8.3);
     a copy whose object cannot be opened or read refuses the restore as unavailable, and the client retries into a fresh snapshot.
+  - **Bounds** (T-52): a restore holds one of the replica's `api.records.max_reads` read slots, taken before the copies are listed;
+    the snapshot lists at most `api.records.max_readers` copies plus one, after the named hour's check below, and a record with more is refused as `resource_exhausted` before any object opens, the comparison never made on part of them;
+    the copies' merge holds at most `api.records.held_bytes` of blocks, as a record read's does (`api.md` §10.1 *Records*).
   - **The hour names where to look**: it is an hour start, and a request whose hour holds no copy is answered not found;
     the comparison spans every copy of the snapshot, whatever hour is named (T-42).
   - **Copies are compared whole**: the stored record, header and payload, and the seq's redaction entries in each pack's metadata;

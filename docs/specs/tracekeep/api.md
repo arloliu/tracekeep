@@ -106,7 +106,7 @@ A refused request carries a Connect code:
 | `permission_denied` (exports) | an export operation by a principal with an empty subject |
 | `failed_precondition` | `pack-superseded`, with the error detail `tracekeep.v1.PackSuperseded` naming the pack; a `Restore` of differing versions, with the detail `tracekeep.v1.RecordConflict`, or of a record that is not restorable; a key refused (`masking-keys.md` §9 *Failures*); a `FindTransaction` of a withheld capture, or of a record that is not a transaction's primary and that nothing read explains; a `CancelExport` of a job that has ended |
 | `unavailable` | a `PackURL` before the compactor's first retention record, when no deadline exists (`compactor.md` §8.3), any read the catalog fails, a key unavailable, or a copy of a record whose object cannot be read, which the client retries |
-| `resource_exhausted` | a `Digest` beyond its principal's rate limit, a request message above 16 MiB, refused before it is decoded, or a record read beyond the replica's concurrent reads, a `FindTransaction` hour beyond its pack bound, or tracepack's read limit in a lookup (*Records* below); an export whose selection passes the export bounds (*Exports* below) |
+| `resource_exhausted` | a `Digest` beyond its principal's rate limit, a request message above 16 MiB, refused before it is decoded, or a record read beyond the replica's concurrent reads, a `FindTransaction` hour beyond its pack bound, or tracepack's read limit in a lookup (*Records* below); an export whose selection passes the export bounds (*Exports* below); a `Restore` whose copies pass its bound (`masking-keys.md` §9) |
 | `internal` | an audit row that could not be written; nothing is returned |
 
 `Restore` answers the original payload with the record's time and kind; `Digest` answers each input's digest in order with the key id.
@@ -205,7 +205,9 @@ Every read set a read reads is checked, so a resumed stream, whatever its cursor
   An object found gone, at its open or during the merge, re-reads that hour's read set once and reads it again from the hour's last seq streamed, skipping every seq at or below it, so nothing streamed twice;
   gone again, or the hour's scope evicted, the rest of the hour is reported `incomplete`.
   A merged input usually still serves for the deletion delay (`compactor.md` §8.3), but a stream's length is not bounded by it, so the re-read is what a reader relies on.
-- **Bounds**: a replica serves at most `api.records.max_reads` reads at once, `QueryRecords` streams and `FindTransaction` lookups together (default 8), refusing one more as `resource_exhausted` before reading.
+- **Bounds**: a replica serves at most `api.records.max_reads` reads at once, `QueryRecords` streams, `FindTransaction` lookups and `Restore`s together (default 8), refusing one more as `resource_exhausted` before reading (T-52).
+  A `QueryRecords` stream whose send makes no progress for `api.records.send_timeout` (default 1 min) is ended, its read slot and memory freed;
+  a client that keeps reading is never ended by it, however long the stream, and resumes an ended one from its last cursor.
   A `QueryRecords` merge opens at most `api.records.max_readers` packs (default 16), and a cluster above that is not read and is reported `incomplete`;
   a `FindTransaction` lookup passes an hour's whole read set, and an hour of more than `api.records.max_lookup_packs` packs (default 64) is refused as `resource_exhausted`, naming the hour.
   A merge holds at most about `api.records.held_bytes` of blocks (default 64 MiB, tracepack's `MaxHeldBytes`, which a block may overrun by an eighth), a lookup also its state (tracepack's `MaxStateBytes`, 64 MiB),
@@ -243,7 +245,8 @@ only the owner reads, lists or cancels a job, and another's answers `not_found`.
   the **hour is the unit of retry**: its packs are exported one at a time, each whole by tracepack's canonical exporter into a file of its own, `tracepack-jsonl/1`, `/2` or `/3` by its `format_minor`,
   and only once every pack of the hour is exported are the hour's files added to the tar, as `packs/<capture>/<hour>/<pack_id>.jsonl`;
   an object found gone discards the hour's files and exports the hour again from its read set read again, once, as a merge in between may have replaced its packs;
-  gone again, the hour's packs are left out and named in the manifest. An exporter's error discards that pack's partial file; its pack is left out and named.
+  gone again, the hour's packs are left out and named in the manifest. An exporter's error on the pack's own bytes (tracepack's error of a corrupt or unreadable pack) discards that pack's partial file; its pack is left out and named.
+  A store's failure to read a pack, its deadline included, fails the attempt instead, so a later attempt under a new fence exports it, and the failed attempt can complete nothing (T-52).
   A read set without a scope whose hour retention evicted, at the first read or the second, puts the hour in the manifest as evicted,
   so the manifest says what the bundle holds, apart from the completeness the capture had when the bundle began.
   The bounds hold over what is read: the packs and object bytes the attempt actually exports, an hour read again included, are counted, and passing `exports.max_packs` or `exports.max_bytes` fails the job;
