@@ -41,6 +41,9 @@ type Options struct {
 	WithholdEvery uint64
 	// Replay makes the equipment answer nothing itself: a replayed pack's own replies cross the pair instead.
 	Replay bool
+	// ProcessProgram, when not empty, makes every tenth forwarded request an S7F3 sending it as a process program's body,
+	// which the baseline masking policy masks, rather than an interval poll.
+	ProcessProgram string
 	// Thinning, when not nil, is every capture's sampling rule, under which Forward's interval polls are thinned;
 	// a replayed request is never marked, so it is never thinned.
 	Thinning *producer.SamplingRule
@@ -158,11 +161,23 @@ func (l *Loopback) Traffic(ctx context.Context, n int) error {
 	return nil
 }
 
-// Forward relays one S1F3 to the equipment the way the gateway does, marked as an interval poll.
+// processProgramEvery is how often a forwarded request is the process program, when Options.ProcessProgram has one.
+const processProgramEvery = 10
+
+// Forward relays one S1F3 to the equipment the way the gateway does, marked as an interval poll,
+// or, every tenth with Options.ProcessProgram, an S7F3 sending the process program, unmarked.
 func (l *Loopback) Forward(ctx context.Context) error {
 	sb := l.sb.Add(1)
 	var sys [4]byte
 	binary.BigEndian.PutUint32(sys[:], sb)
+	if l.opts.ProcessProgram != "" && sb%processProgramEvery == 0 {
+		msg, err := hsms.NewDataMessage(7, 3, true, l.opts.SessionID, sys, secs2.L(secs2.A("SIM-PP"), secs2.A(l.opts.ProcessProgram)))
+		if err != nil {
+			return err
+		}
+
+		return l.relay(ctx, msg, producer.OriginUnmarked)
+	}
 	msg, err := hsms.NewDataMessage(1, 3, true, l.opts.SessionID, sys, secs2.L(secs2.U4(sb)))
 	if err != nil {
 		return err
@@ -271,6 +286,9 @@ func (l *Loopback) equipment(msg *hsms.DataMessage, ep hsms.SECS2Endpoint) {
 	item, err := msg.Item()
 	if err != nil {
 		return
+	}
+	if msg.Stream() == 7 && msg.Function() == 3 {
+		item = secs2.B(0) // ACKC7 accepted: the body is never echoed back unmasked
 	}
 	_ = ep.ReplyDataMessage(context.Background(), msg, item)
 }

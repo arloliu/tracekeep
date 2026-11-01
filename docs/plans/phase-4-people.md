@@ -177,7 +177,7 @@ and the gate (4.6) counts neither leg proven until a run on `main` passed for a 
 
 ## Phase 4.6 — gate
 
-Work on the branch `test/gate/phase-4`, one commit per step, test first;
+Work on the branch `test/gate/phase-4`, each step in commits of its own, test first;
 the branch merges by pull request once the whole phase passes an external post-implementation review, and closes phase 4's gate;
 the phase's close (the roadmap row done, this plan closed) is a pull request of its own after it.
 The audit below read every gate case against the tests and the packaging runs on `main`;
@@ -188,11 +188,14 @@ A local `tracekeep dev` at be45de3 matches every primary in milliseconds at the 
 and tracepack's lookup is unchanged from v0.12.0 but for its errors,
 so the cause lies in what only the cluster has (MariaDB, MinIO, two replicas of each role) or the run was a flake;
 the failed run kept no page, so step 1 first makes a failure show it.
+The next run on `main`, at e4921e9, passed both legs, the cluster's fresh install included, so the failure did not reproduce:
+the diagnostics stay, and a fresh install now browses once the simulator has stopped and its last records flushed, as the upgrade already did,
+so the records read to a complete end.
 
 | Step | Scope | State |
 |---|---|---|
-| 1 | the cluster leg's failure: a failed browser test names what the transaction panel shows, and both legs print Playwright's page snapshot and the log of every pod; then the leg run again on `main` and the cause fixed, with a test below the packaging where one can hold it; the upgrade made to prove itself: the test after an upgrade fails, never skips, without the evidence written before it, and the standalone upgrade installs the candidate's unit, user and directories, not only its binary | pending |
-| 2 | the session in the browser test, both legs: the browser's completeness by hour (a row and its state), the record's SML, the stream's end complete, the transaction's primary and its valid reply with their roles, the manifest's tool, device, window and packs per hour, the download a `/download/` URL; an unmapped person refused by the server, not only by the page; masking exercised: the simulator sends a carrier the baseline policy masks, and neither its SML nor the bundle's JSONL holds the clear text | pending |
+| 1 | the cluster leg's failure: a failed browser test names what the transaction panel shows, and both legs print Playwright's page snapshot and the log of every pod; then the leg run again on `main` and the cause fixed, with a test below the packaging where one can hold it; the upgrade made to prove itself: the test after an upgrade fails, never skips, without the evidence written before it, and the standalone upgrade installs the candidate's unit, user and directories, not only its binary | implemented; the branch's packaging run pending |
+| 2 | the session in the browser test, both legs: the browser's completeness by hour (a row and its state), the record's SML, the stream's end complete, the transaction's primary and its valid reply with their roles, the manifest's tool, device, window and packs per hour, the download a `/download/` URL; an unmapped person refused by the server, not only by the page; masking exercised: the simulator sends a carrier the baseline policy masks, and neither its SML nor the bundle's JSONL holds the clear text | implemented; the branch's packaging run pending |
 | 3 | the IdP down: an `api` role started over HTTPS with the IdP down answers login and callback 503 and counts `logins_total{outcome="unavailable"}` and `idp-unavailable` on `/metrics`; the IdP back, a sign-in once the fetch interval has passed; down again, a session cookie still reads `ListDevices`, a service token verifies from the cached keys until their TTL and is then refused, and a new login's callback fails; a cold callback with the IdP down, the JWKS alone down, and a stalled first discovery bounded by the fetch timeout; a session key's provider gone after start, a cookie still accepted; both packaging legs stop Dex after the session (a signed-in page keeps working, a new login is told the IdP is unavailable) and start it again (a sign-in succeeds) | pending |
 | 4 | an export of a masked capture outside `tracekeep dev` spanning two hours with a conflict, through `StartExport`, the worker and the stored bundle unpacked: a suspect, a confirmed and an acknowledged conflict in the manifest, each hour with its packs, each conflict's versions with theirs | pending |
 | 5 | no clear recipe body, made strict: the scan counts the records it read and fails on fewer than were written, the header's redaction entries counted; its unmasked control carries clear text in a redaction entry and a header extension as well as in payloads and annotation bodies; `TooDeep`'s secrets searched too, and `manifest.json` scanned; the scan run on a bundle the worker stored, and on a tool's export holding a withheld capture beside a masked one; `TestExportWorkerFails`' comment corrected (a withheld capture is named, not failed) | pending |

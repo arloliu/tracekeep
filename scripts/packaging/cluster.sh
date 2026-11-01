@@ -318,7 +318,7 @@ admit() {
 # traffic: the simulator on this host, through the bus's NodePort, until the tool's capture is admitted and its records flushed.
 traffic() {
 	go build -o "$WORK/tracekeep-sim" ./cmd/tracekeep-sim
-	"$WORK/tracekeep-sim" -servers nats://127.0.0.1:4222 -tool $TOOL -device $DEVICE -rate 10 > "$WORK/sim.log" 2>&1 &
+	"$WORK/tracekeep-sim" -servers nats://127.0.0.1:4222 -tool $TOOL -device $DEVICE -rate 10 -process-program "$PROCESS_PROGRAM" > "$WORK/sim.log" 2>&1 &
 	pids+=($!)
 	for _ in $(seq 90); do
 		if admin status 2>/dev/null | python3 -c '
@@ -412,6 +412,9 @@ install deploy/helm/tracekeep candidate 0
 admit
 install deploy/helm/tracekeep candidate 2
 traffic
+# The producer stopped and its last records flushed, so the list reads to a complete end.
+stop_traffic
+sleep 30
 browse
 
 if [ -z "${TRACEKEEP_BASELINE:-}" ]; then
@@ -419,7 +422,6 @@ if [ -z "${TRACEKEEP_BASELINE:-}" ]; then
 	exit 0
 fi
 log "upgrade from $TRACEKEEP_BASELINE to $(git rev-parse --short HEAD)"
-stop_traffic
 kubectl delete namespace $NS --wait=true >/dev/null
 build_image "$TRACEKEEP_BASELINE" baseline
 dependencies

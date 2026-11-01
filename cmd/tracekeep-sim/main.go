@@ -53,6 +53,7 @@ func main() {
 	flag.StringVar(&c.opts.DeviceName, "device", "eqp", "the device name every capture carries")
 	flag.DurationVar(&c.opts.T3, "t3", 45*time.Second, "the waiter's timeout for a forwarded request")
 	flag.Uint64Var(&c.opts.WithholdEvery, "withhold-every", 0, "the equipment leaves every n-th forwarded request unanswered; 0 answers all")
+	flag.StringVar(&c.opts.ProcessProgram, "process-program", "", "make every tenth forwarded request an S7F3 sending this as a process program's body, which the baseline policy masks; synthetic text only")
 	flag.Float64Var(&c.rate, "rate", 10, "forwarded requests per second")
 	flag.DurationVar(&c.duration, "duration", 0, "how long to run; 0 runs until interrupted")
 	flag.BoolVar(&c.thinning, "thinning", false, "thin the forwarded interval polls; a replayed request is never thinned")
