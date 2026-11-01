@@ -6,6 +6,8 @@ import (
 	"maps"
 	"os"
 	"path/filepath"
+	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -198,7 +200,7 @@ func TestExportOfConflictsAcrossHours(t *testing.T) {
 		m := newMasked(t, c)
 		capture := m.admitActive(t)
 		cs := carriers(t)[:1]
-		records, entries := threeConflicts(t, m, capture, &cs[0])
+		records, entries, packs := threeConflicts(t, m, capture, &cs[0])
 		workers(t, m)
 		id := capture.String()
 		req := &tkv1.StartExportRequest{Kind: "canonical", Selector: &tkv1.Selector{ToolId: tool, CaptureId: &id, From: hourTS(hour), To: hourTS(hour + 2)}}
@@ -230,10 +232,18 @@ func TestExportOfConflictsAcrossHours(t *testing.T) {
 		if want := map[uint64]string{3: "suspect", 5: "acknowledged", 7: "confirmed"}; !maps.Equal(states, want) {
 			t.Errorf("conflicts = %v, want %v", states, want)
 		}
-		holders := holdersOf(t, files, man.Captures[0].Hours)
+		// Each conflict's two versions: one in each hour, in the pack put there, its record of that hour.
+		vs := versionsOf(t, files, man.Captures[0].Hours)
 		for _, seq := range []string{"3", "5", "7"} {
-			if fs := holders[seq]; len(fs) != 2 || fs[0] == fs[1] {
-				t.Errorf("seq %s's versions are in %v, want two, each in its own pack's file", seq, fs)
+			got := vs[seq]
+			if len(got) != 2 || got[0].hour == got[1].hour || got[0].ts == got[1].ts {
+				t.Errorf("seq %s's versions = %+v, want two, of different hours and times", seq, got)
+				continue
+			}
+			for _, v := range got {
+				if !slices.Contains(packs[seq], v.pack) || v.ts/nsPerHour != v.hour {
+					t.Errorf("seq %s's version %+v, want it in one of the packs %v, its time in its pack's hour", seq, v, packs[seq])
+				}
 			}
 		}
 		if got := scan(t, files, cs); len(got.found) != 0 || got.records != records || got.entries != entries {
@@ -267,13 +277,23 @@ func stored(t *testing.T, m *masked, key string) (map[string][]byte, manifest) {
 	return files, man
 }
 
-// holdersOf are the files holding each seq's versions, by seq, over hours' packs, each hour checked to have its packs, none left out.
-func holdersOf(t *testing.T, files map[string][]byte, hours []manifestHour) map[string][]string {
+// version is one exported version of a seq: the pack whose file holds it, that pack's hour, and the record's time.
+type version struct {
+	pack     string
+	hour, ts int64
+}
+
+// versionsOf are the versions of each seq the hours' packs export, by seq, each hour checked to have its packs, none left out.
+func versionsOf(t *testing.T, files map[string][]byte, hours []manifestHour) map[string][]version {
 	t.Helper()
-	out := map[string][]string{}
+	out := map[string][]version{}
 	for _, h := range hours {
 		if len(h.Packs) == 0 || len(h.LeftOut) != 0 {
 			t.Errorf("hour %s: packs %+v, left out %+v; want its packs, none left out", h.Hour, h.Packs, h.LeftOut)
+		}
+		start, err := time.Parse(time.RFC3339, h.Hour)
+		if err != nil {
+			t.Fatalf("hour %q: %v", h.Hour, err)
 		}
 		for _, p := range h.Packs {
 			body, ok := files[p.File]
@@ -282,12 +302,21 @@ func holdersOf(t *testing.T, files map[string][]byte, hours []manifestHour) map[
 			}
 			for line := range strings.Lines(string(body)) {
 				var r struct {
-					Seq string `json:"seq"` // a uint64, as a JSON string
+					// Seq and TS are uint64 and int64, as JSON strings; a header line has neither.
+					Seq string `json:"seq"`
+					TS  string `json:"ts_utc_ns"`
 				}
 				if err := json.Unmarshal([]byte(line), &r); err != nil {
 					t.Fatalf("%s: %v", p.File, err)
 				}
-				out[r.Seq] = append(out[r.Seq], p.File)
+				if r.Seq == "" {
+					continue
+				}
+				ts, err := strconv.ParseInt(r.TS, 10, 64)
+				if err != nil {
+					t.Fatalf("%s seq %s: ts_utc_ns %q: %v", p.File, r.Seq, r.TS, err)
+				}
+				out[r.Seq] = append(out[r.Seq], version{pack: p.PackID, hour: start.Unix() / 3600, ts: ts})
 			}
 		}
 	}
@@ -297,17 +326,22 @@ func holdersOf(t *testing.T, files map[string][]byte, hours []manifestHour) map[
 
 // threeConflicts puts carrier c's records of capture, masked, over two hours, with seqs 3, 5 and 7 in both:
 // 3 left suspect, 5 acknowledged and 7 confirmed by a comparison that found its versions differ;
-// it returns how many records and redaction entries it wrote.
-func threeConflicts(t *testing.T, m *masked, capture tracepack.UUID, c *maskingtest.Carrier) (records, entries int) {
+// it returns how many records and redaction entries it wrote, and the packs holding each of the three seqs' versions.
+func threeConflicts(t *testing.T, m *masked, capture tracepack.UUID, c *maskingtest.Carrier) (records, entries int, packs map[string][]string) {
 	t.Helper()
+	packs = map[string][]string{}
 	put := func(h int64, seqs ...uint64) {
 		rs := make([]tracepack.Record, 0, len(seqs))
 		for _, s := range seqs {
 			rs = append(rs, recordAt(c, h, s))
 		}
 		ms, es := m.mask(t, capture, captured(rs))
-		m.put(t, capture, h, ms, es, m.policy())
+		p := m.put(t, capture, h, ms, es, m.policy())
 		records, entries = records+len(ms), entries+len(es)
+		for _, s := range seqs {
+			key := strconv.FormatUint(s, 10)
+			packs[key] = append(packs[key], p.ID.String())
+		}
 	}
 	put(hour, 1, 2, 3, 5, 7)
 	for _, seq := range []uint64{3, 5, 7} {
@@ -332,7 +366,7 @@ func threeConflicts(t *testing.T, m *masked, capture tracepack.UUID, c *maskingt
 		t.Fatal(err)
 	}
 
-	return records, entries
+	return records, entries, packs
 }
 
 // awaitOwned waits, bounded, for owner's job to reach a state other than queued and running, and returns it.

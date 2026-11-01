@@ -191,7 +191,7 @@ func TestLoopbackSendsAProcessProgram(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 	defer cancel()
 	got := map[string]int{}
-	for i := 1; got["S7F3"] < n/10 || got["S7F4"] < n/10; i++ {
+	for i := 1; got["S7F3"] < n/10 || got["S7F4"] < n/10 || got["S1F3"] < n-n/10; i++ {
 		msgs, err := bus.WaitMessages(ctx, i)
 		if err != nil {
 			t.Fatalf("messages on the bus %v: %v", got, err)
@@ -205,6 +205,9 @@ func TestLoopbackSendsAProcessProgram(t *testing.T) {
 		if carries := bytes.Contains(r.Payload, []byte(body)); carries != (sf == "S7F3") {
 			t.Errorf("%s carries the body: %v", sf, carries)
 		}
+	}
+	if got["S7F3"] != n/10 || got["S1F3"] != n-n/10 {
+		t.Errorf("forwarded %v, want every tenth of %d an S7F3 and the rest S1F3", got, n)
 	}
 	l.Stop(t.Context())
 }

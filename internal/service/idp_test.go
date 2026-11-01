@@ -26,8 +26,8 @@ import (
 )
 
 // The api role over HTTPS through an outage of the IdP (api.md §10.2 *People's sign-in*):
-// started with the IdP down, a login is refused as unavailable and counted on /metrics;
-// the IdP back, a person signs in once the fetch interval has passed;
+// started with the IdP down, a login is refused as unavailable, and so is the callback of a login another replica started,
+// both counted on /metrics; the IdP back, a person signs in once the fetch interval has passed;
 // down again, the session cookie still reads ListDevices while a new login's callback fails at the exchange;
 // and the session key's file gone after start, the cookie is still accepted, its material resolved at start.
 func TestAPIRoleThroughAnIdPOutage(t *testing.T) {
@@ -53,40 +53,64 @@ func TestAPIRoleThroughAnIdPOutage(t *testing.T) {
 	if err := os.WriteFile(ca, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: srv.Certificate().Raw}), 0o600); err != nil {
 		t.Fatal(err)
 	}
-
-	e := devEnv(t)
-	e.Metrics = metrics.NewServer()
-	e.Config.API.Listen = "127.0.0.1:0"
-	e.Config.API.TLSCertFile, e.Config.API.TLSKeyFile = selfSigned(t)
-	e.Config.API.PublicURL = public
 	sessionKey := filepath.Join(t.TempDir(), "s-1")
 	if err := os.WriteFile(sessionKey, []byte(base64.StdEncoding.EncodeToString([]byte(rand.Text()+rand.Text()))), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	e.Config.Keys.Declared["s-1"] = config.KeyDeclaration{Provider: keys.ProviderFile, Ref: sessionKey, Kind: catalog.KindSession}
-	e.Config.Keys.Session = config.KeyPurpose{Issuing: "s-1", Accepted: []string{"s-1"}}
 	const interval = 100 * time.Millisecond
-	e.Config.Auth.OIDC = config.OIDC{Issuer: srv.URL, Audience: "tk-services", JWKSTTL: time.Hour, FetchInterval: interval, CAFile: ca}
-	e.Config.Auth.People = config.People{ClientID: client, ClientSecret: secret, RolesClaim: "groups", Roles: map[string][]string{"viewers": {auth.RoleViewer}},
-		SessionLifetime: 8 * time.Hour, LoginLifetime: 10 * time.Minute, ExchangeTimeout: 10 * time.Second}
+	// replica is an api role signing people in at the IdP under the shared session key, with metrics of its own.
+	replica := func() *Env {
+		e := devEnv(t)
+		e.Metrics = metrics.NewServer()
+		e.Config.API.Listen = "127.0.0.1:0"
+		e.Config.API.TLSCertFile, e.Config.API.TLSKeyFile = selfSigned(t)
+		e.Config.API.PublicURL = public
+		e.Config.Keys.Declared["s-1"] = config.KeyDeclaration{Provider: keys.ProviderFile, Ref: sessionKey, Kind: catalog.KindSession}
+		e.Config.Keys.Session = config.KeyPurpose{Issuing: "s-1", Accepted: []string{"s-1"}}
+		e.Config.Auth.OIDC = config.OIDC{Issuer: srv.URL, Audience: "tk-services", JWKSTTL: time.Hour, FetchInterval: interval, CAFile: ca}
+		e.Config.Auth.People = config.People{ClientID: client, ClientSecret: secret, RolesClaim: "groups", Roles: map[string][]string{"viewers": {auth.RoleViewer}},
+			SessionLifetime: 8 * time.Hour, LoginLifetime: 10 * time.Minute, ExchangeTimeout: 10 * time.Second}
+		serveAPI(t, e)
 
-	down.Store(true)
-	serveAPI(t, e)
+		return e
+	}
 	tk := &http.Client{Transport: &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}}, //nolint:gosec // the test's own certificate
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }, Timeout: 30 * time.Second}
-	base := "https://" + e.APIAddr()
+	metricsHold := func(e *Env, want ...string) {
+		t.Helper()
+		m := httptest.NewRecorder()
+		e.Metrics.Handler().ServeHTTP(m, httptest.NewRequest(http.MethodGet, "/metrics", http.NoBody))
+		for _, w := range want {
+			if !strings.Contains(m.Body.String(), w) {
+				t.Errorf("/metrics holds no %s", w)
+			}
+		}
+	}
 
 	// Started with the IdP down: the login is refused as unavailable, and /metrics counts it.
+	down.Store(true)
+	e := replica()
+	base := "https://" + e.APIAddr()
 	if resp := do(t, tk, http.MethodGet, base+"/auth/login", nil); resp.StatusCode != http.StatusServiceUnavailable {
 		t.Fatalf("a login with the IdP down at start = %d, want 503", resp.StatusCode)
 	}
-	m := httptest.NewRecorder()
-	e.Metrics.Handler().ServeHTTP(m, httptest.NewRequest(http.MethodGet, "/metrics", http.NoBody))
-	for _, want := range []string{`tracekeep_api_logins_total{outcome="unavailable",step="start"} 1`, `tracekeep_api_auth_failures_total{reason="idp-unavailable"} 1`} {
-		if !strings.Contains(m.Body.String(), want) {
-			t.Errorf("/metrics holds no %s", want)
-		}
+	metricsHold(e, `tracekeep_api_logins_total{outcome="unavailable",step="start"} 1`, `tracekeep_api_auth_failures_total{reason="idp-unavailable"} 1`)
+
+	// The callback of a login another replica started while the IdP was up, reaching this replica with it down again:
+	// this replica has never fetched from the IdP, so the callback is refused as unavailable, not as a failed exchange.
+	down.Store(false)
+	other := replica()
+	started := do(t, tk, http.MethodGet, "https://"+other.APIAddr()+"/auth/login", nil)
+	if started.StatusCode != http.StatusFound {
+		t.Fatalf("a login on the other replica with the IdP up = %d, want 302", started.StatusCode)
 	}
+	authorized := authorize(t, p, started)
+	// Within the fetch interval or past it, this replica has no endpoints: its fetch is refused or not yet due.
+	down.Store(true)
+	if resp := do(t, tk, http.MethodGet, base+authorized, func(r *http.Request) { r.AddCookie(cookie(started, auth.LoginCookie)) }); resp.StatusCode != http.StatusServiceUnavailable {
+		t.Errorf("a cold callback with the IdP down = %d, want 503", resp.StatusCode)
+	}
+	metricsHold(e, `tracekeep_api_logins_total{outcome="unavailable",step="callback"} 1`)
 
 	// The IdP back: once the fetch interval has passed, a login reaches it and the person signs in.
 	down.Store(false)
@@ -177,8 +201,9 @@ func do(t *testing.T, c *http.Client, method, target string, set func(*http.Requ
 	return resp
 }
 
-// callback has the IdP's authorization page sign a viewer in for login, a redirect to it, and returns the api's answer to the callback.
-func callback(t *testing.T, c *http.Client, base string, p *devidp.Provider, login *http.Response) *http.Response {
+// authorize has the IdP's authorization page sign a viewer in for login, a redirect to it,
+// and returns the path and query of the callback it sends the browser to.
+func authorize(t *testing.T, p *devidp.Provider, login *http.Response) string {
 	t.Helper()
 	authz, err := url.Parse(login.Header.Get("Location"))
 	if err != nil {
@@ -196,7 +221,14 @@ func callback(t *testing.T, c *http.Client, base string, p *devidp.Provider, log
 		t.Fatalf("the IdP's authorization = %d %s", w.Code, w.Body)
 	}
 
-	return do(t, c, http.MethodGet, base+back.Path+"?"+back.RawQuery, func(r *http.Request) { r.AddCookie(cookie(login, auth.LoginCookie)) })
+	return back.Path + "?" + back.RawQuery
+}
+
+// callback authorizes login at the IdP and returns the api's answer to its callback, the login cookie sent.
+func callback(t *testing.T, c *http.Client, base string, p *devidp.Provider, login *http.Response) *http.Response {
+	t.Helper()
+
+	return do(t, c, http.MethodGet, base+authorize(t, p, login), func(r *http.Request) { r.AddCookie(cookie(login, auth.LoginCookie)) })
 }
 
 // cookie is the cookie name resp sets, nil when it sets none.
