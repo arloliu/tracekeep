@@ -64,16 +64,23 @@ type Producer struct {
 	ids        uuidV7
 	faultedAt  int64          // when the last fault rotation ran, mono ns
 	faultFresh tracepack.UUID // the capture it installed, or the faulted one when it failed
-	metricsCur map[string]string
 	// rotateAt overrides the seq-limit rotation point; the package's tests lower it.
 	rotateAt uint64
 	// faultGap, set only by the package's tests, runs between a fault rotation's two lifecycle-lock sections.
 	faultGap func()
 
-	events    chan func()
-	quit      chan struct{}
+	// gauge is the current_capture label set the sink keeps applied, nil for none; gaugeSet wakes the sink.
+	gauge    atomic.Pointer[map[string]string]
+	gaugeSet chan struct{}
+
+	events chan func()
+	quit   chan struct{}
+	// wg joins the goroutines that emit events; the sink, joined by sinkDone, stops after them.
 	wg        sync.WaitGroup
+	sinkQuit  chan struct{}
+	sinkDone  chan struct{}
 	closeOnce sync.Once
+	sinkOnce  sync.Once
 }
 
 type options struct {
@@ -151,6 +158,9 @@ func New(cfg Config, opts ...Option) (*Producer, error) {
 		recorder: recorderName(),
 		now:      core.Now,
 		quit:     make(chan struct{}),
+		sinkQuit: make(chan struct{}),
+		sinkDone: make(chan struct{}),
+		gaugeSet: make(chan struct{}, 1),
 		events:   make(chan func(), sinkEvents),
 		lifeSem:  make(chan struct{}, 1),
 		rotateAt: o.rotateAt,
@@ -164,7 +174,7 @@ func New(cfg Config, opts ...Option) (*Producer, error) {
 		}
 	}
 	p.wg.Go(p.faultLoop)
-	p.wg.Go(p.sinkLoop)
+	go p.sinkLoop()
 	if !o.noPublisher {
 		p.pub = newPublisher(p, o.bus)
 		p.pub.hooks = o.hooks
@@ -204,9 +214,12 @@ func WithMetrics(m Metrics) Option {
 
 // Close stops the producer's goroutines and closes the connection New dialed;
 // call it after End, whose drain it does not wait for.
+// The sink stops last, once nothing emits, so current_capture is left as the last lifecycle call set it.
 func (p *Producer) Close() error {
 	p.closeOnce.Do(func() { close(p.quit) })
 	p.wg.Wait()
+	p.sinkOnce.Do(func() { close(p.sinkQuit) })
+	<-p.sinkDone
 	if p.conn != nil {
 		p.conn.close()
 	}

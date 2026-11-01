@@ -1,8 +1,13 @@
 package producer
 
 import (
+	"maps"
+	"slices"
+	"sync"
 	"sync/atomic"
 	"testing"
+
+	"github.com/arloliu/go-secs/tracepack"
 )
 
 // blockedLog blocks every call until release is closed, and counts the calls that began.
@@ -60,5 +65,66 @@ func TestBlockedLoggerStallsOnlyTheSink(t *testing.T) {
 	}
 	if after > 1+sinkEvents+2 { // the held line, a full queue, and what End and Rotate queued after the drain began
 		t.Errorf("%d Logger calls: the queue did not bound them", after)
+	}
+}
+
+// gaugeMetrics records which current_capture series are set.
+type gaugeMetrics struct {
+	nopMetrics
+	mu  sync.Mutex
+	set map[string]bool
+}
+
+func (m *gaugeMetrics) Set(name string, labels map[string]string, _ float64) {
+	if name == "current_capture" {
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		m.set[labels["capture_id"]] = true
+	}
+}
+
+func (m *gaugeMetrics) Delete(name string, labels map[string]string) {
+	if name == "current_capture" {
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		delete(m.set, labels["capture_id"])
+	}
+}
+
+func (m *gaugeMetrics) series() []string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	return slices.Collect(maps.Keys(m.set))
+}
+
+// The sink is held in the Logger with its queue full when End clears the capture, so the event that would delete
+// current_capture has no room; once the sink is released and the producer closed, the gauge is gone all the same.
+func TestCurrentCaptureGaugeSurvivesAFullSinkQueue(t *testing.T) {
+	t.Parallel()
+
+	log := &blockedLog{entered: make(chan struct{}, 1), release: make(chan struct{})}
+	m := &gaugeMetrics{set: map[string]bool{}}
+	p, err := New(Config{SubjectPrefix: "tpk", ClaimBucket: "b"}, WithBus(newRecBus()), WithLogger(log), WithMetrics(m))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if err := p.Begin(t.Context(), CaptureDescriptor{ToolID: "T1", DeviceName: "eqp"}); err != nil {
+		t.Fatalf("Begin: %v", err)
+	}
+	<-log.entered // the rotation's log line holds the sink inside the Logger
+	for range 2 * sinkEvents {
+		sinkLogger{p}.Warn("producer: traffic connection lost")
+	}
+	if rep := p.End(t.Context()); rep.CaptureID == (tracepack.UUID{}) {
+		t.Fatalf("End = %+v, want the capture closed", rep)
+	}
+
+	close(log.release)
+	if err := p.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if got := m.series(); len(got) != 0 {
+		t.Errorf("current_capture still set for %v after End and Close", got)
 	}
 }
