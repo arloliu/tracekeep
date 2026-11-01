@@ -68,6 +68,8 @@ type Producer struct {
 	rotateAt uint64
 	// faultGap, set only by the package's tests, runs between a fault rotation's two lifecycle-lock sections.
 	faultGap func()
+	// lockWait, set only by the package's tests, runs when a lifecycle-lock attempt finds the lock held and starts to wait.
+	lockWait func()
 
 	// gauge is the current_capture label set the sink keeps applied, nil for none; gaugeSet wakes the sink.
 	gauge    atomic.Pointer[map[string]string]
