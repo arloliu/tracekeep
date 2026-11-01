@@ -441,6 +441,7 @@ func ingesters(ctx context.Context, e *Env) (_ []*ingest.Ingester, err error) {
 	f := &ingest.Flusher{
 		Catalog: e.Catalog, Store: e.Store, WorkDir: c.Ingest.WorkDir, KeyPrefix: c.Store.KeyPrefix, Configs: configs,
 		Interval: c.Ingest.FlushInterval, HorizonHour: func() int64 { return ingest.HourOf(e.horizon()) }, Writer: writerName, Now: e.now,
+		Log: e.Log.With("role", "ingest"), LocalStore: c.Store.Kind == "fs",
 	}
 	dir, err := ownWorkDir(f.WorkDir, "ingest", c.Replica)
 	if err != nil {
@@ -468,7 +469,7 @@ func ingesters(ctx context.Context, e *Env) (_ []*ingest.Ingester, err error) {
 			Executor: x, Flusher: f, Coordinator: k, Batcher: ingest.NewBatcher(c.Ingest.FlushInterval, int(c.Ingest.BatchMaxBytes.Int64())),
 			Park: c.Parking.Enabled, Consumer: cons, Stream: ss[role], Incarnation: incs[role], Log: e.Log.With("role", role),
 			Replica: c.Replica, Lease: c.Ingest.Lease, FetchBatch: c.Ingest.FetchBatch, MaxWait: c.Ingest.MaxWait,
-			Heartbeat: c.Ingest.AckWait / 3, Now: e.now, Metrics: m,
+			Heartbeat: c.Ingest.AckWait / 3, AckWait: c.Ingest.AckWait, StopTimeout: c.Ingest.StopTimeout, Now: e.now, Metrics: m,
 		}
 		if role == catalog.RoleParking {
 			g.Replica, g.RedeliveryDelay = c.Replica+"/parked", c.Parking.RedeliveryDelay

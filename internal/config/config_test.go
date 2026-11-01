@@ -37,14 +37,14 @@ func TestDefaults(t *testing.T) {
 	}
 	for name, got := range map[string]time.Duration{
 		"retention": c.Retention, "ingest.flush_interval": c.Ingest.FlushInterval, "ingest.ack_wait": c.Ingest.AckWait,
-		"parking.redelivery_delay": c.Parking.RedeliveryDelay, "ingest.lease": c.Ingest.Lease,
+		"parking.redelivery_delay": c.Parking.RedeliveryDelay, "ingest.lease": c.Ingest.Lease, "ingest.stop_timeout": c.Ingest.StopTimeout,
 		"compact.quiet_period": c.Compact.QuietPeriod, "compact.redelivery_slack": c.Compact.RedeliverySlack,
 		"compact.inactivity": c.Compact.Inactivity, "compact.delete_delay": c.Compact.DeleteDelay,
 		"store.download_lifetime": c.Store.DownloadLifetime,
 	} {
 		want := map[string]time.Duration{
 			"retention": 30 * 24 * time.Hour, "ingest.flush_interval": 5 * time.Minute, "ingest.ack_wait": 7 * time.Minute,
-			"parking.redelivery_delay": time.Minute, "ingest.lease": time.Minute,
+			"parking.redelivery_delay": time.Minute, "ingest.lease": time.Minute, "ingest.stop_timeout": 20 * time.Second,
 			"compact.quiet_period": 15 * time.Minute, "compact.redelivery_slack": 2 * time.Minute,
 			"compact.inactivity": 2 * time.Hour, "compact.delete_delay": time.Hour,
 			"store.download_lifetime": 15 * time.Minute,
