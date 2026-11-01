@@ -565,13 +565,17 @@ func TestStopRightAfterAFetchThatSpendsTheBudget(t *testing.T) {
 		r := newReplica(t, c)
 		st := &stallingPut{ObjectStore: r.st}
 		r.g.Flusher.Store = st
-		// The fetch's wait is short and the budget long beside it, so it is the put that spends the budget.
-		r.g.AckWait, r.g.StopTimeout, r.g.MaxWait = time.Hour, time.Second, time.Millisecond
+		r.g.AckWait, r.g.StopTimeout = time.Hour, time.Second
 		capture := tracepack.UUID{0xc9, 2}
 		r.publish(t, inline(t, capture, startRecord(t, now), descriptorOf(t, "eqp")), nil)
 		r.publish(t, inline(t, capture, dataRecord(1, now+1), nil), nil)
-		r.step(t)
+		r.step(t) // under the default fetch wait, so both messages are held before the stop
+		if n := len(r.g.Batcher.batches); n != 1 {
+			t.Fatalf("%d batches held after the first step, want 1", n)
+		}
 		r.clk.flushInterval() // the batch is due at the next step
+		// The stop's fetch waits briefly and the budget is long beside it, so it is the put that spends the budget.
+		r.g.MaxWait = time.Millisecond
 		ctx, cancel := context.WithCancel(t.Context())
 		r.g.Consumer = stopOnFetch{Consumer: r.g.Consumer, stop: cancel}
 
