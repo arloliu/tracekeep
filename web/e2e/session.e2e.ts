@@ -274,8 +274,10 @@ test("a session outlives an outage of the IdP, and sign-in returns with it", asy
       expect(location.startsWith(`${issuer ?? ""}/`), `redirected to ${location}`).toBe(true);
       expect(failure, "the IdP's authorization page while it is down").toMatch(/net::ERR_|Timeout/);
     }
-    await login.goto("/");
-    await expect(login.getByRole("link", { name: "Sign in" })).toBeVisible();
+    // A fresh page: the failed navigation to the IdP may still be committing Chrome's error page, which would interrupt a goto on login.
+    const home = await other.newPage();
+    await home.goto("/");
+    await expect(home.getByRole("link", { name: "Sign in" })).toBeVisible();
     await other.close();
   } finally {
     execSync(start ?? "", { stdio: "inherit", timeout: 360_000 });
