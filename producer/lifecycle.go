@@ -195,6 +195,9 @@ func (p *Producer) lockLife(dl time.Time, cancel <-chan struct{}) bool {
 		return true
 	default:
 	}
+	if p.lockWait != nil {
+		p.lockWait()
+	}
 	t := time.NewTimer(time.Until(dl))
 	defer t.Stop()
 	select {

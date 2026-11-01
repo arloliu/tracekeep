@@ -111,6 +111,13 @@ func TestCloseCancelsAClaimPut(t *testing.T) {
 func TestCloseCancelsAFaultRotationsLockWait(t *testing.T) {
 	t.Parallel()
 	p := newTestProducer(t, Tunables{})
+	waiting := make(chan struct{}, 1)
+	p.lockWait = func() {
+		select {
+		case waiting <- struct{}{}:
+		default:
+		}
+	}
 	if err := p.Begin(t.Context(), testDescriptor()); err != nil {
 		t.Fatal(err)
 	}
@@ -120,9 +127,7 @@ func TestCloseCancelsAFaultRotationsLockWait(t *testing.T) {
 	}
 	c.Fault()
 	p.rec.SignalFault(c)
-	for len(p.rec.Faults()) > 0 { // barrier: the lifecycle goroutine took the signal and goes for the lock this test holds
-		time.Sleep(time.Millisecond)
-	}
+	<-waiting // barrier: the fault rotation waits for the lifecycle lock this test holds
 	closeWithin(t, p)
 	p.unlockLife()
 	if cur := p.rec.Current(); cur != c {
