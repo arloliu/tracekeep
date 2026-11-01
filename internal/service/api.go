@@ -71,6 +71,7 @@ func API(ctx context.Context, e *Env) error {
 		Web: web.FS(),
 		Records: api.RecordReads{
 			MaxReads: c.API.Records.MaxReads, MaxReaders: c.API.Records.MaxReaders, MaxLookupPacks: c.API.Records.MaxLookupPacks, HeldBytes: c.API.Records.HeldBytes,
+			SendTimeout: c.API.Records.SendTimeout,
 		},
 	}
 	// Every handler is counted, so the role returns only once none runs: the catalog and the store outlive them all.
