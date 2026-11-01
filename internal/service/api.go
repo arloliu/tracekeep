@@ -155,7 +155,8 @@ type exportWorkers struct {
 	err   error
 }
 
-// drainAPI shuts srv down within the bound, waits for its handlers and the export workers, and returns why the role ended.
+// drainAPI shuts srv down within the bound and waits for its handlers and the export workers;
+// it returns nil on a stop that drained cleanly, and otherwise why the role failed.
 func (e *Env) drainAPI(ctx context.Context, srv *http.Server, inFlight *sync.WaitGroup, w exportWorkers) error {
 	sctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), cmp.Or(e.apiShutdown, apiShutdown))
 	defer cancel()
@@ -179,7 +180,8 @@ func (e *Env) drainAPI(ctx context.Context, srv *http.Server, inFlight *sync.Wai
 		return errors.New("service: api: the export workers stopped")
 	}
 
-	return ctx.Err()
+	// A stop is how the role is asked to end, as the other roles treat it: no error.
+	return nil
 }
 
 // idpClient is the client of the IdP's discovery, JWKS and token exchange when auth.oidc.ca_file is set:

@@ -501,7 +501,11 @@ func TestAPIRoleStopsWithADownloadInFlight(t *testing.T) {
 	<-b.reading
 	stop()
 	select {
-	case <-done: //nolint:errcheck // the role's end, its error the cancellation's
+	case err := <-done:
+		// A stop whose drain outlived its bound is a failure, so the process exits non-zero.
+		if err == nil {
+			t.Error("API = nil after its shutdown bound passed, want the shutdown's error")
+		}
 	case <-time.After(10 * time.Second):
 		t.Fatal("the role did not return after its shutdown bound")
 	}
