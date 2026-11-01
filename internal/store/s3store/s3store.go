@@ -129,8 +129,14 @@ func (s *Store) Open(ctx context.Context, key string) (store.Object, error) {
 // Stat implements store.ObjectStore.
 func (s *Store) Stat(ctx context.Context, key string) (store.ObjectInfo, error) {
 	out, err := s.client.HeadObject(ctx, &s3.HeadObjectInput{Bucket: &s.bucket, Key: &key})
+	if err = wrap("stat", key, err); errors.Is(err, store.ErrNotFound) {
+		// A HEAD's 404 has no body to name what is missing, so a missing bucket would read as a missing key.
+		if _, berr := s.client.HeadBucket(ctx, &s3.HeadBucketInput{Bucket: &s.bucket}); berr != nil {
+			return store.ObjectInfo{}, fmt.Errorf("s3store: stat %s: bucket %s: %w", key, s.bucket, berr)
+		}
+	}
 	if err != nil {
-		return store.ObjectInfo{}, wrap("stat", key, err)
+		return store.ObjectInfo{}, err
 	}
 
 	return store.ObjectInfo{Key: key, Size: aws.ToInt64(out.ContentLength)}, nil

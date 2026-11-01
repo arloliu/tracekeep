@@ -7,6 +7,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	neturl "net/url"
 	"os"
 	"strconv"
@@ -159,6 +160,37 @@ func TestMissingBucketIsNotAMissingKey(t *testing.T) {
 	_, err = denied.Open(ctx, "archive/c1/p1")
 	storeError("Open denied", err)
 	storeError("Delete denied", denied.Delete(ctx, "archive/c1/p1"))
+}
+
+// A HEAD's 404 names neither the key nor the bucket, so Stat and Open ask whether the bucket is there:
+// a missing bucket is a store error, and only a missing key in a bucket that exists is store.ErrNotFound.
+// The endpoint is a fake that answers as MinIO and Ceph RGW do, every HEAD that misses with a bare 404.
+func TestStatAsksTheBucketAfterA404(t *testing.T) {
+	t.Parallel()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodHead && r.URL.Path == "/packs" {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	t.Cleanup(srv.Close)
+	for _, tc := range []struct {
+		bucket string
+		found  bool
+	}{{"packs", true}, {"missing", false}} {
+		s, err := s3store.New(s3store.Config{Endpoint: srv.URL, Bucket: tc.bucket, AccessKeyID: "ak", SecretAccessKey: "sk"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, statErr := s.Stat(t.Context(), "archive/c1/p1")
+		_, openErr := s.Open(t.Context(), "archive/c1/p1")
+		for _, err := range []error{statErr, openErr} {
+			if errors.Is(err, store.ErrNotFound) != tc.found || err == nil {
+				t.Errorf("bucket %s: %v, want store.ErrNotFound %t", tc.bucket, err, tc.found)
+			}
+		}
+	}
 }
 
 // readRemoved opens key, removes it, and its bucket too when bucket names it, then reads the object it opened by range.
