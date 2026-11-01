@@ -432,7 +432,9 @@ func ingesters(ctx context.Context, e *Env) (_ []*ingest.Ingester, err error) {
 	if err != nil {
 		return nil, fmt.Errorf("service: claim bucket: %w", err)
 	}
-	x := &ingest.Executor{Catalog: e.Catalog, Claims: ingest.ObjectClaims{Store: claims}, Horizon: e.horizon, Configs: configs, Keys: ks}
+	x := &ingest.Executor{
+		Catalog: e.Catalog, Claims: ingest.ObjectClaims{Store: claims}, MaxRecordBytes: c.Ingest.MaxRecordBytes.Int64(), Horizon: e.horizon, Configs: configs, Keys: ks,
+	}
 	if !e.Dev {
 		// Outside dev a capture binds only a masking configuration, one whose policy holds the whole baseline,
 		// which Executable refuses to rebuild otherwise (rollouts.md §6.4).

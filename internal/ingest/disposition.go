@@ -94,6 +94,8 @@ const (
 	ReasonCannotScreen      = "cannot-screen"
 	ReasonKeyRefused        = "key-refused"
 	ReasonKeyUnavailable    = "key-unavailable"
+	// ReasonTooLarge defers a claim whose declared payload is above ingest.max_record_bytes, unfetched, until the bound is raised (T-52).
+	ReasonTooLarge = "too-large"
 )
 
 // IncidentKeyBindingMismatch is the incident of a refused key whose material no longer matches its binding,
@@ -158,6 +160,8 @@ const (
 	ClaimMissing
 	// ClaimMismatch is ErrBusPayloadMismatch.
 	ClaimMismatch
+	// ClaimTooLarge: the declared payload is above the bound, and the object was not fetched.
+	ClaimTooLarge
 )
 
 // Receipt is the lookup of a receipt for (capture, seq).
@@ -337,6 +341,9 @@ func admission(f *Facts) (Decision, bool) {
 			return nak(ReasonClaimMissing, true), true
 		case ClaimMismatch:
 			return nak(ReasonClaimMissing, true), true
+		case ClaimTooLarge:
+			// A resource refusal, never malformed: it waits unfetched for the bound to be raised or the version terminated (T-52).
+			return park(ReasonTooLarge, true), true
 		case ClaimOK:
 		default:
 			panic("ingest: unknown claim")
@@ -373,6 +380,8 @@ func admitted(f *Facts) Decision {
 		switch f.Claim {
 		case ClaimUnknown:
 			return step(StepFetchClaim)
+		case ClaimTooLarge:
+			return park(ReasonTooLarge, true)
 		case ClaimMissing, ClaimMismatch:
 			switch f.Receipt {
 			case ReceiptUnknown:

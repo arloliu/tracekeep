@@ -66,6 +66,7 @@ var (
 	claimOKStart  = func(f *Facts) { f.Claim, f.Start = ClaimOK, true }
 	claimMissing  = func(f *Facts) { f.Claim = ClaimMissing }
 	claimMismatch = func(f *Facts) { f.Claim = ClaimMismatch }
+	claimTooLarge = func(f *Facts) { f.Claim = ClaimTooLarge }
 )
 
 var raw = Facts{LayoutOK: true, MsgIDOK: true}
@@ -125,6 +126,14 @@ func TestDecide(t *testing.T) {
 			Decision{Action: ActPark, Reason: ReasonClaimMissing, Alert: true}, []Step{StepResolve, StepFrame, StepLookupCapture, StepFetchClaim}},
 		{"mismatched object at the last delay: still a nak", lastClaim, world{{StepResolve, unresolved}, {StepFrame, framed}, {StepLookupCapture, unknown}, {StepFetchClaim, claimMismatch}},
 			Decision{Action: ActNak, Reason: ReasonClaimMissing, Alert: true}, []Step{StepResolve, StepFrame, StepLookupCapture, StepFetchClaim}},
+		{"oversized claim of an unknown capture: parked unfetched, never malformed", claim, world{{StepResolve, unresolved}, {StepFrame, framed}, {StepLookupCapture, unknown}, {StepFetchClaim, claimTooLarge}},
+			Decision{Action: ActPark, Reason: ReasonTooLarge, Alert: true}, []Step{StepResolve, StepFrame, StepLookupCapture, StepFetchClaim}},
+		{"oversized claim of a rejected capture: parked as too-large", claim, world{{StepResolve, unresolved}, {StepFrame, framed}, {StepLookupCapture, rejectedCap}, {StepFetchClaim, claimTooLarge}},
+			Decision{Action: ActPark, Reason: ReasonTooLarge, Alert: true}, []Step{StepResolve, StepFrame, StepLookupCapture, StepFetchClaim}},
+		{"oversized claim of an admitted capture: parked, no receipt looked up", claim, with(normal, world{{StepFetchClaim, claimTooLarge}}),
+			Decision{Action: ActPark, Reason: ReasonTooLarge, Alert: true}, []Step{StepResolve, StepFrame, StepLookupCapture, StepFetchClaim}},
+		{"oversized claim of a staged version: acknowledged before any fetch", claim, world{{StepResolve, func(f *Facts) { f.Resolution = ResolvedStaged }}},
+			Decision{Action: ActAck, Reason: ReasonAlreadyStaged}, []Step{StepResolve}},
 		{"other record of an unknown capture: never terminated", raw, world{{StepResolve, unresolved}, {StepFrame, framed}, {StepLookupCapture, unknown}},
 			Decision{Action: ActNak, Reason: ReasonUnknownCapture}, []Step{StepResolve, StepFrame, StepLookupCapture}},
 		{"record of a capture an earlier parking left pending: parked", raw, world{{StepResolve, unresolved}, {StepFrame, framed}, {StepLookupCapture, pendingCap}},
