@@ -131,7 +131,7 @@ start() {
 # traffic: the simulator until the tool's capture is admitted (tracekeep status, over the API while the unit holds the catalog).
 traffic() {
 	[ -x "$WORK/tracekeep-sim" ] || go build -o "$WORK/tracekeep-sim" ./cmd/tracekeep-sim
-	"$WORK/tracekeep-sim" -servers nats://127.0.0.1:4222 -tool $TOOL -device $DEVICE -rate 10 > "$WORK/sim.log" 2>&1 &
+	"$WORK/tracekeep-sim" -servers nats://127.0.0.1:4222 -tool $TOOL -device $DEVICE -rate 10 -process-program "$PROCESS_PROGRAM" > "$WORK/sim.log" 2>&1 &
 	pids+=($!)
 	for _ in $(seq 90); do
 		if tk status 2>/dev/null | python3 -c '
@@ -162,8 +162,10 @@ make build >/dev/null
 cp dist/tracekeep "$WORK/tracekeep-candidate"
 fresh "$WORK/tracekeep-candidate" "$PWD"
 traffic
-playwright "$PUBLIC"
+# The producer stopped and its last records flushed, so the list reads to a complete end.
 stop_traffic
+sleep 30
+playwright "$PUBLIC"
 
 if [ -z "${TRACEKEEP_BASELINE:-}" ]; then
 	log "upgrade skipped: no baseline (no strict ancestor on main with the chart whose packaging run passed)"

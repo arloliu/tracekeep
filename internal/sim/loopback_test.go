@@ -1,8 +1,10 @@
 package sim
 
 import (
+	"bytes"
 	"context"
 	"encoding/binary"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -169,6 +171,42 @@ func TestLoopbackRecordsT3(t *testing.T) {
 	if len(l.inflight) != 0 {
 		t.Errorf("%d requests still in flight after Stop", len(l.inflight))
 	}
+}
+
+// With a process program body, every tenth request is an S7F3 carrying it, which the baseline policy masks;
+// its S7F4 reply acknowledges it without echoing the body back.
+func TestLoopbackSendsAProcessProgram(t *testing.T) {
+	t.Parallel()
+	const n, body = 30, "SIM-PROCESS-PROGRAM"
+	bus := producertest.NewBus()
+	opts := testOptions()
+	opts.T3, opts.WithholdEvery, opts.ProcessProgram = time.Second, 0, body
+	l := newTestLoopbackWith(t, producer.Config{}, opts, producer.WithBus(bus))
+	if err := l.Start(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if err := l.Traffic(t.Context(), n); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	got := map[string]int{}
+	for i := 1; got["S7F3"] < n/10 || got["S7F4"] < n/10; i++ {
+		msgs, err := bus.WaitMessages(ctx, i)
+		if err != nil {
+			t.Fatalf("messages on the bus %v: %v", got, err)
+		}
+		r := decode(t, &msgs[i-1]).Record
+		if r.Kind != tracepack.KindData || len(r.Payload) < 14 {
+			continue
+		}
+		sf := fmt.Sprintf("S%dF%d", r.Payload[6]&0x7f, r.Payload[7])
+		got[sf]++
+		if carries := bytes.Contains(r.Payload, []byte(body)); carries != (sf == "S7F3") {
+			t.Errorf("%s carries the body: %v", sf, carries)
+		}
+	}
+	l.Stop(t.Context())
 }
 
 func decode(t *testing.T, m *producer.Msg) tpbus.Record {
