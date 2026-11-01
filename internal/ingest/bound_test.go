@@ -77,10 +77,17 @@ func (s *stallingPut) counts() (puts, ended, deletes int) {
 	return s.puts, s.ended, s.deletes
 }
 
-// stallingAck is a message whose confirmed acknowledgement never answers, returning only once its context ends.
-type stallingAck struct{ *msg }
+// stallingAck is a message whose confirmed acknowledgement never answers, returning only once its context ends;
+// entered, when set, is told the acknowledgement is waiting.
+type stallingAck struct {
+	*msg
+	entered func()
+}
 
 func (m stallingAck) DoubleAck(ctx context.Context) error {
+	if m.entered != nil {
+		m.entered()
+	}
 	t := time.NewTimer(guard)
 	defer t.Stop()
 	select {
@@ -89,6 +96,30 @@ func (m stallingAck) DoubleAck(ctx context.Context) error {
 		return ctx.Err()
 	case <-t.C:
 		return errNotEnded
+	}
+}
+
+// expiring is a context whose deadline the test passes by calling expire: Done closes and Err is the deadline's.
+// It ends a flush at the call the test stalls, however long the work before that call takes on the engine.
+type expiring struct {
+	context.Context
+	done chan struct{}
+	once sync.Once
+}
+
+func newExpiring(parent context.Context) *expiring {
+	return &expiring{Context: parent, done: make(chan struct{})}
+}
+
+func (e *expiring) expire()               { e.once.Do(func() { close(e.done) }) }
+func (e *expiring) Done() <-chan struct{} { return e.done }
+
+func (e *expiring) Err() error {
+	select {
+	case <-e.done:
+		return context.DeadlineExceeded
+	default:
+		return nil
 	}
 }
 
@@ -124,8 +155,9 @@ func lockCapture(t *testing.T, c *catalog.Catalog, capture tracepack.UUID) (rele
 	return release
 }
 
-// A flush whose remote call never answers is given up at the ack wait, each call ended by its context in turn:
-// the store's put, a put made durable whose answer is lost, the catalog's registration, a confirmed acknowledgement.
+// A flush whose remote call never answers is given up at its deadline, each call ended by its context in turn:
+// the store's put, a put made durable whose answer is lost, the catalog's registration at the ack wait,
+// and a confirmed acknowledgement at a deadline passed once it waits.
 // Whatever the outcome, nothing is acknowledged before its registration, a message not acknowledged is nak'd,
 // and an object the flush may have put is kept for the reconciler, never deleted by the flush (ingest.md §6.2).
 func TestFlushRemoteCallsEndWithTheirContext(t *testing.T) {
@@ -172,17 +204,24 @@ func TestFlushRemoteCallsEndWithTheirContext(t *testing.T) {
 				p := newPipeline(t, c)
 				g := p.ingester(slog.New(slog.DiscardHandler))
 				g.AckWait = bound
+				ctx := t.Context()
+				var exp *expiring
 				capture := tracepack.UUID{0xc1, byte(len(tc.name))}
 				msgs := traffic(t, capture)
 				if tc.claimCheck {
 					msgs = confirmedTraffic(t, p.cl, capture)
+					// The deadline passes once the acknowledgement waits, so the registration before it,
+					// slower on some engines than any fixed bound, is never what it ends.
+					g.AckWait = time.Hour
+					exp = newExpiring(ctx)
+					ctx = exp
 				}
 				hs := make([]*msg, len(msgs))
 				for i, m := range msgs {
 					hs[i] = &msg{}
 					var h Msg = hs[i]
 					if tc.claimCheck && i == 1 {
-						h = stallingAck{hs[i]}
+						h = stallingAck{msg: hs[i], entered: exp.expire}
 					}
 					p.add(t, m, h)
 				}
@@ -193,9 +232,9 @@ func TestFlushRemoteCallsEndWithTheirContext(t *testing.T) {
 					}
 				}
 
-				err := g.flush(t.Context(), p.b.All())
+				err := g.flush(ctx, p.b.All())
 				if !errors.Is(err, context.DeadlineExceeded) {
-					t.Fatalf("flush = %v, want the ack wait's deadline", err)
+					t.Fatalf("flush = %v, want the deadline", err)
 				}
 				if st != nil {
 					if puts, ended, deletes := st.counts(); puts != 1 || ended != 1 || deletes != 0 {
