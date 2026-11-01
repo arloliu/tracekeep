@@ -68,23 +68,11 @@ func workers(t *testing.T, m *masked) string {
 	return stale
 }
 
-// await waits, bounded, for job to reach a state other than queued and running, and returns it.
+// await waits, bounded, for testOwner's job to reach a state other than queued and running, and returns it.
 func await(t *testing.T, c *catalog.Catalog, job tracepack.UUID) catalog.ExportJob {
 	t.Helper()
-	deadline := time.Now().Add(20 * time.Second)
-	for {
-		j, err := c.ExportJob(t.Context(), job, testOwner)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if j.State != catalog.ExportQueued && j.State != catalog.ExportRunning {
-			return j
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("job still %s", j.State)
-		}
-		time.Sleep(20 * time.Millisecond) //nolint:forbidigo // polling a background worker's catalog row, bounded above
-	}
+
+	return awaitOwned(t, c, job, testOwner)
 }
 
 // A worker claims a job, puts its bundle under the attempt's key and completes it; the stale work directory is gone.
