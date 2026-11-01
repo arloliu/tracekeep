@@ -290,22 +290,22 @@ func (p *Producer) descriptorKey(d *CaptureDescriptor) ([]byte, error) {
 	return b, nil
 }
 
-// setCurrentMetric replaces the current_capture info gauge, deleting the previous label set.
+// setCurrentMetric makes c the capture the current_capture info gauge names, none when c is nil.
+// It is state the sink applies, never a queued event, so a full queue cannot leave a stale series.
 func (p *Producer) setCurrentMetric(c *core.Capture, d *CaptureDescriptor) {
-	if prev := p.metricsCur; prev != nil {
-		p.emit(func() { p.metrics.Delete("current_capture", prev) })
-		p.metricsCur = nil
+	var cur *map[string]string
+	if c != nil {
+		cur = &map[string]string{
+			"capture_id":           c.ID.String(),
+			"tool_id":              d.ToolID,
+			"recorder_instance_id": d.RecorderInstanceID().String(),
+		}
 	}
-	if c == nil {
-		return
+	p.gauge.Store(cur)
+	select {
+	case p.gaugeSet <- struct{}{}:
+	default:
 	}
-	cur := map[string]string{
-		"capture_id":           c.ID.String(),
-		"tool_id":              d.ToolID,
-		"recorder_instance_id": d.RecorderInstanceID().String(),
-	}
-	p.metricsCur = cur
-	p.emit(func() { p.metrics.Set("current_capture", cur, 1) })
 }
 
 // emit hands a log line or a measurement to the sink goroutine without waiting:
@@ -318,12 +318,31 @@ func (p *Producer) emit(f func()) {
 	}
 }
 
-// sinkLoop runs the events the lifecycle path emitted.
+// sinkLoop runs the events the lifecycle path emitted and keeps current_capture as setCurrentMetric last set it,
+// deleting the previous label set; it applies the gauge once more when it stops.
 func (p *Producer) sinkLoop() {
+	defer close(p.sinkDone)
+	var applied *map[string]string
+	apply := func() {
+		want := p.gauge.Load()
+		if want == applied {
+			return
+		}
+		if applied != nil {
+			p.metrics.Delete("current_capture", *applied)
+		}
+		if want != nil {
+			p.metrics.Set("current_capture", *want, 1)
+		}
+		applied = want
+	}
 	for {
 		select {
-		case <-p.quit:
+		case <-p.sinkQuit:
+			apply()
 			return
+		case <-p.gaugeSet:
+			apply()
 		case f := <-p.events:
 			f()
 		}
