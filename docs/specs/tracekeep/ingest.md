@@ -39,7 +39,7 @@ Contract changes go through proposals, which the subject [README.md](README.md) 
 ### 6.1 Message disposition
 
 Checks run in this order for every delivery:
-**layout and length** (`Tpk-Layout` = 1 and a body of at least 44 bytes, else malformed) → **retention candidate**, from `ts_utc_ns` read directly at body offset 8 (signed little-endian, bytes 8–15) → **resolution before framing and admission**:
+**layout** (a `Tpk-Layout` other than 1, an absent one included, is a newer producer's message: deferred, never malformed, T-51) → **length** (a body of at least 44 bytes, else malformed) → **retention candidate**, from `ts_utc_ns` read directly at body offset 8 (signed little-endian, bytes 8–15) → **resolution before framing and admission**:
 the delivery's **version** is read from the raw message,
 before `bus.CheckMessage` sees it (body bytes 0–43 are the carried header, the payload digest is `Tpk-Payload-Digest` for a claim-check message, present with `Tpk-Payload-Ref`, and SHA-256 over body bytes 44 onward otherwise;
 `capture_id` and `seq` come from `Nats-Msg-Id`), and is looked up in `parked`,
@@ -78,7 +78,7 @@ or the **next step** it needs:
 more **evidence**, gathered without a durable effect (framing by `bus.CheckMessage`, the fetch and check of a claim object, start recognition and descriptor validation),
 or a **transactional operation**: the admission transaction, the durable write of `rejected`, step (1) of the parking protocol, or the termination of an unresolved version under an active order (`parking.md`).
 The step runs, what it returns joins the facts, and the classifier decides again, until it returns a final disposition.
-Before resolution the facts are only those read from the raw message (layout and length, `ts_utc_ns`, the version)
+Before resolution the facts are only those read from the raw message (layout, length, `ts_utc_ns`, the version)
 and the lookups of the version in `parked` and of an active termination order;
 nothing calls `bus.CheckMessage`, fetches an object or validates a descriptor before the classifier has found the version unresolved,
 so a resolved or order-covered delivery reaches its disposition from the raw message alone.
@@ -104,7 +104,8 @@ so an expired `start` that admission has just admitted terminates as beyond-rete
 
 | Condition | Disposition | Visible as |
 |---|---|---|
-| `bus.ErrMalformed` (unknown layout, body length, bad `Nats-Msg-Id`, bad claim headers, a transport-event or annotation payload that does not decode in any minor, tracepack G5-294) | terminate on the bus, alert, count | seq gap |
+| a `Tpk-Layout` other than 1 (`bus.ErrUnsupportedLayout`, a newer producer's message) | nak with delay, alert `unsupported-layout`; never terminated, never parked (it has no version to park), its claim object kept until its hour's retention as any other (§8.4); it waits until a consumer that knows the layout takes it (T-51) | deferred count |
+| `bus.ErrMalformed` (body length, bad `Nats-Msg-Id`, bad claim headers, a transport-event or annotation payload that does not decode in any minor, tracepack G5-294) | terminate on the bus, alert, count | seq gap |
 | `bus.ErrNotAccepted` (a `start` whose descriptor does not decode or names an unserved method) | nak with delay, alert `capture-rejected`; later records of the capture stay deferred until an operator terminates or a fixed consumer accepts (G5-251) | open incident |
 | `start` of an unknown or `rejected` capture, inline or claim-check (fetched first) | the admission transaction above, then normal ingestion; acked only when a segment holding the `start` is registered; an expired `start` of a now-admitted capture terminates as beyond-retention after admission | — |
 | claim-check message of an unknown capture whose object is missing | nak with delay, alert; parked once its nak delay has reached the last step (T-40) | pending / parked count |
