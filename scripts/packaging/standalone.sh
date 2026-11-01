@@ -129,6 +129,19 @@ start() {
 	die "tracekeep did not become ready"
 }
 
+# stop_unit: the unit stopped as an operator stops it; a stop signal is a clean end, so the unit is inactive, not failed, its exit status 0.
+stop_unit() {
+	local state result status
+	sudo systemctl stop tracekeep
+	state=$(systemctl show tracekeep -p ActiveState --value)
+	result=$(systemctl show tracekeep -p Result --value)
+	status=$(systemctl show tracekeep -p ExecMainStatus --value)
+	if [ "$state" = inactive ] && [ "$result" = success ] && [ "$status" = 0 ]; then
+		return 0
+	fi
+	die "the stopped unit is $state (result $result, exit status $status), want inactive, success and exit status 0"
+}
+
 # traffic: the simulator until the tool's capture is admitted (tracekeep status, over the API while the unit holds the catalog).
 traffic() {
 	[ -x "$WORK/tracekeep-sim" ] || go build -o "$WORK/tracekeep-sim" ./cmd/tracekeep-sim
@@ -172,13 +185,13 @@ playwright "$PUBLIC"
 # The IdP stopped after the session and started again: Dex keeps its keys in memory, so it starts with new ones.
 TRACEKEEP_ISSUER=$ISSUER TRACEKEEP_IDP_STOP="docker stop -t 10 tracekeep-dex >/dev/null" TRACEKEEP_IDP_START="docker start tracekeep-dex >/dev/null" \
 	playwright "$PUBLIC" -g "outage of the IdP"
+stop_unit
 
 if [ -z "${TRACEKEEP_BASELINE:-}" ]; then
 	log "upgrade skipped: no baseline (no strict ancestor on main with the chart whose packaging run passed)"
 	exit 0
 fi
 log "upgrade from $TRACEKEEP_BASELINE to $(git rev-parse --short HEAD)"
-sudo systemctl stop tracekeep
 sudo rm -rf /var/lib/tracekeep
 # A fresh bus: the baseline's install starts from nothing.
 docker rm -f tracekeep-nats >/dev/null
@@ -193,8 +206,10 @@ stop_traffic
 sleep 30
 TRACEKEEP_EVIDENCE=$WORK/evidence.json playwright "$PUBLIC"
 # The guide's upgrade: stop, install the candidate's binary, unit and user, start; the migration before the start upgrades the catalog.
+# The baseline's stop is not asserted: a baseline older than the clean stop ends its unit failed.
 sudo systemctl stop tracekeep
 install_unit "$WORK/tracekeep-candidate" "$PWD"
 start
 TRACEKEEP_EVIDENCE=$WORK/evidence.json TRACEKEEP_AFTER_UPGRADE=1 playwright "$PUBLIC"
+stop_unit
 log "upgrade from $TRACEKEEP_BASELINE passed, the records read before it read the same after it"
