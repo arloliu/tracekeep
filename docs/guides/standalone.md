@@ -27,10 +27,10 @@ The bus (NATS with JetStream) and the IdP are the host's or the network's.
 
    systemd's own credentials (`LoadCredential`) are not used: an operator's command reads the same files as the unit's user.
    Keys may come from Vault with AppRole instead (`keys.md`).
-5. Create the state directory and migrate, as the unit's user, with the unit stopped:
+5. Create the state directory and the store's directory under it (the fs store never creates its own), and migrate, as the unit's user, with the unit stopped:
 
    ```
-   install -d -m 0750 -o tracekeep -g tracekeep /var/lib/tracekeep
+   install -d -m 0750 -o tracekeep -g tracekeep /var/lib/tracekeep /var/lib/tracekeep/packs
    sudo -u tracekeep tracekeep migrate --config /etc/tracekeep/config.yaml
    ```
 

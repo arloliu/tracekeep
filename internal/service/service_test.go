@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"io/fs"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -183,6 +184,24 @@ func TestOpen(t *testing.T) {
 	}
 	if err := e.Close(); err != nil {
 		t.Errorf("Close = %v", err)
+	}
+}
+
+// An fs store whose directory is missing fails Open with its error; the cleanup closes no store it did not open.
+func TestOpenMissingStore(t *testing.T) {
+	t.Parallel()
+	cfg := load(t, testbus.Start(t))
+	db, err := sql.Open("sqlite", catalog.SQLiteURI(cfg.Catalog.DSN))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := migrations.Apply(t.Context(), db, catalog.EngineSQLite); err != nil {
+		t.Fatal(err)
+	}
+	_ = db.Close()
+	cfg.Store.Dir = filepath.Join(cfg.Store.Dir, "missing")
+	if _, err := Open(t.Context(), cfg, slog.New(slog.DiscardHandler)); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("Open = %v, want the missing directory", err)
 	}
 }
 
