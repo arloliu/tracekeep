@@ -75,7 +75,7 @@ func (p *Producer) Begin(ctx context.Context, d CaptureDescriptor) error {
 	if err := d.Validate(); err != nil {
 		return err
 	}
-	if !p.lockLife(deadline(ctx)) {
+	if !p.lockLife(deadline(ctx), nil) {
 		return ErrRotationAbandoned
 	}
 	defer p.unlockLife()
@@ -96,7 +96,7 @@ func (p *Producer) Rotate(ctx context.Context, d CaptureDescriptor) error {
 	if err := d.Validate(); err != nil {
 		return err
 	}
-	if !p.lockLife(deadline(ctx)) {
+	if !p.lockLife(deadline(ctx), nil) {
 		return ErrRotationAbandoned
 	}
 	defer p.unlockLife()
@@ -125,7 +125,7 @@ func (p *Producer) End(ctx context.Context) Report {
 	dl := deadline(ctx)
 	// Announced before waiting for the lock, so a rotation inside it abandons; withdrawn if End gives up.
 	p.ending.Add(1)
-	if !p.lockLife(dl) {
+	if !p.lockLife(dl, nil) {
 		p.ending.Add(-1)
 		return Report{Contended: true}
 	}
@@ -188,8 +188,8 @@ func waitEnded(caps []*core.Capture, dl time.Time) (bool, uint64) {
 	return all, dropped
 }
 
-// lockLife takes the lifecycle lock, giving up at dl.
-func (p *Producer) lockLife(dl time.Time) bool {
+// lockLife takes the lifecycle lock, giving up at dl or once cancel closes; a nil cancel never does.
+func (p *Producer) lockLife(dl time.Time, cancel <-chan struct{}) bool {
 	select {
 	case p.lifeSem <- struct{}{}:
 		return true
@@ -201,6 +201,8 @@ func (p *Producer) lockLife(dl time.Time) bool {
 	case p.lifeSem <- struct{}{}:
 		return true
 	case <-t.C:
+		return false
+	case <-cancel:
 		return false
 	}
 }
@@ -368,7 +370,7 @@ func (p *Producer) faultLoop() {
 // so a fault rotation prepared before an End or a Rotate never installs a capture after them.
 // A fresh capture that faults again within a minute waits for the backoff first, outside both locks.
 func (p *Producer) handleFault(c *core.Capture) {
-	if !p.lockLife(time.Now().Add(defaultLifecycleTimeout)) {
+	if !p.lockLife(time.Now().Add(defaultLifecycleTimeout), p.quit) {
 		return
 	}
 	if !p.faultCurrentLocked(c) {
@@ -390,7 +392,7 @@ func (p *Producer) handleFault(c *core.Capture) {
 		}
 	}
 
-	if !p.lockLife(time.Now().Add(defaultLifecycleTimeout)) {
+	if !p.lockLife(time.Now().Add(defaultLifecycleTimeout), p.quit) {
 		return
 	}
 	defer p.unlockLife()
@@ -398,7 +400,7 @@ func (p *Producer) handleFault(c *core.Capture) {
 		return
 	}
 	p.emit(func() { p.log.Error("producer: capture fault, rotating", "capture_id", c.ID.String()) })
-	ctx, cancel := context.WithTimeout(context.Background(), defaultLifecycleTimeout)
+	ctx, cancel := context.WithTimeout(p.stop, defaultLifecycleTimeout)
 	defer cancel()
 	d := p.desc
 	id := c.ID
@@ -417,14 +419,14 @@ func (p *Producer) handleFault(c *core.Capture) {
 
 // handleSeqLimit rotates away from a capture whose seq neared its end, with the same descriptor (G5-231).
 func (p *Producer) handleSeqLimit(c *core.Capture) {
-	if !p.lockLife(time.Now().Add(defaultLifecycleTimeout)) {
+	if !p.lockLife(time.Now().Add(defaultLifecycleTimeout), p.quit) {
 		return
 	}
 	defer p.unlockLife()
 	if p.stoppingNow() || p.rec.Current() != c || c.Faulted() {
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), defaultLifecycleTimeout)
+	ctx, cancel := context.WithTimeout(p.stop, defaultLifecycleTimeout)
 	defer cancel()
 	d := p.desc
 	id := c.ID
