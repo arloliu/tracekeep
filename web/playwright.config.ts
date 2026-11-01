@@ -17,6 +17,10 @@ export default defineConfig({
     ...devices["Desktop Chrome"],
     baseURL: process.env.TRACEKEEP_URL ?? "https://tracekeep.test:8443",
     trace: "retain-on-failure",
+    // Every action and navigation is bounded, so a step that never completes, such as a click on a page an IdP just restarted never served,
+    // fails and lets a retry (expect.toPass) run instead of holding the test to its own timeout.
+    actionTimeout: 30_000,
+    navigationTimeout: 60_000,
     launchOptions: {
       args: rules ? [`--host-resolver-rules=${rules}`] : [],
       env: home ? { ...process.env, HOME: home } : undefined,
