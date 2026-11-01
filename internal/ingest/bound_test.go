@@ -438,3 +438,36 @@ func TestStopBetweenAFetchAndTheDueBatches(t *testing.T) {
 		}
 	})
 }
+
+// A stop right after a fetch whose due batch then spends the stop's budget is a failed stop:
+// Run reports it, the batch's messages left to redelivery and nothing registered.
+func TestStopRightAfterAFetchThatSpendsTheBudget(t *testing.T) {
+	t.Parallel()
+	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
+		r := newReplica(t, c)
+		st := &stallingPut{ObjectStore: r.st}
+		r.g.Flusher.Store = st
+		// The fetch's wait is short and the budget long beside it, so it is the put that spends the budget.
+		r.g.AckWait, r.g.StopTimeout, r.g.MaxWait = time.Hour, time.Second, time.Millisecond
+		capture := tracepack.UUID{0xc9, 2}
+		r.publish(t, inline(t, capture, startRecord(t, now), descriptorOf(t, "eqp")), nil)
+		r.publish(t, inline(t, capture, dataRecord(1, now+1), nil), nil)
+		r.step(t)
+		r.clk.flushInterval() // the batch is due at the next step
+		ctx, cancel := context.WithCancel(t.Context())
+		r.g.Consumer = stopOnFetch{Consumer: r.g.Consumer, stop: cancel}
+
+		if err := r.g.Run(ctx); !errors.Is(err, context.Canceled) {
+			t.Fatalf("Run = %v, want the stop's budget spent", err)
+		}
+		if puts, ended, deletes := st.counts(); puts != 1 || ended != 1 || deletes != 0 {
+			t.Errorf("puts %d, ended by their context %d, deletes %d; want one put, ended by the stop's budget", puts, ended, deletes)
+		}
+		if n := r.pending(t); n != 2 {
+			t.Errorf("the stream holds %d messages, want both left to redelivery", n)
+		}
+		if got, err := c.Capture(t.Context(), capture); err != nil || got.HasHighestSeq {
+			t.Errorf("capture %+v, %v; want nothing registered", got, err)
+		}
+	})
+}

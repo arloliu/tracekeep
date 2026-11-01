@@ -112,7 +112,8 @@ func (g *Ingester) Join(ctx context.Context) error {
 	return nil
 }
 
-// Run steps until ctx ends, then flushes what it holds within the stop budget, StopTimeout from ctx's end;
+// Run steps until ctx ends, then flushes what it holds within the stop budget, StopTimeout from ctx's end,
+// and returns the failure of any flush the stop overlapped: a stop whose batches were not all written failed;
 // a stream that is no longer its incarnation ends it at once, the held deliveries abandoned unacknowledged.
 func (g *Ingester) Run(ctx context.Context) error {
 	if g.Heartbeat <= 0 {
@@ -134,11 +135,14 @@ func (g *Ingester) Run(ctx context.Context) error {
 	}()
 
 	var backoff time.Duration
+	var stopErr error
 	for ctx.Err() == nil {
 		err := g.stepFlushing(ctx, stopping)
 		switch {
 		case errors.Is(err, catalog.ErrIncarnationChanged):
 			return err
+		case errors.Is(err, errStopFlush):
+			stopErr = err
 		case err != nil:
 			g.Log.Warn("ingest: step failed", "error", err)
 			backoff = min(max(2*backoff, firstStepBackoff), lastStepBackoff)
@@ -153,8 +157,11 @@ func (g *Ingester) Run(ctx context.Context) error {
 		}
 	}
 
-	return g.flush(stopping, g.take(g.Batcher.All))
+	return errors.Join(stopErr, g.flush(stopping, g.take(g.Batcher.All)))
 }
+
+// errStopFlush marks the failure of a flush a stop overlapped, which fails the stop.
+var errStopFlush = errors.New("ingest: a flush during the stop failed")
 
 // stopBudget is a context that outlives ctx by budget, the one budget every flush still due at a stop shares (ingest.md §6.2),
 // and its release; with no budget it ends only at its release.
@@ -185,7 +192,8 @@ func stopBudget(ctx context.Context, budget time.Duration) (context.Context, con
 // Step renews the membership, fetches one batch of messages within the lease, disposes of each,
 // keeps the held ones in progress and flushes the batches that are due.
 // It returns the renewal's and the fetch's errors, a pull the server ended with an error included,
-// after disposing of what it delivered; a failed flush's batch is nak'd and logged.
+// after disposing of what it delivered; a failed flush's batch is nak'd and logged,
+// and its error is returned too once ctx has ended, the flush then being part of a stop.
 func (g *Ingester) Step(ctx context.Context) error {
 	return g.stepFlushing(ctx, ctx)
 }
@@ -221,6 +229,9 @@ func (g *Ingester) stepFlushing(ctx, flushing context.Context) error {
 	due := g.take(func() []*Batch { return g.Batcher.Due(now) })
 	if err := g.flush(flushing, due); err != nil {
 		g.Log.Warn("ingest: flush failed", "error", err)
+		if ctx.Err() != nil {
+			return errors.Join(fetchErr, fmt.Errorf("%w: %w", errStopFlush, err))
+		}
 	}
 
 	return fetchErr
