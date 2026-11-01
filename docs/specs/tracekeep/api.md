@@ -206,8 +206,8 @@ Every read set a read reads is checked, so a resumed stream, whatever its cursor
   gone again, or the hour's scope evicted, the rest of the hour is reported `incomplete`.
   A merged input usually still serves for the deletion delay (`compactor.md` §8.3), but a stream's length is not bounded by it, so the re-read is what a reader relies on.
 - **Bounds**: a replica serves at most `api.records.max_reads` reads at once, `QueryRecords` streams, `FindTransaction` lookups and `Restore`s together (default 8), refusing one more as `resource_exhausted` before reading (T-52).
-  A `QueryRecords` stream whose send makes no progress for `api.records.send_timeout` (default 1 min) is ended, its read slot and memory freed;
-  a client that keeps reading is never ended by it, however long the stream, and resumes an ended one from its last cursor.
+  A `QueryRecords` stream whose client takes less than 16 KiB of it within `api.records.send_timeout` (default 1 min) is ended, its read slot and memory freed;
+  a client that keeps reading at least that is never ended by it, however long the stream, and resumes an ended one from its last cursor.
   A `QueryRecords` merge opens at most `api.records.max_readers` packs (default 16), and a cluster above that is not read and is reported `incomplete`;
   a `FindTransaction` lookup passes an hour's whole read set, and an hour of more than `api.records.max_lookup_packs` packs (default 64) is refused as `resource_exhausted`, naming the hour.
   A merge holds at most about `api.records.held_bytes` of blocks (default 64 MiB, tracepack's `MaxHeldBytes`, which a block may overrun by an eighth), a lookup also its state (tracepack's `MaxStateBytes`, 64 MiB),
