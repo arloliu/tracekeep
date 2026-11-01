@@ -19,15 +19,25 @@ async function signIn(page: Page) {
   await expect(page.getByRole("button", { name: "Sign out" })).toBeVisible();
 }
 
-// tarFiles are a tar archive's files by name.
+// tarFiles are a tar archive's regular files by name: a long name is a ustar prefix and name, or a PAX path record.
 function tarFiles(tar: Buffer): Map<string, Buffer> {
   const files = new Map<string, Buffer>();
+  const field = (h: Buffer, from: number, len: number) => h.subarray(from, from + len).toString("utf8").replace(/\0.*$/s, "");
+  let paxPath: string | undefined;
   for (let at = 0; at + 512 <= tar.length; ) {
     const header = tar.subarray(at, at + 512);
-    const entry = header.subarray(0, 100).toString("utf8").replace(/\0.*$/s, "");
-    if (entry === "") break;
-    const size = parseInt(header.subarray(124, 136).toString("utf8").replace(/\0.*$/s, "").trim() || "0", 8);
-    files.set(entry, tar.subarray(at + 512, at + 512 + size));
+    const name = field(header, 0, 100);
+    if (name === "") break;
+    const size = parseInt(field(header, 124, 12).trim() || "0", 8);
+    const body = tar.subarray(at + 512, at + 512 + size);
+    const type = field(header, 156, 1) || "0";
+    const prefix = field(header, 257, 6).startsWith("ustar") ? field(header, 345, 155) : "";
+    if (type === "x") {
+      paxPath = /(?:^|\n)\d+ path=([^\n]*)\n/.exec(body.toString("utf8"))?.[1];
+    } else {
+      if (type === "0") files.set(paxPath ?? (prefix === "" ? name : `${prefix}/${name}`), body);
+      paxPath = undefined;
+    }
     at += 512 + Math.ceil(size / 512) * 512;
   }
   return files;
