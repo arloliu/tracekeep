@@ -2,26 +2,17 @@ package ingest
 
 import (
 	"crypto/sha256"
-	"encoding/base64"
-	"encoding/binary"
-	"strings"
 
 	"github.com/arloliu/go-secs/tracepack"
 	tpbus "github.com/arloliu/go-secs/tracepack/bus"
 )
-
-// headerLen is the record header every bus body starts with.
-const headerLen = 44
-
-// payloadDigestPrefix starts a Tpk-Payload-Digest value, which carries the padded base64url SHA-256 of the payload.
-const payloadDigestPrefix = "SHA-256="
 
 // Version identifies one version of a record (parking.md *Parking*, G5-269):
 // the capture and seq, the 44 header bytes as the body carries them, and one payload digest.
 type Version struct {
 	Capture tracepack.UUID
 	Seq     uint64
-	Header  [headerLen]byte
+	Header  [tpbus.RecordHeaderLen]byte
 	Digest  [32]byte
 }
 
@@ -44,7 +35,8 @@ func ReadRaw(env *tpbus.Envelope, body []byte, horizonNS int64) (Raw, Facts) {
 		f.LayoutUnknown = true
 		return r, f
 	}
-	if len(body) < headerLen {
+	header, ok := tpbus.PeekHeader(body)
+	if !ok {
 		return r, f
 	}
 	f.LayoutOK = true
@@ -53,37 +45,21 @@ func ReadRaw(env *tpbus.Envelope, body []byte, horizonNS int64) (Raw, Facts) {
 		return r, f
 	}
 	r.Version.Capture, r.Version.Seq = capture, seq
-	copy(r.Version.Header[:], body[:headerLen])
-	r.TS = int64(binary.LittleEndian.Uint64(body[8:16])) //nolint:gosec // ts_utc_ns is signed little-endian, body bytes 8–15
+	copy(r.Version.Header[:], body[:tpbus.RecordHeaderLen])
+	r.TS = header.TSUTCNs
 	r.ClaimCheck = env.PayloadRef != ""
 	if r.ClaimCheck {
-		digest, ok := parseDigest(env.PayloadDigest)
-		if !ok {
+		digest, err := tpbus.ParsePayloadDigest(env.PayloadDigest)
+		if err != nil {
 			return r, f // a bad claim header is malformed; without its digest there is no version to resolve
 		}
 		r.Version.Digest = digest
 	} else {
-		r.Version.Digest = sha256.Sum256(body[headerLen:])
+		r.Version.Digest = sha256.Sum256(body[tpbus.RecordHeaderLen:])
 	}
 	f.MsgIDOK = true
 	f.ClaimCheck = r.ClaimCheck
 	f.Expired = r.TS < horizonNS
 
 	return r, f
-}
-
-// parseDigest decodes a Tpk-Payload-Digest value.
-func parseDigest(v string) ([32]byte, bool) {
-	var d [32]byte
-	enc, ok := strings.CutPrefix(v, payloadDigestPrefix)
-	if !ok {
-		return d, false
-	}
-	b, err := base64.URLEncoding.DecodeString(enc)
-	if err != nil || len(b) != len(d) {
-		return d, false
-	}
-	copy(d[:], b)
-
-	return d, true
 }

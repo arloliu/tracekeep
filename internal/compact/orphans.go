@@ -239,7 +239,11 @@ func (r *Compactor) read(ctx context.Context, info store.ObjectInfo) (*catalog.P
 		return nil, "", err
 	}
 	defer obj.Close()
-	vr, err := tracepack.Verify(ctx, obj, obj.Size(), tracepack.VerifyOptions{})
+	rd, err := tracepack.Open(ctx, obj, obj.Size(), tracepack.ReaderOptions{})
+	var vr tracepack.VerifyReport
+	if err == nil {
+		vr, err = rd.Verify(ctx)
+	}
 	if err != nil {
 		if ctx.Err() == nil && quarantines(err) {
 			return nil, fmt.Sprintf("verify: %v", err), nil
@@ -248,10 +252,6 @@ func (r *Compactor) read(ctx context.Context, info store.ObjectInfo) (*catalog.P
 	}
 	if reason := judge(&vr); reason != "" {
 		return nil, reason, nil
-	}
-	rd, err := tracepack.Open(ctx, obj, obj.Size(), tracepack.ReaderOptions{})
-	if err != nil {
-		return nil, "", err
 	}
 	p, reason := describe(rd, r.KeyPrefix, info)
 	if reason != "" {
@@ -271,8 +271,13 @@ func (r *Compactor) read(ctx context.Context, info store.ObjectInfo) (*catalog.P
 // quarantines reports whether err, Verify's, is about the object's own bytes, which quarantines it (storage.md §5.4, T-51):
 // a put is atomic, so a listed object without a valid trailer is never still being written,
 // and one over the default budget opens for no reader.
-// Any other error, a newer module's format or the store's read included, leaves the key for the next pass.
+// Any other error, a newer module's format or the store's read included, leaves the key for the next pass;
+// a failed read of the store is told first, as tracepack's decision table does, so a store error wrapping a sentinel never quarantines.
 func quarantines(err error) bool {
+	if errors.Is(err, tracepack.ErrSourceRead) {
+		return false
+	}
+
 	return slices.ContainsFunc([]error{tracepack.ErrNotTracepack, tracepack.ErrCorrupt, tracepack.ErrNotFinalized, tracepack.ErrReadLimit},
 		func(e error) bool { return errors.Is(err, e) })
 }
@@ -398,10 +403,7 @@ func records(ctx context.Context, rd *tracepack.Reader, p *catalog.Pack) error {
 
 // isStop reports a capture-boundary transport event of kind stop.
 func isStop(rec *tracepack.Record) bool {
-	if rec.Kind != tracepack.KindTransportEvent {
-		return false
-	}
-	ev, err := tracepack.UnmarshalTransportEvent(rec.Payload)
+	k, ok := rec.CaptureBoundary()
 
-	return err == nil && ev.Event == tracepack.EventCaptureBoundary && ev.BoundaryKind != nil && *ev.BoundaryKind == tracepack.BoundaryKindStop
+	return ok && k == tracepack.BoundaryKindStop
 }

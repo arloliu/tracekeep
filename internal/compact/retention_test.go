@@ -83,7 +83,7 @@ func sdkObject(t *testing.T, capture tracepack.UUID, seq uint64, ts int64) Claim
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(body) != headerLen {
+	if len(body) != tpbus.RecordHeaderLen {
 		t.Fatalf("a claim-check body is %d bytes, want the header alone", len(body))
 	}
 
