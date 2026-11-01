@@ -355,13 +355,13 @@ func TestDownloadCutAtItsDeadline(t *testing.T) {
 	t.Parallel()
 	c := catalogtest.Open(t, catalog.EngineSQLite)
 	mem := store.NewMem()
-	body := bytes.Repeat([]byte("0123456789abcdef"), 1<<16) // 1 MiB: 32 reads of 32 KiB, 640 ms
+	body := bytes.Repeat([]byte("0123456789abcdef"), 1<<18) // 4 MiB: 128 reads of 32 KiB, 2.56 s
 	if err := mem.Put(t.Context(), objectKey, bytes.NewReader(body), int64(len(body))); err != nil {
 		t.Fatal(err)
 	}
 	expiry := time.Now().Add(2 * time.Second).Truncate(time.Second)
-	// The downloads' clock reads the expiry less 300 ms when the request is sent: the transfer has 300 ms and no margin.
-	clock, sent := requestClock(expiry, 300*time.Millisecond)
+	// The downloads' clock reads the expiry less 1 s when the request is sent: time for the headers on a slow runner, not for the whole transfer.
+	clock, sent := requestClock(expiry, time.Second)
 	tokens := &auth.Downloads{Keys: downloadKeys(t, c), Now: clock}
 	s := &Server{Catalog: c, Auth: testAuthenticator(nil), Store: slowObjects{mem}, Downloads: Downloads{Tokens: tokens, Now: clock}}
 	srv := httptest.NewServer(s.Handler())
