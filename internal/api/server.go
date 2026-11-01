@@ -77,7 +77,7 @@ type Catalog interface {
 	Audit(ctx context.Context, e catalog.AuditEntry) error
 	Capture(ctx context.Context, id tracepack.UUID) (catalog.Capture, error)
 	ConfigContent(ctx context.Context, id int64) ([]byte, error)
-	RecordCopies(ctx context.Context, capture tracepack.UUID, seq uint64) ([]catalog.Copy, error)
+	RecordCopies(ctx context.Context, capture tracepack.UUID, seq uint64, hour int64, limit int) ([]catalog.Copy, bool, error)
 	Configs(ctx context.Context) ([]catalog.ConfigInfo, error)
 	Policy(ctx context.Context, id string, version int64) (catalog.StoredPolicy, bool, error)
 	Completeness(ctx context.Context, capture tracepack.UUID) (catalog.Completeness, error)

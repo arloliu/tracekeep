@@ -8,11 +8,15 @@ import (
 	"github.com/arloliu/go-secs/tracepack"
 )
 
+// copyIDs are the copies of seq whose named hour 1 holds one, every one of them listed.
 func copyIDs(t *testing.T, c *Catalog, capture tracepack.UUID, seq uint64) []tracepack.UUID {
 	t.Helper()
-	got, err := c.RecordCopies(t.Context(), capture, seq)
+	got, inHour, err := c.RecordCopies(t.Context(), capture, seq, 1, 100)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if !inHour && len(got) != 0 {
+		t.Errorf("RecordCopies(%d) listed %v for an hour holding none", seq, got)
 	}
 	ids := make([]tracepack.UUID, len(got))
 	for i, cp := range got {
@@ -37,9 +41,9 @@ func TestRecordCopies(t *testing.T) {
 		other := admittedAnother(t, c)
 		register(t, c, segment(t, other, 1, 0, 9), Registration{Evidence: &Evidence{}})
 
-		got, err := c.RecordCopies(t.Context(), capture, 5)
-		if err != nil {
-			t.Fatal(err)
+		got, inHour, err := c.RecordCopies(t.Context(), capture, 5, 1, 100)
+		if err != nil || !inHour {
+			t.Fatal(inHour, err)
 		}
 		want := map[tracepack.UUID]Copy{
 			inputs[0].ID: {Pack: inputs[0].ID, Key: inputs[0].Key, Hour: 1, State: "merged"},
@@ -59,6 +63,13 @@ func TestRecordCopies(t *testing.T) {
 		}
 		if ids := copyIDs(t, c, capture, 15); !sameIDs(ids, inputs[1].ID, archive.ID) {
 			t.Errorf("RecordCopies(15) = %v, want the second input and the archive", ids)
+		}
+		// The listing stops at its limit, in hour order; the named hour is checked whole first, whether or not its copy is listed.
+		if got, inHour, err := c.RecordCopies(t.Context(), capture, 5, 3, 2); err != nil || !inHour || len(got) != 2 || got[0].Hour != 1 || got[1].Hour != 1 {
+			t.Errorf("RecordCopies(5) named hour 3, at most 2 = %+v, %v, %v; want hour 1's two copies and the hour held", got, inHour, err)
+		}
+		if got, inHour, err := c.RecordCopies(t.Context(), capture, 5, 2, 100); err != nil || inHour || len(got) != 0 {
+			t.Errorf("RecordCopies(5) named hour 2 = %+v, %v, %v; want nothing listed for an hour holding none", got, inHour, err)
 		}
 		if ids := copyIDs(t, c, capture, 40); len(ids) != 0 {
 			t.Errorf("RecordCopies(40) = %v, want none", ids)

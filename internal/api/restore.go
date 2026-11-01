@@ -1,6 +1,7 @@
 package api
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -37,6 +38,7 @@ const (
 	restoreUnavailable    = "unavailable"
 	restoreAuditFailed    = "audit-failed"
 	restoreInvalidRequest = "invalid"
+	restoreExhausted      = "resource-exhausted"
 )
 
 // closeSentinel is the close record's seq, never a record a restore can name.
@@ -68,14 +70,25 @@ func (s *Server) restoreRecord(ctx context.Context, m *tkv1.RestoreRequest) (*co
 	}
 	hour := h.GetSeconds() / int64(time.Hour/time.Second)
 
-	// Whether the named hour holds a copy is answered first, whatever the capture's configuration.
-	copies, err := s.Catalog.RecordCopies(ctx, capture, seq)
+	// A restore is one of the replica's reads, its slot taken before any copy is listed.
+	release, err := s.acquire()
+	if err != nil {
+		return nil, restoreExhausted, err
+	}
+	defer release()
+	// Whether the named hour holds a copy is answered first, whatever the capture's configuration;
+	// then at most the bound plus one copy is listed, and a record with more is never compared on part of them.
+	bound := cmp.Or(s.Records.MaxReaders, 16)
+	copies, inHour, err := s.Catalog.RecordCopies(ctx, capture, seq, hour, bound+1)
 	if err != nil {
 		return nil, restoreUnavailable, connect.NewError(connect.CodeUnavailable, fmt.Errorf("restore %s: %w", at, err))
 	}
-	named := slices.IndexFunc(copies, func(c catalog.Copy) bool { return c.Hour == hour })
-	if named < 0 {
+	if !inHour {
 		return nil, restoreNotFound, connect.NewError(connect.CodeNotFound, fmt.Errorf("restore %s: no copy in hour %d", at, hour))
+	}
+	named := slices.IndexFunc(copies, func(c catalog.Copy) bool { return c.Hour == hour })
+	if len(copies) > bound || named < 0 {
+		return nil, restoreExhausted, connect.NewError(connect.CodeResourceExhausted, fmt.Errorf("restore %s: more than %d copies, at most %d are compared", at, bound, bound))
 	}
 	s.stalled("copies")
 	// Every copy is read and compared before anything about the capture's configuration is answered.
@@ -199,7 +212,7 @@ func (s *Server) version(ctx context.Context, capture tracepack.UUID, seq uint64
 		to++
 		q.Filter.TimeTo = &to // a record at the last instant leaves the range unbounded above
 	}
-	res, err := tracepack.MergeIterate(ctx, readers, q, tracepack.MergeIterateOptions{Order: tracepack.OrderCapture},
+	res, err := tracepack.MergeIterate(ctx, readers, q, tracepack.MergeIterateOptions{Order: tracepack.OrderCapture, MaxHeldBytes: cmp.Or(s.Records.HeldBytes, 64<<20)},
 		func(*tracepack.Item) error { return nil })
 	if err != nil {
 		return nil, fmt.Errorf("compare the copies: %w", err)
