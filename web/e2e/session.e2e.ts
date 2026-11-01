@@ -91,7 +91,7 @@ async function openRecords(page: Page) {
   await page.getByRole("checkbox", { name: `Select ${device}` }).check();
   const records = page.getByRole("link", { name: /^Records of / }).first();
   await expect(records).toBeVisible();
-  await expect(page.getByRole("table", { name: "Hours" }).getByRole("row").filter({ hasText: /\b(open|settled|unmergeable) \d+ packs?\b/ }).first()).toBeVisible();
+  await expect(page.getByRole("table", { name: "Hours" }).getByRole("row").filter({ hasText: /(open|settled|unmergeable) \d+ packs?\b/ }).first()).toBeVisible();
   await records.click();
   const end = page.getByText(/^\d+ records? in the list;/);
   await expect(end).toBeVisible({ timeout: 60_000 });
