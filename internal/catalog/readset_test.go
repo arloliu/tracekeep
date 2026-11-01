@@ -78,6 +78,35 @@ func TestReadSet(t *testing.T) {
 	})
 }
 
+// The next hour a read reads is the first with a scope or an evicted range, across any empty stretch, within the bounds inclusive.
+func TestNextReadHour(t *testing.T) {
+	t.Parallel()
+	engines(t, func(t *testing.T, c *Catalog) {
+		capture := admitted(t, c)
+		register(t, c, segment(t, capture, 3, 0, 9), Registration{Evidence: &Evidence{}})
+		register(t, c, segment(t, capture, 40_000, 10, 19), Registration{Evidence: &Evidence{}})
+		exec(t, c, `INSERT INTO evicted_ranges (capture_id, hour, seq_from, seq_to, ts_from, ts_to) VALUES (?, 20000, 20, 29, 0, 0)`, capture[:])
+		other := admittedAnother(t, c)
+		register(t, c, segment(t, other, 10, 0, 9), Registration{Evidence: &Evidence{}})
+		const end = int64(1) << 40
+		for _, tc := range []struct {
+			from, to, want int64
+			ok             bool
+		}{
+			{0, end, 3, true}, {3, 3, 3, true}, {4, end, 20_000, true}, {20_001, 40_000, 40_000, true},
+			{4, 19_999, 0, false}, {40_001, end, 0, false},
+		} {
+			got, ok, err := c.NextReadHour(t.Context(), capture, tc.from, tc.to)
+			if err != nil || got != tc.want || ok != tc.ok {
+				t.Errorf("NextReadHour(%d, %d) = %d, %v, %v; want %d, %v", tc.from, tc.to, got, ok, err, tc.want, tc.ok)
+			}
+		}
+		if _, ok, err := c.NextReadHour(t.Context(), newID(t), 0, end); ok || err != nil {
+			t.Errorf("NextReadHour of an unknown capture = %v, %v; want none", ok, err)
+		}
+	})
+}
+
 // checkPacks checks that rs holds each of want with its key, size, role and ranges.
 func checkPacks(t *testing.T, rs ReadSet, want ...*Pack) {
 	t.Helper()

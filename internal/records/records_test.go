@@ -68,6 +68,8 @@ type world struct {
 	st    store.ObjectStore
 	mu    sync.Mutex
 	sets  map[int64][]catalog.ReadSet
+	// reads and nexts count the read sets and the next-hour lookups served.
+	reads, nexts int
 }
 
 // newWorld is a world over an fs store in a fresh directory.
@@ -85,6 +87,7 @@ func newWorld(t *testing.T) *world {
 func (w *world) ReadSet(_ context.Context, _ tracepack.UUID, h int64) (catalog.ReadSet, error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
+	w.reads++
 	l := w.sets[h]
 	if len(l) == 0 {
 		return catalog.ReadSet{Capture: capture, Hour: h}, nil
@@ -97,6 +100,36 @@ func (w *world) ReadSet(_ context.Context, _ tracepack.UUID, h int64) (catalog.R
 	return rs, nil
 }
 
+// NextReadHour is the first hour in [from, to] whose next read set has a scope or an eviction.
+func (w *world) NextReadHour(_ context.Context, _ tracepack.UUID, from, to int64) (int64, bool, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.nexts++
+	next, ok := int64(0), false
+	for h, l := range w.sets {
+		if h >= from && h <= to && len(l) > 0 && (l[0].Scoped || l[0].Evicted) && (!ok || h < next) {
+			next, ok = h, true
+		}
+	}
+
+	return next, ok, nil
+}
+
+// counts are the read sets and next-hour lookups served so far.
+func (w *world) counts() (reads, nexts int) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	return w.reads, w.nexts
+}
+
+// serveAt queues a read set of hour h holding packs.
+func (w *world) serveAt(h int64, packs []catalog.ReadPack) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.sets[h] = append(w.sets[h], catalog.ReadSet{Capture: capture, Hour: h, Scoped: true, Packs: packs})
+}
+
 // serve queues read sets of the test's hour holding packs, in order.
 func (w *world) serve(packs ...[]catalog.ReadPack) {
 	for _, ps := range packs {
@@ -106,6 +139,13 @@ func (w *world) serve(packs ...[]catalog.ReadPack) {
 
 // pack writes recs as a pack of role and state, puts it unless absent, and returns its read-set entry with one range over its producer seqs.
 func (w *world) pack(t *testing.T, role string, state string, absent bool, recs ...tracepack.Record) catalog.ReadPack {
+	t.Helper()
+
+	return w.packAt(t, hour, role, state, absent, recs...)
+}
+
+// packAt is pack for hour h.
+func (w *world) packAt(t *testing.T, h int64, role string, state string, absent bool, recs ...tracepack.Record) catalog.ReadPack {
 	t.Helper()
 	name, origin, mono, tolerance, interval := "eqp", int64(1000), int64(0), uint64(time.Second), uint64(5*time.Minute)
 	prole := tracepack.PackRoleSegment
@@ -118,7 +158,7 @@ func (w *world) pack(t *testing.T, role string, state string, absent bool, recs 
 		CaptureOriginUTCNs: &origin, CaptureOriginMonoNs: &mono, ClockStepToleranceNs: &tolerance,
 		LifecycleCoverage: tracepack.LifecycleCoverageSubscribed, QualityEvaluated: true,
 		RecorderInstanceID: tracepack.UUID{9}, RecorderInstanceName: &name,
-		PackRole: prole, SeqStart: recs[0].Seq, PeriodStart: hour * nsPerHour, PeriodEnd: (hour + 1) * nsPerHour,
+		PackRole: prole, SeqStart: recs[0].Seq, PeriodStart: h * nsPerHour, PeriodEnd: (h + 1) * nsPerHour,
 		FlushIntervalNs: &interval, ScopeGeneration: new(uint64),
 	}
 	id := newID(t)
@@ -586,4 +626,99 @@ func TestReadLimitNamesBoundedPacks(t *testing.T) {
 	if len(o.incompletes) != 1 || o.incompletes[0].Reason != ReasonReadLimit || len(o.incompletes[0].Packs) != MaxNamedPacks || o.incompletes[0].MorePacks != 20 {
 		t.Errorf("incompletes = %+v; want one read limit naming %d packs and counting 20 more", o.incompletes, MaxNamedPacks)
 	}
+}
+
+// seqsAt are seqs' records in hour h.
+func seqsAt(h int64, from, to uint64) []tracepack.Record {
+	out := seqs(from, to)
+	for i := range out {
+		out[i].TSUTCNs += (h - hour) * nsPerHour
+	}
+
+	return out
+}
+
+// years is a window's length in hours, about five years.
+const years = int64(5 * 365 * 24)
+
+// yearsWindow is a window of years starting long before the test's hour.
+func yearsWindow() *Query {
+	return &Query{Capture: capture, From: 0, To: (hour + years) * nsPerHour}
+}
+
+// bounded checks that a read took at most reads read sets and nexts next-hour lookups.
+func bounded(t *testing.T, w *world, what string, reads, nexts int) {
+	t.Helper()
+	if r, n := w.counts(); r > reads || n > nexts {
+		t.Errorf("%s: %d read sets and %d next-hour lookups, want at most %d and %d", what, r, n, reads, nexts)
+	}
+}
+
+// A read steps only through the hours with a scope or an eviction, however wide its window,
+// each read set read as the read reaches its hour.
+func TestReadStepsOnlyThroughPopulatedHours(t *testing.T) {
+	t.Parallel()
+	w := newWorld(t)
+	w.serve([]catalog.ReadPack{w.pack(t, catalog.RoleSegment, catalog.PackStaged, false, seqs(0, 2)...)})
+	check(t, "a window of years over one hour", read(t, w.reader(16), yearsWindow()), "0", "1", "2")
+	bounded(t, w, "a window of years over one hour", 1, 2)
+
+	w = newWorld(t)
+	w.serve([]catalog.ReadPack{w.pack(t, catalog.RoleSegment, catalog.PackStaged, false, seqs(0, 2)...)})
+	w.sets[hour+years/2] = []catalog.ReadSet{{Capture: capture, Hour: hour + years/2, Evicted: true}}
+	check(t, "an eviction-only hour", read(t, w.reader(16), yearsWindow()), "0", "1", "2", "incomplete:evicted")
+	bounded(t, w, "an eviction-only hour", 2, 3)
+
+	w = newWorld(t)
+	far := hour + years - 1
+	w.serve([]catalog.ReadPack{w.pack(t, catalog.RoleSegment, catalog.PackStaged, false, seqs(0, 4)...)})
+	w.serveAt(far, []catalog.ReadPack{w.packAt(t, far, catalog.RoleSegment, catalog.PackStaged, false, seqsAt(far, 5, 6)...)})
+	q := yearsWindow()
+	q.After = &Position{Hour: hour, Seq: 4}
+	check(t, "a cursor resumed past an empty stretch", read(t, w.reader(16), q), "5", "6")
+	bounded(t, w, "a cursor resumed past an empty stretch", 2, 3)
+
+	w = newWorld(t)
+	a := w.pack(t, catalog.RoleSegment, catalog.PackStaged, false, seqs(0, 4)...)
+	gone := w.pack(t, catalog.RoleSegment, catalog.PackStaged, true, seqs(10, 11)...)
+	archive := w.pack(t, catalog.RoleArchive, catalog.PackStaged, false, append(seqs(0, 4), seqs(10, 11)...)...)
+	w.serve([]catalog.ReadPack{a, gone}, []catalog.ReadPack{archive})
+	check(t, "an object gone and its read set read again", read(t, w.reader(16), yearsWindow()), "0", "1", "2", "3", "4", "10", "11")
+	bounded(t, w, "an object gone and its read set read again", 2, 2)
+}
+
+// paused holds a read at its first version until release closes, signalling held as it stops.
+type paused struct {
+	out
+	held, release chan struct{}
+}
+
+func (p *paused) Versions(rs []Record) error {
+	if p.held != nil {
+		close(p.held)
+		p.held = nil
+		<-p.release
+	}
+
+	return p.out.Versions(rs)
+}
+
+// A later hour registered while a read is held in an earlier one is read once the read reaches it.
+func TestReadSeesAnHourRegisteredWhilePaused(t *testing.T) {
+	t.Parallel()
+	w := newWorld(t)
+	w.serve([]catalog.ReadPack{w.pack(t, catalog.RoleSegment, catalog.PackStaged, false, seqs(0, 1)...)})
+	later := hour + years/3
+	p := &paused{held: make(chan struct{}), release: make(chan struct{})}
+	held := p.held
+	done := make(chan error, 1)
+	go func() { done <- w.reader(16).Read(t.Context(), yearsWindow(), p) }()
+	<-held
+	w.serveAt(later, []catalog.ReadPack{w.packAt(t, later, catalog.RoleSegment, catalog.PackStaged, false, seqsAt(later, 2, 3)...)})
+	close(p.release)
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	check(t, "an hour registered during the read", p.lines, "0", "1", "2", "3")
+	bounded(t, w, "an hour registered during the read", 2, 3)
 }

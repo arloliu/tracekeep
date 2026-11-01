@@ -82,6 +82,7 @@ type Catalog interface {
 	Policy(ctx context.Context, id string, version int64) (catalog.StoredPolicy, bool, error)
 	Completeness(ctx context.Context, capture tracepack.UUID) (catalog.Completeness, error)
 	ReadSet(ctx context.Context, capture tracepack.UUID, hour int64) (catalog.ReadSet, error)
+	NextReadHour(ctx context.Context, capture tracepack.UUID, from, to int64) (int64, bool, error)
 	CreateExport(ctx context.Context, id tracepack.UUID, owner string, request []byte, audit catalog.AuditEntry) error
 	ClaimExport(ctx context.Context, holder string, lease time.Duration, maxAttempts int) (catalog.Claim, bool, error)
 	RenewExport(ctx context.Context, a catalog.Attempt, lease time.Duration) error

@@ -38,9 +38,10 @@ const (
 // ErrWithheld refuses a read of a withheld capture: outside tracekeep dev, one whose configuration has no policy (T-48).
 var ErrWithheld = errors.New("records: the capture is withheld")
 
-// ReadSets reads an hour's read set; *catalog.Catalog is one.
+// ReadSets reads an hour's read set, and finds the next hour that has one worth reading; *catalog.Catalog is one.
 type ReadSets interface {
 	ReadSet(ctx context.Context, capture tracepack.UUID, hour int64) (catalog.ReadSet, error)
+	NextReadHour(ctx context.Context, capture tracepack.UUID, from, to int64) (int64, bool, error)
 }
 
 // Reader reads records from the read sets Catalog names and the objects Store holds.
@@ -120,13 +121,20 @@ type Sink interface {
 	Incomplete(in Incomplete) error
 }
 
-// Read reads q's records into sink, hour by hour; it returns early only on sink's error, the context's or a catalog read's.
+// Read reads q's records into sink, hour by hour, stepping only through the hours with a scope or an eviction,
+// each found as the read reaches it, so an hour registered meanwhile is read;
+// it returns early only on sink's error, the context's or a catalog read's.
 func (r *Reader) Read(ctx context.Context, q *Query, sink Sink) error {
 	first, last := floorHour(q.From), floorHour(q.To-1)
 	if q.After != nil {
 		first = max(first, q.After.Hour)
 	}
 	for h := first; h <= last; h++ {
+		next, ok, err := r.Catalog.NextReadHour(ctx, q.Capture, h, last)
+		if err != nil || !ok {
+			return err
+		}
+		h = next
 		var after *uint64
 		if q.After != nil && q.After.Hour == h {
 			after = &q.After.Seq
