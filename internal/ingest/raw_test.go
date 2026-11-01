@@ -73,6 +73,26 @@ func TestReadRawUnknownLayout(t *testing.T) {
 	}
 }
 
+// A delivery without a readable version is named by its stream position, so two such messages never share a deferral (T-51).
+func TestDeferralIDWithoutAVersion(t *testing.T) {
+	t.Parallel()
+	env, body := message(t, tracepack.UUID{4}, 1, 7000, []byte("x"))
+	delivery := func(layout, msgID string, seq int64) *Delivery {
+		e := env
+		e.Layout, e.MsgID = layout, msgID
+		d := &Delivery{Msg: Message{Env: e, Body: body, Incarnation: 1, StreamSeq: seq}}
+		d.Raw, d.Facts = ReadRaw(&d.Msg.Env, body, 0)
+		return d
+	}
+	unknown, malformed := delivery("2", "", 10), delivery("1", "", 11)
+	if unknown.deferralID() == malformed.deferralID() {
+		t.Errorf("an unknown layout and a malformed message share the deferral %q", unknown.deferralID())
+	}
+	if again := delivery("2", "", 10); again.deferralID() != unknown.deferralID() {
+		t.Errorf("a redelivery is named %q, then %q", unknown.deferralID(), again.deferralID())
+	}
+}
+
 // What cannot be read before framing is malformed: Decide terminates it without looking further.
 func TestReadRawMalformed(t *testing.T) {
 	t.Parallel()
