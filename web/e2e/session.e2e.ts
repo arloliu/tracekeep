@@ -49,6 +49,11 @@ function holds(s: string): boolean {
   return /^[A-Za-z0-9+/]+={0,2}$/.test(s) && s.length % 4 === 0 && Buffer.from(s, "base64").includes(processProgram);
 }
 
+// shows tells whether a page's text shows the process program, as it is or in any base64 word of it.
+function shows(text: string): boolean {
+  return holds(text) || text.split(/[^A-Za-z0-9+/=]+/).some(holds);
+}
+
 // strings are every string a JSON value holds, its keys included.
 function strings(v: unknown): string[] {
   if (typeof v === "string") return [v];
@@ -57,9 +62,16 @@ function strings(v: unknown): string[] {
   return [];
 }
 
+// isS7F3 tells whether a JSONL record's base64 payload, an HSMS frame, is an S7F3.
+function isS7F3(payload: unknown): boolean {
+  if (typeof payload !== "string") return false;
+  const frame = Buffer.from(payload, "base64");
+  return frame.length >= 14 && (frame[6] & 0x7f) === 7 && frame[7] === 3;
+}
+
 interface Manifest {
   kind?: string;
-  selector?: { tool_id?: string; devices?: string[]; from?: number; to?: number };
+  selector?: { tool_id?: string; devices?: string[]; capture_id?: string; from?: number; to?: number };
   captures?: { capture?: { device?: string }; hours?: { hour?: string; packs?: { file?: string }[]; left_out?: unknown[] }[] }[];
 }
 
@@ -71,26 +83,24 @@ interface Evidence {
   first: string;
 }
 
-test("a person browses a tool, reads its records and a transaction, and exports them", async ({ page }) => {
-  await signIn(page);
-
+// openRecords opens the tool's device, sees an hour of its capture with its scope's state and packs, and opens the capture's records,
+// returning the list's end once it is read.
+async function openRecords(page: Page) {
   await page.getByLabel("Tool id").fill(tool);
   await page.getByRole("button", { name: "Open" }).click();
   await page.getByRole("checkbox", { name: `Select ${device}` }).check();
   const records = page.getByRole("link", { name: /^Records of / }).first();
   await expect(records).toBeVisible();
-  // An hour of the capture's: its scope's state and its packs.
-  await expect(page.getByRole("table", { name: "Hours" }).getByRole("row").filter({ hasText: /\d+ packs?/ }).first()).toBeVisible();
-
+  await expect(page.getByRole("table", { name: "Hours" }).getByRole("row").filter({ hasText: /\b(open|settled|unmergeable) \d+ packs?\b/ }).first()).toBeVisible();
   await records.click();
   const end = page.getByText(/^\d+ records? in the list;/);
   await expect(end).toBeVisible({ timeout: 60_000 });
-  await expect(end).toHaveText(/; complete\.$/);
-  if (evidence && !existsSync(evidence)) {
-    const first = (await page.getByRole("button", { name: /^Seq \d+$/ }).first().getAttribute("aria-label")) ?? "";
-    writeFileSync(evidence, JSON.stringify({ url: page.url(), end: await end.innerText(), first } satisfies Evidence));
-  }
-  // A primary of the simulator's (S1F3 W), whose transaction the lookup matches with its reply.
+  return end;
+}
+
+// expectMatched opens a primary of the simulator's (S1F3 W) and sees its SML and its transaction matched:
+// the primary, and its reply a valid candidate.
+async function expectMatched(page: Page) {
   await page.getByRole("button", { name: /^Seq \d+$/ }).filter({ hasText: "S1F3 W" }).first().click();
   const panel = page.getByRole("complementary", { name: "Selected" });
   await expect(panel.locator("pre")).not.toBeEmpty();
@@ -100,14 +110,39 @@ test("a person browses a tool, reads its records and a transaction, and exports 
   const tx = panel.getByRole("list", { name: "Transaction records" }).getByRole("listitem");
   await expect(tx.filter({ hasText: /— primary$/ })).toHaveCount(1);
   await expect(tx.filter({ hasText: /candidate.*✓/ }).first()).toBeVisible();
+  return panel;
+}
 
-  // The process program the simulator sent, masked: its record's page never shows it.
+// While the leg's simulator still sends (TRACEKEEP_LIVE), a primary's transaction is looked up and matched, as on a running tool.
+test("a transaction is matched while the simulator sends", async ({ page }) => {
+  test.skip(!process.env.TRACEKEEP_LIVE, "runs while the leg's simulator sends");
+  await signIn(page);
+  await openRecords(page);
+  await expectMatched(page);
+});
+
+test("a person browses a tool, reads its records and a transaction, and exports them", async ({ page }) => {
+  // The checks below can fail: the process program is found as it is and inside a base64 word.
+  expect(shows(`SML ${Buffer.from(`ab${processProgram}`).toString("base64")}.`) && shows(processProgram)).toBe(true);
+  await signIn(page);
+  const end = await openRecords(page);
+  await expect(end).toHaveText(/; complete\.$/);
+  const listed = Number(/^(\d+)/.exec(await end.innerText())?.[1] ?? "0");
+  const selected = new URL(page.url()).searchParams;
+  // The evidence is written before an upgrade only: a run after one never writes what it is to be compared with.
+  if (evidence && !process.env.TRACEKEEP_AFTER_UPGRADE && !existsSync(evidence)) {
+    const first = (await page.getByRole("button", { name: /^Seq \d+$/ }).first().getAttribute("aria-label")) ?? "";
+    writeFileSync(evidence, JSON.stringify({ url: page.url(), end: await end.innerText(), first } satisfies Evidence));
+  }
+  const panel = await expectMatched(page);
+
+  // The process program the simulator sent, masked: its record renders, and its page never shows the program.
   const pp = page.getByRole("button", { name: /^Seq \d+$/ }).filter({ hasText: "S7F3 W" }).first();
   const ppSeq = (await pp.getAttribute("aria-label")) ?? "";
   await pp.click();
   await expect(panel.getByRole("heading", { name: ppSeq, exact: true })).toBeVisible();
-  await expect(panel.getByRole("heading", { name: "SML" })).toBeVisible();
-  expect(holds(await panel.innerText()), "the masked record's page shows the process program").toBe(false);
+  await expect(panel.locator("pre")).not.toBeEmpty();
+  expect(shows(await panel.innerText()), "the masked record's page shows the process program").toBe(false);
 
   await page.getByRole("link", { name: "Export this selection…" }).click();
   await page.getByRole("button", { name: "Start export" }).click();
@@ -120,10 +155,11 @@ test("a person browses a tool, reads its records and a transaction, and exports 
   expect(manifest, "the bundle holds manifest.json").toBeDefined();
   const m = JSON.parse(manifest?.toString("utf8") ?? "{}") as Manifest;
   expect(m.kind).toBe("canonical");
-  // The selection exported: the tool, the device and a window.
+  // The selection exported: the tool, the device and the records' window, to the millisecond (the manifest's nanoseconds parse as a double).
   expect(m.selector?.tool_id).toBe(tool);
   expect(m.selector?.devices).toContain(device);
-  expect(m.selector?.to ?? 0).toBeGreaterThan(m.selector?.from ?? 0);
+  expect(Math.abs((m.selector?.from ?? 0) / 1e6 - Date.parse(selected.get("from") ?? ""))).toBeLessThan(1);
+  expect(Math.abs((m.selector?.to ?? 0) / 1e6 - Date.parse(selected.get("to") ?? ""))).toBeLessThan(1);
   expect(m.captures?.length ?? 0).toBeGreaterThan(0);
   // Every capture is the device's, every hour has its packs, each pack's file is in the bundle, and none was left out.
   const hours = m.captures?.flatMap((c) => c.hours ?? []) ?? [];
@@ -134,19 +170,26 @@ test("a person browses a tool, reads its records and a transaction, and exports 
     for (const p of h.packs ?? []) expect(files.has(p.file ?? ""), `the bundle holds ${p.file ?? "?"}`).toBe(true);
   }
   expect(hours.flatMap((h) => h.left_out ?? [])).toEqual([]);
-  // The records are in the bundle, JSONL whose every line parses, and nothing in it or the manifest holds the process program.
-  const jsonl = [...files].filter(([name, body]) => name.endsWith(".jsonl") && body.length > 0);
-  expect(jsonl.length, "the bundle holds a pack's records").toBeGreaterThan(0);
+  // The records are in the bundle, every one the list read and the process program's among them,
+  // and nothing in a JSONL line or the manifest holds the program, as it is or in base64.
   expect(strings(m).some(holds), "manifest.json holds the process program").toBe(false);
-  let read = 0;
-  for (const [name, body] of jsonl) {
+  let records = 0;
+  let programs = 0;
+  for (const [name, body] of files) {
+    if (!name.endsWith(".jsonl")) continue;
     for (const line of body.toString("utf8").split("\n")) {
       if (line === "") continue;
-      read++;
-      expect(strings(JSON.parse(line)).some(holds), `${name} holds the process program`).toBe(false);
+      const v = JSON.parse(line) as { seq?: string; payload?: unknown };
+      if (v.seq !== undefined) {
+        records++;
+        if (isS7F3(v.payload)) programs++;
+      }
+      expect(strings(v).some(holds), `${name} holds the process program`).toBe(false);
     }
   }
-  expect(read).toBeGreaterThan(0);
+  expect(records, "the bundle's records, at least those the list read").toBeGreaterThanOrEqual(listed);
+  expect(listed).toBeGreaterThan(0);
+  expect(programs, "the bundle's process programs").toBeGreaterThan(0);
 });
 
 // The records read before an upgrade (TRACEKEEP_EVIDENCE, written by the run before it) are read the same after it.
@@ -185,17 +228,18 @@ test("a person no group maps is signed in and admitted to nothing", async ({ pag
 });
 
 // The IdP down after start and back (the gate's case, api.md §10.2 *People's sign-in*): the leg's commands stop it (TRACEKEEP_IDP_STOP)
-// and start it again (TRACEKEEP_IDP_START). Down, a signed-in page keeps reading with its session, and a new login cannot sign in:
-// a replica that never fetched refuses it as unavailable, one that has sends the browser to an IdP that does not answer.
+// and start it again (TRACEKEEP_IDP_START), each bounded. Down, a signed-in page keeps reading with its session, and a new login cannot sign in:
+// a replica that never fetched refuses it as unavailable (503); one that has redirects to the IdP (TRACEKEEP_ISSUER), which does not answer.
 // Back, a sign-in succeeds once the replicas fetch again, retried while the fetch interval holds them back.
 test("a session outlives an outage of the IdP, and sign-in returns with it", async ({ page, browser, baseURL }) => {
   const stop = process.env.TRACEKEEP_IDP_STOP;
   const start = process.env.TRACEKEEP_IDP_START;
-  test.skip(!stop || !start, "needs a leg's commands to stop and start the IdP");
-  test.setTimeout(420_000);
+  const issuer = process.env.TRACEKEEP_ISSUER;
+  test.skip(!stop || !start || !issuer, "needs a leg's IdP, with the commands to stop and start it");
+  test.setTimeout(600_000);
   await signIn(page);
-  execSync(stop ?? "", { stdio: "inherit" });
   try {
+    execSync(stop ?? "", { stdio: "inherit", timeout: 180_000 });
     await page.reload();
     await page.getByLabel("Tool id").fill(tool);
     await page.getByRole("button", { name: "Open" }).click();
@@ -203,19 +247,26 @@ test("a session outlives an outage of the IdP, and sign-in returns with it", asy
 
     const other = await browser.newContext({ baseURL });
     const login = await other.newPage();
-    let outcome: string;
-    try {
-      const res = await login.goto("/auth/login?return=%2F", { timeout: 30_000 });
-      outcome = `${String(res?.status() ?? 0)} ${await login.locator("body").innerText()}`;
-    } catch (e) {
-      outcome = String(e);
+    const answered = login.waitForResponse((r) => new URL(r.url()).pathname === "/auth/login", { timeout: 30_000 });
+    const navigated = login.goto("/auth/login?return=%2F", { timeout: 30_000 }).then(
+      () => "",
+      (e: unknown) => String(e),
+    );
+    const res = await answered;
+    const failure = await navigated;
+    if (res.status() === 503) {
+      expect(await res.text()).toContain("Sign-in failed: idp-unavailable.");
+    } else {
+      expect(res.status(), "a new login while the IdP is down").toBe(302);
+      const location = (await res.headerValue("location")) ?? "";
+      expect(location.startsWith(`${issuer ?? ""}/`), `redirected to ${location}`).toBe(true);
+      expect(failure, "the IdP's authorization page while it is down").toMatch(/net::ERR_|Timeout/);
     }
-    expect(outcome, "a new login while the IdP is down").toMatch(/^503 Sign-in failed: idp-unavailable\.|net::ERR_|Timeout/);
     await login.goto("/");
     await expect(login.getByRole("link", { name: "Sign in" })).toBeVisible();
     await other.close();
   } finally {
-    execSync(start ?? "", { stdio: "inherit" });
+    execSync(start ?? "", { stdio: "inherit", timeout: 360_000 });
   }
 
   const back = await browser.newContext({ baseURL });
