@@ -312,6 +312,77 @@ func TestFlushWaitsForStalledLocalWork(t *testing.T) {
 	})
 }
 
+// slowSource is a store whose puts read their source slowly: the first read waits until wait yields.
+type slowSource struct {
+	store.ObjectStore
+	wait <-chan struct{}
+}
+
+func (s slowSource) Put(ctx context.Context, key string, r io.ReadSeeker, size int64) error {
+	return s.ObjectStore.Put(ctx, key, &waitingReader{ReadSeeker: r, wait: s.wait}, size)
+}
+
+type waitingReader struct {
+	io.ReadSeeker
+	wait   <-chan struct{}
+	waited bool
+}
+
+func (r *waitingReader) Read(p []byte) (int, error) {
+	if !r.waited {
+		r.waited = true
+		timer := time.NewTimer(guard)
+		defer timer.Stop()
+		select {
+		case <-r.wait:
+		case <-timer.C:
+		}
+	}
+
+	return r.ReadSeeker.Read(p)
+}
+
+// A filesystem put is local file work too: one that outlasts the ack wait mid-copy is reported stalled,
+// finishes, its object published, and only then is the batch given up, its messages nak'd and the object kept for the reconciler.
+func TestFlushWaitsForAStalledFilesystemPut(t *testing.T) {
+	t.Parallel()
+	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
+		p := newPipeline(t, c)
+		g := p.ingester(slog.New(slog.DiscardHandler))
+		g.AckWait = bound
+		s := metrics.NewServer()
+		m, err := metrics.NewIngest(s, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		stalled := make(chan struct{}, 1)
+		p.f.Metrics, p.f.Log = m, slog.New(stallLog{Handler: slog.DiscardHandler, stalled: stalled})
+		fs, err := store.NewFS(t.TempDir())
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = fs.Close() })
+		p.f.Store, p.f.LocalStore = slowSource{ObjectStore: fs, wait: stalled}, true
+		hs := p.deliver(t, traffic(t, tracepack.UUID{0xc1, 0x15}))
+
+		err = g.flush(t.Context(), p.b.All())
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("flush = %v, want the batch given up at the ack wait", err)
+		}
+		if body := scrape(t, s); !strings.Contains(body, "tracekeep_ingest_flush_stalls_total 1") {
+			t.Errorf("no stall counted:\n%s", grep(body, "flush_stalls"))
+		}
+		if ks := storedKeys(t, fs); len(ks) != 1 {
+			t.Errorf("objects %v, want the put finished and its object kept", ks)
+		}
+		for i, h := range hs {
+			if got := h.done(); !slices.Equal(got, []string{"nak " + firstNakDelay.String()}) {
+				t.Errorf("message %d: %v, want nak'd", i, got)
+			}
+		}
+	})
+}
+
 // grep is the lines of body that hold s.
 func grep(body, s string) string {
 	var out []string

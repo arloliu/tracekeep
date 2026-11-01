@@ -274,11 +274,11 @@ func (f *Flusher) register(ctx context.Context, b *Batch, capture *catalog.Captu
 		return 0, err
 	}
 	started := time.Now()
-	put := func() error { return f.Store.Put(ctx, key, w.file, w.size) }
 	if f.LocalStore {
-		err = f.local(ctx, "put", put)
+		// The put runs uninterrupted; ctx still bounds its start, reports its stall and bounds the registration after it.
+		err = f.local(ctx, "put", func() error { return f.Store.Put(context.WithoutCancel(ctx), key, w.file, w.size) })
 	} else {
-		err = put()
+		err = f.Store.Put(ctx, key, w.file, w.size)
 	}
 	if err != nil {
 		// An unknown outcome: an object the put may have made is left to the reconciler and the orphan pass (storage.md §5.4).
