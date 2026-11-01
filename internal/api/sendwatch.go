@@ -8,8 +8,8 @@ import (
 )
 
 // sendChunk is the most one write hands the connection at a time, under a write deadline of its own,
-// so a client that keeps reading completes each chunk within the send timeout however large the message.
-// shortcut: progress is judged per chunk, not per byte; a client draining less than a chunk per send timeout is ended.
+// so a client that keeps reading completes each chunk within the send timeout however large the message;
+// one taking less than a chunk per send timeout is ended, as api.md §10.1 *Bounds* states.
 const sendChunk = 16 << 10
 
 // sendWatch is a QueryRecords stream's response writer (api.md §10.1 *Records* *Bounds*):

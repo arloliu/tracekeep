@@ -167,7 +167,7 @@ func serveAPI(t *testing.T, e *Env) {
 	t.Cleanup(func() {
 		cancel()
 		select {
-		case <-done: //nolint:errcheck // the role's end, its error the cancellation's
+		case <-done: //nolint:errcheck // the role's end, its result not checked here
 		case <-time.After(30 * time.Second):
 			t.Errorf("the api role did not stop")
 		}

@@ -46,7 +46,7 @@ func TestDevSignsPeopleIn(t *testing.T) {
 	go func() { done <- d.Run(run) }()
 	t.Cleanup(func() {
 		stop()
-		<-done //nolint:errcheck // the run's end, its error the cancellation's
+		<-done //nolint:errcheck // the run's end, its result not checked here
 	})
 	<-bound
 	public := d.Env.Config.API.PublicURL
