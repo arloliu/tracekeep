@@ -294,7 +294,7 @@ func TestObserveRacingARotationEndsOnTheNewCapture(t *testing.T) {
 	// A callback loaded a's pointer and waits for a's lock while the rotation holds it.
 	held, release := make(chan struct{}), make(chan struct{})
 	var first atomic.Bool
-	r.hooks[hookLoaded] = func() {
+	r.hooks[HookLoaded] = func() {
 		if first.CompareAndSwap(false, true) {
 			close(held)
 			<-release
@@ -383,7 +383,7 @@ func TestPanicAfterLoadingAFaultedCaptureKeepsTheSuccessor(t *testing.T) {
 	r.Rotate(a, time.Now().Add(time.Second), never, clk.now)
 	a.Fault()
 	b := prepared(gen, clk, 2)
-	r.hooks[hookLoaded] = func() {
+	r.hooks[HookLoaded] = func() {
 		r.Rotate(b, time.Now().Add(time.Second), never, clk.now)
 		panic("injected")
 	}

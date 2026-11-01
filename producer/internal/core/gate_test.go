@@ -79,7 +79,7 @@ func TestCallbackHeldAcrossTwoRotations(t *testing.T) {
 
 	// Each time the callback loads a pointer, the next rotation runs before it takes that capture's lock.
 	var loads atomic.Int32
-	r.hooks[hookLoaded] = func() {
+	r.hooks[HookLoaded] = func() {
 		switch loads.Add(1) {
 		case 1:
 			r.Rotate(b, time.Now().Add(time.Second), never, clk.now)
@@ -143,7 +143,7 @@ func TestStopAfterACallbackLoadedThePointer(t *testing.T) {
 	a := prepared(gen, clk, 1)
 	r.Rotate(a, time.Now().Add(time.Second), never, clk.now)
 	drainReserved(r)
-	held, release := holdAt(r, hookLoaded)
+	held, release := holdAt(r, HookLoaded)
 
 	done := observeAsync(r, frameObs(1, []byte{1}))
 	<-held
@@ -172,7 +172,7 @@ func TestCallbackOfAnAbandonedCaptureAfterALaterStart(t *testing.T) {
 	a := prepared(gen, clk, 1)
 	r.Rotate(a, time.Now().Add(time.Second), never, clk.now)
 	drainReserved(r)
-	held, release := holdAt(r, hookLoaded)
+	held, release := holdAt(r, HookLoaded)
 
 	done := observeAsync(r, frameObs(1, []byte{1}))
 	<-held

@@ -21,13 +21,16 @@ const (
 // Test hooks: points where a barrier-controlled test holds a callback.
 const (
 	hookBeforeAllocate = iota
-	hookLoaded         // the callback holds a capture pointer and has not taken its lock
+	// HookLoaded holds a callback that loaded a capture pointer and has not taken its lock.
+	HookLoaded
 	hookAfterUnlock
 	hookFaultLoaded // a panic's fault holds a capture pointer and has not taken its lock
 	// HookLocked holds a callback inside the capture's critical section, past its closed, faulted and generation checks.
 	HookLocked
 	// HookTryLockFailed holds a rotation once its first attempt at the old capture's lock failed.
 	HookTryLockFailed
+	// HookInspect holds the publisher inside its read of a capture's reservation state, under the capture's lock.
+	HookInspect
 	numHooks
 )
 
@@ -373,7 +376,7 @@ func (r *Recorder) allocate(o *Observation, cp **Capture) (Allocation, bool) {
 			r.afterStop.Add(1)
 			return Allocation{}, false
 		}
-		r.hook(hookLoaded)
+		r.hook(HookLoaded)
 		a, st := c.allocateIn(o.Wall, o.Mono, o.Socket, o.Mapped, r.hooks[HookLocked])
 		switch st {
 		case Allocated:
@@ -477,8 +480,16 @@ func (r *Recorder) SignalFault(c *Capture) {
 }
 
 // SetHook sets the function a test holds a goroutine in at hook id, before the goroutine that reaches it starts;
-// the module's tests outside this package set HookLocked and HookTryLockFailed here.
+// the module's tests outside this package set the exported hooks here.
 func (r *Recorder) SetHook(id int, f func()) { r.hooks[id] = f }
+
+// Reservations reads c's reservation state for the publisher, once a pass:
+// its lowest reserved seq, which the dependency barrier keeps everything above unpublished,
+// and the monotonic reading of its oldest reservation, which faults the capture past the reservation timeout;
+// ok is false with nothing reserved.
+func (r *Recorder) Reservations(c *Capture) (low uint64, oldest int64, ok bool) {
+	return c.reservationsIn(r.hooks[HookInspect])
+}
 
 func (r *Recorder) hook(id int) {
 	if h := r.hooks[id]; h != nil {
