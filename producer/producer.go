@@ -105,6 +105,10 @@ func init() {
 
 		return nil
 	}
+	link.Bus = func(nc *nats.Conn) (any, error) {
+		tun := Tunables{}.withDefaults()
+		return newNATSBus(&Config{}, &tun, nc)
+	}
 }
 
 // New builds a producer from cfg; it opens no capture until Begin.

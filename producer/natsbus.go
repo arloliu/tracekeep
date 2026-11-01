@@ -56,7 +56,12 @@ var _ Bus = (*natsBus)(nil)
 
 type natsFuture struct{ f jetstream.PubAckFuture }
 
-type natsObjects struct{ os jetstream.ObjectStore }
+// natsObjects is a claim bucket: its object store, and the stream that holds it, whose chunks Get counts.
+type natsObjects struct {
+	os     jetstream.ObjectStore
+	s      jetstream.Stream
+	bucket string
+}
 
 // errNotConnected reports a call on a dialed bus whose first dial has not returned.
 var errNotConnected = errors.New("producer: traffic connection not established yet")
@@ -348,7 +353,7 @@ func (b *natsBus) Objects(ctx context.Context, bucket string) (Objects, error) {
 		return nil, fmt.Errorf("producer: claim bucket %s: %w", bucket, err)
 	}
 
-	return natsObjects{os: store}, nil
+	return natsObjects{os: store, s: s, bucket: bucket}, nil
 }
 
 // CheckConn implements Bus.
@@ -458,13 +463,29 @@ func (o natsObjects) Put(ctx context.Context, meta ObjectMeta, data []byte) (Obj
 }
 
 // Get implements Objects.
+// A read of an object whose chunks were purged waits for them until its deadline, like one that times out,
+// so the chunks are counted first: fewer than the metadata names, or content off its digest, is ErrObjectIncomplete.
 func (o natsObjects) Get(ctx context.Context, name string) ([]byte, error) {
-	data, err := o.os.GetBytes(ctx, name)
-	if errors.Is(err, jetstream.ErrObjectNotFound) {
-		return nil, fmt.Errorf("%s: %w", name, ErrObjectNotFound)
+	info, err := o.os.GetInfo(ctx, name)
+	if err == nil {
+		subject := "$O." + o.bucket + ".C." + info.NUID // nats.go's chunk subject (v1.55.0 jetstream/object.go)
+		var si *jetstream.StreamInfo
+		if si, err = o.s.Info(ctx, jetstream.WithSubjectFilter(subject)); err == nil && si.State.Subjects[subject] < uint64(info.Chunks) {
+			return nil, fmt.Errorf("%s: %d of %d chunks: %w", name, si.State.Subjects[subject], info.Chunks, ErrObjectIncomplete)
+		}
 	}
-
-	return data, err
+	var data []byte
+	if err == nil {
+		data, err = o.os.GetBytes(ctx, name)
+	}
+	switch {
+	case errors.Is(err, jetstream.ErrObjectNotFound):
+		return nil, fmt.Errorf("%s: %w", name, ErrObjectNotFound)
+	case errors.Is(err, jetstream.ErrDigestMismatch):
+		return nil, fmt.Errorf("%s: %w: %w", name, ErrObjectIncomplete, err)
+	default:
+		return data, err
+	}
 }
 
 // Delete implements Objects.
