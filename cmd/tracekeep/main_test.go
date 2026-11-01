@@ -106,6 +106,17 @@ func TestUsage(t *testing.T) {
 	}
 }
 
+// tracekeep dev refuses a simulator rate it cannot tick at, before it starts anything.
+func TestDevRefusesARateItCannotTick(t *testing.T) {
+	t.Parallel()
+	for _, rate := range []string{"1e300", "+Inf", "1e-300", "-1", "NaN"} {
+		code, _, stderr := tracekeep(t, "dev", "--data", t.TempDir(), "--port", "0", "--api", "127.0.0.1:0", "--idp", "127.0.0.1:0", "--rate", rate)
+		if code != 2 || !strings.Contains(stderr, "rate") {
+			t.Errorf("tracekeep dev --rate %s = %d, %q; want 2 naming the rate", rate, code, stderr)
+		}
+	}
+}
+
 // migrate, then operator commands, each writing its result as JSON.
 func TestMigrateAndAdmin(t *testing.T) {
 	t.Parallel()

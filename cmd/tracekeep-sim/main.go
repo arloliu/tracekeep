@@ -25,6 +25,9 @@ import (
 // stopTimeout bounds the device's Stop, the SDK's End included.
 const stopTimeout = 10 * time.Second
 
+// errDurationEnded ends a run whose -duration has passed, which is the run's success.
+var errDurationEnded = errors.New("the run's duration ended")
+
 type config struct {
 	mode     string
 	pack     string
@@ -73,8 +76,8 @@ func main() {
 
 func run(ctx context.Context, c *config) error {
 	switch {
-	case c.mode == "loopback" && c.rate <= 0:
-		return fmt.Errorf("rate %v: must be positive", c.rate)
+	case c.mode == "loopback" && sim.CheckRate(c.rate) != nil:
+		return sim.CheckRate(c.rate)
 	case c.mode == "replay" && (c.pack == "" || c.speed < 0):
 		return errors.New("replay needs -pack and a speed of 0 or more")
 	case c.mode != "loopback" && c.mode != "replay":
@@ -103,13 +106,17 @@ func run(ctx context.Context, c *config) error {
 	}
 	if c.duration > 0 {
 		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, c.duration)
+		ctx, cancel = context.WithTimeoutCause(ctx, c.duration, errDurationEnded)
 		defer cancel()
 	}
 	var runErr error
 	if c.opts.Replay {
 		var sent, skipped int
 		sent, skipped, runErr = sim.ReplayPack(ctx, l, c.pack, c.speed)
+		// Asked before the wait below, which the duration also ends: a replay that failed earlier stays a failure.
+		if errors.Is(context.Cause(ctx), errDurationEnded) {
+			runErr = nil
+		}
 		log.Info("tracekeep-sim: replayed", "frames", sent, "malformed", skipped)
 		// The pack's last requests get their waits before the device stops.
 		_ = sim.SleepUntil(ctx, time.Now().Add(c.opts.T3))

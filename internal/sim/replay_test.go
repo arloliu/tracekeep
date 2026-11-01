@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/binary"
 	"io/fs"
+	"math"
 	"os"
 	"path/filepath"
 	"slices"
@@ -179,6 +180,22 @@ func TestReplayKeepsThePacksPace(t *testing.T) {
 		t.Errorf("replay at half speed took %v, want at least 40ms", took)
 	}
 	l.Stop(t.Context())
+}
+
+// A rate is refused unless its ticker interval is a positive time.Duration, which time.NewTicker takes without a panic.
+func TestCheckRate(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		rate float64
+		ok   bool
+	}{
+		{10, true}, {1e9, true}, {1e-9, true},
+		{0, false}, {-1, false}, {math.NaN(), false}, {math.Inf(1), false}, {1e300, false}, {1e-300, false},
+	} {
+		if err := CheckRate(tc.rate); (err == nil) != tc.ok {
+			t.Errorf("CheckRate(%v) = %v, want ok %t", tc.rate, err, tc.ok)
+		}
+	}
 }
 
 func TestReplayRefusesAMissingPack(t *testing.T) {
