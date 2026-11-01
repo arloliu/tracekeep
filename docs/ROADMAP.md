@@ -1,6 +1,6 @@
 # Roadmap
 
-Status: current (2026-10-31) — milestones from seed v21 §12
+Status: current (2026-11-01) — milestones from seed v21 §12
 
 Where tracekeep's work stands, and the single index of active plans (`.agents/rules/450-doc-lifecycle.md`).
 The milestones and their gates are seed v21 §12, moved unchanged;
@@ -49,7 +49,7 @@ eqp-hub reviews the SDK's API (`Bus`, `Preflight`, the six guarantees, the `secs
 
 ## Active plans
 
-- [Phase 4 — people](plans/phase-4-people.md)
+None.
 
 Phase 0 is done (#1, #3, #4, #7, #8).
 Phase 1 is done (#9, #11, #13, #14, #16, #17, #18, #19).
@@ -57,9 +57,13 @@ Phase 2 is done (#22, #23, #24, #25, #26, #27, #28, #29).
 Its closed plan's step tables (last text at e396be1) name commits of the branches before their rebase merge,
 which are not on `main`; each is among the commits of the pull request its phase row names.
 Phase 3 is done (#33, #34, #35, #36, #39, #41, #43); its closed plan's last text is at 6238649.
+Phase 4 is done (#46, #48, #49, #52, #53, #55, #58); its closed plan's last text is at e95dee5.
 
 ## Open items
 
+- The SDK sometimes marks a capture's first S1F3 ordering-uncertain, observed before its predecessor (`producer.md` §4.2);
+  tracepack's lookup then does not match it, and the packaging browser test accepts that only with the gap shown.
+  Why the first request is observed before the records allocated ahead of it is still open.
 - An hour whose masked segments merge past the reader's metadata budget stays unmergeable (T-45);
   the lasting fix, redaction entries kept outside the pack metadata, is a format change asked of go-secs.
 - Masking's cost at ingest, measured on 2026-10-30 (the measurements are kept outside the repository), leaves these improvements:
