@@ -135,7 +135,7 @@ func (g *Ingester) Run(ctx context.Context) error {
 
 	var backoff time.Duration
 	for ctx.Err() == nil {
-		err := g.Step(ctx)
+		err := g.stepFlushing(ctx, stopping)
 		switch {
 		case errors.Is(err, catalog.ErrIncarnationChanged):
 			return err
@@ -187,6 +187,12 @@ func stopBudget(ctx context.Context, budget time.Duration) (context.Context, con
 // It returns the renewal's and the fetch's errors, a pull the server ended with an error included,
 // after disposing of what it delivered; a failed flush's batch is nak'd and logged.
 func (g *Ingester) Step(ctx context.Context) error {
+	return g.stepFlushing(ctx, ctx)
+}
+
+// stepFlushing is Step flushing the due batches under flushing, which a stop does not end before its budget:
+// a batch due when the stop comes is flushed within the budget, never given up at once and written again.
+func (g *Ingester) stepFlushing(ctx, flushing context.Context) error {
 	if err := g.renew(ctx); err != nil {
 		if errors.Is(err, catalog.ErrIncarnationChanged) {
 			g.Log.Error("ingest: alert", "reason", ReasonIncarnationChanged, "error", err)
@@ -213,7 +219,7 @@ func (g *Ingester) Step(ctx context.Context) error {
 	}
 	now := g.Now()
 	due := g.take(func() []*Batch { return g.Batcher.Due(now) })
-	if err := g.flush(ctx, due); err != nil {
+	if err := g.flush(flushing, due); err != nil {
 		g.Log.Warn("ingest: flush failed", "error", err)
 	}
 

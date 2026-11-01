@@ -11,6 +11,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/nats-io/nats.go/jetstream"
+
 	"github.com/arloliu/go-secs/tracepack"
 	"github.com/arloliu/tracekeep/internal/catalog"
 	"github.com/arloliu/tracekeep/internal/catalog/catalogtest"
@@ -394,6 +396,45 @@ func TestStopSharesOneBudget(t *testing.T) {
 			if got, err := c.Capture(t.Context(), capture); err != nil || got.HasHighestSeq {
 				t.Errorf("capture %+v, %v; want nothing registered", got, err)
 			}
+		}
+	})
+}
+
+// stopOnFetch is a consumer whose every fetch is followed by a stop, as a signal arriving while one waits.
+type stopOnFetch struct {
+	jetstream.Consumer
+	stop context.CancelFunc
+}
+
+func (s stopOnFetch) Fetch(n int, opts ...jetstream.FetchOpt) (jetstream.MessageBatch, error) {
+	defer s.stop()
+
+	return s.Consumer.Fetch(n, opts...)
+}
+
+// A stop between a fetch and the flush of the batches then due hands them to the bounded final flush:
+// they are registered and acknowledged, never nak'd under the stop's ended context and written again.
+func TestStopBetweenAFetchAndTheDueBatches(t *testing.T) {
+	t.Parallel()
+	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
+		r := newReplica(t, c)
+		r.g.AckWait, r.g.StopTimeout = time.Minute, time.Minute
+		capture := tracepack.UUID{0xc9, 1}
+		r.publish(t, inline(t, capture, startRecord(t, now), descriptorOf(t, "eqp")), nil)
+		r.publish(t, inline(t, capture, dataRecord(1, now+1), nil), nil)
+		r.step(t)
+		r.clk.flushInterval() // the batch is due at the next step
+		ctx, cancel := context.WithCancel(t.Context())
+		r.g.Consumer = stopOnFetch{Consumer: r.g.Consumer, stop: cancel}
+
+		if err := r.g.Run(ctx); err != nil {
+			t.Fatal(err)
+		}
+		if got, err := c.Capture(t.Context(), capture); err != nil || got.HighestSeq != 1 {
+			t.Errorf("capture %+v, %v; want the due batch registered", got, err)
+		}
+		if n := r.pending(t); n != 0 {
+			t.Errorf("the stream holds %d messages, want both acknowledged", n)
 		}
 	})
 }
