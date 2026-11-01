@@ -112,7 +112,7 @@ func TestExportWorkerCompletes(t *testing.T) {
 	})
 }
 
-// A job past its bounds fails with a reason naming no key; a withheld capture's job fails too.
+// A job past its bounds fails with a reason naming no key (a withheld capture fails no job: its bundle names it, TestExportBundleWithheldAndGone).
 func TestExportWorkerFails(t *testing.T) {
 	t.Parallel()
 	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
