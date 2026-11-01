@@ -1,6 +1,6 @@
 # Phase 5 — correctness, error handling and performance
 
-Status: draft (2026-11-01) — answered by the owner; under external plan review
+Status: draft (2026-11-01) — external review clean (v4); awaiting the owner on points 9 and 10
 
 The owner's next phase after the roadmap's milestones:
 no new feature, but the service and the producer SDK made correct under faults, their failures reported, and their hot paths measured and made faster.
