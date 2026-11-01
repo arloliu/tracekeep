@@ -30,6 +30,9 @@ import (
 // apiShutdown bounds how long the requests in flight may finish when the api role stops, before their connections are closed.
 const apiShutdown = 10 * time.Second
 
+// apiIdle closes a keep-alive connection, HTTP/1.1 or HTTP/2, that carries no request for this long.
+const apiIdle = 2 * time.Minute
+
 // exportPoll is how often an api replica looks for an export job to claim.
 const exportPoll = 2 * time.Second
 
@@ -83,7 +86,8 @@ func API(ctx context.Context, e *Env) error {
 			defer inFlight.Done()
 			handler.ServeHTTP(w, r)
 		}),
-		ReadHeaderTimeout: 10 * time.Second, Protocols: new(http.Protocols),
+		// No WriteTimeout: a record stream or a download may rightly run long; only a connection between requests is bounded.
+		ReadHeaderTimeout: 10 * time.Second, IdleTimeout: cmp.Or(e.apiIdle, apiIdle), Protocols: new(http.Protocols),
 		ErrorLog: slog.NewLogLogger(log.Handler(), slog.LevelWarn),
 	}
 	srv.Protocols.SetHTTP1(true)

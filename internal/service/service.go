@@ -62,12 +62,13 @@ type Env struct {
 	// joined, when not nil, runs once Ingest's consumers joined and its readiness is registered; a test's barrier.
 	joined func()
 	// apiAddr is the api role's bound address; apiBound, when not nil, runs once it is bound, a test's barrier;
-	// apiShutdown, when not zero, replaces the api role's shutdown bound.
+	// apiShutdown and apiIdle, when not zero, replace the api role's shutdown bound and its server's idle timeout.
 	apiAddr atomic.Value
 	// apiListener, when set, is the api role's listener, bound by tracekeep dev before it configured the service.
 	apiListener net.Listener
 	apiBound    func()
 	apiShutdown time.Duration
+	apiIdle     time.Duration
 	// listening is closed once the api role's listener is bound.
 	listening     chan struct{}
 	listeningOnce sync.Once

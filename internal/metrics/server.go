@@ -22,6 +22,9 @@ import (
 // readyTimeout bounds one /readyz answer.
 const readyTimeout = 5 * time.Second
 
+// idleTimeout closes a keep-alive connection that sends no request for this long.
+const idleTimeout = 2 * time.Minute
+
 // Server holds the registry and the readiness checks, and serves them.
 type Server struct {
 	reg    *prometheus.Registry
@@ -32,6 +35,7 @@ type Server struct {
 	addr            net.Addr
 	done            chan error
 	shutdownTimeout time.Duration
+	idleTimeout     time.Duration
 }
 
 // NewServer returns a server whose registry holds the Go runtime's and the process's collectors.
@@ -39,7 +43,7 @@ func NewServer() *Server {
 	reg := prometheus.NewRegistry()
 	reg.MustRegister(collectors.NewGoCollector(), collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}))
 
-	return &Server{reg: reg, checks: map[string]func(context.Context) error{}, shutdownTimeout: 5 * time.Second}
+	return &Server{reg: reg, checks: map[string]func(context.Context) error{}, shutdownTimeout: 5 * time.Second, idleTimeout: idleTimeout}
 }
 
 // Registry is the registry the roles register their collectors with.
@@ -105,7 +109,7 @@ func (s *Server) Start(ctx context.Context, addr string, failed func(error)) err
 }
 
 func (s *Server) serve(l net.Listener, failed func(error)) {
-	s.srv = &http.Server{Handler: s.Handler(), ReadHeaderTimeout: 10 * time.Second}
+	s.srv = &http.Server{Handler: s.Handler(), ReadHeaderTimeout: 10 * time.Second, IdleTimeout: s.idleTimeout}
 	s.addr = l.Addr()
 	s.done = make(chan error, 1)
 	go func() {

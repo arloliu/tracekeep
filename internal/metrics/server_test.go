@@ -1,6 +1,7 @@
 package metrics
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"io"
@@ -125,5 +126,35 @@ func TestCloseCutsOffABlockedRequest(t *testing.T) {
 	case <-ended:
 	case <-time.After(readyTimeout / 2):
 		t.Error("the blocked request outlived Close")
+	}
+}
+
+// A connection idle past the idle timeout is closed, so idle clients never hold the listener's connections for good.
+func TestIdleConnectionClosed(t *testing.T) {
+	t.Parallel()
+	s := NewServer()
+	s.idleTimeout = 50 * time.Millisecond
+	if err := s.Start(t.Context(), "127.0.0.1:0", nil); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+	conn, err := (&net.Dialer{}).DialContext(t.Context(), "tcp", s.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	if _, err := io.WriteString(conn, "GET /healthz HTTP/1.1\r\nHost: metrics\r\n\r\n"); err != nil {
+		t.Fatal(err)
+	}
+	r := bufio.NewReader(conn)
+	resp, err := http.ReadResponse(r, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = io.Copy(io.Discard, resp.Body)
+	_ = resp.Body.Close()
+	_ = conn.SetReadDeadline(time.Now().Add(10 * time.Second)) // bounds a connection never closed
+	if _, err := r.ReadByte(); !errors.Is(err, io.EOF) {
+		t.Errorf("reading an idle connection = %v, want EOF: the server closes it", err)
 	}
 }
