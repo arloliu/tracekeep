@@ -1,6 +1,6 @@
 # Phase 4 — people
 
-Status: active (2026-11-01) — 4.1 to 4.5 done; the gate (4.6) next
+Status: active (2026-11-01) — 4.1 to 4.5 done; the gate (4.6) in progress
 
 Milestone 4 of the [roadmap](../ROADMAP.md):
 people's sign-in through the API, the first pages, `QueryRecords` and `FindTransaction`, `Export` bundles, and the packaging a standalone host and a cluster run.
@@ -82,8 +82,8 @@ payload-content predicates of `QueryRecords` (`api.md` §10.1), and the eqp-hub 
 | 4.3 — `Export` | spec first (`api.md` §10.1, `catalog.md` §7.1–§7.2, `compactor.md` §8.3): the jobs table and its migration on both engines, its transactions and locks; start, get and cancel, each checking `exporter`, which jobs a principal sees, and their audit rows; job ownership by a fenced worker, an upload intent persisted before the put, an attempt key never reused, completion by compare-and-set, cancel against completion; partial and orphaned objects deleted by a durable step that survives a crash and a late put; the bundle's deletion deadline persisted at completion and shared by the URL and the compactor (T-33), the URL's margin and floor; the read set and withheld packs of point 9; the manifest's conflicts (suspect, confirmed, acknowledged) across two hours; `export_jobs{state}` and the cleanup's failures; no clear recipe body in a bundle, checked on the unpacked JSONL (payloads, annotation bodies, header and redaction entries) against every baseline carrier, with an unmasked negative control | done (#49) |
 | 4.4 — frontend | detailed below | done (#52) |
 | 4.5 — packaging | detailed below | done (#53) |
-| tracepack v0.13.0 | adopted before the gate (T-51): an unknown layout deferred with an alert, the reconciler's quarantine on positive evidence, both modules' requirements | in progress |
-| 4.6 — gate | audit every gate case against the test bodies, then one step per gap, as phase 3.6 did | pending |
+| tracepack v0.13.0 | adopted before the gate (T-51): an unknown layout deferred with an alert, the reconciler's quarantine on positive evidence, both modules' requirements | done (#55) |
+| 4.6 — gate | audit every gate case against the test bodies, then one step per gap, as phase 3.6 did | in progress |
 
 ## Phase 4.1 — people's sign-in
 
@@ -174,6 +174,47 @@ and the gate (4.6) counts neither leg proven until a run on `main` passed for a 
 | 7 | the cluster leg: `scripts/packaging/cluster.sh` and its CI job: kind, NATS, MariaDB, MinIO, Vault and Dex, the CA, the host names resolved alike inside and outside, API-served downloads, a masking configuration active before any ingest member starts, the tool's capture admitted before the browser, two `api` replicas with the callback crossing them after the first restarts (the Service's selector switched while the callback is held), a fresh install, then the baseline (the newest strict ancestor whose run passed) upgraded to this one (skipped, and said, while none exists) | done (#53) |
 | 8 | the standalone leg: `scripts/packaging/standalone.sh` and its CI job: its refusal outside a GitHub-hosted runner or over any trace of an installation, the unit installed on the runner, NATS and Dex in containers, SQLite and an `fs` store, migrate, then the configuration staged and active with the unit stopped, a fresh install, then the baseline's binary upgraded in the unit's order | done (#53) |
 | 9 | the guides: deploying on Kubernetes and on a standalone host (build or push the image, values, secrets, install and upgrade order, alerts), the configuration and repository guides' notes | done (#53) |
+
+## Phase 4.6 — gate
+
+Work on the branch `test/gate/phase-4`, one commit per step, test first;
+the branch merges by pull request once the whole phase passes an external post-implementation review, and closes phase 4's gate;
+the phase's close (the roadmap row done, this plan closed) is a pull request of its own after it.
+The audit below read every gate case against the tests and the packaging runs on `main`;
+the steps add what it found missing or partial, each catalog test on both engines.
+One case is a defect, not a missing test: the cluster leg failed on `main` at be45de3,
+its transaction panel never showing `matched`, while the standalone leg of the same run passed, its upgrade from 141cc4f included.
+A local `tracekeep dev` at be45de3 matches every primary in milliseconds at the simulator's rate over three minutes,
+and tracepack's lookup is unchanged from v0.12.0 but for its errors,
+so the cause lies in what only the cluster has (MariaDB, MinIO, two replicas of each role) or the run was a flake;
+the failed run kept no page, so step 1 first makes a failure show it.
+
+| Step | Scope | State |
+|---|---|---|
+| 1 | the cluster leg's failure: a failed browser test names what the transaction panel shows, and both legs print Playwright's page snapshot and the log of every pod; then the leg run again on `main` and the cause fixed, with a test below the packaging where one can hold it; the upgrade made to prove itself: the test after an upgrade fails, never skips, without the evidence written before it, and the standalone upgrade installs the candidate's unit, user and directories, not only its binary | pending |
+| 2 | the session in the browser test, both legs: the browser's completeness by hour (a row and its state), the record's SML, the stream's end complete, the transaction's primary and its valid reply with their roles, the manifest's tool, device, window and packs per hour, the download a `/download/` URL; an unmapped person refused by the server, not only by the page; masking exercised: the simulator sends a carrier the baseline policy masks, and neither its SML nor the bundle's JSONL holds the clear text | pending |
+| 3 | the IdP down: an `api` role started over HTTPS with the IdP down answers login and callback 503 and counts `logins_total{outcome="unavailable"}` and `idp-unavailable` on `/metrics`; the IdP back, a sign-in once the fetch interval has passed; down again, a session cookie still reads `ListDevices`, a service token verifies from the cached keys until their TTL and is then refused, and a new login's callback fails; a cold callback with the IdP down, the JWKS alone down, and a stalled first discovery bounded by the fetch timeout; a session key's provider gone after start, a cookie still accepted; both packaging legs stop Dex after the session (a signed-in page keeps working, a new login is told the IdP is unavailable) and start it again (a sign-in succeeds) | pending |
+| 4 | an export of a masked capture outside `tracekeep dev` spanning two hours with a conflict, through `StartExport`, the worker and the stored bundle unpacked: a suspect, a confirmed and an acknowledged conflict in the manifest, each hour with its packs, each conflict's versions with theirs | pending |
+| 5 | no clear recipe body, made strict: the scan counts the records it read and fails on fewer than were written, the header's redaction entries counted; its unmasked control carries clear text in a redaction entry and a header extension as well as in payloads and annotation bodies; `TooDeep`'s secrets searched too, and `manifest.json` scanned; the scan run on a bundle the worker stored, and on a tool's export holding a withheld capture beside a masked one; `TestExportWorkerFails`' comment corrected (a withheld capture is named, not failed) | pending |
+
+### The audit
+
+Read 2026-11-01 at be45de3, from the test bodies and the packaging runs on `main`:
+21a47d7, standalone failed (fixed by #54) and cluster passed, no baseline;
+141cc4f, both passed, no baseline;
+be45de3, standalone passed with its upgrade from 141cc4f, and cluster failed in its fresh install (the defect above), its upgrade never run.
+No case is covered whole.
+Partial, each with what the steps add:
+"a troubleshooting session end to end" on either host (step 1: the cluster leg's failure, and an upgrade that passes when its evidence is missing or its unit unchanged;
+step 2: the browser test signs in at Dex, finds a capture, reads its records to their end, sees a transaction matched, exports and downloads a bundle whose manifest is canonical with nothing left out, and turns an unmapped person away,
+but the hours table may be empty, no SML is read, the end may be incomplete, the manifest's selection and packs go unread, the denial is the page's own,
+and the simulator's S1F3 and S1F4 meet no rule of the baseline policy, so masking is active but never exercised);
+"IdP down before start and after start" (step 3: the units cover discovery read lazily, a cold login refused 503, recovery after the fetch interval, a warm session's `/auth/me`, a warm login's failed exchange and the service token's cached keys and their TTL,
+and a start failing on an unresolved session key;
+but nothing runs it end to end, a cold callback and a JWKS outage alone are untested, a stalled first fetch is not bounded by a test, the counters never reach `/metrics`, and a session key's provider is never taken away after start);
+"export of a capture spanning two hours with a conflict" (step 4: the bundle builder alone, both engines, under `tracekeep dev` on an unmasked capture, with a suspect and an acknowledged conflict, no confirmed one, and no conflict's packs checked);
+"no clear recipe body in an export" (step 5: the bundle builder's JSONL scanned for every carrier's secret, raw, in every string and in every base64 string, with an unmasked control and a withheld capture's bundle holding only its manifest,
+but the scan counts nothing it read, the control proves payloads and annotation bodies only, and no stored bundle is scanned).
 
 ## Gate cases and their owners
 
