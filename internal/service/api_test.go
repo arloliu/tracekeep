@@ -12,6 +12,7 @@ import (
 	"crypto/x509/pkix"
 	"encoding/base64"
 	"encoding/pem"
+	"errors"
 	"io"
 	"log/slog"
 	"math/big"
@@ -568,6 +569,49 @@ func TestAPIRoleUnreadyBeforeItsListenerCloses(t *testing.T) {
 	}
 	if err := ended(); err != nil {
 		t.Errorf("API on a stop = %v, want nil", err)
+	}
+}
+
+// The api server closes a connection idle past its idle timeout, so idle clients never hold connections for good.
+func TestAPIRoleClosesIdleConnections(t *testing.T) {
+	t.Parallel()
+	e := devEnv(t)
+	e.apiIdle = 50 * time.Millisecond
+	bound := make(chan struct{})
+	e.apiBound = func() { close(bound) }
+	run, stop := context.WithCancel(t.Context())
+	done := make(chan error, 1)
+	go func() { done <- API(run, e) }()
+	t.Cleanup(func() {
+		stop()
+		<-done //nolint:errcheck // the role's end, not under test here
+	})
+	<-bound
+	pemCert, err := os.ReadFile(e.Config.API.TLSCertFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	roots := x509.NewCertPool()
+	roots.AppendCertsFromPEM(pemCert)
+	d := &tls.Dialer{Config: &tls.Config{RootCAs: roots, NextProtos: []string{"http/1.1"}, MinVersion: tls.VersionTLS12}}
+	conn, err := d.DialContext(t.Context(), "tcp", e.APIAddr())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	if _, err := io.WriteString(conn, "GET /download/x HTTP/1.1\r\nHost: api\r\n\r\n"); err != nil {
+		t.Fatal(err)
+	}
+	r := bufio.NewReader(conn)
+	resp, err := http.ReadResponse(r, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = io.Copy(io.Discard, resp.Body)
+	_ = resp.Body.Close()
+	_ = conn.SetReadDeadline(time.Now().Add(10 * time.Second)) // bounds a connection never closed
+	if _, err := r.ReadByte(); !errors.Is(err, io.EOF) {
+		t.Errorf("reading an idle connection = %v, want EOF: the server closes it", err)
 	}
 }
 
