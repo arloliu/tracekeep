@@ -184,6 +184,48 @@ test("a person no group maps is signed in and admitted to nothing", async ({ pag
   expect(res.body).toContain("permission_denied");
 });
 
+// The IdP down after start and back (the gate's case, api.md §10.2 *People's sign-in*): the leg's commands stop it (TRACEKEEP_IDP_STOP)
+// and start it again (TRACEKEEP_IDP_START). Down, a signed-in page keeps reading with its session, and a new login cannot sign in:
+// a replica that never fetched refuses it as unavailable, one that has sends the browser to an IdP that does not answer.
+// Back, a sign-in succeeds once the replicas fetch again, retried while the fetch interval holds them back.
+test("a session outlives an outage of the IdP, and sign-in returns with it", async ({ page, browser, baseURL }) => {
+  const stop = process.env.TRACEKEEP_IDP_STOP;
+  const start = process.env.TRACEKEEP_IDP_START;
+  test.skip(!stop || !start, "needs a leg's commands to stop and start the IdP");
+  test.setTimeout(420_000);
+  await signIn(page);
+  execSync(stop ?? "", { stdio: "inherit" });
+  try {
+    await page.reload();
+    await page.getByLabel("Tool id").fill(tool);
+    await page.getByRole("button", { name: "Open" }).click();
+    await expect(page.getByRole("checkbox", { name: `Select ${device}` })).toBeVisible();
+
+    const other = await browser.newContext({ baseURL });
+    const login = await other.newPage();
+    let outcome: string;
+    try {
+      const res = await login.goto("/auth/login?return=%2F", { timeout: 30_000 });
+      outcome = `${String(res?.status() ?? 0)} ${await login.locator("body").innerText()}`;
+    } catch (e) {
+      outcome = String(e);
+    }
+    expect(outcome, "a new login while the IdP is down").toMatch(/^503 Sign-in failed: idp-unavailable\.|net::ERR_|Timeout/);
+    await login.goto("/");
+    await expect(login.getByRole("link", { name: "Sign in" })).toBeVisible();
+    await other.close();
+  } finally {
+    execSync(start ?? "", { stdio: "inherit" });
+  }
+
+  const back = await browser.newContext({ baseURL });
+  const again = await back.newPage();
+  await expect(async () => {
+    await signIn(again);
+  }).toPass({ timeout: 240_000, intervals: [5_000] });
+  await back.close();
+});
+
 // A login one api replica starts, the other finishes (the cluster's leg), the first restarted before the callback.
 // The browser stays on the public URL, as a person's does; the leg's commands make the Service send it to the first replica for the login
 // (TRACEKEEP_BEFORE_LOGIN) and, with the request held, restart that replica and send the callback to the second (TRACEKEEP_BEFORE_CALLBACK).

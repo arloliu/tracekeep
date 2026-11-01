@@ -416,6 +416,10 @@ traffic
 stop_traffic
 sleep 30
 browse
+# The IdP stopped after the session and started again: Dex keeps its keys in memory, so it starts with new ones.
+TRACEKEEP_IDP_STOP="kubectl -n $NS scale deploy/dex --replicas=0 >/dev/null && until [ -z \"\$(kubectl -n $NS get pods -l app=dex -o name)\" ]; do sleep 1; done" \
+	TRACEKEEP_IDP_START="kubectl -n $NS scale deploy/dex --replicas=1 >/dev/null && kubectl -n $NS rollout status deploy/dex --timeout=300s >/dev/null" \
+	playwright "$PUBLIC" -g "outage of the IdP"
 
 if [ -z "${TRACEKEEP_BASELINE:-}" ]; then
 	log "upgrade skipped: no baseline (no strict ancestor on main with the chart whose packaging run passed)"
