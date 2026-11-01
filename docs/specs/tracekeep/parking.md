@@ -170,6 +170,9 @@ the parked consumer inserts-or-finds the row of the copy it holds (`msg.Metadata
 so a redelivery finds its own row.
 A stream **incarnation** is a catalog row of `bus_streams` (role, stream name, `StreamInfo.Created`, an incarnation id the catalog allocates, the highest `LastSeq` observed), created by `tracekeep migrate`
 when it creates the stream.
+A role has **at most one live incarnation**, its row not retired, which the catalog enforces by a unique key on the live role:
+a creation that loses a race to another of the same role reads the row the winner committed, and a live row of another stream or creation time is a changed incarnation, never adopted;
+a catalog that already holds two live rows of a role fails the migration that adds the key, naming them, and the adoption below is its recovery.
 **Every durable consumer of the service is named for the incarnation** (`tk-ingest-<incarnation id>`, `tk-parked-<incarnation id>`),
 so an acknowledgement, a nak or a pull from a handler of a retired incarnation names a consumer the replacement stream does not have (adoption deletes any it inherited, below) and is dropped by the server (acknowledgements address `$JS.ACK.<stream>.<consumer>…`, nats-server `consumer.go`),
 whatever sequence it carries;

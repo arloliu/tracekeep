@@ -17,9 +17,9 @@ Section numbers are those of the specs in `docs/specs/tracekeep/`, whose `README
   The device's `Start`, `HotReload` and `Stop` map onto `Begin`, `Rotate` and `End` (`producer.md` §4.2 *Device verbs and SDK calls*).
   `producer-sdk.md` §4.7 *What the producer must guarantee*.
 - **A callback never blocks on anything external**: not the bus, the claim bucket, a log or go-secs.
-  Its one wait is for another callback to leave the capture's critical section,
+  Its one wait is for another callback, or the publisher's one read of the reservation state a pass, to leave the capture's critical section,
   which holds no I/O, no allocation, no logging and no call into go-secs.
-  `producer.md` §4.2 *Capture object*, §4.3; the residual wait is accepted in `tracekeep-decisions.md` T-9.
+  `producer.md` §4.2 *Capture object*, §4.3; the residual wait is accepted in `tracekeep-decisions.md` T-9, the publisher's read in T-52.
 - **The commit point of a rotation** is the install of the new capture pointer, made while the old capture's lock is held.
   Every lock the rotation needs is taken before it, by a `TryLock` loop bounded by the operation's deadline;
   nothing is acquired after it, and a rotation abandoned before it installs nothing.

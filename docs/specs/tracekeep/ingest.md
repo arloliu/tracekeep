@@ -120,9 +120,13 @@ so an expired `start` that admission has just admitted terminates as beyond-rete
 | `ErrCannotScreen`, or masking fails for the record | nak with delay, alert `cannot-screen`; counted per capture; other captures unaffected | open incident |
 | a key the record's masking needs is refused (`keys.Refused`: a binding mismatch, a key id undeclared or of another kind, material malformed, short or missing at its pinned version, `masking-keys.md` §9) | deferred indefinitely, so parked; alert `key-binding-mismatch` or `key-refused`; the key's other records follow it | parked count, `deferred_messages{reason=key-refused}` |
 | a key the record's masking needs is unavailable (the provider unreachable, its deadline passed, its credential refused) | nak with delay; the key resolves at a later delivery | `deferred_messages{reason=key-unavailable}` |
+| a claim-check record whose header declares a `payload_len` above `ingest.max_record_bytes`, its version unresolved | a resource refusal, never malformed (T-52): deferred indefinitely without fetching its object, so parked; alert `too-large`; it waits until the bound is raised or an operator terminates the version | parked count, `deferred_messages{reason=too-large}` |
 | write or put fails | no ack; the batch is retried by redelivery; a record whose batch fails the `Writer`'s validation, or the reader's metadata budget at the reopen (§6.2), three times, whichever batch held it, is deterministic: alert `write-failure`, the batch's messages stay deferred, operator | open incident |
 
 Nothing is auto-terminated after N deliveries; every terminal action is one of the rows above or an operator's.
+
+A claim object's fetch reads at most its declared `payload_len` plus one byte and must reach the object's end within the fetch's deadline;
+an object longer or shorter than declared, or of another digest, is `bus.ErrPayloadMismatch`, so no fetch holds more than the bound plus one byte.
 A deferred delivery is therefore **bounded per capture, never per service**:
 it holds its own capture's messages on the stream and nothing else.
 `ingest` exports the age and count of deferred messages per reason (aggregate),
@@ -183,6 +187,13 @@ the cases prove the decision, the schedules prove the re-reads under the capture
   a masking configuration writes `format_minor` 1 at least.
 - Ack ownership: each message is acked individually after the transaction that registered a segment holding its record commits;
   a claim-check message with `DoubleAck`.
+- **A flush is bounded** (T-52): its remote calls, the store's put and the catalog's transactions, run under its context,
+  and a flush that has not registered within `ingest.ack_wait` is given up, its unacknowledged messages naked and their in-progress acks stopped;
+  on a stop, the batches still due share one budget, `ingest.stop_timeout`, and one not flushed within it is left to redelivery.
+  Any error of a remote call, its deadline included, is an unknown outcome:
+  an object the flush may have put is left to reconciliation and the orphan pass (`storage.md` §5.4), never deleted by the flush, and acknowledgement still follows registration.
+  The local file work (the working file's writes, sync and reopen, and the `fs` store) is not interrupted:
+  a flush waits for it, so nothing outlives the flush that owns its batch's memory and files, and work that outlasts its bound is logged and counted in `flush_stalls_total`.
 
 ### 6.3 Crash points and the registration transaction
 

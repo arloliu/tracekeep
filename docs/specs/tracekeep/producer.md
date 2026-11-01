@@ -18,9 +18,9 @@ Contract changes go through proposals, which the subject [README.md](README.md) 
 - **Seq before loss**: every observation of an open capture gets a seq before any decision that can lose it,
   so every loss inside a capture is a seq gap (§4.2 *Observer callback*).
 - **Callback contract**: a callback never blocks on anything external;
-  its one wait is for another callback to leave the capture's critical section,
+  its one wait is for another callback, or the publisher's one read of the reservation state a pass, to leave the capture's critical section,
   which holds no I/O, no allocation, no logging and no call into go-secs (§4.2 *Capture object*, §4.3);
-  the wait is the residual the owner accepted under LS-14 (T-9).
+  the wait is the residual the owner accepted under LS-14 (T-9), the publisher's read admitted by T-52.
 - **Borrowed frame**: go-secs lends `Frame` for the callback only;
   the producer reserves lane capacity first and copies the frame only for an admitted record (§4.2 *Observer callback* steps 7–8).
 - **Rotation**: at `Start`, `Stop`, a `HotReload` that changes any descriptor value, and after a fault;
@@ -85,6 +85,8 @@ and this section is the contract between them.
   and the design has no algorithm that removes it.
   This is a **residual under LS-14**, which the owner accepted (T-9, §13);
   the design states it rather than claims a bound.
+  The publisher takes the lock too, once a pass, to read the reservation set's lowest seq and its oldest reservation together, and nothing else under it;
+  its publishing, claim calls and every other wait stay outside the lock, so a callback waits on it only as on another callback (T-52).
   The structures the section touches are preallocated at capture creation:
   the socket→epoch map holds 1024 sockets and the reservation set as many entries as the reserved lane;
   exhaustion of either is a capture fault (below).
@@ -262,7 +264,8 @@ and this section is the contract between them.
   nats.go publishes the object's metadata before every chunk is confirmed and purges only the chunks on a late chunk error,
   so matching metadata does not prove a complete object.
   Before reusing a candidate the SDK therefore **reads it back in full** and checks length and digest;
-  a candidate that fails is deleted by the SDK (the only writer of that name under G5-200) and put again;
+  a candidate the read-back proves incomplete or wrong (another length or digest, or its chunks gone) is deleted by the SDK (the only writer of that name under G5-200) and put again,
+  while a read-back that fails without such proof (a timeout, a disconnect, the bus down) is tried again later and the candidate kept (T-52);
   past H the record is dropped as a gap.
   A reference is published only after a put the SDK itself saw complete or a read-back it verified.
   Claim objects are **not swept early**:
