@@ -128,6 +128,38 @@ func TestHotReloadBlockedOnACaptureLockWhenStopArrives(t *testing.T) {
 	}
 }
 
+// A rotation abandoned before its commit point leaves its start queued and discarded:
+// the publisher releases and skips it without counting a drop, so no loss alert fires with nothing lost.
+func TestDiscardedStartIsNotCountedDropped(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t, producer.Tunables{})
+	h.begin()
+	h.wait(1)
+	release, done := h.observeHeld()
+
+	ctx, cancel := context.WithTimeout(t.Context(), 100*time.Millisecond)
+	defer cancel()
+	if err := h.p.Rotate(ctx, producer.CaptureDescriptor{ToolID: "T1", DeviceName: "eqp-reloaded"}); !errors.Is(err, producer.ErrRotationAbandoned) {
+		t.Fatalf("Rotate under a held capture lock = %v, want ErrRotationAbandoned", err)
+	}
+	close(release)
+	<-done
+	// The discarded start was queued before End's stop, so the drain has passed it when End returns.
+	if rep := h.endBy(5 * time.Second); !rep.Drained || rep.Dropped != 0 {
+		t.Errorf("End = %+v, want drained with nothing dropped", rep)
+	}
+	_ = h.p.Close()
+
+	for _, reason := range []string{"abandoned", "publish_failed"} {
+		if got := h.m.get("records_dropped_total{reason=" + reason + "}"); got != 0 {
+			t.Errorf("dropped{%s} = %v, want 0: a discarded start is no loss", reason, got)
+		}
+	}
+	if n := len(h.bus.Messages()); n != 3 {
+		t.Errorf("%d messages on the bus, want the start, the record and the stop", n)
+	}
+}
+
 // The bus is down while clock steps fill the reserved lane: the capture faults instead of blocking a callback,
 // its fault rotation finds no room and waits, and once the bus is back the successor's start names the faulted capture.
 func TestReservedLaneFullWhileTheBusIsDown(t *testing.T) {
