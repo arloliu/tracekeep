@@ -1,6 +1,7 @@
 package api
 
 import (
+	"cmp"
 	"encoding/json"
 	"io"
 	"maps"
@@ -200,7 +201,7 @@ func TestExportOfConflictsAcrossHours(t *testing.T) {
 		m := newMasked(t, c)
 		capture := m.admitActive(t)
 		cs := carriers(t)[:1]
-		records, entries, packs := threeConflicts(t, m, capture, &cs[0])
+		records, entries, put := threeConflicts(t, m, capture, &cs[0])
 		workers(t, m)
 		id := capture.String()
 		req := &tkv1.StartExportRequest{Kind: "canonical", Selector: &tkv1.Selector{ToolId: tool, CaptureId: &id, From: hourTS(hour), To: hourTS(hour + 2)}}
@@ -232,18 +233,12 @@ func TestExportOfConflictsAcrossHours(t *testing.T) {
 		if want := map[uint64]string{3: "suspect", 5: "acknowledged", 7: "confirmed"}; !maps.Equal(states, want) {
 			t.Errorf("conflicts = %v, want %v", states, want)
 		}
-		// Each conflict's two versions: one in each hour, in the pack put there, its record of that hour.
+		// Each conflict's two versions exactly as they were put: each in its own pack, by the pack's own header, with that pack's hour and the record's time.
 		vs := versionsOf(t, files, man.Captures[0].Hours)
 		for _, seq := range []string{"3", "5", "7"} {
-			got := vs[seq]
-			if len(got) != 2 || got[0].hour == got[1].hour || got[0].ts == got[1].ts {
-				t.Errorf("seq %s's versions = %+v, want two, of different hours and times", seq, got)
-				continue
-			}
-			for _, v := range got {
-				if !slices.Contains(packs[seq], v.pack) || v.ts/nsPerHour != v.hour {
-					t.Errorf("seq %s's version %+v, want it in one of the packs %v, its time in its pack's hour", seq, v, packs[seq])
-				}
+			got, want := sorted(vs[seq]), sorted(put[seq])
+			if !slices.Equal(got, want) {
+				t.Errorf("seq %s's versions = %+v, want %+v", seq, got, want)
 			}
 		}
 		if got := scan(t, files, cs); len(got.found) != 0 || got.records != records || got.entries != entries {
@@ -277,13 +272,21 @@ func stored(t *testing.T, m *masked, key string) (map[string][]byte, manifest) {
 	return files, man
 }
 
-// version is one exported version of a seq: the pack whose file holds it, that pack's hour, and the record's time.
+// version is one version of a seq: the pack holding it, that pack's hour, and the record's time.
 type version struct {
 	pack     string
 	hour, ts int64
 }
 
-// versionsOf are the versions of each seq the hours' packs export, by seq, each hour checked to have its packs, none left out.
+// sorted is vs in order of their packs, hours and times.
+func sorted(vs []version) []version {
+	return slices.SortedFunc(slices.Values(vs), func(a, b version) int {
+		return cmp.Or(strings.Compare(a.pack, b.pack), cmp.Compare(a.hour, b.hour), cmp.Compare(a.ts, b.ts))
+	})
+}
+
+// versionsOf are the versions of each seq the hours' packs export, by seq, each named by the pack its file's header names,
+// which must be the manifest's; each hour is checked to have its packs, none left out.
 func versionsOf(t *testing.T, files map[string][]byte, hours []manifestHour) map[string][]version {
 	t.Helper()
 	out := map[string][]version{}
@@ -300,23 +303,29 @@ func versionsOf(t *testing.T, files map[string][]byte, hours []manifestHour) map
 			if !ok {
 				t.Errorf("the bundle holds no %s", p.File)
 			}
+			pack := ""
 			for line := range strings.Lines(string(body)) {
 				var r struct {
-					// Seq and TS are uint64 and int64, as JSON strings; a header line has neither.
-					Seq string `json:"seq"`
-					TS  string `json:"ts_utc_ns"`
+					// Seq and TS are uint64 and int64, as JSON strings; the header line has neither, and names the pack.
+					Seq    string `json:"seq"`
+					TS     string `json:"ts_utc_ns"`
+					PackID string `json:"pack_id"`
 				}
 				if err := json.Unmarshal([]byte(line), &r); err != nil {
 					t.Fatalf("%s: %v", p.File, err)
 				}
 				if r.Seq == "" {
+					pack = r.PackID
+					if pack != p.PackID {
+						t.Errorf("%s: its header names pack %s, the manifest %s", p.File, pack, p.PackID)
+					}
 					continue
 				}
 				ts, err := strconv.ParseInt(r.TS, 10, 64)
 				if err != nil {
 					t.Fatalf("%s seq %s: ts_utc_ns %q: %v", p.File, r.Seq, r.TS, err)
 				}
-				out[r.Seq] = append(out[r.Seq], version{pack: p.PackID, hour: start.Unix() / 3600, ts: ts})
+				out[r.Seq] = append(out[r.Seq], version{pack: pack, hour: start.Unix() / 3600, ts: ts})
 			}
 		}
 	}
@@ -326,10 +335,10 @@ func versionsOf(t *testing.T, files map[string][]byte, hours []manifestHour) map
 
 // threeConflicts puts carrier c's records of capture, masked, over two hours, with seqs 3, 5 and 7 in both:
 // 3 left suspect, 5 acknowledged and 7 confirmed by a comparison that found its versions differ;
-// it returns how many records and redaction entries it wrote, and the packs holding each of the three seqs' versions.
-func threeConflicts(t *testing.T, m *masked, capture tracepack.UUID, c *maskingtest.Carrier) (records, entries int, packs map[string][]string) {
+// it returns how many records and redaction entries it wrote, and every version it put of the three seqs.
+func threeConflicts(t *testing.T, m *masked, capture tracepack.UUID, c *maskingtest.Carrier) (records, entries int, versions map[string][]version) {
 	t.Helper()
-	packs = map[string][]string{}
+	versions = map[string][]version{}
 	put := func(h int64, seqs ...uint64) {
 		rs := make([]tracepack.Record, 0, len(seqs))
 		for _, s := range seqs {
@@ -338,9 +347,9 @@ func threeConflicts(t *testing.T, m *masked, capture tracepack.UUID, c *maskingt
 		ms, es := m.mask(t, capture, captured(rs))
 		p := m.put(t, capture, h, ms, es, m.policy())
 		records, entries = records+len(ms), entries+len(es)
-		for _, s := range seqs {
-			key := strconv.FormatUint(s, 10)
-			packs[key] = append(packs[key], p.ID.String())
+		for _, r := range rs {
+			key := strconv.FormatUint(r.Seq, 10)
+			versions[key] = append(versions[key], version{pack: p.ID.String(), hour: h, ts: r.TSUTCNs})
 		}
 	}
 	put(hour, 1, 2, 3, 5, 7)
@@ -366,7 +375,7 @@ func threeConflicts(t *testing.T, m *masked, capture tracepack.UUID, c *maskingt
 		t.Fatal(err)
 	}
 
-	return records, entries, packs
+	return records, entries, versions
 }
 
 // awaitOwned waits, bounded, for owner's job to reach a state other than queued and running, and returns it.
