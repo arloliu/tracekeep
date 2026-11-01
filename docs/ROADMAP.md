@@ -47,9 +47,17 @@ Phases 0–3 run in one repository with one CI matrix (embedded bus, `fs` or `go
 so every chaos and race test is a barrier-controlled in-process test;
 eqp-hub reviews the SDK's API (`Bus`, `Preflight`, the six guarantees, the `secsobs` observer options) during phase 0 without changing any code.
 
+## Beyond the seed
+
+Milestones the owner set after seed v21 §12's (T-52).
+
+| Phase | Scope | Gate |
+|---|---|---|
+| 5 — correctness, error handling and performance | no new feature: the service and the producer SDK correct under faults, their failures reported with their own codes and without keys or internal text, and their hot paths benchmarked and made faster where the numbers show it | the gate cases of its plan: a stalled remote call and a stalled client bounded, clean stops, the clustered testbus steady, keyless errors, a baseline and a before-and-after for every hot path, and an API write on SQLite within 2 s at the 99th percentile during sustained ingest |
+
 ## Active plans
 
-None.
+- [Phase 5 — correctness, error handling and performance](plans/phase-5-hardening.md)
 
 Phase 0 is done (#1, #3, #4, #7, #8).
 Phase 1 is done (#9, #11, #13, #14, #16, #17, #18, #19).
