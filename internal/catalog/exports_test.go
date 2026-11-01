@@ -2,6 +2,7 @@ package catalog
 
 import (
 	"errors"
+	"slices"
 	"testing"
 	"time"
 
@@ -279,4 +280,73 @@ func TestExportCancelRacesCompletion(t *testing.T) {
 			}
 		}
 	})
+}
+
+// A claim whose first commit fails retryably is decided by its retry alone: with the job claimed by another replica before the retry,
+// the retry finds nothing to claim and returns no claim.
+func TestClaimRetriedOverChangedRows(t *testing.T) {
+	t.Parallel()
+	engines(t, func(t *testing.T, c *Catalog) {
+		createExport(t, c)
+		FailFirstCommit(c, errors.New("commit failed retryably"))
+		c.hooks[hookRetry] = func() {
+			c.hooks[hookRetry] = nil
+			if _, ok := claim(t, c, "r2"); !ok {
+				t.Error("the other replica's claim failed")
+			}
+		}
+		if cl, ok, err := c.ClaimExport(t.Context(), "r1", time.Minute, 3); err != nil || ok {
+			t.Errorf("ClaimExport = %+v, %v, %v; want no claim, the job another replica's", cl, ok, err)
+		}
+	})
+}
+
+// The objects a doom returns are its committed attempt's: once each after a retry over unchanged rows,
+// and none of a rolled-back attempt's that another replica doomed and forgot before the retry.
+func TestDoomRetriedOverChangedRows(t *testing.T) {
+	t.Parallel()
+	for _, forgotten := range []bool{false, true} {
+		name := map[bool]string{false: "rows unchanged", true: "object forgotten"}[forgotten]
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			engines(t, func(t *testing.T, c *Catalog) {
+				l := compactorLease(t, c, "w")
+				id := createExport(t, c)
+				a, _ := claim(t, c, "r1")
+				key := "exports/" + id.String() + "/1.tar"
+				if _, err := c.IntendExport(t.Context(), a, key, time.Minute); err != nil {
+					t.Fatal(err)
+				}
+				exec(t, c, `UPDATE export_objects SET put_deadline = 0 WHERE object_key = ?`, key)
+				FailFirstCommit(c, errors.New("commit failed retryably"))
+				c.hooks[hookRetry] = func() {
+					c.hooks[hookRetry] = nil
+					if !forgotten {
+						return
+					}
+					if _, err := c.DoomExportObjects(t.Context(), l, 2*time.Minute, 100); err != nil {
+						t.Error(err)
+					}
+					if err := c.ForgetExportObject(t.Context(), l, key); err != nil {
+						t.Error(err)
+					}
+				}
+				doomed, err := c.DoomExportObjects(t.Context(), l, 2*time.Minute, 100)
+				if err != nil {
+					t.Fatal(err)
+				}
+				keys := make([]string, 0, len(doomed))
+				for _, o := range doomed {
+					keys = append(keys, o.Key)
+				}
+				want := []string{key}
+				if forgotten {
+					want = nil
+				}
+				if !slices.Equal(keys, want) {
+					t.Errorf("doomed %v, want %v: the committed attempt's", keys, want)
+				}
+			})
+		})
+	}
 }

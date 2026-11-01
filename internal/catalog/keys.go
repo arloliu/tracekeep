@@ -67,6 +67,7 @@ func (c *Catalog) BindKey(ctx context.Context, b KeyBinding) (KeyBinding, error)
 	}
 	var stored KeyBinding
 	err := c.inTx(ctx, func(tx *sqlx.Tx) error {
+		stored = KeyBinding{}
 		_, err := tx.ExecContext(ctx, c.d.insertIgnore+` INTO key_bindings (key_id, kind, provider_ref, provider_version, fingerprint, bound_at)
 			VALUES (?, ?, ?, ?, ?, ?)`, b.KeyID, b.Kind, b.ProviderRef, b.ProviderVersion, b.Fingerprint, c.now())
 		if err != nil {

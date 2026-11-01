@@ -100,6 +100,7 @@ func (c *Catalog) AdmitWhere(ctx context.Context, dv *Identity, d *Descriptor, b
 	id := dv.Version.Capture
 	var res Result
 	err := c.inTx(ctx, func(tx *sqlx.Tx) error {
+		res = Result{}
 		row, err := c.lockCapture(ctx, tx, id)
 		if err != nil {
 			return err
@@ -161,6 +162,7 @@ func (c *Catalog) Reject(ctx context.Context, dv *Identity, descriptor []byte) (
 	id := dv.Version.Capture
 	var res Result
 	err := c.inTx(ctx, func(tx *sqlx.Tx) error {
+		res = Result{}
 		row, err := c.lockCapture(ctx, tx, id)
 		if err != nil {
 			return err

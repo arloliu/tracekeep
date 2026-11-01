@@ -51,6 +51,7 @@ type Begun struct {
 func (c *Catalog) BeginParking(ctx context.Context, d *Identity, reason, objectKey string, horizonHour int64) (Begun, error) {
 	var b Begun
 	err := outcome(c.inTx(ctx, func(tx *sqlx.Tx) error {
+		b = Begun{}
 		row, err := c.lockCapture(ctx, tx, d.Version.Capture)
 		if err != nil {
 			return err
@@ -126,6 +127,7 @@ func readVersionState(ctx context.Context, q sqlx.QueryerContext, v *VersionKey)
 func (c *Catalog) PrepareAck(ctx context.Context, d *Identity, audit AuditEntry) (VersionState, error) {
 	var state VersionState
 	err := outcome(c.inTx(ctx, func(tx *sqlx.Tx) error {
+		state = ""
 		if _, err := c.lockCapture(ctx, tx, d.Version.Capture); err != nil {
 			return err
 		}
@@ -173,6 +175,7 @@ func (c *Catalog) EvictParked(ctx context.Context, v *VersionKey) (VersionState,
 func (c *Catalog) moveVersion(ctx context.Context, v *VersionKey, from, to VersionState) (VersionState, error) {
 	var state VersionState
 	err := outcome(c.inTx(ctx, func(tx *sqlx.Tx) error {
+		state = ""
 		if _, err := c.lockCapture(ctx, tx, v.Capture); err != nil {
 			return err
 		}
@@ -201,6 +204,7 @@ func (c *Catalog) moveVersion(ctx context.Context, v *VersionKey, from, to Versi
 func (c *Catalog) RecordCopy(ctx context.Context, d *Identity) (VersionState, error) {
 	var state VersionState
 	err := outcome(c.inTx(ctx, func(tx *sqlx.Tx) error {
+		state = ""
 		if _, err := c.lockCapture(ctx, tx, d.Version.Capture); err != nil {
 			return err
 		}
@@ -283,6 +287,7 @@ func (c *Catalog) ReconcileCopy(ctx context.Context, d *Identity, lease Lease) (
 	v := &d.Version
 	var ok bool
 	err := outcome(c.inTx(ctx, func(tx *sqlx.Tx) error {
+		ok = false
 		if _, err := c.lockCapture(ctx, tx, v.Capture); err != nil {
 			return err
 		}
@@ -325,6 +330,7 @@ func (c *Catalog) ReconcileCopy(ctx context.Context, d *Identity, lease Lease) (
 func (c *Catalog) TerminateParked(ctx context.Context, capture tracepack.UUID, seq *uint64, actor, action string) (int, error) {
 	var n int
 	err := outcome(c.inTx(ctx, func(tx *sqlx.Tx) error {
+		n = 0
 		if _, err := c.lockCapture(ctx, tx, capture); err != nil {
 			return err
 		}
@@ -352,6 +358,7 @@ func (c *Catalog) TerminateParked(ctx context.Context, capture tracepack.UUID, s
 func (c *Catalog) TerminateCapture(ctx context.Context, capture tracepack.UUID, incarnation, cutOff int64, actor, action string) (int, error) {
 	var n int
 	err := c.inTx(ctx, func(tx *sqlx.Tx) error {
+		n = 0
 		if _, err := c.lockCapture(ctx, tx, capture); err != nil {
 			return err
 		}
@@ -414,6 +421,7 @@ func (c *Catalog) auditAndEmit(ctx context.Context, tx *sqlx.Tx, capture tracepa
 func (c *Catalog) SpendOrders(ctx context.Context, incarnation, firstSeq int64) (int, error) {
 	var n int64
 	err := c.inTx(ctx, func(tx *sqlx.Tx) error {
+		n = 0
 		res, err := tx.ExecContext(ctx, `UPDATE termination_orders SET state = 'spent' WHERE incarnation_id = ? AND state = 'active' AND cut_off < ?`,
 			incarnation, firstSeq)
 		if err != nil {
@@ -436,6 +444,7 @@ func (c *Catalog) SpendOrders(ctx context.Context, incarnation, firstSeq int64) 
 func (c *Catalog) AdoptStream(ctx context.Context, role, stream string, createdNS int64, actor string) (Incarnation, error) {
 	inc := Incarnation{Role: role, Stream: stream, CreatedNS: createdNS}
 	err := c.inTx(ctx, func(tx *sqlx.Tx) error {
+		inc.ID = 0
 		var live int
 		err := tx.GetContext(ctx, &live, `SELECT (SELECT COUNT(*) FROM members WHERE lease_until >= `+c.d.nowNS+`)
 			+ (SELECT COUNT(*) FROM leases WHERE until_ns >= `+c.d.nowNS+`)`)

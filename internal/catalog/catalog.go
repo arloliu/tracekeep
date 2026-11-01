@@ -62,6 +62,8 @@ type Catalog struct {
 	retried func(reason string)
 	// testRetryable, set only by the package's tests, is an error a transaction retries like a deadlock.
 	testRetryable error
+	// testCommit, set only by the package's tests, fails a commit whose statements succeeded when it returns an error.
+	testCommit func() error
 }
 
 // Test hooks: points where a barrier-controlled test holds a transaction.

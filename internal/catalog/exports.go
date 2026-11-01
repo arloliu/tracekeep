@@ -151,6 +151,7 @@ func (c *Catalog) ClaimExport(ctx context.Context, holder string, lease time.Dur
 	var job ExportJob
 	var exhausted int64
 	err := c.inTx(ctx, func(tx *sqlx.Tx) error {
+		job, exhausted = ExportJob{}, 0
 		// Jobs past their attempts are failed, and the claim's own guard excludes them too, whatever the clock read between.
 		res, err := tx.ExecContext(ctx, `UPDATE export_jobs SET state = 'failed', ended_at = `+c.d.nowNS+`, holder = NULL,
 			reason = 'its attempts are exhausted'
@@ -220,6 +221,7 @@ func (c *Catalog) RenewExport(ctx context.Context, a Attempt, lease time.Duratio
 func (c *Catalog) IntendExport(ctx context.Context, a Attempt, key string, putTimeout time.Duration) (int64, error) {
 	var deadline int64
 	err := c.inTx(ctx, func(tx *sqlx.Tx) error {
+		deadline = 0
 		res, err := tx.ExecContext(ctx, `UPDATE export_jobs SET fence = fence WHERE `+c.attemptGuard(), a.Job[:], a.Fence)
 		if err := affected(res, err, ErrAttemptLost); err != nil {
 			return err
@@ -244,6 +246,7 @@ func (c *Catalog) IntendExport(ctx context.Context, a Attempt, key string, putTi
 func (c *Catalog) CompleteExport(ctx context.Context, a Attempt, key string, size int64, retention time.Duration) (int64, error) {
 	var deleteAt int64
 	err := c.inTx(ctx, func(tx *sqlx.Tx) error {
+		deleteAt = 0
 		// The job row first, then its object's: the lock order of every export transaction (catalog.md §7.2).
 		res, err := tx.ExecContext(ctx, `UPDATE export_jobs SET state = 'done', holder = NULL, object_key = ?, size = ?, ended_at = `+c.d.nowNS+`,
 			delete_at = `+c.d.nowNS+` + ? WHERE `+c.attemptGuard(), key, size, retention.Nanoseconds(), a.Job[:], a.Fence)
@@ -347,6 +350,7 @@ func (c *Catalog) ExportJobs(ctx context.Context, owner string, limit int) ([]Ex
 func (c *Catalog) DoomExportObjects(ctx context.Context, l Lease, skew time.Duration, limit int) ([]ExportObject, error) {
 	var out []ExportObject
 	err := c.inTx(ctx, func(tx *sqlx.Tx) error {
+		out = nil
 		if err := c.checkLease(ctx, tx, l); err != nil {
 			return err
 		}
@@ -419,6 +423,7 @@ func (c *Catalog) ForgetExportObject(ctx context.Context, l Lease, key string) e
 func (c *Catalog) ForgetExports(ctx context.Context, l Lease, retention time.Duration) (int64, error) {
 	var n int64
 	err := c.inTx(ctx, func(tx *sqlx.Tx) error {
+		n = 0
 		if err := c.checkLease(ctx, tx, l); err != nil {
 			return err
 		}

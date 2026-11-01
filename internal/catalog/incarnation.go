@@ -39,6 +39,7 @@ type Incarnation struct {
 func (c *Catalog) Incarnate(ctx context.Context, role, stream string, createdNS int64) (Incarnation, error) {
 	var inc Incarnation
 	err := c.inTx(ctx, func(tx *sqlx.Tx) error {
+		inc = Incarnation{}
 		err := tx.GetContext(ctx, &inc, `SELECT incarnation_id, role, stream_name, created_ns, last_seq_seen FROM bus_streams
 			WHERE role = ? AND retired_at IS NULL`, role)
 		switch {

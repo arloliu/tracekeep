@@ -163,6 +163,7 @@ func (c *Catalog) CommitMerge(ctx context.Context, l Lease, m *Merge) (MergeOutc
 	}
 	var out MergeOutcome
 	err := outcome(c.inTx(ctx, func(tx *sqlx.Tx) error {
+		out = 0
 		var err error
 		out, err = c.commitMergeIn(ctx, tx, l, m)
 		if err == nil && out != Merged {
@@ -264,6 +265,7 @@ type Refusal struct {
 func (c *Catalog) RefuseMerge(ctx context.Context, l Lease, r *Refusal) (MergeOutcome, error) {
 	var out MergeOutcome
 	err := outcome(c.inTx(ctx, func(tx *sqlx.Tx) error {
+		out = 0
 		if _, err := c.lockCapture(ctx, tx, r.Capture); err != nil {
 			return err
 		}
