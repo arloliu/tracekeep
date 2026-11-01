@@ -3,6 +3,7 @@ package ingest
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"slices"
@@ -217,15 +218,22 @@ func TestFlushRemoteCallsEndWithTheirContext(t *testing.T) {
 	})
 }
 
-// A commit whose answer is lost leaves its segment registered and its object kept, and acknowledges nothing:
-// the messages are nak'd and written again at their redelivery, the merge deduplicating them.
+// A registration whose commit succeeded but whose answer is lost fails the flush at the catalog's call:
+// the segment stays registered and its object kept, nothing is acknowledged,
+// and the messages are nak'd and written again at their redelivery, the merge deduplicating them.
 func TestFlushCommitWhoseAnswerIsLost(t *testing.T) {
 	t.Parallel()
 	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
 		p := newPipeline(t, c)
 		g := p.ingester(slog.New(slog.DiscardHandler))
 		g.AckWait = time.Hour
-		p.f.hooks[hookAfterRegister] = func() error { return context.DeadlineExceeded }
+		p.f.registerPack = func(ctx context.Context, pk *catalog.Pack, r catalog.Registration) (catalog.PackOutcome, int, error) {
+			if out, _, err := c.RegisterPackGaps(ctx, pk, r); err != nil || out != catalog.Registered {
+				t.Errorf("registration = %v, %v; want it committed", out, err)
+			}
+
+			return 0, 0, fmt.Errorf("catalog: register pack %s: %w", pk.ID, context.DeadlineExceeded)
+		}
 		capture := tracepack.UUID{0xc1, 0x10}
 		hs := p.deliver(t, confirmedTraffic(t, p.cl, capture))
 		if err := g.flush(t.Context(), p.b.All()); !errors.Is(err, context.DeadlineExceeded) {

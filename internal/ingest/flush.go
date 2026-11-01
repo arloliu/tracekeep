@@ -56,6 +56,8 @@ type Flusher struct {
 	hooks [numFlushHooks]func() error
 	// check, a test seam, judges a segment before its records are appended; its error is the Writer's refusal.
 	check func(*segment) error
+	// registerPack, a test seam, is called in place of the catalog's RegisterPackGaps when set.
+	registerPack func(context.Context, *catalog.Pack, catalog.Registration) (catalog.PackOutcome, int, error)
 }
 
 // Flush hooks: the crash points of ingest.md §6.3.
@@ -293,7 +295,11 @@ func (f *Flusher) register(ctx context.Context, b *Batch, capture *catalog.Captu
 		SeqStart: first, FormatMinor: int(w.minor), Ranges: ranges(seg.entries), Stop: hasStop(seg.entries), Conflicts: seg.others,
 	}
 	started = time.Now()
-	outcome, gaps, err := f.Catalog.RegisterPackGaps(ctx, p, catalog.Registration{Evidence: evidence(seg.copies), HorizonHour: horizon})
+	registerPack := f.Catalog.RegisterPackGaps
+	if f.registerPack != nil {
+		registerPack = f.registerPack
+	}
+	outcome, gaps, err := registerPack(ctx, p, catalog.Registration{Evidence: evidence(seg.copies), HorizonHour: horizon})
 	if err != nil {
 		return 0, err
 	}
