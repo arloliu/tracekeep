@@ -166,8 +166,8 @@ func TestStartIsReservedSeqZero(t *testing.T) {
 	if got, ok := c.MinReserved(); !ok || got != 0 {
 		t.Fatalf("MinReserved = %d, %v; want the start's seq 0", got, ok)
 	}
-	if got, ok := c.OldestReservation(); !ok || got != 0 {
-		t.Errorf("OldestReservation = %d, %v; want mono 0", got, ok)
+	if low, oldest, ok := c.reservationsIn(nil); !ok || low != 0 || oldest != 0 {
+		t.Errorf("reservations = %d, %d, %v; want seq 0 at mono 0", low, oldest, ok)
 	}
 }
 

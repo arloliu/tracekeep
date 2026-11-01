@@ -272,20 +272,23 @@ func (c *Capture) MinReserved() (uint64, bool) {
 	return low, true
 }
 
-// OldestReservation returns the monotonic reading of the oldest unqueued reservation,
-// which faults the capture once it is older than the reservation timeout.
-func (c *Capture) OldestReservation() (int64, bool) {
+// reservationsIn is Recorder.Reservations: one inspection under the lock, which a callback may wait on as on another callback (T-52).
+// locked, when set, is a test's hook inside it.
+func (c *Capture) reservationsIn(locked func()) (low uint64, oldest int64, ok bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if len(c.reservations) == 0 {
-		return 0, false
+	if locked != nil {
+		locked()
 	}
-	oldest := c.reservations[0].mono
+	if len(c.reservations) == 0 {
+		return 0, 0, false
+	}
+	low, oldest = c.reservations[0].seq, c.reservations[0].mono
 	for _, r := range c.reservations[1:] {
-		oldest = min(oldest, r.mono)
+		low, oldest = min(low, r.seq), min(oldest, r.mono)
 	}
 
-	return oldest, true
+	return low, oldest, true
 }
 
 // Fault puts the capture in the fault state: closed and faulted, so no callback allocates in it again.

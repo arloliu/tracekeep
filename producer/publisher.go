@@ -270,8 +270,10 @@ func (pb *publisher) pass() {
 	pb.drainLanes(true)
 	pb.epoch++
 	for _, st := range pb.caps {
-		st.minRes, st.hasMinRes = st.cap.MinReserved()
-		pb.checkReservations(st, mono)
+		// The pass's one read under the capture's lock (T-52); everything that waits stays outside it.
+		var oldest int64
+		st.minRes, oldest, st.hasMinRes = pb.p.rec.Reservations(st.cap)
+		pb.checkReservations(st, oldest, mono)
 	}
 	if h := pb.hooks.afterSnapshot; h != nil {
 		h()
@@ -563,14 +565,13 @@ func (pb *publisher) pollFlights(now time.Time) {
 
 // checkReservations faults a capture whose reservation stayed unqueued past the bound:
 // its seq can never be published, so nothing from it on is (producer.md §4.2 *Lanes*, fault handling).
-func (pb *publisher) checkReservations(st *capState, mono int64) {
-	oldest, ok := st.cap.OldestReservation()
-	if !ok || st.lost || time.Duration(mono-oldest) < pb.p.tun.ReservationTimeout {
+// oldest is the monotonic reading of st's oldest reservation, read with st.minRes.
+func (pb *publisher) checkReservations(st *capState, oldest, mono int64) {
+	if !st.hasMinRes || st.lost || time.Duration(mono-oldest) < pb.p.tun.ReservationTimeout {
 		return
 	}
 	pb.p.log.Error("producer: reservation never queued, capture faulted", "capture_id", st.cap.ID.String())
-	low, _ := st.cap.MinReserved()
-	pb.loseFrom(st, low)
+	pb.loseFrom(st, st.minRes)
 }
 
 // loseFrom faults st's capture and gives up every record from seq on.
