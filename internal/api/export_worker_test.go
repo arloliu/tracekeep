@@ -378,3 +378,90 @@ func TestExportWorkerCountsTheLeaseFromItsClaim(t *testing.T) {
 		}
 	})
 }
+
+// breaksOnce is a store whose first open of key opens, then fails every read as a broken store does, naming the key;
+// opened records each open's key in order.
+type breaksOnce struct {
+	store.ObjectStore
+	key    string
+	mu     sync.Mutex
+	broken bool
+	opened []string
+}
+
+func (b *breaksOnce) Open(ctx context.Context, key string) (store.Object, error) {
+	obj, err := b.ObjectStore.Open(ctx, key)
+	if err != nil {
+		return nil, err
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.opened = append(b.opened, key)
+	if key == b.key && !b.broken {
+		b.broken = true
+
+		return brokenObject{obj, key}, nil
+	}
+
+	return obj, nil
+}
+
+type brokenObject struct {
+	store.Object
+	key string
+}
+
+func (o brokenObject) ReadAt([]byte, int64) (int, error) {
+	return 0, errors.New("the store broke reading " + o.key)
+}
+
+// A store that fails to read a pack after the hour's earlier packs exported fails the attempt, never leaving the pack out:
+// the failed attempt puts and completes no bundle, its work directory is removed, and the next attempt, under a new fence,
+// exports every pack; the failed attempt's fence can complete nothing afterwards.
+func TestExportWorkerStoreFailureFailsTheAttempt(t *testing.T) {
+	t.Parallel()
+	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
+		m := newMasked(t, c)
+		capture := m.admitActive(t)
+		cs := carriers(t)
+		packs := make([]*catalog.Pack, 0, 3)
+		for i := range 3 {
+			ms, entries := m.mask(t, capture, captured(recordsOf(cs[i:i+1], hour)))
+			packs = append(packs, m.put(t, capture, hour, ms, entries, m.policy()))
+		}
+		// The read set's last pack, by pack id, is the one whose reads break.
+		slices.SortFunc(packs, func(a, b *catalog.Pack) int { return strings.Compare(a.ID.String(), b.ID.String()) })
+		st := &breaksOnce{ObjectStore: m.st, key: packs[2].Key}
+		m.srv.Store = st
+		stale := workers(t, m)
+		job := startExport(t, c, capture)
+		j := await(t, c, job)
+		if j.State != catalog.ExportDone || j.Fence != 2 || *j.ObjectKey != "exports/"+job.String()+"/2.tar" {
+			t.Fatalf("job = %+v, want done by the second attempt", j)
+		}
+		st.mu.Lock()
+		at := slices.Index(st.opened, packs[2].Key)
+		st.mu.Unlock()
+		if at < 2 {
+			t.Errorf("the broken pack was the first attempt's open %d, want after both others", at)
+		}
+		_, man := stored(t, m, *j.ObjectKey)
+		h := man.Captures[0].Hours[0]
+		if len(h.Packs) != 3 || len(h.LeftOut) != 0 {
+			t.Errorf("hour = %+v, want every pack exported, none left out", h)
+		}
+		if _, err := m.st.Stat(t.Context(), "exports/"+job.String()+"/1.tar"); !errors.Is(err, store.ErrNotFound) {
+			t.Errorf("the failed attempt's bundle: %v, want none put", err)
+		}
+		if objs, err := c.ExportObjects(t.Context(), job); err != nil || len(objs) != 1 || objs[0].Fence != 2 {
+			t.Errorf("rows = %+v, %v; want only the completing attempt's", objs, err)
+		}
+		if _, err := os.Stat(filepath.Join(filepath.Dir(stale), job.String()+"-f1")); !os.IsNotExist(err) {
+			t.Errorf("the failed attempt's work directory: %v, want removed", err)
+		}
+		failed := catalog.Attempt{Job: job, Fence: 1, Holder: "r1"}
+		if _, err := c.CompleteExport(t.Context(), failed, "exports/"+job.String()+"/1.tar", 1, time.Hour); err == nil {
+			t.Error("the failed attempt completed the job after the next one")
+		}
+	})
+}

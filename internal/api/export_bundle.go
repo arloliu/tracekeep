@@ -299,6 +299,9 @@ func (b *bundle) packs(ctx context.Context, rs *catalog.ReadSet, hourDir string,
 			return true, nil
 		case errors.Is(err, errBounds) || ctx.Err() != nil:
 			return false, cmp.Or(ctx.Err(), err)
+		case errors.Is(err, records.ErrStore) || errors.Is(err, context.DeadlineExceeded):
+			// The store failed, not the pack: the attempt fails, and the next, under a new fence, exports it.
+			return false, fmt.Errorf("export pack %s: %w", p.ID, err)
 		case err != nil:
 			mh.LeftOut = append(mh.LeftOut, leftOut{PackID: p.ID.String(), Reason: err.Error()})
 			continue
@@ -311,7 +314,7 @@ func (b *bundle) packs(ctx context.Context, rs *catalog.ReadSet, hourDir string,
 	return false, nil
 }
 
-// pack exports p whole into path; an error leaves no file, its pack left out with the error's text, which names no key.
+// pack exports p whole into path; an error leaves no file, and an error of the pack's own bytes leaves the pack out with its text, which names no key.
 func (b *bundle) pack(ctx context.Context, rs *catalog.ReadSet, p *catalog.ReadPack, path string) (manifestPack, bool, error) {
 	mp := manifestPack{PackID: p.ID.String(), Role: p.Role, State: p.State, FormatMinor: p.FormatMinor, Schema: jsonlSchema(p.FormatMinor)}
 	obj, err := records.Open(ctx, b.s.Store, p.Key)

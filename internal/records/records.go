@@ -35,6 +35,9 @@ const (
 	ReasonEvicted      = "evicted"
 )
 
+// ErrStore is a store failure other than a missing object, without the store's text: the store failed, not the pack.
+var ErrStore = errors.New("records: the store failed to read an object")
+
 // ErrWithheld refuses a read of a withheld capture: outside tracekeep dev, one whose configuration has no policy (T-48).
 var ErrWithheld = errors.New("records: the capture is withheld")
 
@@ -279,7 +282,7 @@ func (hr *hourRead) merge(ctx context.Context, rs *catalog.ReadSet, c cluster) (
 			return nil, hr.lacks(ReasonReadLimit, err.Error(), c, []catalog.ReadPack{p})
 		case ctx.Err() != nil:
 			return nil, ctx.Err()
-		case errors.Is(err, errStore):
+		case errors.Is(err, ErrStore):
 			// A store that fails a read is unavailable, not the pack corrupt: the client retries.
 			return nil, fmt.Errorf("records: open pack %s: %w", p.ID, err)
 		case err != nil:
@@ -555,9 +558,6 @@ func (o keyless) ReadAt(p []byte, off int64) (int, error) {
 	return n, err
 }
 
-// errStore is a store failure other than a missing object, without the store's text.
-var errStore = errors.New("records: the store failed to read an object")
-
 // Keyless is a store's err without its text, which names the object's key:
 // store.ErrNotFound for a missing object, the context's error, or a store failure, a timeout said so.
 func Keyless(err error) error {
@@ -570,8 +570,8 @@ func Keyless(err error) error {
 	case errors.Is(err, context.DeadlineExceeded):
 		return context.DeadlineExceeded
 	case errors.As(err, &nerr) && nerr.Timeout():
-		return fmt.Errorf("%w: timed out", errStore)
+		return fmt.Errorf("%w: timed out", ErrStore)
 	default:
-		return errStore
+		return ErrStore
 	}
 }
