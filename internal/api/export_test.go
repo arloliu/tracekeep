@@ -1,16 +1,23 @@
 package api
 
 import (
+	"encoding/json"
+	"io"
+	"maps"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"connectrpc.com/connect"
 	"github.com/arloliu/go-secs/tracepack"
+	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"github.com/arloliu/tracekeep/internal/catalog"
 	"github.com/arloliu/tracekeep/internal/catalog/catalogtest"
+	"github.com/arloliu/tracekeep/internal/maskingtest"
 	tkv1 "github.com/arloliu/tracekeep/proto/tracekeep/v1"
 )
 
@@ -171,6 +178,163 @@ func awaitOwner(t *testing.T, c *catalog.Catalog, job tracepack.UUID, owner stri
 	t.Helper()
 	deadline := time.Now().Add(20 * time.Second)
 	for {
+		j, err := c.ExportJob(t.Context(), job, owner)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if j.State != catalog.ExportQueued && j.State != catalog.ExportRunning || time.Now().After(deadline) {
+			return j
+		}
+		time.Sleep(20 * time.Millisecond) //nolint:forbidigo // polling a background worker's catalog row, bounded above
+	}
+}
+
+// An export of a masked capture outside dev, over two hours with a suspect, a confirmed and an acknowledged conflict,
+// through StartExport, the worker and the bundle it stored: the manifest names each conflict in its state and each hour with its packs,
+// each pack's file is in the bundle, and each conflict's two versions are there, each in its own pack's file.
+func TestExportOfConflictsAcrossHours(t *testing.T) {
+	t.Parallel()
+	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
+		m := newMasked(t, c)
+		capture := m.admitActive(t)
+		cs := carriers(t)[:1]
+		threeConflicts(t, m, capture, &cs[0])
+		workers(t, m)
+		id := capture.String()
+		req := &tkv1.StartExportRequest{Kind: "canonical", Selector: &tkv1.Selector{ToolId: tool, CaptureId: &id, From: hourTS(hour), To: hourTS(hour + 2)}}
+		started, err := m.cl.StartExport(t.Context(), withToken(req, exporterToken))
+		if err != nil {
+			t.Fatal(err)
+		}
+		job, err := tracepack.ParseUUID(started.Msg.GetJobId())
+		if err != nil {
+			t.Fatal(err)
+		}
+		j := awaitOwned(t, c, job, "static:exporter")
+		if j.State != catalog.ExportDone || j.ObjectKey == nil {
+			t.Fatalf("job = %+v, want done", j)
+		}
+
+		files, man := stored(t, m, *j.ObjectKey)
+		if len(man.Captures) != 1 || len(man.Captures[0].Hours) != 2 {
+			t.Fatalf("manifest captures = %+v, want one over two hours", man.Captures)
+		}
+		var comp tkv1.Completeness
+		if err := protojson.Unmarshal(man.Captures[0].Completeness, &comp); err != nil {
+			t.Fatal(err)
+		}
+		states := map[uint64]string{}
+		for _, k := range comp.GetConflicts() {
+			states[k.GetSeqFrom()] = k.GetState()
+		}
+		if want := map[uint64]string{3: "suspect", 5: "acknowledged", 7: "confirmed"}; !maps.Equal(states, want) {
+			t.Errorf("conflicts = %v, want %v", states, want)
+		}
+		holders := holdersOf(t, files, man.Captures[0].Hours)
+		for _, seq := range []string{"3", "5", "7"} {
+			if fs := holders[seq]; len(fs) != 2 || fs[0] == fs[1] {
+				t.Errorf("seq %s's versions are in %v, want two, each in its own pack's file", seq, fs)
+			}
+		}
+		if got := leaks(t, files, cs); len(got) != 0 {
+			t.Errorf("the stored bundle shows %v", got)
+		}
+	})
+}
+
+// stored is the bundle the worker stored under key, unpacked, and its manifest.
+func stored(t *testing.T, m *masked, key string) (map[string][]byte, manifest) {
+	t.Helper()
+	obj, err := m.st.Open(t.Context(), key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := io.ReadAll(io.NewSectionReader(obj, 0, obj.Size()))
+	_ = obj.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "bundle.tar")
+	if err := os.WriteFile(path, b, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	files := unpacked(t, path)
+	var man manifest
+	if err := json.Unmarshal(files["manifest.json"], &man); err != nil {
+		t.Fatal(err)
+	}
+
+	return files, man
+}
+
+// holdersOf are the files holding each seq's versions, by seq, over hours' packs, each hour checked to have its packs, none left out.
+func holdersOf(t *testing.T, files map[string][]byte, hours []manifestHour) map[string][]string {
+	t.Helper()
+	out := map[string][]string{}
+	for _, h := range hours {
+		if len(h.Packs) == 0 || len(h.LeftOut) != 0 {
+			t.Errorf("hour %s: packs %+v, left out %+v; want its packs, none left out", h.Hour, h.Packs, h.LeftOut)
+		}
+		for _, p := range h.Packs {
+			body, ok := files[p.File]
+			if !ok {
+				t.Errorf("the bundle holds no %s", p.File)
+			}
+			for line := range strings.Lines(string(body)) {
+				var r struct {
+					Seq string `json:"seq"` // a uint64, as a JSON string
+				}
+				if err := json.Unmarshal([]byte(line), &r); err != nil {
+					t.Fatalf("%s: %v", p.File, err)
+				}
+				out[r.Seq] = append(out[r.Seq], p.File)
+			}
+		}
+	}
+
+	return out
+}
+
+// threeConflicts puts carrier c's records of capture, masked, over two hours, with seqs 3, 5 and 7 in both:
+// 3 left suspect, 5 acknowledged and 7 confirmed by a comparison that found its versions differ.
+func threeConflicts(t *testing.T, m *masked, capture tracepack.UUID, c *maskingtest.Carrier) {
+	t.Helper()
+	put := func(h int64, seqs ...uint64) {
+		rs := make([]tracepack.Record, 0, len(seqs))
+		for _, s := range seqs {
+			rs = append(rs, recordAt(c, h, s))
+		}
+		ms, entries := m.mask(t, capture, captured(rs))
+		m.put(t, capture, h, ms, entries, m.policy())
+	}
+	put(hour, 1, 2, 3, 5, 7)
+	for _, seq := range []uint64{3, 5, 7} {
+		put(hour+1, seq) // each again in the next hour, in a pack of its own: three suspects
+	}
+	lease, ok, err := m.c.TakeLease(t.Context(), "compactor/2", "test", time.Hour)
+	if err != nil || !ok {
+		t.Fatalf("TakeLease = %v, %v", ok, err)
+	}
+	sus, err := m.c.Suspects(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, s := range sus {
+		if s.Capture == capture && s.SeqFrom == 7 {
+			if _, err := m.c.RecordConflict(t.Context(), lease, s, true); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if _, err := m.c.AcknowledgeConflict(t.Context(), capture, 5, "op", "a1"); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// awaitOwned waits, bounded, for owner's job to reach a state other than queued and running, and returns it.
+func awaitOwned(t *testing.T, c *catalog.Catalog, job tracepack.UUID, owner string) catalog.ExportJob {
+	t.Helper()
+	for deadline := time.Now().Add(20 * time.Second); ; {
 		j, err := c.ExportJob(t.Context(), job, owner)
 		if err != nil {
 			t.Fatal(err)
