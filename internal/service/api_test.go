@@ -52,7 +52,9 @@ func trusting(t *testing.T, certFile string) *http.Client {
 	}
 	tr := &http.Transport{TLSClientConfig: &tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS12}, ForceAttemptHTTP2: true}
 
-	return &http.Client{Transport: tr, Timeout: 10 * time.Second}
+	// 30 s, as the package's other clients: a request that writes the catalog waits for SQLite's one write connection,
+	// which dev's ingest keeps busy, and on a loaded race-enabled runner that wait has passed 10 s.
+	return &http.Client{Transport: tr, Timeout: 30 * time.Second}
 }
 
 // tracekeep dev serves the machine API behind its generated token: a client lists the simulator's packs, gets a pack's URL,
