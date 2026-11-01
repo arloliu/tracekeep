@@ -1,6 +1,6 @@
 # Phase 5 — correctness, error handling and performance
 
-Status: draft (2026-11-01) — external review clean (v4); awaiting the owner on points 9 and 10
+Status: active (2026-11-01) — 5.1 next
 
 The owner's next phase after the roadmap's milestones:
 no new feature, but the service and the producer SDK made correct under faults, their failures reported, and their hot paths measured and made faster.
@@ -12,9 +12,9 @@ This plan only orders the work.
 
 ## Before it starts
 
-The owner answered on 2026-11-01: every recommendation below is taken, except point 3's refusal.
-Points 9 and 10 came from the external review after that answer and carry the recommendation the plan assumes until the owner answers them.
-The answers become one decision-log entry when the plan is activated (T-52).
+The owner answered on 2026-11-01: every recommendation below is taken, except point 3's refusal;
+points 9 and 10 came from the external review and were taken the same day.
+The answers are T-52.
 
 1. **Where phase 5 sits in the roadmap**:
    the milestone table is seed v21 §12, "moved unchanged", so a new row would break that sentence.
@@ -51,12 +51,12 @@ The answers become one decision-log entry when the plan is activated (T-52).
 8. **The split below** into six sub-phases, correctness before error handling before performance.
 9. **The publisher's reads under a capture's lock (C19)**:
    `600-invariants.md` and T-9 let a callback wait only for another callback, but the publisher reads the reservation state under the same lock.
-   Recommended: T-52 admits the publisher's reads, which hold no I/O, allocation, logging or call into go-secs, and T-9 gains "(superseded in part by T-52)" with its text kept;
+   Answered: T-52 admits the publisher's reads, which hold no I/O, allocation, logging or call into go-secs, and T-9 gains "(superseded in part by T-52)" with its text kept;
    the invariant names those reads, the two reads of a pass merge into one, and the publisher's external waits stay outside the lock;
    a lock-free mirror of the reservation state would put the dependency barrier at risk for a wait the callbacks already accept from each other.
 10. **A claim object's largest size (C7)**:
     no spec bounds a claim payload, and HSMS allows up to 4 GiB.
-    Recommended: `ingest.max_record_bytes`, default 64 MiB, the batch's default byte bound.
+    Answered: `ingest.max_record_bytes`, default 64 MiB, the batch's default byte bound.
     The bound is a resource refusal, never a malformed record:
     after resolution, so a staged or terminated version still settles as today, an unresolved claim declared above the bound is deferred unfetched,
     its reason `too-large` logged and counted, until the operator raises the bound or terminates the version (`ingest.md` §6.1, `parking.md`);
@@ -83,7 +83,7 @@ Every step after the first adds the failing case its row names before its fix: a
 
 | Step | Scope | State |
 |---|---|---|
-| 1 | spec: C3's send timeout, C6, C7's bound and its deferral (point 10) in `ingest.md` §6.1 and `parking.md`, C11's one live incarnation per role and its migration, C15, C17's bounded enumeration, C19 (point 9) in T-52, `600-invariants.md` and `producer.md` §4.2, and T-52's answers, and `operations.md` §10.4 and the configuration guide for every new bound and key | pending |
+| 1 | spec: C3's send timeout, C6, C7's bound and its deferral (point 10) in `ingest.md` §6.1 and `parking.md`, C11's one live incarnation per role and its migration, C15, C17's bounded enumeration, C19 (point 9, T-52) in `600-invariants.md` and `producer.md` §4.2, and `operations.md` §10.4 and the configuration guide for every new bound and key | pending |
 | 2 | C1, one contract for the flush: its remote calls, the S3 store's and the catalog's, return when their context ends (the S3 client's response-header timeout, the catalog's queries under their context); each step's deadline lies inside one total budget for a stop, shared by every batch still due; the local file work (the working file's writes, sync and reopen, and the `fs` store) is assumed to complete, is not interrupted, and is reported as stalled once it outlasts the budget; a flush returns only after its operations returned, so no detached worker keeps a batch's memory or files; any error, a deadline included, is an unknown outcome: the batch's unacknowledged messages are naked or left to redelivery, an object it may have put is left to reconciliation and the orphan pass, never deleted by the flush, and registration still precedes acknowledgement. Failing cases: each remote call blocked in turn and ended by its context; the local file work blocked inside its abstraction, the flush waiting and the stall reported; a put made durable whose answer is lost; a catalog commit whose answer is lost; a stop after part of the acknowledgement prefix; several batches due at a stop sharing the budget; each asserting acknowledgement eligibility, the objects kept, every message's disposition and every worker ended | pending |
 | 3 | C2: `QueryRecords` steps only through the hours with a scope or an eviction, each read set read when the stream reaches it. Failing cases: a window of years over one capture in a bounded number of reads; a stream paused in an earlier hour while a later hour registers, then resumed; an eviction-only hour; a cursor resumed past an empty stretch; an object gone and its read set read again | pending |
 | 4 | C3 and C17: a send that makes no progress for the configured time ends the stream and frees its slot and memory, while a slow client that keeps reading is untouched; the servers' idle timeouts; a restore takes its read slot before it lists copies, lists at most the bound plus one from one snapshot, after the named hour's `not_found` check of that snapshot, and refuses an overflow with `resource_exhausted` before opening any object, with no payload and no success audit. Failing cases: a stalled stream over HTTP/1.1 and HTTP/2 beside an active one on the same HTTP/2 connection, a single large send outlasting the timeout while the client keeps reading, the client resuming from its last cursor; on both engines, copies past the bound from merged inputs, archives and other hours, asserting the rows read, no object opened and the named hour's `not_found` unchanged; the read slots held by `QueryRecords` and `FindTransaction`, the restore refused before it lists; many equivalent copies with heavy metadata, a differing copy past the bound, copies in different hours, cleanup after every failure | pending |

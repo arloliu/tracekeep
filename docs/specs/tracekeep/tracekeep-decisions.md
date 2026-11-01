@@ -134,7 +134,7 @@ Accept, under LS-14, the producer's one residual wait:
 a callback may wait for another callback to leave the capture's critical section (§4.2), a dependency on scheduling and on nothing external;
 or require a different producer algorithm.
 
-**Decided (2026-10-25):** the residual callback wait accepted under LS-14.
+**Decided (2026-10-25):** the residual callback wait accepted under LS-14 (superseded in part by T-52, which admits the publisher's reads).
 
 ### T-10 — the requests to the tracepack maintainers
 
@@ -651,3 +651,34 @@ An absent `Tpk-Layout` is deferred too, as tracepack's check reads it.
 any other error, `ErrUnsupportedFormat` and the store's own read failing included, leaves the key for the next pass (`storage.md` §5.4),
 where every error but the store's quarantined before, a newer module's pack included; since v0.13.0 marks every fault of a pack's bytes with a sentinel, the store's read errors need no tag of tracekeep's own.
 Considered and not taken: parking the message, which needs the version the unknown layout hides; terminating it after a bound, which turns a deployment's order into a loss.
+
+### T-52 — what the phase 5 plan settled (2026-11-01)
+
+The owner's answers to ten points the phase 5 plan (correctness, error handling and performance) raised before it started; points 9 and 10 came from the plan's outside review.
+**Phase 5 sits after the seed's milestones**, in a roadmap section of its own, so the milestone table stays seed v21 §12 unchanged.
+**Spec changes the phase makes**: a store failure fails an export attempt rather than leaving a pack out of a `done` bundle;
+`FindTransaction` answers `not_found` for an unknown capture and a non-retryable code for a corrupt pack;
+a restore takes a read slot, bounds the copies it lists and the readers it opens, and refuses what it cannot compare whole;
+a scope whose merge keeps failing backs off, and a cycle merges a bounded number of scopes;
+the producer retries a transient claim read and re-puts only content proven wrong;
+a client's cancellation and deadline answer `canceled` and `deadline_exceeded`;
+discovery and JWKS are fetched ahead of their TTL, never used past it;
+the SDK reports its counters from zero;
+a stream whose send makes no progress for a configured time ends.
+Not now, decided again from measurements: batched parking acknowledgements, a derived-key cache or a capture key per fetch batch, stale JWKS after a failed fetch.
+Not at all: a cap on `QueryRecords`' window, and a quiet `/auth/me`.
+**A link to the bus or the store without TLS is warned of at start, never refused**, so no installation stops starting.
+**go-secs' share stays out of the phase**: T-45, the format-minor accessor, the filtered writer, tracepack's epoch-hour text;
+the first S1F3's `ordering-uncertain` stays open, its two read hypotheses sent to go-secs.
+**SQLite's one write connection** is relieved by shorter write transactions, and an API request's audit write gets a deadline and a wait histogram;
+a priority gate only if measurement still shows a starved write; `synchronous` stays `FULL`, and the audit log stays in the catalog.
+**Performance work is measured first**, before and after, and a finding not worth its change closes with its number.
+**The publisher's reads of a capture's reservation state under its lock are admitted**, beside T-9's wait for another callback:
+they hold no I/O, allocation, logging or call into go-secs, the two reads of a pass merge into one, and the publisher's external waits stay outside the lock.
+**A claim payload is bounded by `ingest.max_record_bytes`**, default 64 MiB, as a resource refusal, never a malformed record:
+an unresolved claim declared above it is deferred unfetched, `too-large`, until the bound is raised or the version terminated;
+a read takes at most the declared length plus one byte.
+The plan splits the phase into six sub-phases, correctness before error handling before performance, and sets the gate, including a `PackURL` answering within 2 s at the 99th percentile on SQLite during sustained ingest.
+Considered and not taken: refusing a link without TLS, which stops installations that rely on one; a lock-free mirror of the reservation state, which puts the dependency barrier at risk for a wait the callbacks already accept from each other;
+a separate audit database file, whose rows could not commit with the domain rows they record.
+
