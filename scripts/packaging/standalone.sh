@@ -58,7 +58,8 @@ install_unit() {
 	sudo systemd-sysusers
 	sudo install -m 0644 "$2/deploy/systemd/tracekeep.service" /etc/systemd/system/tracekeep.service
 	sudo install -d -m 0750 -o tracekeep -g tracekeep /var/lib/tracekeep /var/lib/tracekeep/packs
-	[ -e $ETC/config.yaml ] || configure
+	# /etc/tracekeep is 0750 root:tracekeep, so only root sees whether the configuration is there.
+	sudo test -e $ETC/config.yaml || configure
 	sudo systemctl daemon-reload
 }
 
