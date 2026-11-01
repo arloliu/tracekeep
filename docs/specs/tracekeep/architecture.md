@@ -123,7 +123,7 @@ the bus, the catalog's MariaDB, the object store, Vault and the IdP are the clus
   key material under `/etc/tracekeep/keys/`, mode 0600, owned by `tracekeep`, as the `file` provider requires (`masking-keys.md` §9), or from Vault with AppRole.
   `sudo -u tracekeep tracekeep admin …` reads the same files.
 - **Migration before every start**: `ExecStartPre` runs `tracekeep migrate` with the same configuration,
-  so an install and an upgrade are one order: stop the unit, replace the binary, start it;
+  so an install and an upgrade are one order: stop the unit, install the release's binary, unit and user, start it;
   a SQLite catalog has one writer (§7.4), and migrate runs while no role holds it. `migrate` only ensures, so a start without a new release changes nothing.
   `TimeoutStartSec` (15 min) bounds it, a held MariaDB migration lock included.
 - **Restarts**: `Restart=on-failure` every 10 s with no start limit (`StartLimitIntervalSec=0`), so a host whose bus or catalog comes up after tracekeep is waited for,

@@ -50,13 +50,19 @@ docker run -d --name tracekeep-dex -p 127.0.0.1:5556:5556 \
 	"$DEX_IMAGE" dex serve /etc/dex/config/config.yaml >/dev/null
 docker run -d --name tracekeep-nats -p 127.0.0.1:4222:4222 "$NATS_IMAGE" -js >/dev/null
 
-# install bin: the binary, the unit, its user, its configuration, credentials (0640 root:tracekeep) and keys (0600 tracekeep).
+# install_unit bin src: the binary, and the unit, its user and its state directories from src's deploy/systemd, as the guide's install and upgrade do;
+# the configuration, credentials (0640 root:tracekeep) and keys (0600 tracekeep) once, an upgrade keeping them.
 install_unit() {
 	sudo install -m 0755 "$1" /usr/local/bin/tracekeep
-	[ -e /etc/systemd/system/tracekeep.service ] && return 0
-	sudo install -m 0644 deploy/systemd/tracekeep.sysusers /usr/lib/sysusers.d/tracekeep.conf
+	sudo install -m 0644 "$2/deploy/systemd/tracekeep.sysusers" /usr/lib/sysusers.d/tracekeep.conf
 	sudo systemd-sysusers
-	sudo install -m 0644 deploy/systemd/tracekeep.service /etc/systemd/system/tracekeep.service
+	sudo install -m 0644 "$2/deploy/systemd/tracekeep.service" /etc/systemd/system/tracekeep.service
+	sudo install -d -m 0750 -o tracekeep -g tracekeep /var/lib/tracekeep /var/lib/tracekeep/packs
+	[ -e $ETC/config.yaml ] || configure
+	sudo systemctl daemon-reload
+}
+
+configure() {
 	sudo install -d -m 0750 -o root -g tracekeep $ETC $ETC/secrets
 	sudo install -d -m 0700 -o tracekeep -g tracekeep $ETC/keys
 	sudo install -m 0640 -o root -g tracekeep "$WORK/ca/tracekeep.crt" $ETC/secrets/tls.crt
@@ -101,15 +107,13 @@ keys:
   download: {issuing: download-1, accepted: [download-1]}
 YAML
 	sudo chown root:tracekeep $ETC/config.yaml && sudo chmod 0640 $ETC/config.yaml
-	sudo install -d -m 0750 -o tracekeep -g tracekeep /var/lib/tracekeep /var/lib/tracekeep/packs
-	sudo systemctl daemon-reload
 }
 
 tk() { sudo -u tracekeep /usr/local/bin/tracekeep "$@" --config $ETC/config.yaml; }
 
-# fresh bin: installed, migrated and its masking configuration active with the unit stopped, then started.
+# fresh bin src: installed, migrated and its masking configuration active with the unit stopped, then started.
 fresh() {
-	install_unit "$1"
+	install_unit "$1" "$2"
 	tk migrate
 	local id
 	id=$(sudo -u tracekeep /usr/local/bin/tracekeep admin --config $ETC/config.yaml --actor packaging config stage digest-1 master-1 |
@@ -156,7 +160,7 @@ stop_traffic() {
 log "fresh install of $(git rev-parse --short HEAD)"
 make build >/dev/null
 cp dist/tracekeep "$WORK/tracekeep-candidate"
-fresh "$WORK/tracekeep-candidate"
+fresh "$WORK/tracekeep-candidate" "$PWD"
 traffic
 playwright "$PUBLIC"
 stop_traffic
@@ -168,22 +172,21 @@ fi
 log "upgrade from $TRACEKEEP_BASELINE to $(git rev-parse --short HEAD)"
 sudo systemctl stop tracekeep
 sudo rm -rf /var/lib/tracekeep
-sudo install -d -m 0750 -o tracekeep -g tracekeep /var/lib/tracekeep /var/lib/tracekeep/packs
 # A fresh bus: the baseline's install starts from nothing.
 docker rm -f tracekeep-nats >/dev/null
 docker run -d --name tracekeep-nats -p 127.0.0.1:4222:4222 "$NATS_IMAGE" -js >/dev/null
 git worktree prune
 git worktree add -f --detach "$WORK/src-baseline" "$TRACEKEEP_BASELINE" >/dev/null
 (cd "$WORK/src-baseline" && make build >/dev/null)
-fresh "$WORK/src-baseline/dist/tracekeep"
+fresh "$WORK/src-baseline/dist/tracekeep" "$WORK/src-baseline"
 traffic
 # The producer stopped and its last records flushed, so the records read now are all there will be in their window.
 stop_traffic
 sleep 30
 TRACEKEEP_EVIDENCE=$WORK/evidence.json playwright "$PUBLIC"
-# The unit's order: stop, replace the binary, start; the migration before the start upgrades the catalog.
+# The guide's upgrade: stop, install the candidate's binary, unit and user, start; the migration before the start upgrades the catalog.
 sudo systemctl stop tracekeep
-install_unit "$WORK/tracekeep-candidate"
+install_unit "$WORK/tracekeep-candidate" "$PWD"
 start
 TRACEKEEP_EVIDENCE=$WORK/evidence.json TRACEKEEP_AFTER_UPGRADE=1 playwright "$PUBLIC"
 log "upgrade from $TRACEKEEP_BASELINE passed, the records read before it read the same after it"

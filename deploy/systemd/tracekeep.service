@@ -1,7 +1,7 @@
 # tracekeep on a standalone host: every role in one process (architecture.md §3.3, docs/guides/standalone.md).
 # Install: the binary at /usr/local/bin/tracekeep, this file under /etc/systemd/system/, tracekeep.sysusers under /usr/lib/sysusers.d/,
 # the configuration at /etc/tracekeep/config.yaml, credentials under /etc/tracekeep/secrets/ (0640 root:tracekeep),
-# key material under /etc/tracekeep/keys/ (0600 tracekeep). Upgrade: stop the unit, replace the binary, start it.
+# key material under /etc/tracekeep/keys/ (0600 tracekeep). Upgrade: stop the unit, install the release's binary, this file and tracekeep.sysusers, start it.
 
 [Unit]
 Description=tracekeep, the traffic-log service

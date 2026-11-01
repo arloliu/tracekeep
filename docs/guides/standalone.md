@@ -76,13 +76,18 @@ keys:
 
 ## Upgrade
 
-Stop the unit, replace the binary, start it:
+Stop the unit, install the release's binary, unit, user and state directories, all from the same commit, and start it:
 
 ```
 systemctl stop tracekeep
 install -m 0755 dist/tracekeep /usr/local/bin/tracekeep
+install -m 0644 deploy/systemd/tracekeep.sysusers /usr/lib/sysusers.d/tracekeep.conf && systemd-sysusers
+install -m 0644 deploy/systemd/tracekeep.service /etc/systemd/system/ && systemctl daemon-reload
+install -d -m 0750 -o tracekeep -g tracekeep /var/lib/tracekeep /var/lib/tracekeep/packs
 systemctl start tracekeep
 ```
+
+The configuration, credentials and keys stay as they are.
 
 The unit migrates before every start (`ExecStartPre`), while no role holds a SQLite catalog, which has one writer;
 a start without a new release migrates nothing. `TimeoutStartSec` (15 min) bounds the migration, a held MariaDB migration lock included.
