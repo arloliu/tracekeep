@@ -159,8 +159,36 @@ func (s *Server) start() {
 //   - string: a comma-separated nats:// URL list to connect to
 func StartCluster(t testing.TB, n int) string {
 	t.Helper()
-	// Every server routes to every other, so each port is chosen before any server starts.
-	// shortcut: another process may take a released port before its server binds it; retry the cluster if that ever flakes.
+	var srvs []*server.Server
+	for attempt := 1; ; attempt++ {
+		var err error
+		if srvs, err = startServers(t, n); err == nil {
+			break
+		} else if attempt == clusterAttempts {
+			t.Fatalf("testbus: %v, %d times", err, attempt)
+		}
+	}
+	urls := make([]string, n)
+	for i, srv := range srvs {
+		urls[i] = srv.ClientURL()
+	}
+	// A stream is placed only once the meta leader knows every peer and each server is current with it.
+	await(t, "meta leader of the cluster", func() bool {
+		return slices.ContainsFunc(srvs, func(s *server.Server) bool { return s.JetStreamIsLeader() && len(s.JetStreamClusterPeers()) == n }) &&
+			!slices.ContainsFunc(srvs, func(s *server.Server) bool { return !s.JetStreamIsCurrent() })
+	}, func() string { return clusterState(srvs) })
+
+	return strings.Join(urls, ",")
+}
+
+// clusterAttempts bounds StartCluster's tries: a route port is chosen, released, then bound by its server,
+// so another process may take it meanwhile, which only a fresh set of ports recovers from.
+const clusterAttempts = 3
+
+// startServers starts n servers routed to one another, each on a route port chosen before any starts,
+// and returns them once every one is ready; a server not ready shuts every one down and is the error.
+func startServers(t testing.TB, n int) ([]*server.Server, error) {
+	t.Helper()
 	routes := make([]*url.URL, n)
 	ports := make([]int, n)
 	for i := range n {
@@ -195,20 +223,18 @@ func StartCluster(t testing.TB, n int) string {
 		})
 		srvs[i] = srv
 	}
-	urls := make([]string, n)
 	for i, srv := range srvs {
 		if !srv.ReadyForConnections(readyTimeout) {
-			t.Fatalf("testbus: server %d not ready within %s", i, readyTimeout)
-		}
-		urls[i] = srv.ClientURL()
-	}
-	// A stream is placed only once the meta leader knows every peer and each server is current with it.
-	await(t, "meta leader of the cluster", func() bool {
-		return slices.ContainsFunc(srvs, func(s *server.Server) bool { return s.JetStreamIsLeader() && len(s.JetStreamClusterPeers()) == n }) &&
-			!slices.ContainsFunc(srvs, func(s *server.Server) bool { return !s.JetStreamIsCurrent() })
-	}, func() string { return clusterState(srvs) })
+			for _, s := range srvs {
+				s.Shutdown()
+				s.WaitForShutdown()
+			}
 
-	return strings.Join(urls, ",")
+			return nil, fmt.Errorf("server %d not ready within %s", i, readyTimeout)
+		}
+	}
+
+	return srvs, nil
 }
 
 // await polls f until it returns a value other than the zero one, within electionTimeout:
