@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"os"
 	"time"
 
@@ -78,7 +79,18 @@ func SleepUntil(ctx context.Context, t time.Time) error {
 	}
 }
 
-// Forward relays requests at rate per second until ctx ends.
+// CheckRate refuses a rate Forward cannot tick at: one whose interval is under a nanosecond or beyond a time.Duration,
+// which time.NewTicker would panic on.
+func CheckRate(rate float64) error {
+	// Written to be false for NaN as well; float64(math.MaxInt64) is 2^63, the first interval out of range.
+	if iv := float64(time.Second) / rate; !(iv >= 1 && iv < math.MaxInt64) {
+		return fmt.Errorf("rate %v: want requests per second from %.2g to %g", rate, float64(time.Second)/math.MaxInt64, float64(time.Second))
+	}
+
+	return nil
+}
+
+// Forward relays requests at rate per second until ctx ends; rate must pass CheckRate.
 func Forward(ctx context.Context, l *Loopback, rate float64, log *slog.Logger) {
 	tick := time.NewTicker(time.Duration(float64(time.Second) / rate))
 	defer tick.Stop()

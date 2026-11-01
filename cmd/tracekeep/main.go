@@ -28,6 +28,7 @@ import (
 	"github.com/arloliu/tracekeep/internal/catalog"
 	"github.com/arloliu/tracekeep/internal/config"
 	"github.com/arloliu/tracekeep/internal/service"
+	"github.com/arloliu/tracekeep/internal/sim"
 	tkv1 "github.com/arloliu/tracekeep/proto/tracekeep/v1"
 	"github.com/arloliu/tracekeep/proto/tracekeep/v1/tracekeepv1connect"
 )
@@ -235,8 +236,13 @@ func runDev(ctx context.Context, args []string, stderr io.Writer) error {
 	if err := fs.Parse(args); err != nil {
 		return fmt.Errorf("%w: %w", errUsage, err)
 	}
-	if fs.NArg() != 0 || *flush <= 0 || *rate < 0 {
+	if fs.NArg() != 0 || *flush <= 0 {
 		return fmt.Errorf("%w: dev %v", errUsage, args)
+	}
+	if *rate != 0 {
+		if err := sim.CheckRate(*rate); err != nil {
+			return fmt.Errorf("%w: dev: %w", errUsage, err)
+		}
 	}
 	if *dir == "" {
 		d, err := os.MkdirTemp("", "tracekeep-dev-")
