@@ -59,9 +59,10 @@ type idp struct {
 	// redirectTo is where /redirect sends its client.
 	redirectTo      string
 	discovery, jwks atomic.Int32
-	// down refuses every request; failJWKS refuses the JWKS once a blocked fetch is released.
-	down, failJWKS     atomic.Bool
-	block, jwksEntered chan struct{}
+	// down refuses every request; failJWKS refuses the JWKS once a blocked fetch is released;
+	// stallDiscovery holds discovery unanswered until its client gives up.
+	down, failJWKS, stallDiscovery atomic.Bool
+	block, jwksEntered             chan struct{}
 	// endpoints, when set, replace what discovery names for the authorization and token endpoints ("-" names none).
 	authEndpoint, tokenEndpoint string
 	// grants are the codes the token endpoint exchanges, each once; tokenEntered and tokenBlock hold an exchange.
@@ -93,6 +94,10 @@ func newIDP(t *testing.T) *idp {
 		switch r.URL.Path {
 		case "/.well-known/openid-configuration":
 			p.discovery.Add(1)
+			if p.stallDiscovery.Load() {
+				<-r.Context().Done()
+				return
+			}
 			doc := map[string]string{"issuer": iss, "jwks_uri": uri}
 			if authz != "-" {
 				doc["authorization_endpoint"] = authz

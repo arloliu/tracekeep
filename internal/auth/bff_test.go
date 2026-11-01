@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"log/slog"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -26,9 +27,7 @@ func newBrowser() *browser { return &browser{cookies: map[string]string{}} }
 // do sends a request to h with b's cookies and keeps the cookies the answer sets or clears.
 func (b *browser) do(h http.Handler, method, target string, header http.Header) *httptest.ResponseRecorder {
 	r := httptest.NewRequest(method, target, http.NoBody)
-	for k, v := range header {
-		r.Header[k] = v
-	}
+	maps.Copy(r.Header, header)
 	for name, v := range b.cookies {
 		r.AddCookie(&http.Cookie{Name: name, Value: v})
 	}
@@ -75,13 +74,18 @@ func (l *loginLog) Login(step, outcome string) {
 }
 
 func (p *idp) replica(c *clock, keys *sessionKeys, log *slog.Logger) *replica {
+	return p.replicaWith(c, keys, log, p.verifier(c))
+}
+
+// replicaWith is a replica whose sign-in reaches the IdP through v.
+func (p *idp) replicaWith(c *clock, keys *sessionKeys, log *slog.Logger, v *Verifier) *replica {
 	r := &replica{failures: &failureLog{}, logins: &loginLog{}}
 	r.people = NewPeople(PeopleConfig{
 		ClientID: peopleClient, ClientSecret: peopleSecret, PublicURL: publicURL, Scopes: []string{"groups"},
 		RolesClaim: "groups", Roles: map[string][]string{"tk-viewers": {RoleViewer}},
 		SessionLifetime: 8 * time.Hour, LoginLifetime: 10 * time.Minute, ExchangeTimeout: 10 * time.Second,
 		Client: p.srv.Client(), Now: c.Now, Failures: r.failures, Logins: r.logins, Log: log,
-	}, p.verifier(c), &Cookies{Keys: keys, Leeway: time.Minute, Now: c.Now})
+	}, v, &Cookies{Keys: keys, Leeway: time.Minute, Now: c.Now})
 
 	return r
 }
@@ -362,6 +366,71 @@ func TestIdPDownColdAndWarm(t *testing.T) {
 	q = startLogin(t, b, h)
 	if w := b.do(h, http.MethodGet, "/auth/callback?code=code-x&state="+q.Get("state"), nil); w.Code != http.StatusBadGateway {
 		t.Errorf("callback with the IdP down warm = %d, want 502", w.Code)
+	}
+}
+
+// A callback reaching a replica that has never fetched from the IdP, with the IdP down, is refused as unavailable (503),
+// not as a failed exchange, and counted as such.
+func TestIdPDownColdCallback(t *testing.T) {
+	t.Parallel()
+	p, c := newIDP(t), newClock()
+	p.newKey(t, "k1")
+	keys := newSessionKeys("s-1", "s-1")
+	warm, cold := p.replica(c, keys, nil), p.replica(c, keys, nil)
+	b := newBrowser()
+	q := startLogin(t, b, warm.people.Handler())
+	p.down.Store(true)
+	if w := b.do(cold.people.Handler(), http.MethodGet, "/auth/callback?code=code-x&state="+q.Get("state"), nil); w.Code != http.StatusServiceUnavailable {
+		t.Errorf("a cold callback with the IdP down = %d, want 503", w.Code)
+	}
+	if !slices.Contains(cold.failures.reasons, ReasonIDPUnavailable) || !slices.Contains(cold.logins.steps, "callback/unavailable") {
+		t.Errorf("counted %v and %v", cold.failures.reasons, cold.logins.steps)
+	}
+}
+
+// The JWKS alone down fails the IdP's fetch whole: a replica that has fetched nothing refuses a login as unavailable,
+// though discovery answers, while one that fetched before signs a person in from the endpoints and keys it cached.
+func TestJWKSAloneDown(t *testing.T) {
+	t.Parallel()
+	p, c := newIDP(t), newClock()
+	s := p.newKey(t, "k1")
+	keys := newSessionKeys("s-1", "s-1")
+	warm := p.replica(c, keys, nil)
+	b := newBrowser()
+	startLogin(t, b, warm.people.Handler())
+	p.failJWKS.Store(true)
+	cold := p.replica(c, keys, nil)
+	before := p.discovery.Load()
+	if w := newBrowser().do(cold.people.Handler(), http.MethodGet, "/auth/login", nil); w.Code != http.StatusServiceUnavailable || p.discovery.Load() == before {
+		t.Errorf("a cold login with the JWKS alone down = %d, discovery read %d times; want 503 after discovery answered", w.Code, p.discovery.Load()-before)
+	}
+	q := startLogin(t, b, warm.people.Handler())
+	code := p.grantChallenge(q.Get("code_challenge"), sign(t, s, p.idClaims(c.Now(), q.Get("nonce"))))
+	if w := b.do(warm.people.Handler(), http.MethodGet, "/auth/callback?code="+code+"&state="+q.Get("state"), nil); w.Code != http.StatusSeeOther {
+		t.Errorf("a warm sign-in with the JWKS alone down = %d, want 303", w.Code)
+	}
+}
+
+// A first discovery the IdP never answers is bounded by the fetch's timeout, 10 s unless the client sets one:
+// the login is refused as unavailable rather than held.
+func TestStalledDiscoveryIsBounded(t *testing.T) {
+	t.Parallel()
+	if got := NewVerifier(OIDCConfig{}).cfg.Client.Timeout; got != fetchTimeout {
+		t.Errorf("the default fetch timeout = %v, want %v", got, fetchTimeout)
+	}
+	p, c := newIDP(t), newClock()
+	p.newKey(t, "k1")
+	p.stallDiscovery.Store(true)
+	client := p.srv.Client()
+	client.Timeout = 200 * time.Millisecond
+	r := p.replicaWith(c, newSessionKeys("s-1", "s-1"), nil, p.verifierWith(c, client))
+	start := time.Now()
+	w := newBrowser().do(r.people.Handler(), http.MethodGet, "/auth/login", nil)
+	if w.Code != http.StatusServiceUnavailable || !slices.Contains(r.failures.reasons, ReasonIDPUnavailable) {
+		t.Errorf("a login over a stalled discovery = %d, %v; want 503 idp-unavailable", w.Code, r.failures.reasons)
+	}
+	if d := time.Since(start); d > 5*time.Second { // far above the 200 ms timeout; bounds a hang only
+		t.Errorf("a login over a stalled discovery took %v", d)
 	}
 }
 
