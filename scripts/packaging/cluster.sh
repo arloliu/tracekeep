@@ -412,12 +412,15 @@ install deploy/helm/tracekeep candidate 0
 admit
 install deploy/helm/tracekeep candidate 2
 traffic
-# The producer stopped and its last records flushed, so the list reads to a complete end.
+# A transaction looked up while the producer still sends; then the producer stopped and its last records flushed,
+# so the list reads to a complete end.
+TRACEKEEP_LIVE=1 playwright "$PUBLIC" -g "while the simulator sends"
 stop_traffic
 sleep 30
 browse
 # The IdP stopped after the session and started again: Dex keeps its keys in memory, so it starts with new ones.
-TRACEKEEP_IDP_STOP="kubectl -n $NS scale deploy/dex --replicas=0 >/dev/null && until [ -z \"\$(kubectl -n $NS get pods -l app=dex -o name)\" ]; do sleep 1; done" \
+TRACEKEEP_ISSUER=$ISSUER \
+	TRACEKEEP_IDP_STOP="kubectl -n $NS scale deploy/dex --replicas=0 >/dev/null && for _ in \$(seq 120); do [ -z \"\$(kubectl -n $NS get pods -l app=dex -o name)\" ] && exit 0; sleep 1; done; exit 1" \
 	TRACEKEEP_IDP_START="kubectl -n $NS scale deploy/dex --replicas=1 >/dev/null && kubectl -n $NS rollout status deploy/dex --timeout=300s >/dev/null" \
 	playwright "$PUBLIC" -g "outage of the IdP"
 

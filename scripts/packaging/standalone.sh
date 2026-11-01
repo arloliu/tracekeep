@@ -163,12 +163,14 @@ make build >/dev/null
 cp dist/tracekeep "$WORK/tracekeep-candidate"
 fresh "$WORK/tracekeep-candidate" "$PWD"
 traffic
-# The producer stopped and its last records flushed, so the list reads to a complete end.
+# A transaction looked up while the producer still sends; then the producer stopped and its last records flushed,
+# so the list reads to a complete end.
+TRACEKEEP_LIVE=1 playwright "$PUBLIC" -g "while the simulator sends"
 stop_traffic
 sleep 30
 playwright "$PUBLIC"
 # The IdP stopped after the session and started again: Dex keeps its keys in memory, so it starts with new ones.
-TRACEKEEP_IDP_STOP="docker stop tracekeep-dex >/dev/null" TRACEKEEP_IDP_START="docker start tracekeep-dex >/dev/null" \
+TRACEKEEP_ISSUER=$ISSUER TRACEKEEP_IDP_STOP="docker stop -t 10 tracekeep-dex >/dev/null" TRACEKEEP_IDP_START="docker start tracekeep-dex >/dev/null" \
 	playwright "$PUBLIC" -g "outage of the IdP"
 
 if [ -z "${TRACEKEEP_BASELINE:-}" ]; then

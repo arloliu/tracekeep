@@ -142,12 +142,14 @@ on a push to `main`, on a daily schedule and when dispatched, never on a pull re
   The simulator (`cmd/tracekeep-sim`) is the producer, started only after a masking configuration is staged and active with no ingest member running,
   so every ingest member starts executing it and the simulator's first capture is admitted (`docs/guides/production-admission.md`);
   Every tenth request the simulator sends is an S7F3 whose process program body the baseline policy masks (`-process-program`).
-  The leg checks that `tracekeep status` lists the tool's open capture and no deferred message, then stops the simulator and lets its last records flush before the browser runs.
+  The leg checks that `tracekeep status` lists the tool's open capture and no deferred message, has the browser look a transaction up while the simulator still sends,
+  then stops the simulator and lets its last records flush before the browser's session.
   Playwright (`web/e2e/`) then signs in, browses the simulator's tool and an hour's scope, reads its records to a complete end, a record's SML and one transaction matched with its roles,
   finds the process program on no page, and runs an export to its `/download/` URL, whose manifest it reads (the tool, device and window, each hour's packs, none left out)
   and in whose manifest and JSONL it finds no process program, as it is or in base64;
   a person the mock connector signs in without a mapped group is denied by the page and by the API.
-  The leg then stops Dex and starts it again: down, a signed-in page keeps reading with its session and a new login does not sign in;
+  The leg then stops Dex and starts it again, each bounded: down, a signed-in page keeps reading with its session,
+  and a new login is refused as unavailable or redirected to Dex, which does not answer;
   back, with new signing keys since Dex keeps them in memory, a sign-in succeeds once the replicas fetch again.
 - **Cluster** (`cluster.sh`, run locally where Docker is before a change to the packaging merges):
   kind with NATS, MariaDB, MinIO (over HTTP inside the cluster), Vault (over TLS, the `kubernetes` method bound to the chart's service account) and Dex in the cluster,
