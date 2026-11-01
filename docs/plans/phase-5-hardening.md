@@ -1,6 +1,6 @@
 # Phase 5 — correctness, error handling and performance
 
-Status: draft (2026-11-01) — awaiting the owner
+Status: draft (2026-11-01) — answered by the owner; awaiting the external plan review
 
 The owner's next phase after the roadmap's milestones:
 no new feature, but the service and the producer SDK made correct under faults, their failures reported, and their hot paths measured and made faster.
@@ -12,8 +12,8 @@ This plan only orders the work.
 
 ## Before it starts
 
-The owner's answers to the points below become one decision-log entry when the plan is activated (T-52).
-Each point gives the recommendation the plan assumes until the owner answers.
+The owner answered on 2026-11-01: every recommendation below is taken, except point 3's refusal.
+The answers become one decision-log entry when the plan is activated (T-52).
 
 1. **Where phase 5 sits in the roadmap**:
    the milestone table is seed v21 §12, "moved unchanged", so a new row would break that sentence.
@@ -28,7 +28,8 @@ Each point gives the recommendation the plan assumes until the owner answers.
    - not at all: a cap on `QueryRecords`' window; C2 skips the empty hours instead, which needs no spec change.
 3. **TLS for the bus and the store**:
    `650-perf-sec.md` asks for TLS to NATS and S3, but the configuration accepts `nats://` without a CA and an `http://` endpoint (E12).
-   Recommended: refuse both outside `tracekeep dev`, named in the configuration guide and the upgrade notes, since an installation that relies on them stops starting.
+   Answered: neither is refused, so no installation stops starting;
+   outside `tracekeep dev` the service logs a warning at start naming each link without TLS, and the configuration guide says why.
 4. **go-secs' share stays out**:
    T-45, the format-minor accessor that would end the flush's reopen (P22), the filtered writer (T-48), tracepack's epoch-hour error text,
    and the first S1F3's `ordering-uncertain` (K1), which the SDK reports correctly from go-secs' timestamps.
@@ -41,7 +42,8 @@ Each point gives the recommendation the plan assumes until the owner answers.
 6. **Measure first**: `650-perf-sec.md` asks for benchmarks before and after, and only two exist.
    Recommended: 5.3 adds benchmarks for every hot path, an opt-in `pprof` on the metrics listener, and baseline numbers recorded in this plan, before any performance step;
    a performance finding that 5.3 shows is not worth its change is closed with its number.
-7. **The gate**: proposed below in *Gate cases and their owners*; the owner sets the bound of the write-connection case.
+7. **The gate**: below in *Gate cases and their owners*.
+   Recommended bound of the write-connection case: a `PackURL` answers within 2 s at the 99th percentile while `tracekeep dev` ingests at the simulator's highest tested rate.
 8. **The split below** into six sub-phases, correctness before error handling before performance.
 
 Not in this phase: new features, go-secs' changes (point 4), the eqp-hub side of phase G, and a `producer/` tag, which stays the owner's call.
@@ -51,7 +53,7 @@ Not in this phase: new features, go-secs' changes (point 4), the eqp-hub side of
 | Phase | Scope | State |
 |---|---|---|
 | 5.1 — correctness and liveness | detailed below | pending |
-| 5.2 — error handling and signals | E1–E18: context errors mapped to their own codes, the SDK's panics, drops and sink events counted from zero, the service's bus events logged, dropped errors logged, readiness without internal text, retries with backoff, TLS and configuration bounds (points 3 and 2), JWKS fetched ahead of its TTL, downloads' headers; the spec and guide rows each names | pending |
+| 5.2 — error handling and signals | E1–E18: context errors mapped to their own codes, the SDK's panics, drops and sink events counted from zero, the service's bus events logged, dropped errors logged, readiness without internal text, retries with backoff, a warning for a link without TLS (point 3), configuration bounds, JWKS fetched ahead of its TTL, downloads' headers; the spec and guide rows each names | pending |
 | 5.3 — measurement | benchmarks for the SDK's observe path, ingest's dispose, batch, flush and acknowledgement, the catalog's registration, listing and reads on both engines, `QueryRecords` over an hour of N records in K packs (binary and JSON), merge and the compactor's passes; `pprof` on the metrics listener, opt-in; the baselines recorded here | pending |
 | 5.4 — performance: the catalog and its writer | P1–P6, each measured before and after: set-based registration, the overlap probe's index, the claim listing in bounded transactions, the missing indexes, listings bounded to their window, the API audit write's deadline and wait histogram (point 5) | pending |
 | 5.5 — performance: ingest, reads, compactor, API | P7–P20 that 5.3 shows worth their change, each measured before and after | pending |
@@ -120,7 +122,7 @@ Severity is high (H), medium (M) or low (L); *spec* marks a finding whose fix ch
 | E9 | the dev IdP's serve error and the environment's close error are dropped | `internal/service/devsignin.go:115`, `cmd/tracekeep/main.go:133` | L |
 | E10 | `/readyz` returns the checks' internal error text on the unauthenticated metrics port | `internal/metrics/server.go:86` | L |
 | E11 | a retryable transaction re-runs 16 times at once, up to about 80 s on SQLite, without jitter | `internal/catalog/tx.go:94` | L |
-| E12 | the bus URL and the S3 endpoint are accepted without TLS (point 3) | `internal/config/config.go:232` | M |
+| E12 | the bus URL and the S3 endpoint are accepted without TLS and without a word (point 3: warned, not refused) | `internal/config/config.go:232` | M |
 | E13 | the OIDC leeway and the session and login lifetimes have no upper bound | `internal/config/auth.go:54` | L |
 | E14 | JWKS expire hard and refetch synchronously, so every request waits and an IdP down at that moment refuses all | `internal/auth/oidc.go:278` | M |
 | E15 | `/download/` sends no `Content-Disposition`, ETag or `Last-Modified` | `internal/api/download.go:65` | L |
@@ -172,4 +174,4 @@ Only two benchmarks exist, the SDK's allocation and the fleet metrics', and noth
 | every refusal answers its own code, and no error a client or log sees carries a key, URL or internal text | 5.2 |
 | every hot path has a benchmark and a recorded baseline | 5.3 |
 | every performance change has its before and after, and no benchmark regresses beyond noise | 5.4, 5.5 |
-| an API write during sustained ingest on SQLite answers within the owner's bound | 5.4 |
+| an API write during sustained ingest on SQLite answers within point 7's bound | 5.4 |
