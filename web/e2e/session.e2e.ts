@@ -84,8 +84,10 @@ test("a person browses a tool, reads its records and a transaction, and exports 
 });
 
 // The records read before an upgrade (TRACEKEEP_EVIDENCE, written by the run before it) are read the same after it.
+// After an upgrade (TRACEKEEP_AFTER_UPGRADE) the evidence must be there: a run without it fails, never passing for an upgrade it did not check.
 test("the records read before an upgrade are read the same after it", async ({ page }) => {
-  test.skip(!evidence || !existsSync(evidence) || !process.env.TRACEKEEP_AFTER_UPGRADE, "needs the evidence of a run before an upgrade");
+  test.skip(!process.env.TRACEKEEP_AFTER_UPGRADE, "runs after an upgrade");
+  expect(evidence !== undefined && existsSync(evidence), `the evidence of the run before the upgrade (${evidence ?? "TRACEKEEP_EVIDENCE unset"})`).toBe(true);
   const before = JSON.parse(readFileSync(evidence ?? "", "utf8")) as Evidence;
   await signIn(page);
   await page.goto(before.url);
