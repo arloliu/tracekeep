@@ -311,7 +311,7 @@ func (pb *publisher) progress(st *capState, now time.Time) {
 				return
 			}
 			if state == core.StartDiscarded {
-				pb.dropAll(st, core.DropAbandoned)
+				pb.dropAll(st, core.DropAbandoned) // releases the start uncounted
 				return
 			}
 		}
@@ -647,6 +647,11 @@ func (pb *publisher) dropAll(st *capState, reason core.DropReason) {
 }
 
 func (pb *publisher) dropEntry(e *core.Entry, reason core.DropReason) {
+	// A discarded start belongs to a capture never installed: skipped, it loses nothing (producer.md §4.2 *Rotation*).
+	if e.Kind == core.EntryStart && e.Cap.StartState() == core.StartDiscarded {
+		pb.p.rec.ReleaseReserved()
+		return
+	}
 	// Every record of a capture End gave up is lost to the abandonment, whatever ended it (producer.md §4.2).
 	if reason == core.DropPublishFailed && e.Cap.Abandoned() {
 		reason = core.DropAbandoned
