@@ -78,7 +78,7 @@ func (r *Compactor) compare(ctx context.Context, s *catalog.Suspect) (bool, erro
 			return false, err
 		}
 		opened = append(opened, obj)
-		rd, err := tracepack.Open(ctx, reading{obj}, obj.Size(), tracepack.ReaderOptions{})
+		rd, err := tracepack.Open(ctx, obj, obj.Size(), tracepack.ReaderOptions{})
 		if err != nil {
 			return false, fmt.Errorf("compact: open %s: %w", p.Key, err)
 		}

@@ -7,7 +7,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"log/slog"
 	"math"
 	"slices"
@@ -235,19 +234,17 @@ func (r *Compactor) delete(ctx context.Context, lease catalog.Lease, key string,
 // read verifies the object of info in full and reads the pack it holds;
 // a non-empty reason quarantines it, and an error leaves it for the next pass.
 func (r *Compactor) read(ctx context.Context, info store.ObjectInfo) (*catalog.Pack, string, error) {
-	opened, err := r.Store.Open(ctx, info.Key)
+	obj, err := r.Store.Open(ctx, info.Key)
 	if err != nil {
 		return nil, "", err
 	}
-	defer opened.Close()
-	obj := reading{opened}
+	defer obj.Close()
 	vr, err := tracepack.Verify(ctx, obj, obj.Size(), tracepack.VerifyOptions{})
 	if err != nil {
-		if ctx.Err() != nil || errors.Is(err, errStoreRead) || errors.Is(err, store.ErrNotFound) {
-			return nil, "", err
+		if ctx.Err() == nil && quarantines(err) {
+			return nil, fmt.Sprintf("verify: %v", err), nil
 		}
-		// A pack Verify cannot open is no finalized pack.
-		return nil, fmt.Sprintf("verify: %v", err), nil
+		return nil, "", err
 	}
 	if reason := judge(&vr); reason != "" {
 		return nil, reason, nil
@@ -271,20 +268,13 @@ func (r *Compactor) read(ctx context.Context, info store.ObjectInfo) (*catalog.P
 	return p, "", nil
 }
 
-// errStoreRead marks a failure of the store's own read, which the next pass retries;
-// any other error of Verify is the object's, which is quarantined.
-var errStoreRead = errors.New("compact: store read")
-
-// reading tags the read errors of an object, its end apart, as the store's.
-type reading struct{ store.Object }
-
-func (o reading) ReadAt(b []byte, off int64) (int, error) {
-	n, err := o.Object.ReadAt(b, off)
-	if err != nil && !errors.Is(err, io.EOF) {
-		err = fmt.Errorf("%w: %w", errStoreRead, err)
-	}
-
-	return n, err
+// quarantines reports whether err, Verify's, is about the object's own bytes, which quarantines it (storage.md §5.4, T-51):
+// a put is atomic, so a listed object without a valid trailer is never still being written,
+// and one over the default budget opens for no reader.
+// Any other error, a newer module's format or the store's read included, leaves the key for the next pass.
+func quarantines(err error) bool {
+	return slices.ContainsFunc([]error{tracepack.ErrNotTracepack, tracepack.ErrCorrupt, tracepack.ErrNotFinalized, tracepack.ErrReadLimit},
+		func(e error) bool { return errors.Is(err, e) })
 }
 
 // judge is the quarantine rule of storage.md §5.4 on a verification: anything but finalized-consistent, or any writer defect.

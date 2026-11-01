@@ -501,3 +501,33 @@ func TestUndecodableEventsAreMalformed(t *testing.T) {
 		}
 	})
 }
+
+// A newer producer's layout, or none, is deferred with an alert, inline or claim-check, and writes nothing (T-51).
+func TestUnknownLayoutDeferred(t *testing.T) {
+	t.Parallel()
+	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
+		ctx := t.Context()
+		x := executor(t, c, newClaims())
+		n := byte(0)
+		for _, layout := range []string{"2", ""} {
+			for _, claim := range []bool{false, true} {
+				n++
+				capture := tracepack.UUID{n}
+				m := inline(t, capture, startRecord(t, now), descriptorOf(t, "eqp"))
+				if claim {
+					m.Env.PayloadRef, m.Env.PayloadDigest = bucket+"/"+m.Env.MsgID, tpbus.PayloadDigest([]byte("x"))
+				}
+				m.Env.Layout = layout
+				if _, dec := dispose(t, x, m); dec.Action != ActNak || dec.Reason != ReasonUnsupportedLayout || !dec.Alert {
+					t.Errorf("layout %q, claim %v: %+v, want an alerted deferral", layout, claim, dec)
+				}
+				if _, err := c.Capture(ctx, capture); !errors.Is(err, catalog.ErrUnknownCapture) {
+					t.Errorf("layout %q, claim %v: a capture row was written (%v)", layout, claim, err)
+				}
+				if vs := versions(t, c, capture); len(vs) != 0 {
+					t.Errorf("layout %q, claim %v: versions %+v fabricated", layout, claim, vs)
+				}
+			}
+		}
+	})
+}

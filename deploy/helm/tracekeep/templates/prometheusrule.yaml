@@ -28,6 +28,15 @@ spec:
       annotations:
         summary: "A message has been deferred for more than an hour ({{ "{{" }} $labels.reason {{ "}}" }})."
         runbook_url: {{ $runbook }}#parked
+    # A newer producer's bus layout: deferred, never a seq gap, until a release that reads it is deployed.
+    - alert: TracekeepLayoutUnsupported
+      expr: max(tracekeep_ingest_deferred_messages{reason="unsupported-layout"}) > 0
+      for: 5m
+      labels:
+        severity: critical
+      annotations:
+        summary: Ingest defers messages of a bus layout this release does not read.
+        runbook_url: {{ $runbook }}#unsupported-layout
     - alert: TracekeepBacklogHigh
       expr: |
         max(
