@@ -1013,8 +1013,21 @@ table "bus_streams" {
     type = bigint
     null = true
   }
+  # The role while the row is live, NULL once retired: its unique index keeps one live incarnation per role (parking.md *incarnations*).
+  column "live_role" {
+    type = varchar(16)
+    null = true
+    as {
+      expr = "CASE WHEN retired_at IS NULL THEN role END"
+      type = VIRTUAL
+    }
+  }
   primary_key {
     columns = [column.incarnation_id]
+  }
+  index "bus_streams_live_role" {
+    unique  = true
+    columns = [column.live_role]
   }
   check "bus_streams_role" {
     expr = "role IN ('traffic', 'parking')"

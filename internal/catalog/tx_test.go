@@ -162,6 +162,23 @@ func TestMariaDBRetryable(t *testing.T) {
 	}
 }
 
+// An insert a primary or unique key refuses is a duplicate, on either engine; another failure is not.
+func TestDuplicate(t *testing.T) {
+	t.Parallel()
+	engines(t, func(t *testing.T, c *Catalog) {
+		insert := `INSERT INTO bus_streams (incarnation_id, role, stream_name, created_ns, last_seq_seen) VALUES (?, ?, 'S', 1, 0)`
+		exec(t, c, insert, 1, RoleTraffic)
+		for _, row := range [][]any{{1, RoleParking}, {2, RoleTraffic}} {
+			if _, err := c.write.ExecContext(t.Context(), insert, row...); !c.d.duplicate(err) {
+				t.Errorf("insert %v = %v, want a duplicate", row, err)
+			}
+		}
+		if _, err := c.write.ExecContext(t.Context(), insert, 3, "other"); err == nil || c.d.duplicate(err) {
+			t.Errorf("insert of a role the check refuses = %v, want another failure", err)
+		}
+	})
+}
+
 // MariaDB transactions run at READ COMMITTED (§7.4).
 func TestMariaDBReadCommitted(t *testing.T) {
 	t.Parallel()

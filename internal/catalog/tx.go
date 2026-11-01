@@ -30,6 +30,8 @@ type dialect struct {
 	retryable func(error) bool
 	// retryReason names this engine's retryable error for the retry metric: busy on SQLite, deadlock on MariaDB.
 	retryReason string
+	// duplicate reports an insert refused by a primary or unique key.
+	duplicate func(error) bool
 	// nowNS is the database's clock in UTC nanoseconds, which judges every lease (rollouts.md §6.4, T-32).
 	nowNS string
 }
@@ -50,6 +52,10 @@ var sqliteDialect = dialect{
 
 		return code == sqlite3.SQLITE_BUSY || code == sqlite3.SQLITE_LOCKED
 	},
+	duplicate: func(err error) bool {
+		var e *sqlite.Error
+		return errors.As(err, &e) && (e.Code() == sqlite3.SQLITE_CONSTRAINT_UNIQUE || e.Code() == sqlite3.SQLITE_CONSTRAINT_PRIMARYKEY)
+	},
 }
 
 var mariadbDialect = dialect{
@@ -64,6 +70,10 @@ var mariadbDialect = dialect{
 		// 1213 is a deadlock, which rolls the transaction back; a lock wait timeout (1205) is not retried,
 		// since a holder stuck that long would keep the caller retrying for minutes.
 		return errors.As(err, &e) && e.Number == 1213
+	},
+	duplicate: func(err error) bool {
+		var e *mysql.MySQLError
+		return errors.As(err, &e) && e.Number == 1062
 	},
 }
 
@@ -97,8 +107,11 @@ func (c *Catalog) inTx(ctx context.Context, fn func(tx *sqlx.Tx) error) error {
 }
 
 func (c *Catalog) retryable(err error) bool {
-	return c.d.retryable(err) || (c.testRetryable != nil && errors.Is(err, c.testRetryable))
+	return c.d.retryable(err) || errors.Is(err, errLostRace) || (c.testRetryable != nil && errors.Is(err, c.testRetryable))
 }
+
+// errLostRace is an insert another transaction's committed row refused: the retry reads that row.
+var errLostRace = errors.New("catalog: lost a race to another transaction")
 
 // errRollback ends a transaction whose outcome writes nothing, so even the prologue's update is undone;
 // the caller reports the outcome its closure recorded.

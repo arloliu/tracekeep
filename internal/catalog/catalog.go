@@ -78,6 +78,10 @@ const (
 	hookCompletenessRead
 	// hookWatermarkRead runs once a listing read its watermark, inside its snapshot.
 	hookWatermarkRead
+	// hookIncarnationChecked runs once Incarnate found no live incarnation, before it allocates an id;
+	// hookIncarnationAllocated once it allocated one, before its insert.
+	hookIncarnationChecked
+	hookIncarnationAllocated
 	numHooks
 )
 
