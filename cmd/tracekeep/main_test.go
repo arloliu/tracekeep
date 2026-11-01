@@ -2,13 +2,19 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"database/sql"
+	"encoding/base64"
 	"encoding/json"
+	"io"
+	"net"
+	"net/http"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/arloliu/tracekeep/internal/catalog"
 	"github.com/arloliu/tracekeep/internal/config"
@@ -173,5 +179,84 @@ func TestAdminBesideARunningService(t *testing.T) {
 	code, _, stderr := tracekeep(t, "admin", "--config", path, "parked", "list")
 	if code != 1 || !strings.Contains(stderr, "stop the service") || !strings.Contains(stderr, "MariaDB") {
 		t.Errorf("admin beside a running service = %d, %q; want the cause and the ways around it", code, stderr)
+	}
+}
+
+// serviceConfig writes a configuration that runs every role: setup's, with the API over TLS and its download key,
+// work directories of the test's own and metrics on a free port, and returns its path and the metrics address.
+func serviceConfig(t *testing.T) (string, string) {
+	t.Helper()
+	path := setup(t)
+	dir := filepath.Dir(path)
+	cert, key := selfSigned(t, dir)
+	dl := secret(t, dir, "dl-1", base64.StdEncoding.EncodeToString([]byte(strings.Repeat("k", 32))))
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr := l.Addr().String()
+	_ = l.Close()
+	base, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	yaml := string(base) + "api:\n  listen: 127.0.0.1:0\n  tls_cert_file: " + cert + "\n  tls_key_file: " + key + "\n  public_url: https://127.0.0.1:1" +
+		"\nkeys:\n  declared:\n    dl-1: {provider: file, ref: " + dl + "}\n  download:\n    issuing: dl-1\n    accepted: [dl-1]\n" +
+		"metrics:\n  listen: " + addr + "\ningest:\n  work_dir: " + filepath.Join(dir, "ingest") + "\nexports:\n  work_dir: " + filepath.Join(dir, "exports") + "\n"
+
+	return secret(t, dir, "service.yaml", yaml), addr
+}
+
+// api and all end on a stop signal with exit code 0: the cancellation is how they are asked to stop, not a failure.
+func TestRoleStopsCleanly(t *testing.T) {
+	t.Parallel()
+	for _, command := range []string{"api", "all"} {
+		t.Run(command, func(t *testing.T) {
+			t.Parallel()
+			path, metricsAddr := serviceConfig(t)
+			if code, _, stderr := tracekeep(t, "migrate", "--config", path); code != 0 {
+				t.Fatalf("migrate = %d, %s", code, stderr)
+			}
+			ctx, stop := context.WithCancel(t.Context())
+			defer stop()
+			var stderr bytes.Buffer
+			done := make(chan int, 1)
+			go func() { done <- run(ctx, []string{command, "--config", path}, io.Discard, &stderr) }()
+			// Stopped once every role is ready, so the stop meets a running process, not one still starting.
+			if code, ended := waitReady(t, metricsAddr, done); ended {
+				t.Fatalf("%s ended before it was ready: %d, %s", command, code, stderr.String())
+			}
+			stop()
+			if code := <-done; code != 0 {
+				t.Errorf("%s on a stop signal = %d, %s; want 0", command, code, stderr.String())
+			}
+		})
+	}
+}
+
+// waitReady reads addr's /readyz, as a probe does, until it answers ok or the command ends, returning its exit code then.
+func waitReady(t *testing.T, addr string, done <-chan int) (int, bool) {
+	t.Helper()
+	tick := time.NewTicker(20 * time.Millisecond)
+	defer tick.Stop()
+	deadline := time.After(30 * time.Second) // bounds a hung start only
+	for {
+		select {
+		case code := <-done:
+			return code, true
+		case <-deadline:
+			t.Fatal("the command never became ready")
+		case <-tick.C:
+			req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, "http://"+addr+"/readyz", http.NoBody)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if resp, err := http.DefaultClient.Do(req); err == nil {
+				_ = resp.Body.Close()
+				if resp.StatusCode == http.StatusOK {
+					return 0, false
+				}
+			}
+		}
 	}
 }
