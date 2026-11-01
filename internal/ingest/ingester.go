@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"sync"
 	"time"
@@ -602,12 +603,25 @@ func nakDelay(delivered uint64) time.Duration {
 // ObjectClaims reads claim objects from the claim bucket.
 type ObjectClaims struct{ Store jetstream.ObjectStore }
 
-// Get implements ClaimStore.
-func (o ObjectClaims) Get(ctx context.Context, name string) ([]byte, error) {
-	b, err := o.Store.GetBytes(ctx, name)
+// Get implements ClaimStore: it reads at most size+1 bytes, so an object longer than declared is found without being held,
+// and a read whose ctx has no deadline is bounded by the bucket's own timeout.
+func (o ObjectClaims) Get(ctx context.Context, name string, size int64) ([]byte, error) {
+	r, err := o.Store.Get(ctx, name)
 	if errors.Is(err, jetstream.ErrObjectNotFound) {
 		return nil, fmt.Errorf("%w: %s", ErrClaimNotFound, name)
 	}
+	if err != nil {
+		return nil, err
+	}
+	defer r.Close()
+	b := make([]byte, size+1)
+	n, err := io.ReadFull(r, b)
+	if errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, io.EOF) { // the object's end, before size+1 bytes
+		err = nil
+	}
+	if err != nil {
+		return nil, err
+	}
 
-	return b, err
+	return b[:n], nil
 }

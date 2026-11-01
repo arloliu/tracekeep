@@ -110,6 +110,8 @@ type Ingest struct {
 	Lease time.Duration `yaml:"lease" default:"1m" env:"TRACEKEEP_INGEST_LEASE" validate:"gt=0"`
 	// BatchMaxBytes makes a batch due before F once it holds this many payload bytes.
 	BatchMaxBytes fuda.ByteSize `yaml:"batch_max_bytes" default:"64MiB" env:"TRACEKEEP_INGEST_BATCH_MAX_BYTES" validate:"gt=0"`
+	// MaxRecordBytes is the largest claim payload ingest fetches; a larger one is deferred unfetched and parked as too-large (ingest.md §6.1).
+	MaxRecordBytes fuda.ByteSize `yaml:"max_record_bytes" default:"64MiB" env:"TRACEKEEP_INGEST_MAX_RECORD_BYTES" validate:"gt=0"`
 	// StopTimeout is the budget the batches still due share when ingest stops; one not flushed within it is redelivered (ingest.md §6.2).
 	StopTimeout time.Duration `yaml:"stop_timeout" default:"20s" env:"TRACEKEEP_INGEST_STOP_TIMEOUT" validate:"gt=0"`
 	// WorkDir holds the working files of segments being written; empty takes the system's temporary directory.

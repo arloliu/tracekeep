@@ -19,19 +19,30 @@ const bucket = "claims"
 type claims struct {
 	mu   sync.Mutex
 	objs map[string][]byte
+	// gets counts the fetches of each object.
+	gets map[string]int
 }
 
-func newClaims() *claims { return &claims{objs: map[string][]byte{}} }
+func newClaims() *claims { return &claims{objs: map[string][]byte{}, gets: map[string]int{}} }
 
-func (c *claims) Get(_ context.Context, name string) ([]byte, error) {
+func (c *claims) Get(_ context.Context, name string, size int64) ([]byte, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	c.gets[name]++
 	b, ok := c.objs[name]
 	if !ok {
 		return nil, ErrClaimNotFound
 	}
 
-	return b, nil
+	return b[:min(int64(len(b)), size+1)], nil
+}
+
+// fetched counts the fetches of the object named name.
+func (c *claims) fetched(name string) int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	return c.gets[name]
 }
 
 func (c *claims) put(name string, b []byte) {

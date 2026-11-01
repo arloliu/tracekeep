@@ -1,6 +1,7 @@
 package ingest
 
 import (
+	"cmp"
 	"context"
 	"encoding/base64"
 	"errors"
@@ -23,6 +24,9 @@ import (
 // maxSteps bounds one delivery's steps; Decide finishes far sooner.
 const maxSteps = 32
 
+// defaultMaxRecordBytes is ingest.max_record_bytes' default, the bound of an Executor that sets none.
+const defaultMaxRecordBytes = 64 << 20
+
 // recordKinds are the four kinds a record can be; any other is a producer fault.
 var recordKinds = []tracepack.Kind{tracepack.KindData, tracepack.KindControl, tracepack.KindTransportEvent, tracepack.KindAnnotation}
 
@@ -31,8 +35,9 @@ var ErrClaimNotFound = errors.New("ingest: claim object not found")
 
 // ClaimStore reads claim objects: the claim bucket, a NATS object store on the traffic cluster (storage.md §5.2).
 type ClaimStore interface {
-	// Get returns the object named name, or an error wrapping ErrClaimNotFound.
-	Get(ctx context.Context, name string) ([]byte, error)
+	// Get returns the object named name, read to its end within ctx, or its first size+1 bytes when it is longer than size,
+	// so no read holds more than the declared length and a byte (ingest.md §6.1); an absent object is an error wrapping ErrClaimNotFound.
+	Get(ctx context.Context, name string, size int64) ([]byte, error)
 }
 
 // Message is one delivery as ingest reads it.
@@ -95,6 +100,8 @@ type Config struct {
 type Executor struct {
 	Catalog *catalog.Catalog
 	Claims  ClaimStore
+	// MaxRecordBytes is the largest claim payload fetched (ingest.max_record_bytes); zero takes the configuration's default.
+	MaxRecordBytes int64
 	// Horizon returns the retention horizon, in UTC nanoseconds: an older record is expired.
 	Horizon func() int64
 	// Configs are the processing configurations this replica executes, by id.
@@ -247,8 +254,14 @@ func (x *Executor) lookupCapture(ctx context.Context, d *Delivery) error {
 
 // fetchClaim fetches the claim object the message names and checks it against the length and digest the message declares;
 // for a start, bus.CheckPayload also decodes its descriptor, and an event's or an annotation's payload must decode.
+// A claim declared above the bound is left unfetched (ingest.md §6.1 `too-large`).
 func (x *Executor) fetchClaim(ctx context.Context, d *Delivery) error {
-	payload, err := x.Claims.Get(ctx, d.Msg.Env.MsgID)
+	size := int64(d.Record.PayloadLen)
+	if size > cmp.Or(x.MaxRecordBytes, defaultMaxRecordBytes) {
+		d.Facts.Claim = ClaimTooLarge
+		return nil
+	}
+	payload, err := x.Claims.Get(ctx, d.Msg.Env.MsgID, size)
 	if errors.Is(err, ErrClaimNotFound) {
 		d.Facts.Claim = ClaimMissing
 		return nil
