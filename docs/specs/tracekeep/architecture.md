@@ -147,6 +147,8 @@ on a push to `main`, on a daily schedule and when dispatched, never on a pull re
   finds the process program on no page, and runs an export to its `/download/` URL, whose manifest it reads (the tool, device and window, each hour's packs, none left out)
   and in whose manifest and JSONL it finds no process program, as it is or in base64;
   a person the mock connector signs in without a mapped group is denied by the page and by the API.
+  The leg then stops Dex and starts it again: down, a signed-in page keeps reading with its session and a new login does not sign in;
+  back, with new signing keys since Dex keeps them in memory, a sign-in succeeds once the replicas fetch again.
 - **Cluster** (`cluster.sh`, run locally where Docker is before a change to the packaging merges):
   kind with NATS, MariaDB, MinIO (over HTTP inside the cluster), Vault (over TLS, the `kubernetes` method bound to the chart's service account) and Dex in the cluster,
   the image built and loaded, the chart installed with two `api` replicas and `ingest` at zero replicas until the configuration is active.

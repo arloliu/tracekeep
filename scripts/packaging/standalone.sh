@@ -166,6 +166,9 @@ traffic
 stop_traffic
 sleep 30
 playwright "$PUBLIC"
+# The IdP stopped after the session and started again: Dex keeps its keys in memory, so it starts with new ones.
+TRACEKEEP_IDP_STOP="docker stop tracekeep-dex >/dev/null" TRACEKEEP_IDP_START="docker start tracekeep-dex >/dev/null" \
+	playwright "$PUBLIC" -g "outage of the IdP"
 
 if [ -z "${TRACEKEEP_BASELINE:-}" ]; then
 	log "upgrade skipped: no baseline (no strict ancestor on main with the chart whose packaging run passed)"
