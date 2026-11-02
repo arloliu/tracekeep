@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"database/sql"
 	"math"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -225,7 +226,11 @@ const insertTimeout = 30 * time.Second
 // MariaDB runs the indexes' migration while inserts naming the old columns go on in another connection:
 // none fails, and inserts into pack_ranges start and return while its ALTER builds the index.
 // The test logs the slowest insert and what each metadata-lock wait it saw was waiting behind.
+// It seeds 300,000 rows on the shared server, so it runs only when TRACEKEEP_ONLINE_DDL is set, as a one-off check of the migration.
 func TestSpanIndexesOnline(t *testing.T) {
+	if os.Getenv("TRACEKEEP_ONLINE_DDL") == "" {
+		t.Skip("TRACEKEEP_ONLINE_DDL not set: the online DDL check seeds a large table")
+	}
 	t.Parallel()
 	db := open(t, "mariadb")
 	ctx := t.Context()
