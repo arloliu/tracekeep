@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
 
 	"github.com/jmoiron/sqlx"
 
@@ -245,6 +246,14 @@ func (c *Catalog) registerIn(ctx context.Context, tx *sqlx.Tx, p *Pack, r Regist
 	if out, done, err := c.guards(ctx, tx, p, r, row); done || err != nil {
 		return out, nil, err
 	}
+	var stage []*VersionKey
+	if r.Evidence != nil {
+		// The last guard: check refuses evidence with an adoption, so it runs where guards ran it, after the adoption's.
+		var out PackOutcome
+		if out, stage, err = c.evidenceGuard(ctx, tx, p, r.Evidence); out != 0 || err != nil {
+			return out, nil, err
+		}
+	}
 	if err := c.insertPack(ctx, tx, p, r); err != nil {
 		return 0, nil, err
 	}
@@ -262,7 +271,7 @@ func (c *Catalog) registerIn(ctx context.Context, tx *sqlx.Tx, p *Pack, r Regist
 		if err := c.insertReceipts(ctx, tx, p, r.Evidence); err != nil {
 			return 0, nil, err
 		}
-		if err := c.stageParked(ctx, tx, r.Evidence); err != nil {
+		if err := c.stageParked(ctx, tx, stage); err != nil {
 			return 0, nil, err
 		}
 	}
@@ -276,7 +285,7 @@ func (c *Catalog) registerIn(ctx context.Context, tx *sqlx.Tx, p *Pack, r Regist
 	return Registered, evs, nil
 }
 
-// guards runs the checks that end a registration before it writes the pack: done reports that out is final.
+// guards runs the checks that end a registration before it writes the pack, the evidence's apart: done reports that out is final.
 func (c *Catalog) guards(ctx context.Context, tx *sqlx.Tx, p *Pack, r Registration, row captureRow) (PackOutcome, bool, error) {
 	var adopted bool
 	err := tx.GetContext(ctx, &adopted, `SELECT adopted FROM packs WHERE pack_id = ?`, p.ID[:])
@@ -297,11 +306,6 @@ func (c *Catalog) guards(ctx context.Context, tx *sqlx.Tx, p *Pack, r Registrati
 	}
 	if out, done, err := c.horizonGuard(ctx, tx, p, r, row); done || err != nil {
 		return out, done, err
-	}
-	if r.Evidence != nil {
-		if out, done, err := c.evidenceGuard(ctx, tx, p, r.Evidence); done || err != nil {
-			return out, done, err
-		}
 	}
 	if r.Adopted {
 		if out, done, err := c.adoptionGuard(ctx, tx, p); done || err != nil {
@@ -403,40 +407,100 @@ func (c *Catalog) KeyStanding(ctx context.Context, key string) (KeyStanding, err
 	return KeyUnknown, nil
 }
 
-// evidenceGuard re-reads, under the capture row, the version of every delivery of the evidence:
-// one terminated, or a message an active order covers, wins over the registration (T-32);
-// one whose hour retention evicted can no longer be staged (parking.md *Parking*).
-// Either way the key is tombstoned, in this transaction, before the caller deletes the object.
-func (c *Catalog) evidenceGuard(ctx context.Context, tx *sqlx.Tx, p *Pack, e *Evidence) (PackOutcome, bool, error) {
+// activeOrder is an active termination order of a capture: its incarnation and cut-off.
+type activeOrder struct {
+	Incarnation int64 `db:"incarnation_id"`
+	CutOff      int64 `db:"cut_off"`
+}
+
+// evidenceGuard re-reads, under the capture row, the version of every delivery of the evidence, in sets (T-55):
+// the capture's parked rows over the deliveries' seqs and its active termination orders, one read each,
+// and a held probe for each delivery an order covers.
+// In the deliveries' order, the first whose version is terminated, or whose message an active order covers with its seq not held,
+// wins over the registration (T-32); so does the first whose version's hour retention evicted, which can no longer be staged (parking.md *Parking*).
+// Either way out is that outcome and the key is tombstoned, in this transaction, before the caller deletes the object.
+// Otherwise it returns the versions it found parking or parked, each once, for stageParked: the capture row keeps their state meanwhile.
+func (c *Catalog) evidenceGuard(ctx context.Context, tx *sqlx.Tx, p *Pack, e *Evidence) (PackOutcome, []*VersionKey, error) {
+	if len(e.Deliveries) == 0 {
+		return 0, nil, nil
+	}
+	states, err := versionStates(ctx, tx, p.Capture, e.Deliveries)
+	if err != nil {
+		return 0, nil, err
+	}
+	var orders []activeOrder
+	err = tx.SelectContext(ctx, &orders, `SELECT incarnation_id, cut_off FROM termination_orders WHERE capture_id = ? AND state = 'active'`, p.Capture[:])
+	if err != nil {
+		return 0, nil, err
+	}
+	var stage []*VersionKey
+	staging := map[VersionKey]bool{}
 	for i := range e.Deliveries {
 		d := &e.Deliveries[i]
-		res, _, err := resolveIn(ctx, tx, &d.Version, d.Incarnation, d.StreamSeq)
-		if err != nil {
-			return 0, true, err
-		}
-		out, reason := PackOutcome(0), ""
-		switch res {
-		case ResolvedTerminated, CoveredByOrder:
-			out, reason = LostToTermination, "terminated"
-		case Unresolved:
-			state, err := readVersionState(ctx, tx, &d.Version)
-			if err != nil && !errors.Is(err, ErrUnknownVersion) {
-				return 0, true, err
+		state := states[d.Version]
+		var out PackOutcome
+		switch {
+		case state == VersionStaged:
+			continue
+		case state == VersionTerminated:
+			out = LostToTermination
+		case slices.ContainsFunc(orders, func(o activeOrder) bool { return o.Incarnation == d.Incarnation && o.CutOff >= d.StreamSeq }):
+			// An order never undoes a registration: a seq a registered pack holds is staged, as resolveIn reads it.
+			var held bool
+			seq := int64(d.Version.Seq) //nolint:gosec // a checked seq is below 2^63
+			if err := tx.GetContext(ctx, &held, heldSeqQuery, p.Capture[:], seq, seq, seq, p.Capture[:]); err != nil {
+				return 0, nil, err
 			}
-			if state == VersionEvictedHour {
-				out, reason = BeyondHorizon, "beyond-retention"
+			if !held {
+				out = LostToTermination
 			}
-		case ResolvedStaged:
+		case state == VersionEvictedHour:
+			out = BeyondHorizon
 		default:
-			return 0, true, fmt.Errorf("catalog: unknown resolution %d", res)
+			// Unresolved, with no order covering its message: it registers, and a parking or parked version is staged.
 		}
 		if out != 0 {
+			reason := "terminated"
+			if out == BeyondHorizon {
+				reason = "beyond-retention"
+			}
 			_, err := tx.ExecContext(ctx, c.d.insertIgnore+` INTO tombstones (object_key, reason, at) VALUES (?, ?, ?)`, p.Key, reason, c.now())
-			return out, true, err
+
+			return out, nil, err
+		}
+		if (state == VersionParking || state == VersionParked) && !staging[d.Version] {
+			staging[d.Version] = true
+			stage = append(stage, &d.Version)
 		}
 	}
 
-	return 0, false, nil
+	return 0, stage, nil
+}
+
+// versionStates reads the states of capture's parked versions over the seqs ds name, in one read on the primary key's prefix;
+// a version with no row is absent.
+func versionStates(ctx context.Context, tx *sqlx.Tx, capture tracepack.UUID, ds []Identity) (map[VersionKey]VersionState, error) {
+	lo, hi := ds[0].Version.Seq, ds[0].Version.Seq
+	for i := range ds {
+		lo, hi = min(lo, ds[i].Version.Seq), max(hi, ds[i].Version.Seq)
+	}
+	var rows []struct {
+		Seq    int64        `db:"seq"`
+		Header []byte       `db:"header"`
+		Digest []byte       `db:"payload_digest"`
+		State  VersionState `db:"state"`
+	}
+	err := tx.SelectContext(ctx, &rows, `SELECT seq, header, payload_digest, state FROM parked WHERE capture_id = ? AND seq BETWEEN ? AND ?`,
+		capture[:], int64(lo), int64(hi)) //nolint:gosec // checked seqs are below 2^63
+	if err != nil {
+		return nil, err
+	}
+	states := make(map[VersionKey]VersionState, len(rows))
+	for _, r := range rows {
+		states[VersionKey{Capture: capture, Seq: uint64(r.Seq), Header: [44]byte(r.Header), Digest: [32]byte(r.Digest)}] = r.State //nolint:gosec // a stored seq is not negative
+	}
+
+	return states, nil
 }
 
 func (c *Catalog) insertPack(ctx context.Context, tx *sqlx.Tx, p *Pack, r Registration) error {
@@ -446,19 +510,35 @@ func (c *Catalog) insertPack(ctx context.Context, tx *sqlx.Tx, p *Pack, r Regist
 	if err != nil {
 		return err
 	}
+	ranges := make([]any, 0, 6*len(p.Ranges))
 	for _, rg := range p.Ranges {
-		_, err := tx.ExecContext(ctx, `INSERT INTO pack_ranges (pack_id, capture_id, seq_from, seq_to, ts_from, ts_to) VALUES (?, ?, ?, ?, ?, ?)`,
-			p.ID[:], p.Capture[:], int64(rg.SeqFrom), int64(rg.SeqTo), rg.TSFrom, rg.TSTo)
-		if err != nil {
-			return err
-		}
+		ranges = append(ranges, p.ID[:], p.Capture[:], int64(rg.SeqFrom), int64(rg.SeqTo), rg.TSFrom, rg.TSTo) //nolint:gosec // checked seqs are below 2^63
 	}
+	if err := insertValues(ctx, tx, `INSERT INTO pack_ranges (pack_id, capture_id, seq_from, seq_to, ts_from, ts_to)`, 6, ranges); err != nil {
+		return err
+	}
+	losses := make([]any, 0, 6*len(p.Losses))
 	for i, l := range p.Losses {
-		_, err := tx.ExecContext(ctx, `INSERT INTO pack_losses (pack_id, ord, seq_from, seq_to, ts_from, ts_to) VALUES (?, ?, ?, ?, ?, ?)`,
-			p.ID[:], i, signed(l.SeqFrom), signed(l.SeqTo), l.TSFrom, l.TSTo)
-		if err != nil {
+		losses = append(losses, p.ID[:], i, signed(l.SeqFrom), signed(l.SeqTo), l.TSFrom, l.TSTo)
+	}
+
+	return insertValues(ctx, tx, `INSERT INTO pack_losses (pack_id, ord, seq_from, seq_to, ts_from, ts_to)`, 6, losses)
+}
+
+// maxParams is the most placeholders a multi-row statement binds, every one of them counted.
+const maxParams = 900
+
+// insertValues runs insert, which names cols columns, with the rows args holds, cols values a row,
+// in multi-row statements of at most maxParams placeholders on x, the transaction they all commit in.
+func insertValues(ctx context.Context, x sqlx.ExecerContext, insert string, cols int, args []any) error {
+	tuple := "(?" + strings.Repeat(", ?", cols-1) + ")"
+	per := maxParams / cols * cols
+	for len(args) > 0 {
+		n := min(per, len(args))
+		if _, err := x.ExecContext(ctx, insert+" VALUES "+tuple+strings.Repeat(", "+tuple, n/cols-1), args[:n]...); err != nil {
 			return err
 		}
+		args = args[n:]
 	}
 
 	return nil
@@ -567,30 +647,29 @@ func (c *Catalog) insertConflict(ctx context.Context, tx *sqlx.Tx, p *Pack, from
 	return err
 }
 
-// insertReceipts writes a receipt and a claim object row for every record of the pack that travelled by claim-check.
+// insertReceipts writes a receipt and a claim object row for every record of the pack that travelled by claim-check;
+// a receipt already recorded keeps its first pack, and a claim object its row.
 func (c *Catalog) insertReceipts(ctx context.Context, tx *sqlx.Tx, p *Pack, e *Evidence) error {
-	for _, rc := range e.Receipts {
-		_, err := tx.ExecContext(ctx, c.d.insertIgnore+` INTO claim_records (capture_id, seq, header, payload_sha256, hour, first_pack_id)
-			VALUES (?, ?, ?, ?, ?, ?)`, p.Capture[:], int64(rc.Seq), rc.Header[:], rc.PayloadSHA256[:], p.Hour, p.ID[:])
-		if err != nil {
-			return err
-		}
-		_, err = tx.ExecContext(ctx, c.d.insertIgnore+` INTO claim_objects (object_key, capture_id, seq, hour, size, state)
-			VALUES (?, ?, ?, ?, ?, 'live')`, rc.ObjectKey, p.Capture[:], int64(rc.Seq), p.Hour, rc.ObjectSize)
-		if err != nil {
-			return err
-		}
+	records, objects := make([]any, 0, 6*len(e.Receipts)), make([]any, 0, 6*len(e.Receipts))
+	for i := range e.Receipts {
+		rc := &e.Receipts[i]
+		seq := int64(rc.Seq) //nolint:gosec // a checked seq is below 2^63
+		records = append(records, p.Capture[:], seq, rc.Header[:], rc.PayloadSHA256[:], p.Hour, p.ID[:])
+		objects = append(objects, rc.ObjectKey, p.Capture[:], seq, p.Hour, rc.ObjectSize, "live")
+	}
+	err := insertValues(ctx, tx, c.d.insertIgnore+` INTO claim_records (capture_id, seq, header, payload_sha256, hour, first_pack_id)`, 6, records)
+	if err != nil {
+		return err
 	}
 
-	return nil
+	return insertValues(ctx, tx, c.d.insertIgnore+` INTO claim_objects (object_key, capture_id, seq, hour, size, state)`, 6, objects)
 }
 
-// stageParked moves the parked versions of the evidence's deliveries to staged, forward only:
+// stageParked moves the versions evidenceGuard found parking or parked to staged, forward only:
 // the resolution a later copy is acknowledged from, committed with the receipts (parking.md *Resolution*).
-func (c *Catalog) stageParked(ctx context.Context, tx *sqlx.Tx, e *Evidence) error {
+func (c *Catalog) stageParked(ctx context.Context, tx *sqlx.Tx, vs []*VersionKey) error {
 	now := c.now()
-	for _, d := range e.Deliveries {
-		v := &d.Version
+	for _, v := range vs {
 		_, err := tx.ExecContext(ctx, `UPDATE parked SET state = 'staged', resolved_at = ?
 			WHERE capture_id = ? AND seq = ? AND header = ? AND payload_digest = ? AND state IN ('parking', 'parked')`,
 			now, v.Capture[:], int64(v.Seq), v.Header[:], v.Digest[:])
