@@ -183,9 +183,12 @@ an hour evicted while it held no pack keeps none, and what a caller's earlier ho
 An hour holding claim objects but no scope is a candidate like any other:
 the claim bucket is listed before every retention pass, and an object without a `claim_objects` row is attributed by its name, `<capture_id>.<seq>`, and the SDK's metadata (§8.4) and given a `live` row,
 so a crash between an eviction's commit and its bucket deletions leaves objects the next listing attributes to the now scope-less hour, which is evicted again.
-The listing's transaction checks the lease and takes no capture row:
-it only inserts a missing row, as `ingest`'s receipt does, both ignoring an existing one,
-and taking the row of a capture the catalog does not know would create a `pending` capture for a stray object.
+The listing is recorded in transactions of at most 1,024 objects, each checking the lease and taking no capture row:
+each only inserts a missing row, as `ingest`'s receipt does, both ignoring an existing one, and the rows already recorded are read first so a steady listing writes nothing,
+while a listing that writes nothing still verifies the lease;
+taking the row of a capture the catalog does not know would create a `pending` capture for a stray object.
+Unattributed rows the listing no longer holds, or that gained a claim row since, are forgotten only after every chunk committed, page by page under the lease,
+so a failure before then forgets nothing and a key in a later chunk is never lost (T-55).
 The one retention decision therefore governs packs, receipts and claim objects alike, from the record's own `ts_utc_ns`, never from an object store clock.
 Seq order and hour order differ after a clock step, so evicted seqs are a set of ranges, not a prefix (§7.3).
 The same pass prunes the change cursor's events by seq prefix with the configured retention period (`catalog.md` §7.3), under the lease.
