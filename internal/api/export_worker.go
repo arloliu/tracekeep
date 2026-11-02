@@ -50,7 +50,7 @@ func (s *Server) RunExports(ctx context.Context, holder string, poll time.Durati
 		if err != nil || !ok {
 			<-slots
 			if err != nil && ctx.Err() == nil && s.Log != nil {
-				s.Log.Warn("api: exports: claim", "error", err)
+				s.Log.Warn("api: exports: claim", "error", safeText(err.Error()))
 			}
 			select {
 			case <-ctx.Done():
@@ -120,7 +120,7 @@ func (s *Server) attempt(parent context.Context, cl *catalog.Claim, claimed time
 		s.Metrics.Export(outcome, 0)
 	case err != nil && s.Log != nil && parent.Err() == nil:
 		// The attempt ends; the lease's expiry starts the next.
-		s.Log.Warn("api: exports: attempt ended", "job", a.Job.String(), "fence", a.Fence, "error", err)
+		s.Log.Warn("api: exports: attempt ended", "job", a.Job.String(), "fence", a.Fence, "error", safeText(err.Error()))
 	default: // done, counted where it completed
 	}
 }
