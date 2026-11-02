@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -184,7 +185,7 @@ func TestIncarnateLosesARace(t *testing.T) {
 	}
 }
 
-// migratedBefore returns a catalog on engine migrated up to, not including, its newest migration,
+// migratedBefore returns a catalog on engine migrated up to, not including, the migration adding the live role's key,
 // and a function applying the rest.
 func migratedBefore(t *testing.T, engine string) (*Catalog, func() error) {
 	t.Helper()
@@ -216,8 +217,12 @@ func migratedBefore(t *testing.T, engine string) (*Catalog, func() error) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	live := slices.IndexFunc(files, func(f atlas.File) bool { return strings.HasSuffix(f.Name(), "_live_incarnation.sql") })
+	if live < 0 {
+		t.Fatal("no live incarnation migration")
+	}
 	older := &atlas.MemDir{}
-	if err := older.CopyFiles(files[:len(files)-1]); err != nil {
+	if err := older.CopyFiles(files[:live]); err != nil {
 		t.Fatal(err)
 	}
 	if err := migrations.ApplyDir(t.Context(), db, engine, older); err != nil {
