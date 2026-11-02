@@ -440,7 +440,7 @@ func (k *Keys) Verify(ctx context.Context, keyID string) (Verification, error) {
 		return Verification{}, err
 	}
 	if !bound {
-		return Verification{}, fmt.Errorf("%w: %s", ErrNotBound, keyID)
+		return Verification{}, ErrNotBound // never the id asked for, which may be any text
 	}
 	v := Verification{KeyID: keyID, Kind: b.Kind, ProviderRef: b.ProviderRef, ProviderVersion: b.ProviderVersion, Bound: b.Fingerprint}
 	provider, at, _ := strings.Cut(b.ProviderRef, ":")
