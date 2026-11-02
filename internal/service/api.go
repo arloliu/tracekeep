@@ -41,6 +41,7 @@ const exportPoll = 2 * time.Second
 // It is ready once its listener is bound and the catalog answers (api.md §10.1 *Downloads*).
 func API(ctx context.Context, e *Env) error {
 	e.ready("api", failing(errStarting))
+	e.warnPlain()
 	defer e.ready("api", failing(errStopped))
 	c := e.Config
 	var m *metrics.API

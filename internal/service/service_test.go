@@ -288,16 +288,16 @@ func TestObservedIngestReadiness(t *testing.T) {
 			h.ServeHTTP(rec, httptest.NewRequestWithContext(ctx, http.MethodGet, "/readyz", nil))
 			return rec.Code, rec.Body.String()
 		}
-		if code, body := readyz(); code != http.StatusServiceUnavailable || !strings.Contains(body, errStarting.Error()) {
-			t.Fatalf("/readyz before the role starts = %d %q, want 503 starting", code, body)
+		if code, body := readyz(); code != http.StatusServiceUnavailable || !strings.Contains(body, "ingest") || strings.Contains(body, errStarting.Error()) {
+			t.Fatalf("/readyz before the role starts = %d %q, want 503 naming ingest, not its error", code, body)
 		}
 		traffic := bus.StreamName(e.Bus(), catalog.RoleTraffic)
 		setDirect(t, e.JS, traffic, true)
 		if err := Ingest(ctx, e); !errors.Is(err, ErrAllowDirect) {
 			t.Fatalf("Ingest = %v, want ErrAllowDirect", err)
 		}
-		if code, body := readyz(); code != http.StatusServiceUnavailable || !strings.Contains(body, errStopped.Error()) {
-			t.Errorf("/readyz after a refused start = %d %q, want 503 stopped", code, body)
+		if code, body := readyz(); code != http.StatusServiceUnavailable || !strings.Contains(body, "ingest") || strings.Contains(body, errStopped.Error()) {
+			t.Errorf("/readyz after a refused start = %d %q, want 503 naming ingest, not its error", code, body)
 		}
 		setDirect(t, e.JS, traffic, false)
 		joined := make(chan struct{})
@@ -325,8 +325,8 @@ func TestObservedIngestReadiness(t *testing.T) {
 		if err := <-done; err != nil && !errors.Is(err, context.Canceled) {
 			t.Errorf("Ingest = %v at its context's end", err)
 		}
-		if code, body := readyz(); code != http.StatusServiceUnavailable || !strings.Contains(body, errStopped.Error()) {
-			t.Errorf("/readyz after the role ended = %d %q, want 503 stopped", code, body)
+		if code, body := readyz(); code != http.StatusServiceUnavailable || !strings.Contains(body, "ingest") || strings.Contains(body, errStopped.Error()) {
+			t.Errorf("/readyz after the role ended = %d %q, want 503 naming ingest, not its error", code, body)
 		}
 	})
 }

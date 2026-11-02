@@ -111,8 +111,7 @@ func (d *Dev) devSignIn(cfg *config.Config, apiAddr string, idpLn net.Listener, 
 		TLSConfig: &tls.Config{Certificates: []tls.Certificate{pair}, MinVersion: tls.VersionTLS12},
 		ErrorLog:  slog.NewLogLogger(d.opts.Log.Handler(), slog.LevelWarn),
 	}
-	srv := d.idp
-	go func() { _ = srv.ServeTLS(idpLn, "", "") }()
+	go serveIDP(d.idp, idpLn, d.opts.Log)
 
 	identity := map[string][]string{}
 	for _, r := range devRoles {
@@ -127,6 +126,13 @@ func (d *Dev) devSignIn(cfg *config.Config, apiAddr string, idpLn net.Listener, 
 	cfg.Keys.Session = config.KeyPurpose{Issuing: devSessionID, Accepted: []string{devSessionID}}
 
 	return nil
+}
+
+// serveIDP serves the test IdP on ln until it is shut down, logging why serving ended otherwise.
+func serveIDP(srv *http.Server, ln net.Listener, log *slog.Logger) {
+	if err := srv.ServeTLS(ln, "", ""); !errors.Is(err, http.ErrServerClosed) {
+		log.Error("dev: idp: serving ended", "error", err)
+	}
 }
 
 // closeIDP shuts the test IdP down within d.idpShutdown, then closes the connections left, which ends their requests.

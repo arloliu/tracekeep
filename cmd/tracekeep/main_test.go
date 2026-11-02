@@ -6,7 +6,9 @@ import (
 	"database/sql"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"os"
@@ -18,6 +20,8 @@ import (
 
 	"github.com/arloliu/tracekeep/internal/catalog"
 	"github.com/arloliu/tracekeep/internal/config"
+	"github.com/arloliu/tracekeep/internal/service"
+	"github.com/arloliu/tracekeep/internal/store"
 	"github.com/arloliu/tracekeep/internal/testbus"
 	"github.com/arloliu/tracekeep/migrations"
 )
@@ -241,7 +245,68 @@ func TestRoleStopsCleanly(t *testing.T) {
 			if code := <-done; code != 0 {
 				t.Errorf("%s on a stop signal = %d, %s; want 0", command, code, stderr.String())
 			}
+			// The bus is plain: the command warns of it once, all once for its three roles.
+			if n := strings.Count(stderr.String(), "the bus connection is without TLS"); n != 1 {
+				t.Errorf("%s warned %d times of the plain bus, want once: %s", command, n, stderr.String())
+			}
 		})
+	}
+}
+
+// closeLogged logs a failed close as one line and a clean one as none.
+func TestCloseLogged(t *testing.T) {
+	t.Parallel()
+	var buf bytes.Buffer
+	log := slog.New(slog.NewJSONHandler(&buf, nil))
+	closeLogged(log, "the environment", closer(func() error { return errors.New("close-sentinel") }))
+	if got := buf.String(); strings.Count(got, "\n") != 1 || !strings.Contains(got, "close-sentinel") || !strings.Contains(got, `"level":"ERROR"`) {
+		t.Errorf("a failed close logged %q, want one error line", got)
+	}
+	buf.Reset()
+	closeLogged(log, "the environment", closer(func() error { return nil }))
+	if buf.Len() != 0 {
+		t.Errorf("a clean close logged %q", buf.String())
+	}
+}
+
+type closer func() error
+
+func (c closer) Close() error { return c() }
+
+// keyedClose is a store whose close fails with an error naming an object's key and the backend's text.
+type keyedClose struct{ store.ObjectStore }
+
+func (k keyedClose) Close() error {
+	err := errors.New("store: close packs/T1/key-sentinel.tpk: backend-sentinel")
+	if c, ok := k.ObjectStore.(io.Closer); ok {
+		err = errors.Join(err, c.Close())
+	}
+
+	return err
+}
+
+// A command whose environment's store fails to close logs one line without the key or the backend's text, its exit code unchanged.
+// Not parallel: it replaces the command's open seam.
+func TestDispatchLogsAKeylessCloseError(t *testing.T) {
+	path := setup(t)
+	if code, _, stderr := tracekeep(t, "migrate", "--config", path); code != 0 {
+		t.Fatalf("migrate = %d, %s", code, stderr)
+	}
+	t.Cleanup(func() { openEnv = service.Open })
+	openEnv = func(ctx context.Context, cfg *config.Config, log *slog.Logger) (*service.Env, error) {
+		e, err := service.Open(ctx, cfg, log)
+		if err == nil {
+			e.Store = keyedClose{e.Store}
+		}
+
+		return e, err
+	}
+	code, stdout, stderr := tracekeep(t, "status", "--config", path)
+	if code != 0 || !json.Valid([]byte(stdout)) {
+		t.Errorf("status = %d, %q, %s; want 0 with its JSON", code, stdout, stderr)
+	}
+	if n := strings.Count(stderr, "tracekeep: close"); n != 1 || strings.Contains(stderr, "key-sentinel") || strings.Contains(stderr, "backend-sentinel") {
+		t.Errorf("stderr %q, want one keyless close line", stderr)
 	}
 }
 

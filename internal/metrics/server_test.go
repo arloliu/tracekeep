@@ -24,7 +24,7 @@ func get(t *testing.T, h http.Handler, path string) (int, string) {
 	return rec.Code, string(body)
 }
 
-// /healthz answers while the process runs; /readyz answers ok only when every registered check passes, naming a failing one;
+// /healthz answers while the process runs; /readyz answers ok only when every registered check passes, naming a failing one without its error's text;
 // /metrics serves the registry.
 func TestServer(t *testing.T) {
 	t.Parallel()
@@ -39,12 +39,19 @@ func TestServer(t *testing.T) {
 	if code, _ := get(t, h, "/readyz"); code != http.StatusOK {
 		t.Errorf("/readyz with no check = %d, want 200", code)
 	}
-	failing := errors.New("consumer not bound")
+	// A check's error may name a driver's host or hold a credential; the unauthenticated body names the check only.
+	failing := errors.New("consumer not bound: dial tcp db.example.invalid:3306: user tk password=pw-sentinel")
 	s.Ready("ingest", func(context.Context) error { return failing })
-	if code, body := get(t, h, "/readyz"); code != http.StatusServiceUnavailable || !strings.Contains(body, "ingest: consumer not bound") {
-		t.Errorf("/readyz with a failing check = %d %q, want 503 naming it", code, body)
+	s.Ready("compact", func(context.Context) error { return nil })
+	code, body := get(t, h, "/readyz")
+	if code != http.StatusServiceUnavailable || !strings.Contains(body, "ingest") || strings.Contains(body, "compact") {
+		t.Errorf("/readyz with a failing check = %d %q, want 503 naming it alone", code, body)
 	}
-	failing = nil
+	for _, leak := range []string{"consumer not bound", "db.example.invalid", "3306", "pw-sentinel"} {
+		if strings.Contains(body, leak) {
+			t.Errorf("/readyz body %q holds %q from the check's error", body, leak)
+		}
+	}
 	s.Ready("ingest", func(context.Context) error { return nil })
 	if code, _ := get(t, h, "/readyz"); code != http.StatusOK {
 		t.Errorf("/readyz once ready = %d, want 200", code)
