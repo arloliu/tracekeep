@@ -243,6 +243,37 @@ func TestMissingRowsFail(t *testing.T) {
 	}
 }
 
+func TestRunParameters(t *testing.T) {
+	t.Parallel()
+	const n = "BenchmarkX-8"
+	params := func(benchtime, count, scale string) string {
+		return fmt.Sprintf("benchtime: %s\ncount: %s\ncpus: 8\nscale: %s\n", benchtime, count, scale)
+	}
+	ten, five := map[string][]string{n: around(100)}, map[string][]string{n: around(100)[:5]}
+	base := params("1s", "10", "small") + output(ten)
+	for name, tc := range map[string]struct {
+		head string
+		want verdict
+	}{
+		"every parameter the same": {params("1s", "10", "small") + output(ten), pass},
+		"another benchtime":        {params("2s", "10", "small") + output(ten), fail},
+		"another count":            {params("1s", "5", "small") + output(five), fail},
+		"another scale":            {params("1s", "10", "medium") + output(ten), fail},
+		"no parameters at all":     {output(ten), fail},
+		"fewer samples":            {params("1s", "10", "small") + output(five), fail},
+		"a parameter changing within the file": {
+			params("1s", "10", "small") + output(map[string][]string{n: around(100)[:5]}) + params("2s", "10", "small") + output(five), fail,
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			if got := worst(judgedAll(t, options{}, base, base, tc.head))[n]; got != tc.want {
+				t.Errorf("%s: %v, want %v", name, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestExitCodes(t *testing.T) {
 	t.Parallel()
 	for name, tc := range map[string]struct {
