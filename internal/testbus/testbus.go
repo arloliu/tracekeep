@@ -8,6 +8,7 @@ package testbus
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -37,6 +38,8 @@ type Options struct {
 	MaxPayload int32
 	// User and Password, when set, are the one account a client must authenticate as.
 	User, Password string
+	// TLS, when set, is the server's TLS configuration, and every client must connect over TLS.
+	TLS *tls.Config
 }
 
 // Server is an embedded server that a test can stop and start again on the same address and storage,
@@ -85,6 +88,7 @@ func StartServer(t testing.TB, o Options) *Server {
 		MaxPayload: o.MaxPayload,
 		Username:   o.User,
 		Password:   o.Password,
+		TLSConfig:  o.TLS,
 		NoLog:      true,
 		NoSigs:     true,
 	}}

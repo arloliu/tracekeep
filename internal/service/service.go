@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -29,6 +30,7 @@ import (
 	"github.com/arloliu/tracekeep/internal/ingest"
 	"github.com/arloliu/tracekeep/internal/keys"
 	"github.com/arloliu/tracekeep/internal/metrics"
+	"github.com/arloliu/tracekeep/internal/records"
 	"github.com/arloliu/tracekeep/internal/store"
 	"github.com/arloliu/tracekeep/internal/store/s3store"
 	"github.com/arloliu/tracekeep/producer/busconfig"
@@ -72,6 +74,8 @@ type Env struct {
 	// listening is closed once the api role's listener is bound.
 	listening     chan struct{}
 	listeningOnce sync.Once
+	// plainOnce warns of the links without TLS once, at the first role to start.
+	plainOnce sync.Once
 }
 
 // refreshInterval is how often ingest's metrics read the catalog and the bus.
@@ -135,7 +139,7 @@ func Open(ctx context.Context, cfg *config.Config, log *slog.Logger) (*Env, erro
 	if e.Catalog, err = catalog.Open(ctx, catalog.Config{Engine: cfg.Catalog.Engine, DSN: cfg.Catalog.DSN}); err != nil {
 		return nil, err
 	}
-	if e.NC, err = connect(&cfg.Bus); err != nil {
+	if e.NC, err = connect(&cfg.Bus, log); err != nil {
 		return nil, errors.Join(err, e.Close())
 	}
 	if e.JS, err = jetstream.New(e.NC); err != nil {
@@ -155,7 +159,10 @@ func (e *Env) Close() error {
 		errs = append(errs, e.Metrics.Close())
 	}
 	if c, ok := e.Store.(interface{ Close() error }); ok {
-		errs = append(errs, c.Close())
+		// A store's error text names an object's key, which no log may carry (operations.md §10.4 *Logs*).
+		if err := c.Close(); err != nil {
+			errs = append(errs, fmt.Errorf("service: close the store: %w", records.Keyless(err)))
+		}
 	}
 	if e.NC != nil {
 		e.NC.Close()
@@ -167,8 +174,10 @@ func (e *Env) Close() error {
 	return errors.Join(errs...)
 }
 
-func connect(b *config.Bus) (*nats.Conn, error) {
-	opts := []nats.Option{nats.Name("tracekeep"), nats.MaxReconnects(-1)}
+// connect connects to the bus b names, logging the connection's events to log.
+func connect(b *config.Bus, log *slog.Logger) (*nats.Conn, error) {
+	events := &busEvents{log: log}
+	opts := append([]nats.Option{nats.Name("tracekeep"), nats.MaxReconnects(-1)}, events.options()...)
 	switch {
 	case b.CredsFile != "":
 		opts = append(opts, nats.UserCredentials(b.CredsFile))
@@ -187,8 +196,83 @@ func connect(b *config.Bus) (*nats.Conn, error) {
 	if err != nil {
 		return nil, fmt.Errorf("service: connect the bus: %w", err)
 	}
+	events.connected(nc)
 
 	return nc, nil
+}
+
+// busEvents logs the bus connection's loss, restoration, asynchronous errors and a close with an error (operations.md §10.4 *Logs*),
+// each naming the server last connected to by its scheme and host only, so no credential or query in its URL reaches the log.
+type busEvents struct {
+	log *slog.Logger
+	// server is the last connected server's name: a lost or closed connection no longer reports one.
+	server atomic.Pointer[string]
+}
+
+func (b *busEvents) options() []nats.Option {
+	return []nats.Option{
+		nats.DisconnectErrHandler(func(_ *nats.Conn, err error) {
+			if err != nil {
+				b.log.Warn("bus: connection lost", "server", b.name(), "error", err)
+			}
+		}),
+		nats.ReconnectHandler(func(nc *nats.Conn) {
+			b.connected(nc)
+			b.log.Info("bus: connection restored", "server", b.name())
+		}),
+		nats.ErrorHandler(func(_ *nats.Conn, _ *nats.Subscription, err error) {
+			b.log.Warn("bus: connection error", "server", b.name(), "error", err)
+		}),
+		nats.ClosedHandler(func(nc *nats.Conn) {
+			if err := nc.LastError(); err != nil {
+				b.log.Error("bus: connection closed", "server", b.name(), "error", err)
+			}
+		}),
+	}
+}
+
+// connected records the server nc is connected to.
+func (b *busEvents) connected(nc *nats.Conn) {
+	s := serverName(nc.ConnectedUrl())
+	b.server.Store(&s)
+}
+
+func (b *busEvents) name() string {
+	if s := b.server.Load(); s != nil {
+		return *s
+	}
+
+	return ""
+}
+
+// serverName is the URL raw's scheme and host, without its user information, path or query; empty when it does not parse.
+func serverName(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return ""
+	}
+
+	return (&url.URL{Scheme: u.Scheme, Host: u.Host}).String()
+}
+
+// warnPlain warns once per process, outside dev, of each link without TLS (650-perf-sec.md *Transport*):
+// the bus judged by its connection's TLS state, so a nats:// URL the server upgrades is not warned,
+// and an S3 store by an http:// endpoint, an empty one, the provider's default over TLS, not.
+func (e *Env) warnPlain() {
+	if e.Dev {
+		return
+	}
+	e.plainOnce.Do(func() {
+		if e.NC != nil {
+			if _, err := e.NC.TLSConnectionState(); errors.Is(err, nats.ErrConnectionNotTLS) {
+				e.Log.Warn("tracekeep: the bus connection is without TLS", "server", serverName(e.NC.ConnectedUrl()))
+			}
+		}
+		s := &e.Config.Store
+		if u, err := url.Parse(s.S3.Endpoint); s.Kind == "s3" && err == nil && strings.EqualFold(u.Scheme, "http") {
+			e.Log.Warn("tracekeep: the store endpoint is without TLS", "endpoint", serverName(s.S3.Endpoint))
+		}
+	})
 }
 
 // openStore returns a nil interface on error, never a nil pointer in one, which Close would call.
@@ -285,6 +369,7 @@ func (e *Env) streams(ctx context.Context) (map[string]jetstream.Stream, map[str
 // Ingest is ready once both consumers joined, while both are still on the bus.
 func Ingest(ctx context.Context, e *Env) error {
 	e.ready("ingest", failing(errStarting))
+	e.warnPlain()
 	defer e.ready("ingest", failing(errStopped))
 	gs, err := ingesters(ctx, e)
 	if err != nil {
@@ -488,6 +573,7 @@ func ingesters(ctx context.Context, e *Env) (_ []*ingest.Ingester, err error) {
 // Compact runs the compact role until ctx ends: its reconciler (storage.md §5.4) and its merges (compactor.md §8.1), under the compactor lease.
 func Compact(ctx context.Context, e *Env) error {
 	e.ready("compact", failing(errStarting))
+	e.warnPlain()
 	defer e.ready("compact", failing(errStopped))
 	if _, _, err := e.streams(ctx); err != nil {
 		return err

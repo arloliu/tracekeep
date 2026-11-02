@@ -58,6 +58,9 @@ commands:
 // errUsage marks a command line the binary cannot run; it exits 2.
 var errUsage = admin.ErrUsage
 
+// openEnv opens a command's environment; a test replaces it.
+var openEnv = service.Open
+
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	code := run(ctx, os.Args[1:], os.Stdout, os.Stderr)
@@ -123,7 +126,7 @@ func dispatch(ctx context.Context, args []string, stdout, stderr io.Writer) erro
 	if command == "status" {
 		words = []string{"status"}
 	}
-	e, err := service.Open(ctx, cfg, log)
+	e, err := openEnv(ctx, cfg, log)
 	if !isRole && errors.Is(err, catalog.ErrSecondWriter) {
 		// The running service holds its SQLite catalog alone: the command goes through its API (api.md §10.1 *Admin over the API*).
 		return remoteAdmin(ctx, cfg, words, stdout)
@@ -131,7 +134,7 @@ func dispatch(ctx context.Context, args []string, stdout, stderr io.Writer) erro
 	if err != nil {
 		return err
 	}
-	defer func() { _ = e.Close() }()
+	defer closeLogged(log, "the environment", e)
 	if isRole {
 		log.Info("tracekeep: starting", "command", command)
 		if command == "migrate" {
@@ -154,6 +157,13 @@ func dispatch(ctx context.Context, args []string, stdout, stderr io.Writer) erro
 	}
 
 	return runAdmin(ctx, a, words, stdout)
+}
+
+// closeLogged closes c, what it names, logging a failure, which leaves the command's exit code as it is.
+func closeLogged(log *slog.Logger, what string, c io.Closer) {
+	if err := c.Close(); err != nil {
+		log.Error("tracekeep: close", "what", what, "error", err)
+	}
 }
 
 // runAdmin runs one operator command and writes its result to stdout as JSON.
@@ -258,7 +268,7 @@ func runDev(ctx context.Context, args []string, stderr io.Writer) error {
 	if err != nil {
 		return err
 	}
-	defer func() { _ = d.Close() }()
+	defer closeLogged(log, "dev", d)
 	d.Env.Config.Metrics.Listen = *listen
 	octx, err := d.Env.Observe(ctx, "ingest", "compact", "api")
 	if err != nil {

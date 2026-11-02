@@ -8,9 +8,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"net"
 	"net/http"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -49,7 +51,8 @@ func NewServer() *Server {
 // Registry is the registry the roles register their collectors with.
 func (s *Server) Registry() *prometheus.Registry { return s.reg }
 
-// Ready registers, or replaces, the readiness check named name: /readyz answers ok only while every check returns nil.
+// Ready registers, or replaces, the readiness check named name: /readyz answers ok only while every check returns nil,
+// and otherwise names each failing check, never its error.
 func (s *Server) Ready(name string, check func(context.Context) error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -75,19 +78,18 @@ func (s *Server) readyz(w http.ResponseWriter, r *http.Request) {
 		names = append(names, name)
 	}
 	checks := make(map[string]func(context.Context) error, len(s.checks))
-	for k, v := range s.checks {
-		checks[k] = v
-	}
+	maps.Copy(checks, s.checks)
 	s.mu.Unlock()
 	slices.Sort(names)
-	var errs []error
+	// The listener is unauthenticated: the body names each failing check, never its error's text (operations.md §10.4).
+	var failed []string
 	for _, name := range names {
 		if err := checks[name](ctx); err != nil {
-			errs = append(errs, fmt.Errorf("%s: %w", name, err))
+			failed = append(failed, name)
 		}
 	}
-	if err := errors.Join(errs...); err != nil {
-		http.Error(w, err.Error(), http.StatusServiceUnavailable)
+	if len(failed) > 0 {
+		http.Error(w, "not ready: "+strings.Join(failed, ", "), http.StatusServiceUnavailable)
 		return
 	}
 	_, _ = fmt.Fprintln(w, "ok")
