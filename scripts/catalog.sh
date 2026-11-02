@@ -1,13 +1,18 @@
 #!/usr/bin/env bash
-# The catalog's migrations and its MariaDB tests, each needing a MariaDB server in a container.
+# The catalog's migrations and its MariaDB tests and benchmarks, each needing a MariaDB server in a container.
 # Usage:
 #   scripts/catalog.sh diff <name>   generate a migration for both engines from schema.hcl
 #   scripts/catalog.sh check         validate both migration directories and check schema.hcl for drift
 #   scripts/catalog.sh test          run the catalog's tests on MariaDB
+#   scripts/catalog.sh bench <file>  run the catalog's benchmarks on MariaDB, -count ${COUNT:-10} -benchtime ${BENCHTIME:-1s}, into file
+#   scripts/catalog.sh bench-smoke   run them once each, failing rather than skipping without MariaDB
 set -euo pipefail
 
 MARIADB_IMAGE=mariadb:11.8
 PASSWORD=tracekeep
+
+# The packages whose tests or benchmarks reach the catalog.
+PACKAGES="./migrations/ ./internal/catalog/... ./internal/bus/... ./internal/ingest/... ./internal/admin/... ./internal/keys/... ./internal/compact/... ./internal/service/... ./internal/metrics/... ./internal/api/..."
 
 container=
 cleanup() { [ -z "$container" ] || docker rm -f "$container" >/dev/null; }
@@ -66,10 +71,24 @@ check)
 test)
 	start_mariadb
 	TRACEKEEP_MARIADB_DSN="root:$PASSWORD@tcp(127.0.0.1:$port)/catalog" GOWORK=off CGO_ENABLED=1 \
-		go test ./migrations/ ./internal/catalog/... ./internal/bus/... ./internal/ingest/... ./internal/admin/... ./internal/keys/... ./internal/compact/... ./internal/service/... ./internal/metrics/... ./internal/api/... -race -count=1 ${GOTESTFLAGS:-}
+		go test $PACKAGES -race -count=1 ${GOTESTFLAGS:-}
+	;;
+bench)
+	out=${2:?usage: catalog.sh bench <file>}
+	start_mariadb
+	# The engine's durability, which a baseline records; the container is gone once the script ends.
+	echo "innodb_flush_log_at_trx_commit: $(docker exec "$container" mariadb -uroot -p$PASSWORD -N -e 'SELECT @@innodb_flush_log_at_trx_commit')"
+	# No race detector: it would measure itself.
+	TRACEKEEP_MARIADB_DSN="root:$PASSWORD@tcp(127.0.0.1:$port)/catalog" TRACEKEEP_REQUIRE_MARIADB=1 GOWORK=off \
+		go test $PACKAGES -run '^$' -bench "${BENCH:-.}" -benchmem -count "${COUNT:-10}" -benchtime "${BENCHTIME:-1s}" -timeout 0 | tee "$out"
+	;;
+bench-smoke)
+	start_mariadb
+	TRACEKEEP_MARIADB_DSN="root:$PASSWORD@tcp(127.0.0.1:$port)/catalog" TRACEKEEP_REQUIRE_MARIADB=1 TRACEKEEP_BENCH_SCALE=small GOWORK=off \
+		go test $PACKAGES -run '^$' -bench . -benchtime 1x
 	;;
 *)
-	echo "usage: catalog.sh diff <name> | check | test" >&2
+	echo "usage: catalog.sh diff <name> | check | test | bench <file> | bench-smoke" >&2
 	exit 2
 	;;
 esac

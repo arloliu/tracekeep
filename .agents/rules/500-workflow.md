@@ -72,7 +72,10 @@ make alerts-check   # the alert rules' tests and their runbook anchors
 make unit-check     # the systemd unit verified (needs systemd-analyze)
 make packaging-cluster     # the cluster leg: kind, the chart, a browser (needs docker; its own CI job)
 make packaging-standalone  # the standalone leg: installs the unit on the host; refuses outside a GitHub-hosted runner
-make bench
+make bench          # every benchmark, every module
+make bench-smoke    # every benchmark once at its small size, without the race detector (the ci job)
+make bench-catalog OUT=<file>  # the catalog's benchmarks on MariaDB in a container, -count 10 (COUNT, BENCHTIME), into a file (needs docker)
+make bench-catalog-smoke       # the catalog's benchmarks once on MariaDB in a container, failing without it (needs docker; the catalog job)
 make ci             # check + docs-check + data-check + test + the service built with GOWORK=off
 ```
 
