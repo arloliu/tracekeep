@@ -235,6 +235,16 @@ table "pack_ranges" {
   column "ts_to" {
     type = bigint
   }
+  # The range's width, kept by the engine on every insert, so a writer naming only the columns above keeps it true;
+  # the capture's largest bounds its range probes from below (catalog.md §7.1). NULL-able: MariaDB refuses NOT NULL on a generated column.
+  column "span" {
+    type = bigint
+    null = true
+    as {
+      expr = "seq_to - seq_from"
+      type = VIRTUAL
+    }
+  }
   primary_key {
     columns = [column.pack_id, column.seq_from]
   }
