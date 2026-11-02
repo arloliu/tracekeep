@@ -309,8 +309,9 @@ const writerSeed = historyHourRanges
 // each writer registers one pack of 100 delivered seqs above them, every tenth by claim-check, then deletes that pack's rows in a second transaction,
 // over and over from before the loop until after it, so every registration probes the same population and nothing the writers write accumulates;
 // registering=0 is the idle control.
-// One iteration appends one audit row and asserts it written. After the loop the writers' tables hold what they were seeded with,
-// the audit log grew by exactly the iterations, and every writer ran without error; the counts before and after are logged.
+// One iteration appends one audit row; outside the timer it asserts that row written and deletes it, so every iteration writes into the same audit log.
+// After the loop the writers' tables hold what they were seeded with, the audit log what it held before,
+// and every writer ran without error; the counts before and after are logged.
 // The writers are 1, 4 and 16 by TRACEKEEP_BENCH_SCALE.
 func BenchmarkAuditWhileRegistering(b *testing.B) {
 	for _, writers := range append([]int{0}, benchscale.Sizes(b, 1, 4, 16)...) {
@@ -332,6 +333,12 @@ func BenchmarkAuditWhileRegistering(b *testing.B) {
 					if err := c.Audit(b.Context(), e); err != nil {
 						b.Fatal(err)
 					}
+					b.StopTimer()
+					if got := count(b, c, `SELECT COUNT(*) FROM audit_log WHERE actor = ?`, e.Actor); got != 1 {
+						b.Fatalf("%d audit rows of the iteration, want 1", got)
+					}
+					exec(b, c, `DELETE FROM audit_log WHERE actor = ?`, e.Actor)
+					b.StartTimer()
 				}
 				during := registered.Load() - regsBefore
 				stop()
@@ -342,8 +349,8 @@ func BenchmarkAuditWhileRegistering(b *testing.B) {
 					b.Fatalf("the writers' tables hold %s, seeded with %s", got, population)
 				}
 				after := count(b, c, `SELECT COUNT(*) FROM audit_log`)
-				if after != audits+b.N {
-					b.Fatalf("audit rows %d, want %d", after, audits+b.N)
+				if after != audits {
+					b.Fatalf("audit rows %d after %d iterations, want the %d before", after, b.N, audits)
 				}
 				b.Logf("%d registrations completed during %d audit writes; the writers' tables %s before and after; audit rows %d before, %d after",
 					during, b.N, population, audits, after)
