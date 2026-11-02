@@ -10,7 +10,7 @@ import (
 	"github.com/arloliu/tracekeep/migrations"
 )
 
-// The catalog's metrics: both pools' usage, the retries counter and the schema version; its readiness pings it.
+// The catalog's metrics: both pools' usage, the retries counter, an audit write's wait and the schema version; its readiness pings it.
 func TestCatalogMetrics(t *testing.T) {
 	t.Parallel()
 	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
@@ -22,10 +22,14 @@ func TestCatalogMetrics(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		if err := c.AuditWithin(t.Context(), catalog.AuditEntry{Actor: "oidc:metrics", Action: "pack-url"}); err != nil {
+			t.Fatal(err)
+		}
 		_, body := get(t, s.Handler(), "/metrics")
 		for _, want := range []string{
 			`go_sql_open_connections{db_name="catalog_write"}`, `go_sql_open_connections{db_name="catalog_read"}`,
 			`tracekeep_catalog_migration_info{engine="` + c.Engine() + `",version="` + version + `"} 1`,
+			`tracekeep_catalog_audit_wait_seconds_count{engine="` + c.Engine() + `",outcome="acquired"} 1`,
 		} {
 			if !strings.Contains(body, want) {
 				t.Errorf("/metrics lacks %s", want)

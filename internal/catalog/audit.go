@@ -4,7 +4,9 @@ import (
 	"context"
 	"crypto/rand"
 	"database/sql"
+	"errors"
 	"fmt"
+	"time"
 
 	"github.com/jmoiron/sqlx"
 
@@ -20,12 +22,55 @@ type AuditEntry struct {
 	Detail   string
 }
 
-// Audit appends e to the audit log, outside any domain transaction (catalog.md §7.2).
+// auditDeadline bounds a standalone audit write a request makes, within the request's own deadline (api.md §10.1, T-55).
+const auditDeadline = time.Second
+
+// Audit appends e to the audit log on a write connection of its own, outside any domain transaction (catalog.md §7.2).
+// It reports its wait for that connection, from the request to its acquisition or failure, to the OnAuditWait observer.
+// Its failure, the wait's included, wraps ErrAudit.
 func (c *Catalog) Audit(ctx context.Context, e AuditEntry) error {
-	return c.auditIn(ctx, c.write, e)
+	start := time.Now()
+	conn, err := c.write.Conn(ctx)
+	if c.auditWaited != nil {
+		c.auditWaited(waitOutcome(err), time.Since(start))
+	}
+	if err != nil {
+		return fmt.Errorf("%w: %s: %w", ErrAudit, e.Action, err)
+	}
+	defer func() { _ = conn.Close() }()
+
+	return c.auditIn(ctx, conn, e)
 }
 
-// auditIn appends e on q: the write pool, or the transaction whose audit row it is.
+// AuditWithin is Audit under a deadline of a second within ctx's own:
+// the audit row a request writes alone, after its operation, which a held writer delays by at most that (api.md §10.1, T-55).
+func (c *Catalog) AuditWithin(ctx context.Context, e AuditEntry) error {
+	ctx, cancel := context.WithTimeout(ctx, auditDeadline)
+	defer cancel()
+
+	return c.Audit(ctx, e)
+}
+
+// OnAuditWait observes each standalone audit write's wait for its connection with its outcome, for the audit wait metric:
+// acquired, deadline, canceled or error.
+// It is set once, before the catalog writes any audit row.
+func (c *Catalog) OnAuditWait(f func(outcome string, wait time.Duration)) { c.auditWaited = f }
+
+// waitOutcome is the outcome of a wait for a connection that ended with err.
+func waitOutcome(err error) string {
+	switch {
+	case err == nil:
+		return "acquired"
+	case errors.Is(err, context.DeadlineExceeded):
+		return "deadline"
+	case errors.Is(err, context.Canceled):
+		return "canceled"
+	default:
+		return "error"
+	}
+}
+
+// auditIn appends e on q: a write connection, or the transaction whose audit row it is.
 // Its failure wraps ErrAudit, so a caller tells a failed audit row from the rest of a transaction's failures (api.md §10.1).
 func (c *Catalog) auditIn(ctx context.Context, q sqlx.ExecerContext, e AuditEntry) error {
 	var id [16]byte
