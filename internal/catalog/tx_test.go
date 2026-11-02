@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 	"time"
 
@@ -237,5 +238,180 @@ func TestSQLitePathWithURICharacters(t *testing.T) {
 	}
 	if names, _ := filepath.Glob(filepath.Join(filepath.Dir(dir), "*")); len(names) != 1 {
 		t.Errorf("files %v beside the directory, want it alone", names)
+	}
+}
+
+// scriptedPace is a retry's clock, wait and draw scripted by a test: the clock moves only when the test moves it,
+// a wait moves it by its duration and then runs onWait, and a draw is draw's, half the cap without one.
+type scriptedPace struct {
+	at     time.Duration
+	caps   []time.Duration
+	waits  []time.Duration
+	draw   func(limit time.Duration) time.Duration
+	onWait func(ctx context.Context) error
+}
+
+func (p *scriptedPace) install(c *Catalog) {
+	start := time.Unix(0, 0)
+	c.pace = pace{
+		now: func() time.Time { return start.Add(p.at) },
+		wait: func(ctx context.Context, d time.Duration) error {
+			p.waits = append(p.waits, d)
+			p.at += d
+			if p.onWait != nil {
+				return p.onWait(ctx)
+			}
+
+			return nil
+		},
+		draw: func(limit time.Duration) time.Duration {
+			p.caps = append(p.caps, limit)
+			if p.draw != nil {
+				return p.draw(limit)
+			}
+
+			return limit / 2
+		},
+	}
+}
+
+// failing runs inTx over a transaction that fails retryably every time, each run moving p's clock by took,
+// and returns the runs made and inTx's error.
+func failing(ctx context.Context, c *Catalog, p *scriptedPace, took time.Duration) (int, error) {
+	errBusy := errors.New("busy")
+	c.testRetryable = errBusy
+	runs := 0
+	err := c.inTx(ctx, func(*sqlx.Tx) error {
+		runs++
+		p.at += took
+
+		return fmt.Errorf("run %d: %w", runs, errBusy)
+	})
+
+	return runs, err
+}
+
+// Before each further run the helper waits its draw, under a cap doubling from 10 ms to 1 s;
+// it stops after 16 runs, returning the last run's error, with no wait after the sixteenth.
+func TestRetryBacksOffUntilTheCount(t *testing.T) {
+	t.Parallel()
+	engines(t, func(t *testing.T, c *Catalog) {
+		p := &scriptedPace{}
+		draws := []time.Duration{0, 20 * time.Millisecond, time.Millisecond} // the floor, the cap, between
+		p.draw = func(limit time.Duration) time.Duration {
+			if i := len(p.caps) - 1; i < len(draws) {
+				return draws[i]
+			}
+
+			return limit
+		}
+		p.install(c)
+		var observed []string
+		c.OnRetry(func(reason string) { observed = append(observed, reason) })
+		runs, err := failing(t.Context(), c, p, 0)
+		if runs != 16 || err == nil || err.Error() != "run 16: busy" {
+			t.Fatalf("inTx = %v after %d runs, want the 16th run's error", err, runs)
+		}
+		ms := time.Millisecond
+		wantCaps := []time.Duration{10 * ms, 20 * ms, 40 * ms, 80 * ms, 160 * ms, 320 * ms, 640 * ms}
+		for len(wantCaps) < 15 {
+			wantCaps = append(wantCaps, time.Second)
+		}
+		if !slices.Equal(p.caps, wantCaps) {
+			t.Errorf("caps %v, want %v", p.caps, wantCaps)
+		}
+		if wantWaits := append(slices.Clone(draws), wantCaps[len(draws):]...); !slices.Equal(p.waits, wantWaits) {
+			t.Errorf("waits %v, want each its draw %v", p.waits, wantWaits)
+		}
+		if len(observed) != 15 {
+			t.Errorf("%d retries observed, want 15, one per further run", len(observed))
+		}
+	})
+}
+
+// The time bound is checked after each wait, from the first run's start: runs crossing 30 s stop at the next check,
+// a wait crossing it stops before another run, and a run begun before it is left to finish.
+func TestRetryStopsAtTheTimeBound(t *testing.T) {
+	t.Parallel()
+	engines(t, func(t *testing.T, c *Catalog) {
+		ctx := t.Context()
+		p := &scriptedPace{}
+		p.install(c)
+		// Runs of 7 s: the fifth ends past 35 s, and the check after its wait stops.
+		if runs, err := failing(ctx, c, p, 7*time.Second); runs != 5 || err == nil || err.Error() != "run 5: busy" {
+			t.Errorf("runs of 7 s: inTx = %v after %d runs, want the fifth run's error", err, runs)
+		}
+
+		p = &scriptedPace{}
+		p.onWait = func(context.Context) error {
+			if len(p.waits) == 3 {
+				p.at = 30 * time.Second // the third wait crosses the bound
+			}
+
+			return nil
+		}
+		p.install(c)
+		if runs, err := failing(ctx, c, p, 0); runs != 3 || err == nil || err.Error() != "run 3: busy" {
+			t.Errorf("a wait crossing the bound: inTx = %v after %d runs, want the third run's error", err, runs)
+		}
+
+		p = &scriptedPace{}
+		p.onWait = func(context.Context) error {
+			p.at = 29 * time.Second
+			return nil
+		}
+		p.install(c)
+		errBusy := errors.New("busy")
+		c.testRetryable = errBusy
+		runs := 0
+		err := c.inTx(ctx, func(*sqlx.Tx) error {
+			if runs++; runs == 1 {
+				return errBusy
+			}
+			p.at += 30 * time.Second // the second run begins at 29 s and ends at 59 s
+
+			return nil
+		})
+		if err != nil || runs != 2 {
+			t.Errorf("a run begun before the bound: inTx = %v after %d runs, want its success", err, runs)
+		}
+	})
+}
+
+// A caller cancelled or past its deadline during a wait gets its context's error at once, with no further run.
+func TestRetryWaitEndsWithTheCaller(t *testing.T) {
+	t.Parallel()
+	engines(t, func(t *testing.T, c *Catalog) {
+		for _, want := range []error{context.Canceled, context.DeadlineExceeded} {
+			ctx, cancel := context.WithCancel(t.Context())
+			p := &scriptedPace{}
+			p.onWait = func(ctx context.Context) error {
+				if errors.Is(want, context.Canceled) {
+					cancel()
+					return ctx.Err()
+				}
+
+				return want // the caller's deadline passed during the wait
+			}
+			p.install(c)
+			runs, err := failing(ctx, c, p, 0)
+			cancel()
+			if !errors.Is(err, want) || runs != 1 || len(p.waits) != 1 {
+				t.Errorf("inTx = %v after %d runs and %d waits, want %v after the first wait", err, runs, len(p.waits), want)
+			}
+		}
+	})
+}
+
+// The helper's own wait ends with its context, and otherwise after its duration.
+func TestSleepEndsWithTheContext(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	if err := sleep(ctx, time.Hour); !errors.Is(err, context.Canceled) {
+		t.Errorf("sleep under a cancelled context = %v, want canceled", err)
+	}
+	if err := sleep(t.Context(), 0); err != nil {
+		t.Errorf("sleep of zero = %v, want nil", err)
 	}
 }

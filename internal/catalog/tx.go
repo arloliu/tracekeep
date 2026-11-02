@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"math/rand/v2"
+	"time"
 
 	"github.com/go-sql-driver/mysql"
 	"github.com/jmoiron/sqlx"
@@ -14,8 +16,41 @@ import (
 	"github.com/arloliu/go-secs/tracepack"
 )
 
-// maxAttempts bounds a transaction's retries; each attempt re-runs it whole from the prologue.
-const maxAttempts = 16
+// A transaction's retries (§7.2 *Retries stay inside the module*, T-53): at most maxRuns runs;
+// before each further run the helper waits a random time up to a cap doubling from firstWaitCap to lastWaitCap,
+// then stops once maxRetryTime has passed since the first began.
+const (
+	maxRuns      = 16
+	maxRetryTime = 30 * time.Second
+	firstWaitCap = 10 * time.Millisecond
+	lastWaitCap  = time.Second
+)
+
+// pace is the retrying helper's monotonic clock, its wait under the caller's context and its random draw up to a cap;
+// the package's tests script it.
+type pace struct {
+	now  func() time.Time
+	wait func(ctx context.Context, d time.Duration) error
+	draw func(limit time.Duration) time.Duration
+}
+
+var systemPace = pace{
+	now:  time.Now,
+	wait: sleep,
+	draw: func(limit time.Duration) time.Duration { return rand.N(limit + 1) }, //nolint:gosec // jitter, not a secret
+}
+
+// sleep waits d, or until ctx ends, returning its error.
+func sleep(ctx context.Context, d time.Duration) error {
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-t.C:
+		return nil
+	}
+}
 
 // dialect isolates what the two engines spell differently (§7.4).
 type dialect struct {
@@ -92,13 +127,26 @@ type captureRow struct {
 
 // inTx runs fn in a write transaction, re-running it whole on a deadlock or a busy database,
 // so its guards are read again; any other error rolls it back and is returned.
+// It makes at most maxRuns runs, with no wait after the last;
+// before each further run it waits its backoff under ctx, returning at once with ctx's error if ctx ends,
+// and after the wait it stops once maxRetryTime has passed since the first run began; either way it returns the last run's error.
+// No run in flight is cut by that bound, only by ctx.
 // fn resets on entry every result it records outside itself: a rolled-back attempt's results are not the committed one's.
 func (c *Catalog) inTx(ctx context.Context, fn func(tx *sqlx.Tx) error) error {
-	for attempt := 1; ; attempt++ {
+	start := c.pace.now()
+	limit := firstWaitCap
+	for runs := 1; ; runs++ {
 		err := c.attempt(ctx, fn)
-		if err == nil || !c.retryable(err) || attempt == maxAttempts || ctx.Err() != nil {
+		if err == nil || !c.retryable(err) || ctx.Err() != nil || runs >= maxRuns {
 			return err
 		}
+		if werr := c.pace.wait(ctx, c.pace.draw(limit)); werr != nil {
+			return errors.Join(werr, err)
+		}
+		if c.pace.now().Sub(start) >= maxRetryTime {
+			return err
+		}
+		limit = min(2*limit, lastWaitCap)
 		if c.retried != nil {
 			c.retried(c.d.retryReason)
 		}

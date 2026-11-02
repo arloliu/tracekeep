@@ -56,6 +56,8 @@ type Catalog struct {
 	// writerLock marks this process as the SQLite catalog's writer while it is open.
 	writerLock *os.File
 	now        func() int64
+	// pace is the retrying helper's clock, wait and draw.
+	pace pace
 	// hooks are the package's test seams, nil otherwise.
 	hooks [numHooks]func()
 	// retried observes each retry of a transaction with its reason; nil observes none.
@@ -101,6 +103,7 @@ func Open(ctx context.Context, cfg Config) (*Catalog, error) {
 		return nil, err
 	}
 	c.now = func() int64 { return time.Now().UnixNano() }
+	c.pace = systemPace
 	if err := c.write.PingContext(ctx); err != nil {
 		_ = c.Close()
 		return nil, fmt.Errorf("catalog: %w", err)
