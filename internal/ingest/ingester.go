@@ -475,7 +475,11 @@ func (g *Ingester) park(ctx context.Context, e Entry, reason string, delivered u
 	p, err := g.Coordinator.Park(ctx, e, reason, HourOf(g.Executor.Horizon()))
 	switch {
 	case err != nil:
-		g.Log.Warn("ingest: parking failed", "msg_id", id, "error", err)
+		cause := slog.Any("error", err)
+		if p.Confirmation == Unconfirmed {
+			cause = publishCause(err)
+		}
+		g.Log.Warn("ingest: parking failed", "msg_id", id, cause)
 		g.deferMsg(e, reason, g.delay(delivered))
 	case p.Begun.BeyondRetention:
 		g.act(ctx, e, Decision{Action: ActTerminate, Reason: ReasonBeyondRetention, Alert: true, Audit: true}, delivered)
@@ -488,6 +492,23 @@ func (g *Ingester) park(ctx context.Context, e Entry, reason string, delivered u
 		g.deferMsg(e, reason, g.delay(delivered))
 	default: // parked: the original was acknowledged
 		g.resolved(e)
+	}
+}
+
+// publishCause is an unconfirmed publish's cause as fields built here, never the error's text,
+// which can hold the server's description, a URL or a credential:
+// a JetStream API error's code and error code, a context error, else the class publish-failed.
+func publishCause(err error) slog.Attr {
+	var api *jetstream.APIError
+	switch {
+	case errors.As(err, &api):
+		return slog.Group("publish", "code", api.Code, "error_code", api.ErrorCode)
+	case errors.Is(err, context.Canceled):
+		return slog.Group("publish", "error", context.Canceled)
+	case errors.Is(err, context.DeadlineExceeded):
+		return slog.Group("publish", "error", context.DeadlineExceeded)
+	default:
+		return slog.Group("publish", "class", "publish-failed")
 	}
 }
 

@@ -57,7 +57,8 @@ type Parking struct {
 
 // Park runs the protocol for the original e, deferred indefinitely for reason:
 // begin; for an unresolved version, publish and confirm the copy, advance, and acknowledge the original.
-// A resolved version, a version past the horizon or an unconfirmed copy is returned for the caller to act on, nothing acknowledged;
+// A resolved version, a version past the horizon or an unconfirmed copy is returned for the caller to act on, nothing acknowledged,
+// an unconfirmed copy with its publish's error;
 // an error leaves the original unacknowledged.
 func (k *Coordinator) Park(ctx context.Context, e Entry, reason string, horizonHour int64) (Parking, error) {
 	b, err := k.Begin(ctx, e.D, reason, horizonHour)
@@ -87,6 +88,7 @@ func (k *Coordinator) Begin(ctx context.Context, d *Delivery, reason string, hor
 
 // Publish is step (2) for a version in state, which must be unresolved: the copy on the version's own subject,
 // expecting no message stored under it.
+// An unconfirmed copy returns the publish's error, whose text is never logged: an API error's description is the server's.
 func (k *Coordinator) Publish(ctx context.Context, d *Delivery, state catalog.VersionState) (Confirmation, error) {
 	if state != catalog.VersionParking && state != catalog.VersionParked && state != catalog.VersionEvictedHour {
 		return 0, fmt.Errorf("ingest: publish of a version %s", state)
@@ -102,8 +104,11 @@ func (k *Coordinator) Publish(ctx context.Context, d *Delivery, state catalog.Ve
 	// The SDK's publish stamps it, and the parking stream would refuse it; every other header travels unchanged.
 	m.Header.Del(jetstream.ExpectedStreamHeader)
 	ack, err := k.Bus.PublishMsg(ctx, m, jetstream.WithExpectLastSequencePerSubject(0))
+	if c := confirm(ack, err); c != Unconfirmed {
+		return c, nil
+	}
 
-	return confirm(ack, err), nil
+	return Unconfirmed, err
 }
 
 // Advance is step (3), parking → parked; a version past parking is left as it is.
