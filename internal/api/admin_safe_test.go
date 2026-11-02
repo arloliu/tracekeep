@@ -14,6 +14,7 @@ import (
 	"github.com/arloliu/tracekeep/internal/auth"
 	"github.com/arloliu/tracekeep/internal/catalog"
 	"github.com/arloliu/tracekeep/internal/catalog/catalogtest"
+	"github.com/arloliu/tracekeep/internal/keys"
 	tkv1 "github.com/arloliu/tracekeep/proto/tracekeep/v1"
 	"github.com/arloliu/tracekeep/proto/tracekeep/v1/tracekeepv1connect"
 )
@@ -63,6 +64,30 @@ func TestAdminUsageQuotesNoWords(t *testing.T) {
 	}
 	if text := strings.Join(answers, "\n") + r.logs.String(); strings.Contains(text, "sentinel") || strings.Contains(text, "host.invalid") {
 		t.Errorf("an answer or the log quotes the operator's words:\n%s", text)
+	}
+}
+
+// key verify of an id no binding knows answers that the id is not bound, never the id, whatever text it is.
+func TestAdminKeyVerifyQuotesNoID(t *testing.T) {
+	t.Parallel()
+	c := catalogtest.Open(t, catalog.EngineSQLite)
+	k, err := keys.New(keys.Config{}, c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := newRig(t, &Server{Catalog: c, Admin: &admin.Admin{Catalog: c, Keys: k}}, nil)
+	cl := tracekeepv1connect.NewAdminServiceClient(r.hs.Client(), r.hs.URL)
+	answers := make([]string, 0, 3)
+	for _, id := range []string{"session=cookie-sentinel", "password=pw-sentinel", "token-sentinel"} {
+		_, err := cl.Admin(t.Context(), withToken(&tkv1.AdminRequest{Words: []string{"key", "verify", id}}, adminToken))
+		<-r.done
+		answers = append(answers, errMessage(err))
+		if connect.CodeOf(err) != connect.CodeFailedPrecondition || !strings.Contains(errMessage(err), "key id not bound") {
+			t.Errorf("key verify %q = %v, want failed_precondition naming an unbound key id", id, err)
+		}
+	}
+	if text := strings.Join(answers, "\n") + r.logs.String(); strings.Contains(text, "sentinel") {
+		t.Errorf("an answer or the log quotes the key id asked for:\n%s", text)
 	}
 }
 
