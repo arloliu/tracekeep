@@ -209,39 +209,36 @@ func (c *Catalog) ListDevices(ctx context.Context, sel Selector, q time.Duration
 // first every device's first capture, then the others of the devices still without a gap meeting sel's window,
 // so a device whose first capture has one costs that capture's reads alone, as when each capture was read apart.
 func (c *Catalog) deviceGaps(ctx context.Context, tx *sqlx.Tx, sel Selector, caps []CaptureInfo, byName map[string]*DeviceInfo) error {
-	var firsts, rest []CaptureInfo
-	for i, ci := range caps {
-		if i == 0 || caps[i-1].Device != ci.Device {
-			firsts = append(firsts, ci)
-		} else {
-			rest = append(rest, ci)
+	ids := make([]tracepack.UUID, 0, min(len(caps), completenessChunk))
+	devs := make([]*DeviceInfo, 0, cap(ids))
+	flush := func() error {
+		if len(ids) == 0 {
+			return nil
 		}
+		ins, err := c.completenessInputs(ctx, tx, ids)
+		if err != nil {
+			return err
+		}
+		for i, d := range devs {
+			d.Gap = d.Gap || slices.ContainsFunc(ins[i].classify().Gaps, func(g Gap) bool { return g.meets(sel.From, sel.To) })
+		}
+		ids, devs = ids[:0], devs[:0]
+
+		return nil
 	}
-	for _, round := range [][]CaptureInfo{firsts, rest} {
-		var pending []CaptureInfo
-		for _, ci := range round {
-			if !byName[ci.Device].Gap {
-				pending = append(pending, ci)
+	for _, firsts := range []bool{true, false} {
+		for i, ci := range caps {
+			if d := byName[ci.Device]; (i == 0 || caps[i-1].Device != ci.Device) == firsts && !d.Gap {
+				ids, devs = append(ids, ci.ID), append(devs, d)
 			}
-		}
-		for chunk := range slices.Chunk(pending, completenessChunk) {
-			ids := make([]tracepack.UUID, 0, len(chunk))
-			for _, ci := range chunk {
-				if !byName[ci.Device].Gap {
-					ids = append(ids, ci.ID)
+			if len(ids) == completenessChunk {
+				if err := flush(); err != nil {
+					return err
 				}
 			}
-			if len(ids) == 0 {
-				continue
-			}
-			ins, err := c.completenessInputs(ctx, tx, ids)
-			if err != nil {
-				return err
-			}
-			for i, id := range ids {
-				d := byName[chunk[slices.IndexFunc(chunk, func(ci CaptureInfo) bool { return ci.ID == id })].Device]
-				d.Gap = d.Gap || slices.ContainsFunc(ins[i].classify().Gaps, func(g Gap) bool { return g.meets(sel.From, sel.To) })
-			}
+		}
+		if err := flush(); err != nil {
+			return err
 		}
 	}
 

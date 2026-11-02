@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/jmoiron/sqlx"
@@ -289,4 +290,16 @@ func TestCompletenessKnownTimesKept(t *testing.T) {
 			t.Errorf("evicted %+v, want 20 and 30, each its own record's time at both ends", got.Evicted)
 		}
 	})
+}
+
+// TestInputQueryOneCapture checks each input's one-capture form selects no key and binds one capture by equality.
+func TestInputQueryOneCapture(t *testing.T) {
+	for _, q := range []inputQuery{frontierQuery, retainedQuery, evictedQuery, parkedQuery, lossesQuery, crashGapsQuery, conflictsQuery} {
+		if strings.Contains(q.one, "capture_id, ") || strings.Contains(q.one, "IN (") || strings.Count(q.one, "?") != 1 {
+			t.Errorf("one-capture form %q of %q", q.one, q.many)
+		}
+		if n := strings.Count(q.sql(3), "?"); n != 3 {
+			t.Errorf("three captures bind %d in %q", n, q.sql(3))
+		}
+	}
 }
