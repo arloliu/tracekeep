@@ -597,8 +597,9 @@ type Changes struct {
 // the next cursor is the last event's seq for a full page, else the watermark, so other tools' events never hold it back.
 func (c *Catalog) ListScopeChanges(ctx context.Context, after Cursor, sel Selector, limit int) (Changes, error) {
 	if limit <= 0 || len(sel.Devices) > maxDevices || sel.ToolID == "" {
-		return Changes{}, fmt.Errorf("%w: limit %d, %d devices, tool %q: want a positive limit, at most %d devices and a tool",
-			ErrInvalidSelector, limit, len(sel.Devices), sel.ToolID, maxDevices)
+		// The tool is the caller's text, never quoted.
+		return Changes{}, fmt.Errorf("%w: limit %d, %d devices: want a positive limit, at most %d devices and a tool",
+			ErrInvalidSelector, limit, len(sel.Devices), maxDevices)
 	}
 	var out Changes
 	err := c.snapshot(ctx, func(tx *sqlx.Tx) error {
