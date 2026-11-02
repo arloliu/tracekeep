@@ -7,6 +7,8 @@ package producer
 // Names and labels are listed in docs/specs/tracekeep/operations.md.
 type Metrics interface {
 	// Add adds delta to the counter name with labels.
+	// A zero delta declares the series: when its publisher starts, the producer adds zero to every counter
+	// and label value it can emit, so a first event after the start is seen by its increase.
 	Add(name string, labels map[string]string, delta float64)
 	// Set sets the gauge name with labels.
 	Set(name string, labels map[string]string, value float64)

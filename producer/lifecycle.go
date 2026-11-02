@@ -31,6 +31,9 @@ const (
 	reasonSeqLimit  = "seq_limit"
 )
 
+// rotationReasons labels capture_rotations_total.
+var rotationReasons = [...]string{reasonStart, reasonHotReload, reasonFault, reasonStop, reasonSeqLimit}
+
 var (
 	// ErrNotStarted reports a Rotate with no capture open: before Begin or after End.
 	ErrNotStarted = errors.New("producer: no capture open")

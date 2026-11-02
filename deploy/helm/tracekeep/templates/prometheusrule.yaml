@@ -130,7 +130,8 @@ spec:
     rules:
     - alert: TracepubToolSilent
       # Connected through the last ten minutes (and seen ten minutes ago) with nothing published in them;
-      # a producer that never published has no counter, which counts as unchanged, and a first publication counts as one.
+      # the SDK reports its counter at zero from its start, and the last clause keeps a gateway on an older SDK,
+      # which has no counter until it publishes, counting a first publication as one.
       expr: |
         min_over_time(tracepub_bus_connected[10m]) == 1
         and on(job, instance) tracepub_bus_connected offset 10m
@@ -145,7 +146,8 @@ spec:
         summary: "Producer {{ "{{" }} $labels.instance {{ "}}" }} is connected and has published nothing for ten minutes."
         runbook_url: {{ $runbook }}#tool-silent
     - alert: TracepubDropping
-      # The SDK reports a reason's drops from its first, so the first drop of a reason after a producer starts counts from the second.
+      # The SDK reports every reason at zero when its publisher starts, so a reason's first drop counts;
+      # a gateway on an older SDK reports a reason only from its first drop, which then counts from the second.
       expr: sum by (job, instance) (increase(tracepub_records_dropped_total[5m])) > 0
       labels:
         severity: warning
