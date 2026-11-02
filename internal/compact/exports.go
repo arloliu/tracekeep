@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/arloliu/tracekeep/internal/catalog"
+	tkrecords "github.com/arloliu/tracekeep/internal/records"
 )
 
 // clockSkew is the clock skew the export cleanup waits out twice past a put deadline or a bundle's deadline
@@ -38,7 +39,7 @@ func (r *Compactor) ExportCleanup(ctx context.Context, lease catalog.Lease, rep 
 			if ctx.Err() != nil {
 				return ctx.Err()
 			}
-			r.Log.Error("compact: delete an export object", "job", o.Job.String(), "fence", o.Fence) // the store's error names the key
+			r.Log.Error("compact: delete an export object", "job", o.Job.String(), "fence", o.Fence, "error", tkrecords.Keyless(err)) // the store's text names the key
 			rep.Failed++
 
 			continue

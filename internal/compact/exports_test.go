@@ -2,9 +2,13 @@ package compact
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
+	"net"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -49,15 +53,16 @@ func (f *fixture) exists(t *testing.T, key string) bool {
 	return err == nil
 }
 
-// failingDeletes fails every delete of a key in fail, the key in its error, as a store's errors name it.
+// failingDeletes fails every delete of a key in fail, with err or else an error naming the key, as a store's errors name it.
 type failingDeletes struct {
 	store.ObjectStore
 	fail map[string]bool
+	err  error
 }
 
 func (s *failingDeletes) Delete(ctx context.Context, key string) error {
 	if s.fail[key] {
-		return errors.New("the store broke deleting " + key)
+		return cmp.Or(s.err, errors.New("the store broke deleting "+key))
 	}
 
 	return s.ObjectStore.Delete(ctx, key)
@@ -98,26 +103,40 @@ func TestExportCleanup(t *testing.T) {
 	})
 }
 
-// A deletion that fails is counted and logged without the key, its row and job kept, and the next cycle finishes it.
+// A deletion that fails is counted and logged with its cause but without the key or the store's text, its row and job kept,
+// and the next cycle finishes it.
 func TestExportCleanupRetriesAFailure(t *testing.T) {
 	t.Parallel()
 	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
 		f := newFixture(t, c)
 		ctx := t.Context()
 		a, key := f.attempt(t, -10*time.Minute)
+		const backend = "backend-sentinel"
 		var logs bytes.Buffer
 		mem := f.s
-		f.r.Store, f.r.Log = &failingDeletes{ObjectStore: mem, fail: map[string]bool{key: true}}, slog.New(slog.NewTextHandler(&logs, nil))
+		f.r.Log = slog.New(slog.NewTextHandler(&logs, nil))
 		var rep ExportReport
-		if err := f.r.ExportCleanup(ctx, f.lease, &rep); err != nil {
-			t.Fatal(err)
-		}
-		objs, _ := c.ExportObjects(ctx, a.Job)
-		if rep.Failed != 1 || len(objs) != 1 || objs[0].State != catalog.ObjectDeleting || !f.exists(t, key) {
-			t.Errorf("after a failed deletion: report %+v, rows %+v; want the failure counted and the row deleting", rep, objs)
-		}
-		if strings.Contains(logs.String(), key) || !strings.Contains(logs.String(), a.Job.String()) {
-			t.Errorf("the log %q names the key, or not the job", logs.String())
+		for _, tc := range []struct {
+			err   error
+			cause string
+		}{
+			{fmt.Errorf("delete %s: %s: access denied", key, backend), `error="records: the store failed"`},
+			{fmt.Errorf("delete %s: %s: %w", key, backend, &net.OpError{Op: "read", Net: "tcp", Err: os.ErrDeadlineExceeded}), "timed out"},
+		} {
+			logs.Reset()
+			f.r.Store = &failingDeletes{ObjectStore: mem, fail: map[string]bool{key: true}, err: tc.err}
+			rep = ExportReport{}
+			if err := f.r.ExportCleanup(ctx, f.lease, &rep); err != nil {
+				t.Fatal(err)
+			}
+			objs, _ := c.ExportObjects(ctx, a.Job)
+			if rep.Failed != 1 || len(objs) != 1 || objs[0].State != catalog.ObjectDeleting || !f.exists(t, key) {
+				t.Errorf("after a failed deletion: report %+v, rows %+v; want the failure counted and the row deleting", rep, objs)
+			}
+			line := logs.String()
+			if strings.Contains(line, key) || strings.Contains(line, backend) || !strings.Contains(line, a.Job.String()) || !strings.Contains(line, tc.cause) {
+				t.Errorf("the log %q names the key or the store's text, or not the job and the cause %q", line, tc.cause)
+			}
 		}
 		f.r.Store = mem
 		rep = ExportReport{}

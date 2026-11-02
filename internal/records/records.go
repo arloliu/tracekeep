@@ -36,7 +36,7 @@ const (
 )
 
 // ErrStore is a store failure other than a missing object, without the store's text: the store failed, not the pack.
-var ErrStore = errors.New("records: the store failed to read an object")
+var ErrStore = errors.New("records: the store failed")
 
 // ErrWithheld refuses a read of a withheld capture: outside tracekeep dev, one whose configuration has no policy (T-48).
 var ErrWithheld = errors.New("records: the capture is withheld")
