@@ -81,7 +81,7 @@ bench: ## Run benchmarks in every module
 bench-smoke: ## Run every benchmark once at its small size in every module
 	@$(call in_module,TRACEKEEP_BENCH_SCALE=small go test ./... -run=^$$ -bench=. -benchtime=1x)
 
-bench-catalog: ## Run the catalog's benchmarks on MariaDB in a container into OUT (needs docker; COUNT, BENCHTIME)
+bench-catalog: ## Run the catalog's benchmarks' MariaDB rows in a container into OUT (needs docker; COUNT, BENCHTIME, BENCH, BENCH_PACKAGES)
 	@scripts/catalog.sh bench $(OUT)
 
 bench-catalog-smoke: ## Run the catalog's benchmarks once on MariaDB in a container, failing without it (needs docker)

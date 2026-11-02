@@ -1,6 +1,7 @@
 name: Bench
-# The catalog's benchmarks on MariaDB (650-perf-sec.md, T-54): a base measured twice and a head once in one job, on one runner,
-# judged by benchjudge against the base's own repeatability; started by hand only.
+# The catalog's benchmarks on MariaDB (650-perf-sec.md, T-54), MariaDB's rows only, one job a group of benchmarks:
+# in each, a base measured twice and a head once, on one runner, judged by benchjudge against the base's own repeatability;
+# started by hand only.
 on:
   workflow_dispatch:
     inputs:
@@ -30,8 +31,38 @@ env:
 
 jobs:
   mariadb:
+    name: mariadb (${{ matrix.group }})
     runs-on: ubuntu-latest
-    timeout-minutes: 180
+    timeout-minutes: 360
+    # Every group runs to its end: one group's failure says nothing of another's rows.
+    strategy:
+      fail-fast: false
+      # The groups of the benchmarks reaching MariaDB, each the packages and -bench expression scripts/catalog.sh bench runs.
+      # Together they hold every benchmark of those packages, each in one group (internal/benchscale's TestBenchGroups).
+      matrix:
+        include:
+        # Registration first and alone: its fixed-N passes run only here, and benchjudge requires its MariaDB shapes.
+        - group: registration
+          packages: ./internal/catalog/
+          bench: ^BenchmarkRegisterPack$
+        - group: claim-listing
+          packages: ./internal/catalog/
+          bench: ^BenchmarkRecordListing$
+        - group: listings
+          packages: ./internal/catalog/
+          bench: ^Benchmark(Listings|ListingHistory)$
+        - group: lookups
+          packages: ./internal/catalog/
+          bench: ^Benchmark(Lookups|Resolve)$
+        - group: retention
+          packages: ./internal/catalog/
+          bench: ^Benchmark(AuditWhileRegistering|PruneEvents|DeleteCandidates|EvictHour|EvictMerges)$
+        - group: metrics
+          packages: ./internal/metrics/
+          bench: ^BenchmarkReadCatalog$
+    env:
+      BENCH_PACKAGES: ${{ matrix.packages }}
+      BENCH: ${{ matrix.bench }}
     steps:
     - uses: actions/checkout@v7
       with:
@@ -57,6 +88,7 @@ jobs:
       run: |
         echo "CPU=$(nproc)" >> "$GITHUB_ENV"
         {
+          echo "## ${{ matrix.group }}"
           echo '```'
           echo "base: $(git -C base rev-parse HEAD)"
           echo "head: $(git -C head rev-parse HEAD)"
@@ -67,26 +99,37 @@ jobs:
           echo "filesystem of the work: $(stat -f -c %T "$GITHUB_WORKSPACE")"
           echo "filesystem of the tests' temporary directory: $(stat -f -c %T "${TMPDIR:-/tmp}")"
           echo "filesystem of MariaDB's data: $(sudo stat -f -c %T "$(docker info -f '{{.DockerRootDir}}')")"
-          echo "-cpu $(nproc) -count 10 -benchtime $BENCHTIME, scale $TRACEKEEP_BENCH_SCALE; BenchmarkRegisterPack at 100x, its ranges cells at 1x"
+          echo "packages: $BENCH_PACKAGES; -bench $BENCH; MariaDB's rows only (TRACEKEEP_BENCH_ENGINES=mariadb)"
+          echo "-cpu $(nproc) -count 10 -benchtime $BENCHTIME, scale $TRACEKEEP_BENCH_SCALE"
+          if [ "${{ matrix.group }}" = registration ]; then
+            echo "BenchmarkRegisterPack at 100x, its ranges cells at 1x"
+          fi
           echo '```'
           echo
           echo '| Benchmarks | A synchronization to disk in the timed work |'
           echo '|---|---|'
-          echo '| catalog RegisterPack, AuditWhileRegistering, PruneEvents, EvictHour; RecordListing attributed/new, unattributed/new, unattributed/gone; ingest Acknowledge parked; compact Orphans adopting | yes: catalog commits that write, SQLite at synchronous FULL, MariaDB as innodb_flush_log_at_trx_commit says |'
-          echo '| compact MergePass .../fresh | yes: each healthy scope its archive working file synced, its commit written |'
-          echo '| ingest Flush, FlushDue | yes: the segment working file synced, the registration committed, and on the fs store each object and its directory synced |'
-          echo '| store FSPut | yes: the object and its directory synced |'
-          echo '| compact MergeWrite | yes: the archive working file synced each block |'
-          echo '| compact MergePass .../cycles=10 | no: failing=0 lists candidates only; a failing scope fails in the merge plan before its output is touched and records nothing |'
-          echo '| catalog RecordListing attributed/steady, attributed/gone, unattributed/steady; compact RetainClaimListing (steady) | no: their transactions change no row, the lease check rewriting its row unchanged (SQLite checked: no WAL frame; MariaDB to confirm) |'
-          echo '| ingest Acknowledge inline, claim-check | no per acknowledgement: the embedded bus file store syncs on its own interval |'
-          echo '| catalog Listings, ListingHistory, Lookups, Resolve, DeleteCandidates; metrics ReadCatalog; compact Orphans steady, Compare; ingest Dispose, Batcher, Act, Heartbeat; api, records, service | no: reads, or memory only |'
+          echo '| catalog RegisterPack, AuditWhileRegistering, PruneEvents, EvictHour, EvictMerges; RecordListing attributed/new, unattributed/new, unattributed/gone | yes: catalog commits that write, MariaDB as innodb_flush_log_at_trx_commit says |'
+          echo '| catalog RecordListing attributed/steady, attributed/gone, attributed/tiny, unattributed/steady | no: their transactions change no row, the lease check rewriting its row unchanged (SQLite checked: no WAL frame; MariaDB to confirm) |'
+          echo '| catalog Listings, ListingHistory, Lookups, Resolve, DeleteCandidates; metrics ReadCatalog | no: reads |'
+        } | tee -a "$GITHUB_STEP_SUMMARY"
+
+    # The group's benchmarks in each tree, as go test lists them, so the groups' union can be checked against every MariaDB row.
+    - name: Rows
+      run: |
+        mkdir out
+        for tree in base head; do
+          (cd "$tree" && GOWORK=off go test $BENCH_PACKAGES -run '^$' -list "$BENCH" | grep '^Benchmark' | sort) > "out/rows-$tree.txt"
+        done
+        {
+          echo '```'
+          echo "the group's benchmarks, base | head:"
+          paste -d '|' out/rows-base.txt out/rows-head.txt
+          echo '```'
         } | tee -a "$GITHUB_STEP_SUMMARY"
 
     # The head between the base's two runs, so the base's repeatability spans the head's run.
     - name: Benchmarks
       run: |
-        mkdir out
         (cd base && ../head/scripts/catalog.sh bench ../out/base1.txt)
         (cd head && scripts/catalog.sh bench ../out/head.txt)
         (cd base && ../head/scripts/catalog.sh bench ../out/base2.txt)
@@ -95,7 +138,7 @@ jobs:
       if: always()
       uses: actions/upload-artifact@v7
       with:
-        name: bench-${{ github.run_id }}
+        name: bench-${{ matrix.group }}-${{ github.run_id }}
         path: out/
 
     - name: benchstat
@@ -105,11 +148,31 @@ jobs:
         echo "## the change, base1 against head"
         go run "$BENCHSTAT" base=out/base1.txt head=out/head.txt
 
-    # Fails on a regression or a failed row, and on an inconclusive one (exit 3), which is measured again, never passed;
-    # registration's rows run at a fixed N, the same on every side, and each of its shapes must be measured on MariaDB.
+    # Every listed benchmark has a MariaDB row on its side and no side has a SQLite row: the engine filter held.
+    - name: MariaDB's rows only
+      run: |
+        fail=0
+        for f in base1 head base2; do
+          tree=head; [ "$f" = head ] || tree=base
+          if grep -E '^Benchmark[^ ]*/sqlite(/|-[0-9]+[[:space:]])' "out/$f.txt"; then
+            echo "$f: SQLite rows ran" >&2; fail=1
+          fi
+          while read -r name; do
+            grep -qE "^$name/([^ ]*/)?mariadb(/|-[0-9]+[[:space:]])" "out/$f.txt" || { echo "$f: $name has no MariaDB row" >&2; fail=1; }
+          done < "out/rows-$tree.txt"
+        done
+        exit $fail
+
+    # Fails on a regression or a failed row, and on an inconclusive one (exit 3), which is measured again, never passed.
     - name: Decisions
+      if: matrix.group != 'registration'
+      run: cd head && go run ./cmd/benchjudge ../out/base1.txt ../out/base2.txt ../out/head.txt
+    # Registration's rows run at a fixed N, the same on every side, and each of its shapes must be measured on MariaDB.
+    - name: Decisions of registration
+      if: matrix.group == 'registration'
       run: |
         cd head && go run ./cmd/benchjudge -fixed 'BenchmarkRegisterPack/' \
-          -require 'BenchmarkRegisterPack/evidence/.*/mariadb' -require 'BenchmarkRegisterPack/ranges/.*/mariadb' \
+          -require 'BenchmarkRegisterPack/evidence/.*/mariadb' -require 'BenchmarkRegisterPack/parked/.*/mariadb' \
+          -require 'BenchmarkRegisterPack/ranges/.*/mariadb' \
           -require 'BenchmarkRegisterPack/miss/.*/mariadb' -require 'BenchmarkRegisterPack/hit/.*/mariadb' \
           ../out/base1.txt ../out/base2.txt ../out/head.txt
