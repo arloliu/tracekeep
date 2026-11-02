@@ -203,15 +203,18 @@ the owner may override any before 5.4's spec step lands, which records them as T
 
 30. **The range probes' bound (P2)**: a capture's `pack_ranges` probes (`overlapQuery` `register.go:501`, `heldSeqQuery` `resolve.go:72`, `RecordCopies` `copies.go:28`) bound `seq_from` from above only,
     so on `pack_ranges_capture_seq` they read every earlier range of the capture (MariaDB reads 200,000 for one probe; 13.9 ms a range, `Resolve` 10.4 ms and `RecordCopies` 27 ms at 200k).
-    The capture row gains `max_range_span`, the largest `seq_to - seq_from` of any range ever inserted for it, raised in `insertPack` (registration and merge, both under the capture row) and never lowered,
-    the migration backfilling it from `pack_ranges` on both engines; each probe adds `r.seq_from >= first - span` (floored at 0), which loses no range:
-    a range overlapping `[first, last]` has `seq_to >= first` and `seq_to - seq_from <= span`.
-    The probes then read the ranges within one span of the probed seqs, on the existing index, whatever the optimizer's statistics; a merged hour's range widens the span to an hour's records, still bounded.
-    `heldSeqQuery` becomes `EXISTS`. A second index on `(capture_id, seq_to, seq_from)` serves only probes near the end and depends on the planner choosing it, so it is not added.
+    `pack_ranges` gains a virtual generated column `span = seq_to - seq_from` and an index `pack_ranges_capture_span (capture_id, span)`;
+    each probe adds `r.seq_from >= first - m`, where `m` is the capture's largest stored span (`MAX(span)` for the capture, one seek of that index), which loses no range:
+    a range overlapping `[first, last]` has `seq_to >= first` and `seq_to - seq_from <= m`.
+    The engine maintains the column on every insert, so an older writer during a rollout (`catalog.md` §7.1, expand-then-contract) keeps it true, no backfill runs, and no seeder maintains it;
+    an eviction lowering `m` is correct, since `m` is the largest span still stored. `seq_from` and `seq_to` are signed `bigint`, so `first - m` below zero only widens the bound.
+    `m` and the probe are read in one statement or one snapshot, so a range inserted between them is never missed: `Resolve`'s probe, which runs on the read pool without a snapshot (`resolve.go:61`), takes a snapshot or folds `m` into its statement.
+    The bound makes a bounded index range possible, not chosen: step 9 accepts it by measurement, the probes' plans on both engines before and after `ANALYZE` and MariaDB's rows read, beside their times.
+    `heldSeqQuery` becomes `EXISTS`. If step 3 finds the generated column unsupported by Atlas's `schema.hcl` or by either engine's online `ALTER`, the fallback is an index on `(capture_id, seq_to, seq_from)`, which bounds only probes near the end, and the step says so.
 31. **Registration's evidence in sets (P1)**: one transaction a pack, as now, with every outcome, its precedence and its tombstone reason unchanged (`register.go:410–437`);
     the per-delivery reads become: the capture's `parked` rows over the evidence's seq span in one read on the primary key's prefix (`capture_id = ? AND seq BETWEEN ? AND ?`), matched to the deliveries by version in Go,
     which serves both the resolution's and `readVersionState`'s read; the capture's active termination orders read once, a delivery covered when its incarnation has an order whose cut-off is at or above its stream seq;
-    a covered delivery's held probe through point 30's bound; and `stageParked` updating only the versions that read found `parking` or `parked`, which the capture row keeps unchanged meanwhile.
+    a covered delivery's held probe through point 30's bound in the registration's own transaction; and `stageParked` updating only the versions that read found `parking` or `parked`, which the capture row keeps unchanged meanwhile.
     The inserts of ranges, losses, receipts and claim objects are multi-row, each statement within 900 parameters; nothing commits a chunk on its own.
 32. **The claim listing in bounded transactions (P3)**: `RecordListing` keeps its signature; it reads the recorded claim and unattributed keys on the read pool, and writes only what the listing adds,
     in transactions of at most 1,024 objects, each checking the lease, multi-row; a steady listing writes nothing
@@ -219,19 +222,24 @@ the owner may override any before 5.4's spec step lands, which records them as T
     The unattributed sweep runs only after every chunk committed, paged by key, each page deleting rows absent from the whole listing or attributed since, under the lease;
     a failure anywhere before it skips the sweep, so a key in a later chunk is never forgotten, and the rows added so far stay (each is idempotent).
     Attributed rows absent from a listing stay, as now.
+    A listing that writes nothing still verifies the lease (`VerifyLease`, `lease.go:83`), so a stale holder gets `ErrLeaseLost` as it does now (`claims.go:47`);
+    the count returned is the claim rows the committed chunks inserted, and zero with the error on any failure, as now; a retry inserts only what is still missing.
 33. **Deletion and eviction (P4)**, the measured choice among point 26's candidates, which it supersedes:
     the deletable merges' `CASE` deadline splits into two sargable branches (`delete_at <> 0 AND delete_at <= now`, `delete_at = 0 AND at <= now - D`) over a new `merges (outcome, delete_at, at)` index, legacy zero deadlines keeping their process-D fallback;
-    eviction selects an hour's conflicts by two indexed joins over new `conflicts (capture_id, pack_id)` and `conflicts (capture_id, other_pack_id)`, and its merges by a new `merges (capture_id, hour)`, deleting by key in batches, `EvictHour` staying one transaction.
+    eviction selects an hour's conflicts by two indexed joins over new `conflicts (capture_id, pack_id)` and `conflicts (capture_id, other_pack_id)`, and its merges by a new `merges (capture_id, hour)`, deleting by key in batches, `EvictHour` staying one transaction;
+    both accepted as point 30's is, by their plans before and after `ANALYZE`, MariaDB's rows read and their times.
     Closed here with their numbers: the audit listings by capture and by actor (no production caller; MariaDB's scans 114 and 37 ms; an index would tax every audit append),
     and the prune (237 ms at a million events is mostly its 500,000 deletes, not the floor's 16 ms scan), measured again after P1–P3.
 34. **Listings batched, not windowed (P5)**: `Completeness` answers a whole capture (`completeness.go:86`, `catalog.md` §7.3), so no time window clips its inputs without a contract change.
     `ListPacks` and `ListDevices` read the seven inputs for chunks of 128 captures at a time (`capture_id IN`), in one snapshot, classifying outside it where the buffered input allows,
     `ListDevices` keeping its early answer for a device with a gap (on MariaDB a listing over 100 captures now costs about 2.4 ms a capture). Maintained coverage summaries wait until the batched listing still costs.
     The "windowed" `Completeness` benchmark passes no window (`reads_bench_test.go:136–147`): it is fixed or dropped, and the listing benchmarks assert the complete answer, not counts.
-35. **The API's audit write (P6)**: `Catalog.Audit` takes its connection explicitly and records the wait in `catalog_audit_wait_seconds` (a histogram, labels engine and outcome), its failure wrapping `ErrAudit`;
-    the API's standalone audit calls (PackURL, Digest, Restore) run under a 1 s deadline within the caller's own; no priority over ingest, since the gate's `PackURL` already holds at 5.78 ms p99.
-36. **Schema in one step**: point 30's column, point 33's three indexes and their backfill are one migration per engine, generated from `schema.hcl` (`scripts/catalog.sh diff`), landed before any code step;
-    MariaDB adds each index `ALGORITHM=NOCOPY, LOCK=NONE`; no new index holds a wide object key; `utf8mb4_nopad_bin` unchanged.
+35. **The API's audit write (P6)**: `Catalog.Audit` takes its connection explicitly and records the wait for it in `catalog_audit_wait_seconds`, a histogram labelled `engine` and `outcome` (`acquired`, `deadline`, `canceled`, `error`), timed from the request for the connection to its acquisition or failure, not the insert; its failure wraps `ErrAudit`.
+    The API's standalone audit calls (`PackURL`, `Digest`, `Restore`, and `GetExport`'s URL, `export.go:124`) go through one helper that runs the write under a 1 s deadline within the caller's own,
+    each failure answered as now (`internal`, T-53), `Restore` still clearing its recovered bytes, and no URL or payload returned; no priority over ingest, since the gate's `PackURL` already holds at 5.78 ms p99.
+36. **Schema in one step**: point 30's generated column and index and point 33's four indexes are one migration per engine, generated from `schema.hcl` (`scripts/catalog.sh diff`), landed before any code step, with no backfill;
+    MariaDB adds the virtual column and each index online (`ALGORITHM=NOCOPY, LOCK=NONE`, *to confirm* by step 3 for the index on the virtual column), SQLite by `ALTER TABLE ADD COLUMN` of a virtual column and `CREATE INDEX`;
+    old writers name their columns (`register.go:450`), so the column breaks no insert; no new index holds a wide object key; `utf8mb4_nopad_bin` unchanged.
 37. **Before and after**: 5.4's base is the branch after step 2, which adds the benchmark rows the changes need (a parked share in the evidence, many captures with few probes, few due merges among many, a held probe far from the end), so both sides run them; a local sitting runs base, head and base again for every row 5.4 touches (P1–P6 and the rows the inconclusive list names among them),
     and `bench.yaml` runs the catalog's on MariaDB with the same base and head; a regression under point 21 fails the step.
     `bench.yaml` as 5.3 left it cannot finish one pass in its 180 minutes (*Baselines*), so step 2 narrows it before any comparison:
@@ -239,6 +247,9 @@ the owner may override any before 5.4's spec step lands, which records them as T
     and one job per group of benchmarks, each running base, head and base: registration first and alone (`benchjudge -require`s its MariaDB shapes, and its fixed-N pass has never completed on MariaDB),
     then the claim listing, the listings, the lookups and `Resolve`, the audit, prune, deletion and eviction, and the metrics fleet;
     at `medium`, each job within the hosted runner's 360-minute limit (*to confirm*: step 2 records each job's time, and a group that does not fit is split again, never run with fewer samples).
+    `scripts/catalog.sh bench` takes the group's packages and `-bench` expression, and appends registration's fixed-N passes only in the registration group; `benchjudge -require`s registration's shapes only there;
+    each matrix job uploads its samples under its own name and records its rows; the test and smoke commands keep their package list.
+    Step 2 also adds an eviction benchmark with many unaffected merges and a small chain of merges in the evicted hour, restoring the same population outside the timer and asserting the merges and inputs kept and deleted by identity.
 38. **The gate's write-connection case** (point 27) runs after steps 2–6 on the branch: 1,000 audited `PackURL` calls at the offered rate, p99 within 2 s, enforced.
 
 Not in this phase: new features, go-secs' changes (point 4), the eqp-hub side of phase G, and a `producer/` tag, which stays the owner's call.
@@ -259,18 +270,19 @@ Not in this phase: new features, go-secs' changes (point 4), the eqp-hub side of
 Work on the branch `perf/phase-5/catalog`, one commit per step, the spec first;
 the branch merges by pull request once the whole phase passes an external post-implementation review.
 Every change runs its tests on both engines and has its before and after under point 37; a change that is not measured faster where the *Baselines* row named it is dropped, not merged.
-Steps 1–3 land in order; steps 4–8 then touch separate files and go to separate implementers, steps 4 and 5 together since both are registration's.
+Steps 1–3 land in order; steps 4–8 then go to separate implementers, steps 4 and 5 together since both are registration's;
+steps 4 and 8 both edit `resolve.go` (`heldSeqQuery`, `Catalog.Audit`), so step 8 moves `Audit` and its helper to `audit.go` in its first commit and rebases on step 4.
 
 | Step | Scope | State |
 |---|---|---|
-| 1 | spec, with T-55 recording points 30 to 38: `catalog.md` §6 (`captures.max_range_span`; the `merges` and `conflicts` indexes), §7.2 (`RecordListing` in bounded transactions, the sweep last), `operations.md` §10.4 (`catalog_audit_wait_seconds`), `api.md` (the audit write's deadline) | pending |
-| 2 | benchmarks (point 37): the evidence with a parked share; a held probe far from the end; few due merges among many; the listings asserting complete answers and the "windowed" `Completeness` row fixed; `bench.yaml` narrowed and split, its engine filter checked to skip SQLite's rows and to run every `mariadb` row, and a run of it on this step recorded with each job's time | pending |
-| 3 | schema (point 36): `schema.hcl`, one migration per engine with the backfill, `migrate` tests on both engines that the backfilled span equals the largest stored range | pending |
-| 4 | P2 (point 30): the span raised in `insertPack`, the three probes bounded, held as `EXISTS`. Failing cases first: a range overlapping from far below found, nested and equal ranges, a merged hour's wide range, cross-hour conflicts, a held seq at the start of a long history | pending |
+| 1 | spec, with T-55 recording points 30 to 38: `catalog.md` §7.1 (`pack_ranges.span` and its index; the `merges` and `conflicts` indexes), §7.2 (`RecordListing` in bounded transactions, the lease verified when nothing is written, the sweep last), `compactor.md` §8.3 (the listing no longer one transaction), `operations.md` §10.4 (`catalog_audit_wait_seconds` and its outcomes), `api.md` (the audit write's deadline, `GetExport` included) | pending |
+| 2 | benchmarks (point 37): the evidence with a parked share; a held probe far from the end; few due merges among many; eviction with a merge chain among unaffected merges; the listings asserting complete answers and the "windowed" `Completeness` row fixed; `bench.yaml` and `scripts/catalog.sh bench` narrowed and split, its engine filter checked to skip SQLite's rows and to run every `mariadb` row, each group's rows listed and their union checked against every `mariadb` row, and a run of it on this step recorded with each job's time | pending |
+| 3 | schema (point 36): `schema.hcl`, one migration per engine, `migrate` tests on both engines that a migrated catalog with stored ranges answers each range's `span`, that an insert naming the old columns gets it, and that the migration applies online on MariaDB; the fallback of point 30 taken here if the column is not supported | pending |
+| 4 | P2 (point 30): the three probes bounded by the stored span, held as `EXISTS`. Failing cases first: a range overlapping from far below found, nested, equal and singleton ranges, seq 0 and the largest seq, a merged hour's wide range and the bound after it is evicted, cross-hour conflicts, a held seq at the start of a long history, a wide range inserted by a barrier between `Resolve`'s span and its probe, rows inserted directly by the seeders | pending |
 | 5 | P1 (point 31): the evidence read in sets. Failing cases first: every outcome and tombstone reason against the per-delivery path, a parked version in each state, an order's cut-off at, above and below a stream seq, two incarnations, a refusal in the last delivery, statements at the 900-parameter boundary | pending |
-| 6 | P3 (point 32): the claim listing bounded. Failing cases first: a key only in the last chunk never forgotten, a failure between chunks skipping the sweep, a lost lease, a steady listing writing nothing, survivors and deletable rows kept | pending |
+| 6 | P3 (point 32): the claim listing bounded. Failing cases first: a key only in the last chunk never forgotten, a key repeated across chunks, a failure between chunks skipping the sweep and its retry, a key attributed after the read and before its sweep page kept, a lease lost before, between chunks and between sweep pages, an expired lease with an empty and an unchanged listing refused, a steady listing writing nothing, survivors and deletable rows kept | pending |
 | 7 | P4 (point 33): deletion and eviction. Failing cases first: legacy and current deadlines at their boundary, both sides of a conflict, cross-hour conflicts' revisions and events, a merge chain, a lost lease rolling back | pending |
-| 8 | P5 and P6 (points 34, 35): listings batched at 127, 128 and 129 captures with complete answers equal to the unbatched ones and the registration barriers across chunk boundaries; the audit's deadline and wait histogram, a held writer expiring an audit with no row written later | pending |
+| 8 | P5 and P6 (points 34, 35): listings batched at 127, 128 and 129 captures with complete answers equal to the unbatched ones and the registration barriers across chunk boundaries; the audit's deadline and wait histogram for all four callers, a held writer expiring an audit with no row written later, an earlier parent deadline, one observation an attempt with its outcome | pending |
 | 9 | measurement (points 37, 38): the local sitting and `bench.yaml` on MariaDB, base against head, recorded in *Baselines* under a 5.4 heading; the write-connection gate run and recorded; a P row its numbers do not support is reverted and closed with them | pending |
 
 Carried to 5.5 (P10): the traffic consumer's heartbeat sends an in-progress acknowledgement for every held message each beat (`ingester.go:276`, `Heartbeat/held=10000` 3.01 ms),
