@@ -128,7 +128,7 @@ func (s *Server) attempt(parent context.Context, cl *catalog.Claim, claimed time
 func (s *Server) runAttempt(ctx context.Context, dir string, cl *catalog.Claim) (string, error) {
 	a := cl.Attempt
 	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return "", err
+		return "", workFailed(err)
 	}
 	var req exportRequest
 	if err := json.Unmarshal(cl.Job.Request, &req); err != nil {
@@ -154,7 +154,7 @@ func (s *Server) runAttempt(ctx context.Context, dir string, cl *catalog.Claim) 
 	}
 	f, err := os.Open(path)
 	if err != nil {
-		return "", err
+		return "", workFailed(err)
 	}
 	defer f.Close()
 	if err := s.Store.Put(putCtx, key, f, size); err != nil {

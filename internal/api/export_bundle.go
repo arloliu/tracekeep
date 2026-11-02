@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"slices"
@@ -44,6 +45,44 @@ var errNoHour = errors.New("an hour without a scope")
 
 // errBounds fails a job whose bundle passes its bounds.
 var errBounds = errors.New("the export passes its bounds")
+
+// errWorkFile is a failure of the attempt's own work files, which fails the attempt as a store's does, never a pack's (api.md §10.1 *Exports*).
+var errWorkFile = errors.New("the export's work file failed")
+
+// workFile is an export attempt's work file, as os.Create returns it.
+type workFile interface {
+	io.Writer
+	io.Seeker
+	Sync() error
+	Close() error
+}
+
+// create creates the attempt's work file at path.
+func (s *Server) create(path string) (workFile, error) {
+	if s.createWork != nil {
+		return s.createWork(path)
+	}
+	f, err := os.Create(path)
+	if err != nil {
+		return nil, err
+	}
+
+	return f, nil
+}
+
+// workFailed marks err a failure of the attempt's work files, its cause kept without the path it names;
+// a bound passed and an error already marked are returned as they are.
+func workFailed(err error) error {
+	if errors.Is(err, errBounds) || errors.Is(err, errWorkFile) {
+		return err
+	}
+	var pe *fs.PathError
+	if errors.As(err, &pe) {
+		err = pe.Err
+	}
+
+	return fmt.Errorf("%w: %w", errWorkFile, err)
+}
 
 // exportRequest is a job's request as its row keeps it.
 type exportRequest struct {
@@ -119,7 +158,6 @@ type bundle struct {
 	bounds ExportBounds
 	dir    string
 	tar    *tar.Writer
-	file   *os.File
 	// exported, bytes and written count what the attempt exported and wrote, retries included.
 	exported int
 	bytes    int64
@@ -134,13 +172,18 @@ func (s *Server) buildBundle(ctx context.Context, job tracepack.UUID, req *expor
 		return "", 0, err
 	}
 	path := filepath.Join(dir, "bundle.tar")
-	f, err := os.Create(path)
+	f, err := s.create(path)
 	if err != nil {
-		return "", 0, fmt.Errorf("api: export work file: %w", err)
+		return "", 0, workFailed(err)
 	}
-	defer f.Close()
+	open := true
+	defer func() {
+		if open {
+			_ = f.Close()
+		}
+	}()
 	b := &bundle{
-		s: s, bounds: s.Exports.Bounds.withDefaults(), dir: dir, file: f,
+		s: s, bounds: s.Exports.Bounds.withDefaults(), dir: dir,
 		manifest: manifest{
 			Kind: "canonical", Job: job.String(), Selector: req.Selector,
 			Note: "each pack is exported whole, so a pack's file holds the records of its hour outside the window too",
@@ -169,14 +212,21 @@ func (s *Server) buildBundle(ctx context.Context, job tracepack.UUID, req *expor
 		return "", 0, err
 	}
 	if err := b.tar.Close(); err != nil {
-		return "", 0, err
+		return "", 0, workFailed(err)
 	}
 	size, err := f.Seek(0, io.SeekEnd)
 	if err != nil {
-		return "", 0, err
+		return "", 0, workFailed(err)
+	}
+	if err := f.Sync(); err != nil {
+		return "", 0, workFailed(err)
+	}
+	open = false
+	if err := f.Close(); err != nil {
+		return "", 0, workFailed(err)
 	}
 
-	return path, size, f.Sync()
+	return path, size, nil
 }
 
 // capture adds c's hours of [from, to).
@@ -237,11 +287,11 @@ func (b *bundle) hour(ctx context.Context, capture tracepack.UUID, h int64) (*ma
 			return mh, nil
 		}
 		hourDir := filepath.Join(b.dir, "hour")
-		if err := os.RemoveAll(hourDir); err != nil {
+		if err := removeWork(hourDir); err != nil {
 			return nil, err
 		}
 		if err := os.Mkdir(hourDir, 0o700); err != nil {
-			return nil, err
+			return nil, workFailed(err)
 		}
 		gone, err := b.packs(ctx, &rs, hourDir, mh)
 		switch {
@@ -256,7 +306,7 @@ func (b *bundle) hour(ctx context.Context, capture tracepack.UUID, h int64) (*ma
 				mh.LeftOut = append(mh.LeftOut, leftOut{PackID: p.ID.String(), Reason: "its object is gone, again after the hour's read set was read again"})
 			}
 
-			return mh, os.RemoveAll(hourDir)
+			return mh, removeWork(hourDir)
 		default:
 		}
 		for _, p := range mh.Packs {
@@ -265,7 +315,7 @@ func (b *bundle) hour(ctx context.Context, capture tracepack.UUID, h int64) (*ma
 			}
 		}
 
-		return mh, os.RemoveAll(hourDir)
+		return mh, removeWork(hourDir)
 	}
 }
 
@@ -299,8 +349,8 @@ func (b *bundle) packs(ctx context.Context, rs *catalog.ReadSet, hourDir string,
 			return true, nil
 		case errors.Is(err, errBounds) || ctx.Err() != nil:
 			return false, cmp.Or(ctx.Err(), err)
-		case errors.Is(err, records.ErrStore) || errors.Is(err, context.DeadlineExceeded):
-			// The store failed, not the pack: the attempt fails, and the next, under a new fence, exports it.
+		case errors.Is(err, records.ErrStore) || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, errWorkFile):
+			// The store or the work file failed, not the pack: the attempt fails, and the next, under a new fence, exports it.
 			return false, fmt.Errorf("export pack %s: %w", p.ID, err)
 		case err != nil:
 			mh.LeftOut = append(mh.LeftOut, leftOut{PackID: p.ID.String(), Reason: err.Error()})
@@ -333,13 +383,17 @@ func (b *bundle) pack(ctx context.Context, rs *catalog.ReadSet, p *catalog.ReadP
 	} else if err != nil {
 		return mp, false, err
 	}
-	f, err := os.Create(path)
+	f, err := b.s.create(path)
 	if err != nil {
-		return mp, false, err
+		return mp, false, workFailed(err)
 	}
-	res, err := tracepack.ExportJSONL(ctx, r, &limited{w: f, b: b})
-	if cerr := f.Close(); err == nil {
-		err = cerr
+	lw := &limited{w: f, b: b}
+	res, err := tracepack.ExportJSONL(ctx, r, lw)
+	if lw.err != nil {
+		err = lw.err // the bound or the work file, whatever the exporter made of it
+	}
+	if cerr := f.Close(); err == nil && cerr != nil {
+		err = workFailed(cerr)
 	}
 	if err != nil {
 		_ = os.Remove(path)
@@ -359,44 +413,68 @@ func (b *bundle) pack(ctx context.Context, rs *catalog.ReadSet, p *catalog.ReadP
 	return mp, false, nil
 }
 
-// limited counts what the attempt writes against its work directory's bound.
+// limited counts what the attempt writes against its work directory's bound; err is its first failure, the bound's or the work file's.
 type limited struct {
-	w io.Writer
-	b *bundle
+	w   io.Writer
+	b   *bundle
+	err error
 }
 
 func (l *limited) Write(p []byte) (int, error) {
 	if l.b.written+int64(len(p)) > l.b.bounds.MaxBundleBytes {
-		return 0, fmt.Errorf("%w: a work directory past %d bytes", errBounds, l.b.bounds.MaxBundleBytes)
+		return 0, l.failed(fmt.Errorf("%w: a work directory past %d bytes", errBounds, l.b.bounds.MaxBundleBytes))
 	}
 	n, err := l.w.Write(p)
 	l.b.written += int64(n)
+	if err != nil {
+		err = l.failed(workFailed(err))
+	}
 
 	return n, err
 }
 
-// addFile adds the file at path to the tar under name.
+func (l *limited) failed(err error) error {
+	if l.err == nil {
+		l.err = err
+	}
+
+	return err
+}
+
+// addFile adds the work file at path to the tar under name.
 func (b *bundle) addFile(name, path string) error {
 	f, err := os.Open(path)
 	if err != nil {
-		return err
+		return workFailed(err)
 	}
 	defer f.Close()
 	st, err := f.Stat()
 	if err != nil {
-		return err
+		return workFailed(err)
 	}
 
 	return b.add(name, f, st.Size())
 }
 
+// add adds size bytes of r to the tar under name; every failure is the work files'.
 func (b *bundle) add(name string, r io.Reader, size int64) error {
 	if err := b.tar.WriteHeader(&tar.Header{Name: name, Mode: 0o644, Size: size, Format: tar.FormatPAX}); err != nil {
-		return err
+		return workFailed(err)
 	}
-	_, err := io.Copy(b.tar, r)
+	if _, err := io.Copy(b.tar, r); err != nil {
+		return workFailed(err)
+	}
 
-	return err
+	return nil
+}
+
+// removeWork removes the work directory dir.
+func removeWork(dir string) error {
+	if err := os.RemoveAll(dir); err != nil {
+		return workFailed(err)
+	}
+
+	return nil
 }
 
 // jsonlSchema is the JSONL schema of a pack of format_minor m.

@@ -18,6 +18,7 @@ import (
 	"github.com/arloliu/tracekeep/internal/catalog"
 	"github.com/arloliu/tracekeep/internal/keys"
 	"github.com/arloliu/tracekeep/internal/procconfig"
+	"github.com/arloliu/tracekeep/internal/records"
 	"github.com/arloliu/tracekeep/internal/store"
 	tkv1 "github.com/arloliu/tracekeep/proto/tracekeep/v1"
 )
@@ -103,6 +104,9 @@ func (s *Server) restoreRecord(ctx context.Context, m *tkv1.RestoreRequest) (*co
 	switch {
 	case errors.Is(err, errConflict):
 		return nil, restoreConflict, conflict(capture, seq)
+	case errors.Is(err, tracepack.ErrReadLimit):
+		// Never a comparison of part (masking-keys.md §9 *Bounds*).
+		return nil, restoreExhausted, connect.NewError(connect.CodeResourceExhausted, fmt.Errorf("restore %s: %w", at, err))
 	case err != nil:
 		return nil, restoreUnavailable, dependency(connect.CodeUnavailable, msgStore, fmt.Errorf("restore %s: %w", at, err))
 	}
@@ -225,6 +229,9 @@ func (s *Server) version(ctx context.Context, capture tracepack.UUID, seq uint64
 		return nil, fmt.Errorf("compare the copies: %w", err)
 	}
 	for _, d := range res.Incomplete {
+		if d.Reason == tracepack.IncompleteReasonLimit {
+			return nil, fmt.Errorf("compare the copies: incomplete: %v: %w", d.Reason, tracepack.ErrReadLimit)
+		}
 		if d.Reason != tracepack.IncompleteReasonCoverage && d.Reason != tracepack.IncompleteReasonCrashGap {
 			return nil, fmt.Errorf("compare the copies: incomplete: %v", d.Reason)
 		}
@@ -245,15 +252,16 @@ func (v *copyOf) equal(o *copyOf) bool {
 		reflect.DeepEqual(v.entries, o.entries) && reflect.DeepEqual(v.policy, o.policy)
 }
 
-// openCopy opens c's pack, refusing one of another capture; the caller closes the object.
+// openCopy opens c's pack through the records reader, whose store errors name no key, refusing one of another capture;
+// the caller closes the object.
 func (s *Server) openCopy(ctx context.Context, capture tracepack.UUID, c catalog.Copy) (store.Object, *tracepack.Reader, error) {
-	obj, err := s.Store.Open(ctx, c.Key)
+	obj, err := records.Open(ctx, s.Store, c.Key)
 	if err != nil {
 		return nil, nil, fmt.Errorf("open pack %s: %w", c.Pack, err)
 	}
-	r, err := tracepack.Open(ctx, obj, obj.Size(), tracepack.ReaderOptions{})
+	r, err := tracepack.Open(ctx, obj, obj.Size(), s.restoreReader)
 	if err == nil && r.Header().CaptureID != capture {
-		err = errors.New("of another capture")
+		err = errOtherCapture
 	}
 	if err != nil {
 		_ = obj.Close()
@@ -289,6 +297,11 @@ func readCopy(ctx context.Context, r *tracepack.Reader, seq uint64, c catalog.Co
 
 		return nil
 	})
+	for _, d := range res.Incomplete {
+		if err == nil && d.Reason == tracepack.IncompleteReasonLimit {
+			err = fmt.Errorf("incomplete: %v: %w", d.Reason, tracepack.ErrReadLimit)
+		}
+	}
 	if err == nil && len(res.Incomplete) > 0 && len(found) == 0 {
 		err = fmt.Errorf("incomplete: %v", res.Incomplete[0].Reason)
 	}
