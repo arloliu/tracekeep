@@ -23,8 +23,9 @@ The review reports, the owner's decision brief and the seed's last text (v21) ar
 | `glossary.md` | living | draft | terms and tunables, with their defining sections |
 | `tracekeep-decisions.md` | living | draft | rulings relied on, the owner's decisions T-1 onward, service defaults |
 | `proposals/p1-parked-replay.md` | finite | deferred | an early retry of a capture's parked messages, withdrawn by T-40 |
+| `proposals/p3-host-log-feed.md` | finite | draft | ingesting an equipment host's SML text log, routed by the log pipeline, as `log` captures |
 
-The next free proposal ID is P3.
+The next free proposal ID is P4.
 
 ## Read order
 
@@ -64,4 +65,4 @@ Where a ruling already settles a point, the specs apply it and do not re-derive 
 Facts about eqp-hub are as of its `develop` branch at fc67e5f;
 facts about nats.go are as of v1.55.0, the version the SDK requires, and about nats-server as of v2.15.1, the version `internal/testbus` embeds (T-19).
 
-Next free proposal ID: P3.
+Next free proposal ID: P4.
