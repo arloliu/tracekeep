@@ -68,8 +68,9 @@ func (c *Catalog) Resolve(ctx context.Context, v *VersionKey, incarnation, strea
 const activeOrderQuery = `SELECT action_id FROM termination_orders
 		WHERE capture_id = ? AND incarnation_id = ? AND state = 'active' AND cut_off >= ? ORDER BY action_id LIMIT 1`
 
-// heldSeqQuery counts the ranges of a capture holding a seq, its arguments the capture and the seq twice.
-const heldSeqQuery = `SELECT COUNT(*) FROM pack_ranges WHERE capture_id = ? AND seq_from <= ? AND seq_to >= ?`
+// heldSeqQuery reports whether a range of a capture holds a seq, its arguments the capture, the seq three times and the capture,
+// bounded by spanBound in its own statement, so the read pool needs no snapshot.
+const heldSeqQuery = `SELECT EXISTS (SELECT 1 FROM pack_ranges r WHERE r.capture_id = ? AND r.seq_from <= ? AND r.seq_to >= ?` + spanBound + `)`
 
 // resolveIn is Resolve on q, a transaction's or the read pool; it also returns the action id of the order that covers the message.
 func resolveIn(ctx context.Context, q sqlx.QueryerContext, v *VersionKey, incarnation, streamSeq int64) (Resolution, string, error) {
@@ -93,12 +94,13 @@ func resolveIn(ctx context.Context, q sqlx.QueryerContext, v *VersionKey, incarn
 		// An evicted hour's seqs are no longer held, so an order still covers them.
 		// shortcut: pack_ranges records seqs, not versions, so another version of a held seq also reads staged;
 		// accepted since the operator ended the capture; upgrade to a per-version receipt if that loss ever matters.
-		var held int
-		err := sqlx.GetContext(ctx, q, &held, heldSeqQuery, v.Capture[:], int64(v.Seq), int64(v.Seq))
+		var held bool
+		seq := int64(v.Seq)
+		err := sqlx.GetContext(ctx, q, &held, heldSeqQuery, v.Capture[:], seq, seq, seq, v.Capture[:])
 		switch {
 		case err != nil:
 			return 0, "", fmt.Errorf("catalog: resolve %s.%d: %w", v.Capture, v.Seq, err)
-		case held > 0:
+		case held:
 			return ResolvedStaged, "", nil
 		}
 

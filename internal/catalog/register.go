@@ -496,10 +496,16 @@ func (c *Catalog) upsertScope(ctx context.Context, tx *sqlx.Tx, p *Pack) (scopeC
 	return ch, err
 }
 
+// spanBound bounds a probe of a capture's ranges r from below (catalog.md §7.1, T-55):
+// a range meeting seqs at or above first has seq_to >= first and a span of at most the capture's largest stored one,
+// so it starts at or above first minus that span, which the probe's own statement reads, so no range stored before it is missed.
+// Its arguments are first and the capture; SQL subtracts in signed BIGINT, and a capture with no range has no span and matches nothing.
+const spanBound = ` AND r.seq_from >= ? - (SELECT MAX(m.span) FROM pack_ranges m WHERE m.capture_id = ?)`
+
 // overlapQuery finds the ranges of a capture's other live packs overlapping a range,
-// its arguments the capture, the pack, and the range's last and first seq.
+// its arguments the capture, the pack, the range's last and first seq, then spanBound's: the first seq and the capture.
 const overlapQuery = `SELECT r.pack_id, r.seq_from, r.seq_to, k.hour FROM pack_ranges r JOIN packs k ON k.pack_id = r.pack_id
-			WHERE r.capture_id = ? AND r.pack_id <> ? AND k.state <> 'deleted' AND r.seq_from <= ? AND r.seq_to >= ?`
+			WHERE r.capture_id = ? AND r.pack_id <> ? AND k.state <> 'deleted' AND r.seq_from <= ? AND r.seq_to >= ?` + spanBound
 
 // recordConflicts writes the conflicts the batch split, confirmed, and a suspect for every range of another live pack of the capture,
 // in any hour, that overlaps one of the pack's (ingest.md §6.2);
@@ -520,7 +526,7 @@ func (c *Catalog) recordConflicts(ctx context.Context, tx *sqlx.Tx, p *Pack, own
 			To   int64  `db:"seq_to"`
 			Hour int64  `db:"hour"`
 		}
-		err := tx.SelectContext(ctx, &overlaps, overlapQuery, p.Capture[:], p.ID[:], int64(rg.SeqTo), int64(rg.SeqFrom))
+		err := tx.SelectContext(ctx, &overlaps, overlapQuery, p.Capture[:], p.ID[:], int64(rg.SeqTo), int64(rg.SeqFrom), int64(rg.SeqFrom), p.Capture[:])
 		if err != nil {
 			return nil, err
 		}

@@ -39,7 +39,7 @@ type planned struct {
 }
 
 // TestExplainPlans logs the plans of the statements whose predicates may lack an index (P4's five, the eviction's merges deletes),
-// the registration's two probes, the completeness inputs and the capture's largest span, over a small seed on both engines:
+// the range probes (the registration's two and RecordCopies' two), the completeness inputs and the capture's largest span, over a small seed on both engines:
 // SQLite's EXPLAIN QUERY PLAN and MariaDB's EXPLAIN FORMAT=JSON, one block per statement. It asserts no plan.
 func TestExplainPlans(t *testing.T) {
 	t.Parallel()
@@ -114,8 +114,10 @@ func seedPlans(tb testing.TB, c *Catalog, s planSeed) []planned {
 		{name: "evictConflicts delete", query: `DELETE` + evictConflictsWhere, args: []any{id, int64(1), id, int64(1)}},
 		{name: "evictMergeInputsQuery", query: evictMergeInputsQuery, args: []any{id, int64(2)}},
 		{name: "evictMergesQuery", query: evictMergesQuery, args: []any{id, int64(2)}},
-		{name: "overlapQuery", query: overlapQuery, args: []any{id, other[:], top, top - 9}},
-		{name: "heldSeqQuery", query: heldSeqQuery, args: []any{id, top, top}},
+		{name: "overlapQuery", query: overlapQuery, args: []any{id, other[:], top, top - 9, top - 9, id}},
+		{name: "heldSeqQuery", query: heldSeqQuery, args: []any{id, top, top, top, id}},
+		{name: "copiesInHourQuery", query: copiesInHourQuery, args: []any{id, top, top, s.hours, top, id}},
+		{name: "copiesQuery", query: copiesQuery, args: []any{id, top, top, top, id, int64(10)}},
 		{name: "frontierQuery", query: frontierQuery, args: []any{id}},
 		{name: "retainedQuery", query: retainedQuery, args: []any{id}},
 		{name: "evictedQuery", query: evictedQuery, args: []any{id}},
