@@ -102,8 +102,8 @@ the owner may override any before 5.2's spec step lands, which records them as T
     rotations and the log lines the sink has no room for (`log_lines_dropped_total`, a line still queued when the sink stops included) are counted by atomic adds where they happen, the lifecycle's lock held or not, never by a call into the integrator there;
     the publisher reports them with the rest, outside every lock.
     `Close` cuts off emission in this order: it stops the publisher, the lifecycle's workers and the fault worker, closes the bus connection it owns (an injected one's publisher only cleaned up, as today), and marks the producer closed;
-    an emission is admitted under a read lock held across its check of that mark and its enqueue or drop count, none of which blocks, and the mark is set under the write lock,
-    so every emission admitted before the mark has settled when it is set, and one after it (a late callback, the unjoined first dial) is discarded uncounted, which `Close`'s documentation says;
+    an emission adds itself to an in-flight count, checks that mark, enqueues or counts its drop, none of which blocks, and leaves the count; `Close` sets the mark, then waits for the count to reach zero,
+    so every emission that saw no mark has settled before what follows, and one that sees it (a late callback, the unjoined first dial) is discarded uncounted, which `Close`'s documentation says;
     the sink then stops, counting every line still queued as dropped, and `Close` reports once more on its own goroutine, before the sink's last apply, so the counts it reports are final; a second or concurrent `Close` does none of it again.
     No alert is added for panics; the runbook reads the counter.
     The chart's gateway rules keep their fallback for a gateway on an SDK before this change (no `producer/` tag is cut in this phase).
