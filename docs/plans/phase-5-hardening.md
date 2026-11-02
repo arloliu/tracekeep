@@ -231,7 +231,7 @@ A plan or a default this section states from reading the code, not from a run, i
 | 8 | the compactor (`internal/compact`): the merge writer over 2, 12 and 64 inputs of 1,000 and 10,000 records, masked inputs at a fixed count below the merge's limit; the merge pass with 0, 1 and 10 failing scopes, recording the scopes attempted, failed and merged each cycle with its time, freshly seeded and over ten cycles that keep their failures (P17); the conflict check over two overlapping packs of 1,000, 10,000 and 100,000 records (P15); the orphan pass over 1,000, 10,000 and 100,000 objects, steady and adopting (P16); a retention cycle's claim listing (P3) | done (#70) |
 | 9 | the EXPLAIN harness (point 26), in package `catalog`: P4's five predicates, P2's two probes, P5's completeness inputs and the eviction's `merges` scan, on both engines; a small seed always, logging plans, and a large seed under `TRACEKEEP_EXPLAIN` that records SQLite's plans with and without `ANALYZE` and MariaDB's rows read (`ANALYZE FORMAT=JSON`, inside a rolled-back transaction for a statement that writes); no assertion until 5.4 | done (#70) |
 | 10 | the load harness (point 27) in `internal/service`: the sweep and the offered rate; and the `PackURL` measurement 5.4's gate runs, recording p50, p99, the calls made, succeeded, superseded and failed, the backlog's minima and the made and published rates. Its analysis is checked first on recorded series: a bounded sawtooth and a phase-shifted one (sustained); a rising one, one rising by 1% of a window's records a window, a publisher missing its offered rate, producers whose ordinary ring grows while reserved records publish, and two points whose producers' counters start from different origins (each judged on its own deltas); a sustained sweep followed by a `PackURL` measurement whose ingest is not sustained, a run reaching its calls with fewer than ten flushes, and 1,000 fast successes beside one deadline (each failing); two tools are checked admitted as two captures | done (#70) |
-| 11 | baselines: every benchmark at its three sizes locally and the catalog's on MariaDB through `bench.yaml`, each sitting with its repeatability, step 9's plans and step 10's sweep, all recorded in *Baselines* below; a performance row 5.5 then shows not worth its change is closed there with its number (point 6). The local sitting and MariaDB's plans and rows read are recorded; `bench.yaml` could not finish one pass within its job's 180 minutes, so MariaDB's benchmarks are one partial pass, and the workflow's fix is 5.4's | done (#70) |
+| 11 | baselines: every benchmark at its three sizes locally and the catalog's on MariaDB through `bench.yaml`, each sitting with its repeatability, step 9's plans and step 10's sweep, all recorded in *Baselines* below; a performance row 5.5 then shows not worth its change is closed there with its number (point 6). The local sitting and MariaDB's plans and rows read are recorded; `bench.yaml` could not finish one pass within its job's 180 minutes, so MariaDB's benchmarks are one partial pass, and the workflow's fix is 5.4's | done (#70, #72) |
 
 ## Baselines
 
@@ -599,7 +599,7 @@ benchstat gives no interval under six samples.
 
 Two runs of `bench.yaml` on `main` at 1c0e5f2 (base and head the same commit), at `small` and at `medium`:
 a hosted runner, a virtual machine of 4 logical cores (2 cores, two threads each), the work, the temporary directory and MariaDB's data on one ext-family filesystem (`stat -f`: ext2/ext3);
-MariaDB 11.8 in the image `scripts/catalog.sh` runs, its durability settings the image's defaults;
+MariaDB 11.8.9 in the image `scripts/catalog.sh` runs, `innodb_flush_log_at_trx_commit` 1;
 `-cpu 4 -count 10 -benchtime 1s`.
 Neither run finished its first pass within the job's 180 minutes:
 at `small` the catalog's benchmarks took 21 minutes and the ingest package the rest, and at `medium` the catalog's alone took the whole job.
@@ -610,6 +610,7 @@ These numbers judge nothing against the local sitting (another machine, another 
 | Benchmark (MariaDB) | time/op |
 |---|---|
 | RecordListing/objects=10000/attributed/steady, new | 2.37 s ±2%, 2.38 s ±4% |
+| RecordListing/objects=10000/attributed/gone | 626 µs ±2% |
 | RecordListing/objects=10000/unattributed/steady, new, gone | 4.87 s ±2%, 4.81 s ±1%, 2.53 s ±3% |
 | RecordListing/objects=100000/attributed/steady, new | 23.4 s ±1%, 23.8 s ±3% |
 | RecordListing/objects=100000/unattributed/steady, new, gone | 48.5 s ±1%, 48.1 s ±1%, 25.0 s ±1% |
