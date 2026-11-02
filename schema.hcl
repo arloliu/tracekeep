@@ -251,6 +251,10 @@ table "pack_ranges" {
   index "pack_ranges_capture_seq" {
     columns = [column.capture_id, column.seq_from, column.seq_to]
   }
+  # The capture's largest span, one seek.
+  index "pack_ranges_capture_span" {
+    columns = [column.capture_id, column.span]
+  }
 }
 
 table "evicted_ranges" {
@@ -362,6 +366,13 @@ table "conflicts" {
   }
   primary_key {
     columns = [column.capture_id, column.seq_from, column.seq_to, column.pack_id, column.other_pack_id]
+  }
+  # An evicted hour's conflicts, by either of their packs.
+  index "conflicts_capture_pack" {
+    columns = [column.capture_id, column.pack_id]
+  }
+  index "conflicts_capture_other_pack" {
+    columns = [column.capture_id, column.other_pack_id]
   }
   # acknowledged: an operator closed the incident; the scope stays unmerged (operations.md §10.4).
   check "conflicts_state" {
@@ -633,6 +644,14 @@ table "merges" {
   }
   index "merges_output" {
     columns = [column.output_pack_id]
+  }
+  # The deletable merges, by their deadline or, for a legacy zero one, by their time.
+  index "merges_outcome_delete_at" {
+    columns = [column.outcome, column.delete_at, column.at]
+  }
+  # An evicted hour's merges.
+  index "merges_capture_hour" {
+    columns = [column.capture_id, column.hour]
   }
   check "merges_outcome" {
     expr = "outcome IN ('committed', 'failed')"
