@@ -240,6 +240,7 @@ func runDev(ctx context.Context, args []string, stderr io.Writer) error {
 	flush := fs.Duration("flush", 10*time.Second, "ingest's flush interval")
 	rate := fs.Float64("rate", 10, "the simulator's forwarded requests per second; 0 runs no simulator")
 	listen := fs.String("metrics", "", "where to serve /metrics, /healthz and /readyz; empty serves none")
+	pprof := fs.Bool("pprof", false, "also serve Go's profiles under /debug/pprof/ on the metrics listener, which needs -metrics")
 	apiAddr := fs.String("api", "127.0.0.1:8080", "where to serve the machine API over TLS: localhost, 127.0.0.1 or ::1")
 	idpAddr := fs.String("idp", "127.0.0.1:8444", "where to serve the test IdP people sign in at: localhost, 127.0.0.1 or ::1")
 	publicURL := fs.String("public-url", "", "the https URL the browser reaches the API at, such as Vite's server; empty is the API's own")
@@ -248,6 +249,9 @@ func runDev(ctx context.Context, args []string, stderr io.Writer) error {
 	}
 	if fs.NArg() != 0 || *flush <= 0 {
 		return fmt.Errorf("%w: dev %v", errUsage, args)
+	}
+	if *pprof && *listen == "" {
+		return fmt.Errorf("%w: dev: -pprof needs -metrics, the listener its profiles are served on", errUsage)
 	}
 	if *rate != 0 {
 		if err := sim.CheckRate(*rate); err != nil {
@@ -269,7 +273,7 @@ func runDev(ctx context.Context, args []string, stderr io.Writer) error {
 		return err
 	}
 	defer closeLogged(log, "dev", d)
-	d.Env.Config.Metrics.Listen = *listen
+	d.Env.Config.Metrics.Listen, d.Env.Config.Metrics.Pprof = *listen, *pprof
 	octx, err := d.Env.Observe(ctx, "ingest", "compact", "api")
 	if err != nil {
 		return err

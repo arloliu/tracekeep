@@ -200,6 +200,9 @@ type Exports struct {
 type Metrics struct {
 	// Listen is the address /metrics, /healthz and /readyz are served on; empty serves none.
 	Listen string `yaml:"listen" default:":9090" env:"TRACEKEEP_METRICS_LISTEN"`
+	// Pprof also serves Go's profiles under /debug/pprof/ on that listener, which is unauthenticated:
+	// on only while the listener is reachable by its operators alone (operations.md §10.4).
+	Pprof bool `yaml:"pprof" default:"false" env:"TRACEKEEP_METRICS_PPROF"`
 }
 
 // Load reads the configuration from the YAML file path, or from defaults and the environment alone when path is empty,
@@ -266,9 +269,6 @@ func (c *Config) check(dev bool) error {
 	default:
 		// The kind's own validation names it.
 	}
-	if (c.API.TLSCertFile == "") != (c.API.TLSKeyFile == "") {
-		errs = append(errs, errors.New("api.tls_cert_file and api.tls_key_file go together"))
-	}
 	if c.API.DownloadFloor >= c.Store.DownloadLifetime {
 		errs = append(errs, fmt.Errorf("api.download_floor %s must be below store.download_lifetime %s", c.API.DownloadFloor, c.Store.DownloadLifetime))
 	}
@@ -277,12 +277,7 @@ func (c *Config) check(dev bool) error {
 	}
 	errs = append(errs, c.checkPeople()...)
 	errs = append(errs, c.checkMaxima()...)
-	if (c.Bus.CertFile == "") != (c.Bus.KeyFile == "") {
-		errs = append(errs, errors.New("bus.cert_file and bus.key_file go together, for mutual TLS"))
-	}
-	if c.Bus.CredsFile != "" && c.Bus.User != "" {
-		errs = append(errs, errors.New("bus.creds_file and bus.user are exclusive"))
-	}
+	errs = append(errs, c.checkPairs()...)
 	if err := errors.Join(errs...); err != nil {
 		return fmt.Errorf("config: %w", err)
 	}
@@ -343,6 +338,25 @@ func (c *Config) checkMaxima() []error {
 	}
 	if n := c.Ingest.MaxRecordBytes.Int64(); n > maxRecordBytes {
 		errs = append(errs, fmt.Errorf("ingest.max_record_bytes %d must be at most 4 GiB, HSMS's largest message", n))
+	}
+
+	return errs
+}
+
+// checkPairs refuses a key given without the key it needs, or beside one it excludes.
+func (c *Config) checkPairs() []error {
+	var errs []error
+	if (c.API.TLSCertFile == "") != (c.API.TLSKeyFile == "") {
+		errs = append(errs, errors.New("api.tls_cert_file and api.tls_key_file go together"))
+	}
+	if (c.Bus.CertFile == "") != (c.Bus.KeyFile == "") {
+		errs = append(errs, errors.New("bus.cert_file and bus.key_file go together, for mutual TLS"))
+	}
+	if c.Bus.CredsFile != "" && c.Bus.User != "" {
+		errs = append(errs, errors.New("bus.creds_file and bus.user are exclusive"))
+	}
+	if c.Metrics.Pprof && c.Metrics.Listen == "" {
+		errs = append(errs, errors.New("metrics.pprof needs metrics.listen, the listener its profiles are served on"))
 	}
 
 	return errs
