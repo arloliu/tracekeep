@@ -524,12 +524,13 @@ func TestReadFailsOnABrokenStore(t *testing.T) {
 	}
 }
 
-// A store's cancellation and deadline errors come back as the context's own, which name no key.
+// A store's cancellation and deadline errors come back as the context's own marked as the store's, naming no key.
 func TestKeylessContextErrors(t *testing.T) {
 	t.Parallel()
 	for _, want := range []error{context.Canceled, context.DeadlineExceeded} {
-		if got := Keyless(fmt.Errorf("store: head packs/k1: %w", want)); got != want { //nolint:errorlint // the sentinel itself, not a wrapper
-			t.Errorf("Keyless of a wrapped %v = %v, want the sentinel itself", want, got)
+		got := Keyless(fmt.Errorf("store: head packs/k1: %w", want))
+		if !errors.Is(got, want) || !errors.Is(got, ErrStore) || strings.Contains(got.Error(), "packs/k1") {
+			t.Errorf("Keyless of a wrapped %v = %v, want it and ErrStore, without the key", want, got)
 		}
 	}
 }

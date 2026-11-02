@@ -559,16 +559,17 @@ func (o keyless) ReadAt(p []byte, off int64) (int, error) {
 }
 
 // Keyless is a store's err without its text, which names the object's key:
-// store.ErrNotFound for a missing object, the context's error, or a store failure, a timeout said so.
+// store.ErrNotFound for a missing object, or a store failure, a timeout said so;
+// a context's error stays marked as the store's, so a caller tells it from another dependency's, and errors.Is finds both.
 func Keyless(err error) error {
 	var nerr net.Error
 	switch {
 	case errors.Is(err, store.ErrNotFound):
 		return store.ErrNotFound
 	case errors.Is(err, context.Canceled):
-		return context.Canceled
+		return fmt.Errorf("%w: %w", ErrStore, context.Canceled)
 	case errors.Is(err, context.DeadlineExceeded):
-		return context.DeadlineExceeded
+		return fmt.Errorf("%w: %w", ErrStore, context.DeadlineExceeded)
 	case errors.As(err, &nerr) && nerr.Timeout():
 		return fmt.Errorf("%w: timed out", ErrStore)
 	default:
