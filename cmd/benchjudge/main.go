@@ -5,8 +5,9 @@
 // and the allowance T, 5% plus r, and a 95% percentile bootstrap interval of median(head) / median(base1):
 // the metric passes when the interval's upper bound is at most 1 + T, regresses when its lower bound exceeds 1 + T,
 // and is inconclusive otherwise, to be measured again, never passed.
-// Allocations are exact when every sample of both base runs has the same count, and any metric from a zero base is exact:
-// any increase of the median regresses. Allocations whose base samples vary are judged by the interval, as a time is.
+// Allocations are exact when every sample of both base runs has the same count, and any metric whose base samples are all zero is exact:
+// any increase of the median regresses. Allocations whose base samples vary are judged by the interval, as a time is,
+// and a varying base whose median is zero, which has no ratio, is inconclusive.
 // A rate, a unit ending in /s, is judged as its inverse, a time.
 // A row or a metric missing on any side fails; a row run with other -cpu is another row, so it fails too.
 // A row fails when its run's parameters differ between the sides, or within one, or its samples number differently:
