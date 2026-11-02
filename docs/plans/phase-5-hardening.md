@@ -231,7 +231,7 @@ A plan or a default this section states from reading the code, not from a run, i
 | 8 | the compactor (`internal/compact`): the merge writer over 2, 12 and 64 inputs of 1,000 and 10,000 records, masked inputs at a fixed count below the merge's limit; the merge pass with 0, 1 and 10 failing scopes, recording the scopes attempted, failed and merged each cycle with its time, freshly seeded and over ten cycles that keep their failures (P17); the conflict check over two overlapping packs of 1,000, 10,000 and 100,000 records (P15); the orphan pass over 1,000, 10,000 and 100,000 objects, steady and adopting (P16); a retention cycle's claim listing (P3) | pending |
 | 9 | the EXPLAIN harness (point 26), in package `catalog`: P4's five predicates, P2's two probes, P5's completeness inputs and the eviction's `merges` scan, on both engines; a small seed always, logging plans, and a large seed under `TRACEKEEP_EXPLAIN` that records SQLite's plans with and without `ANALYZE` and MariaDB's rows read (`ANALYZE FORMAT=JSON`, inside a rolled-back transaction for a statement that writes); no assertion until 5.4 | pending |
 | 10 | the load harness (point 27) in `internal/service`: the sweep and the offered rate; and the `PackURL` measurement 5.4's gate runs, recording p50, p99, the calls made, succeeded, superseded and failed, the backlog's minima and the made and published rates. Its analysis is checked first on recorded series: a bounded sawtooth and a phase-shifted one (sustained); a rising one, one rising by 1% of a window's records a window, a publisher missing its offered rate, producers whose ordinary ring grows while reserved records publish, and two points whose producers' counters start from different origins (each judged on its own deltas); a sustained sweep followed by a `PackURL` measurement whose ingest is not sustained, a run reaching its calls with fewer than ten flushes, and 1,000 fast successes beside one deadline (each failing); two tools are checked admitted as two captures | pending |
-| 11 | baselines: every benchmark at its three sizes locally and the catalog's on MariaDB through `bench.yaml`, each sitting with its repeatability, step 9's plans and step 10's sweep, all recorded in *Baselines* below; a performance row 5.5 then shows not worth its change is closed there with its number (point 6) | pending |
+| 11 | baselines: every benchmark at its three sizes locally and the catalog's on MariaDB through `bench.yaml`, each sitting with its repeatability, step 9's plans and step 10's sweep, all recorded in *Baselines* below; a performance row 5.5 then shows not worth its change is closed there with its number (point 6). The local sitting is recorded; the MariaDB part (the catalog's benchmarks through `bench.yaml` and step 9's plans and rows read) follows the merge, since `bench.yaml` runs only from the default branch | pending |
 
 ## Baselines
 
@@ -240,6 +240,465 @@ under a line naming the run's commit and point 22's machine facts; then step 9's
 
 Carried from 5.2 to the gate (5.6): a few catalog and compactor errors on paths 5.2 did not touch name an object key in the operator's log
 (a claim survivor's release and removal, a registration's key lookups, an abandoned close's delete), which point 11 keeps out of every log.
+
+**The local sitting** (2026-11-02), at 77930eb, the tip of `test/phase-5/measurement`:
+Go 1.26.10 linux/amd64, benchstat `v0.0.0-20261009192801-be2c69fb417e` (pinned in `bench.yaml`);
+SQLite 3.54.1, journal mode WAL, `synchronous` FULL;
+32 logical cores (16 cores, two threads each), x86-64 desktop class, 62 GiB of memory, not idle (other work held a load average of about 2 to 3);
+ext4 on an NVMe SSD for the test's temporary directory, which also holds the flush's working file and the `fs` store's root;
+`-cpu 32 -count 10 -benchtime 1s`, no race detector, except where a table's notes say otherwise.
+The small and medium rows ran in one pass at `TRACEKEEP_BENCH_SCALE=medium` and the large rows alone in a second at `large`, so each row is one run of ten samples:
+the sitting measured no repeatability of its own (point 21's r), which a comparison measures in its own sitting.
+A `sync` row's time includes a synchronization to disk, as `bench.yaml`'s summary classifies it.
+Every catalog benchmark's `mariadb` row skipped locally;
+an interval of ±5% or more is inconclusive under point 21 and is listed under *What the numbers say*.
+
+### catalog (`internal/catalog`, SQLite)
+
+`RegisterPack` ran at a fixed `-benchtime`, as its godoc requires: 100x for `evidence`, `miss` and `hit`, but 10x for `deliveries=50000` (1.4 s an iteration), and 1x for `ranges`;
+`ranges=1000/prior=1000` and `ranges=50000` at every prior skip by that bound and have no row.
+`RecordListing` at 1,000,000 objects ran at 1x, `PruneEvents` at 1,000,000 events at 5x and `EvictHour` at 100,000 conflicts at 10x, each reseeded every iteration.
+
+| Benchmark | time/op | B/op | allocs/op | sync |
+|---|---|---|---|---|
+| RegisterPack/evidence/deliveries=100/prior=1000 | 4.47 ms ±34% | 482 KiB | 12.4k | yes |
+| RegisterPack/evidence/deliveries=1000/prior=1000 | 29.5 ms ±1% | 4.6 MiB | 121k | yes |
+| RegisterPack/miss/prior=1000 | 589 µs ±2% | 18.9 KiB | 488 | yes |
+| RegisterPack/hit/prior=1000 | 950 µs ±73% | 22 KiB | 570 | yes |
+| RegisterPack/evidence/deliveries=100/prior=20000 | 6.19 ms ±32% | 482 KiB | 12.4k | yes |
+| RegisterPack/evidence/deliveries=1000/prior=20000 | 30.7 ms ±2% | 4.6 MiB | 121k | yes |
+| RegisterPack/miss/prior=20000 | 1.84 ms ±1% | 18.9 KiB | 488 | yes |
+| RegisterPack/hit/prior=20000 | 1.9 ms ±1% | 22 KiB | 570 | yes |
+| RegisterPack/ranges/ranges=100/prior=1000 | 10.2 ms ±13% | 257 KiB | 6444 | yes |
+| RegisterPack/ranges/ranges=100/prior=20000 | 131 ms ±1% | 257 KiB | 6438 | yes |
+| RegisterPack/ranges/ranges=1000/prior=20000 | 1.31 s ±0% | 2.4 MiB | 60.5k | yes |
+| RegisterPack/evidence/deliveries=100/prior=200000 | 17 ms ±8% | 482 KiB | 12.4k | yes |
+| RegisterPack/evidence/deliveries=1000/prior=200000 | 42.6 ms ±1% | 4.6 MiB | 121k | yes |
+| RegisterPack/miss/prior=200000 | 13.8 ms ±1% | 19 KiB | 488 | yes |
+| RegisterPack/hit/prior=200000 | 13.9 ms ±0% | 22.1 KiB | 570 | yes |
+| RegisterPack/evidence/deliveries=50000/prior=1000 | 1.39 s ±0% | 230 MiB | 6.04M | yes |
+| RegisterPack/evidence/deliveries=50000/prior=20000 | 1.39 s ±0% | 230 MiB | 6.04M | yes |
+| RegisterPack/evidence/deliveries=50000/prior=200000 | 1.39 s ±1% | 230 MiB | 6.04M | yes |
+| RegisterPack/ranges/ranges=100/prior=200000 | 1.39 s ±1% | 271 KiB | 6473 | yes |
+| RegisterPack/ranges/ranges=1000/prior=200000 | 13.9 s ±0% | 2.4 MiB | 60.5k | yes |
+| RecordListing/objects=10000/attributed/steady | 53.5 ms ±1% | 7.25 MiB | 170k |  |
+| RecordListing/objects=10000/attributed/new | 62.8 ms ±1% | 7.25 MiB | 170k | yes |
+| RecordListing/objects=10000/attributed/gone | 14.5 µs ±1% | 2.36 KiB | 55 |  |
+| RecordListing/objects=10000/unattributed/steady | 64.2 ms ±2% | 18 MiB | 460k |  |
+| RecordListing/objects=10000/unattributed/new | 68.6 ms ±1% | 18 MiB | 460k | yes |
+| RecordListing/objects=10000/unattributed/gone | 30 ms ±12% | 5.75 MiB | 170k | yes |
+| RecordListing/objects=100000/attributed/steady | 537 ms ±2% | 72.5 MiB | 1.7M |  |
+| RecordListing/objects=100000/attributed/new | 657 ms ±1% | 72.5 MiB | 1.7M | yes |
+| RecordListing/objects=100000/attributed/gone | 18 µs ±0% | 2.34 KiB | 53 |  |
+| RecordListing/objects=100000/unattributed/steady | 681 ms ±2% | 181 MiB | 4.6M |  |
+| RecordListing/objects=100000/unattributed/new | 724 ms ±1% | 181 MiB | 4.6M | yes |
+| RecordListing/objects=100000/unattributed/gone | 340 ms ±4% | 59.6 MiB | 1.7M | yes |
+| RecordListing/objects=1000000/attributed/steady | 5.45 s ±1% | 725 MiB | 17M |  |
+| RecordListing/objects=1000000/attributed/new | 6.64 s ±1% | 725 MiB | 17M | yes |
+| RecordListing/objects=1000000/attributed/gone | 116 µs ±19% | 2.34 KiB | 54 |  |
+| RecordListing/objects=1000000/unattributed/steady | 7.65 s ±1% | 1.8 GiB | 46M |  |
+| RecordListing/objects=1000000/unattributed/new | 9.22 s ±2% | 1.8 GiB | 46M | yes |
+| RecordListing/objects=1000000/unattributed/gone | 4.58 s ±1% | 595 MiB | 17M | yes |
+| Listings/captures=1/devices=1/gaps=false/ListCaptures | 52.4 µs ±0% | 10.5 KiB | 195 |  |
+| Listings/captures=1/devices=1/gaps=false/ListDevices | 133 µs ±3% | 31.2 KiB | 689 |  |
+| Listings/captures=1/devices=1/gaps=false/ListPacks | 314 µs ±1% | 83.5 KiB | 1653 |  |
+| Listings/captures=1/devices=1/gaps=false/Completeness | 76.4 µs ±1% | 21 KiB | 508 |  |
+| Listings/captures=1/devices=1/gaps=true/ListCaptures | 53.1 µs ±2% | 10.5 KiB | 195 |  |
+| Listings/captures=1/devices=1/gaps=true/ListDevices | 131 µs ±1% | 32 KiB | 673 |  |
+| Listings/captures=1/devices=1/gaps=true/ListPacks | 292 µs ±3% | 73.6 KiB | 1453 |  |
+| Listings/captures=1/devices=1/gaps=true/Completeness | 73.1 µs ±2% | 21.9 KiB | 491 |  |
+| Listings/captures=100/devices=1/gaps=false/ListCaptures | 665 µs ±3% | 374 KiB | 4872 |  |
+| Listings/captures=100/devices=1/gaps=false/ListDevices | 9.14 ms ±3% | 2.34 MiB | 53.3k |  |
+| Listings/captures=100/devices=1/gaps=false/ListPacks | 18.6 ms ±2% | 7.25 MiB | 126k |  |
+| Listings/captures=100/devices=1/gaps=false/Completeness | 8.36 ms ±0% | 2.04 MiB | 50.1k |  |
+| Listings/captures=100/devices=1/gaps=true/ListCaptures | 664 µs ±2% | 374 KiB | 4872 |  |
+| Listings/captures=100/devices=1/gaps=true/ListDevices | 809 µs ±5% | 396 KiB | 5351 |  |
+| Listings/captures=100/devices=1/gaps=true/ListPacks | 19.4 ms ±6% | 7.04 MiB | 124k |  |
+| Listings/captures=100/devices=1/gaps=true/Completeness | 8.37 ms ±6% | 2.05 MiB | 49.9k |  |
+| Listings/captures=100/devices=100/gaps=false/ListCaptures | 708 µs ±2% | 374 KiB | 4872 |  |
+| Listings/captures=100/devices=100/gaps=false/ListDevices | 8.96 ms ±0% | 2.39 MiB | 53.5k |  |
+| Listings/captures=100/devices=100/gaps=false/ListPacks | 18.8 ms ±4% | 7.25 MiB | 126k |  |
+| Listings/captures=100/devices=100/gaps=false/Completeness | 8.58 ms ±3% | 2.04 MiB | 50.1k |  |
+| Listings/captures=100/devices=100/gaps=true/ListCaptures | 702 µs ±5% | 374 KiB | 4872 |  |
+| Listings/captures=100/devices=100/gaps=true/ListDevices | 8.93 ms ±1% | 2.4 MiB | 53.3k |  |
+| Listings/captures=100/devices=100/gaps=true/ListPacks | 18.3 ms ±1% | 7.04 MiB | 124k |  |
+| Listings/captures=100/devices=100/gaps=true/Completeness | 8.36 ms ±1% | 2.05 MiB | 49.9k |  |
+| Listings/captures=1500/devices=1/gaps=false/ListCaptures | 9.51 ms ±4% | 5.55 MiB | 73.2k |  |
+| Listings/captures=1500/devices=1/gaps=false/ListDevices | 146 ms ±1% | 35.1 MiB | 800k |  |
+| Listings/captures=1500/devices=1/gaps=false/ListPacks | 309 ms ±0% | 120 MiB | 1.88M |  |
+| Listings/captures=1500/devices=1/gaps=false/Completeness | 145 ms ±2% | 30.6 MiB | 752k |  |
+| Listings/captures=1500/devices=1/gaps=true/ListCaptures | 9.46 ms ±2% | 5.55 MiB | 73.2k |  |
+| Listings/captures=1500/devices=1/gaps=true/ListDevices | 9.95 ms ±3% | 5.57 MiB | 73.7k |  |
+| Listings/captures=1500/devices=1/gaps=true/ListPacks | 309 ms ±2% | 119 MiB | 1.85M |  |
+| Listings/captures=1500/devices=1/gaps=true/Completeness | 142 ms ±0% | 30.8 MiB | 750k |  |
+| Listings/captures=1500/devices=100/gaps=false/ListCaptures | 10.4 ms ±4% | 5.55 MiB | 73.2k |  |
+| Listings/captures=1500/devices=100/gaps=false/ListDevices | 150 ms ±3% | 35.2 MiB | 800k |  |
+| Listings/captures=1500/devices=100/gaps=false/ListPacks | 320 ms ±2% | 120 MiB | 1.88M |  |
+| Listings/captures=1500/devices=100/gaps=false/Completeness | 142 ms ±1% | 30.6 MiB | 752k |  |
+| Listings/captures=1500/devices=100/gaps=true/ListCaptures | 10 ms ±1% | 5.55 MiB | 73.2k |  |
+| Listings/captures=1500/devices=100/gaps=true/ListDevices | 136 ms ±1% | 32.4 MiB | 731k |  |
+| Listings/captures=1500/devices=100/gaps=true/ListPacks | 316 ms ±3% | 119 MiB | 1.85M |  |
+| Listings/captures=1500/devices=100/gaps=true/Completeness | 141 ms ±1% | 30.8 MiB | 750k |  |
+| ListingHistory/hours=24/window=hour/ListCaptures | 110 µs ±1% | 45.1 KiB | 632 |  |
+| ListingHistory/hours=24/window=hour/ListDevices | 195 µs ±1% | 66.5 KiB | 1110 |  |
+| ListingHistory/hours=24/window=hour/ListPacks | 1.08 ms ±1% | 287 KiB | 5962 |  |
+| ListingHistory/hours=24/window=hour/Completeness | 802 µs ±2% | 210 KiB | 4991 |  |
+| ListingHistory/hours=24/window=whole/ListCaptures | 113 µs ±3% | 45 KiB | 629 |  |
+| ListingHistory/hours=24/window=whole/ListDevices | 195 µs ±5% | 66.5 KiB | 1107 |  |
+| ListingHistory/hours=24/window=whole/ListPacks | 1.97 ms ±5% | 710 KiB | 12.8k |  |
+| ListingHistory/hours=24/window=whole/Completeness | 843 µs ±3% | 210 KiB | 4991 |  |
+| ListingHistory/hours=720/window=hour/ListCaptures | 110 µs ±2% | 45.1 KiB | 632 |  |
+| ListingHistory/hours=720/window=hour/ListDevices | 978 µs ±1% | 266 KiB | 4379 |  |
+| ListingHistory/hours=720/window=hour/ListPacks | 9.21 ms ±2% | 1.91 MiB | 46.9k |  |
+| ListingHistory/hours=720/window=hour/Completeness | 8.79 ms ±0% | 1.83 MiB | 45.9k |  |
+| ListingHistory/hours=720/window=whole/ListCaptures | 110 µs ±1% | 45 KiB | 629 |  |
+| ListingHistory/hours=720/window=whole/ListDevices | 942 µs ±1% | 266 KiB | 4376 |  |
+| ListingHistory/hours=720/window=whole/ListPacks | 37.9 ms ±4% | 17.1 MiB | 277k |  |
+| ListingHistory/hours=720/window=whole/Completeness | 8.79 ms ±1% | 1.83 MiB | 45.9k |  |
+| ListingHistory/hours=8760/window=hour/ListCaptures | 111 µs ±2% | 45.1 KiB | 632 |  |
+| ListingHistory/hours=8760/window=hour/ListDevices | 13.8 ms ±1% | 3.07 MiB | 41.9k |  |
+| ListingHistory/hours=8760/window=hour/ListPacks | 120 ms ±2% | 26 MiB | 519k |  |
+| ListingHistory/hours=8760/window=hour/Completeness | 117 ms ±0% | 26 MiB | 518k |  |
+| ListingHistory/hours=8760/window=whole/ListCaptures | 111 µs ±1% | 45 KiB | 629 |  |
+| ListingHistory/hours=8760/window=whole/ListDevices | 10.8 ms ±2% | 3.07 MiB | 41.9k |  |
+| ListingHistory/hours=8760/window=whole/ListPacks | 522 ms ±2% | 221 MiB | 3.38M |  |
+| ListingHistory/hours=8760/window=whole/Completeness | 119 ms ±1% | 26 MiB | 518k |  |
+| Lookups/prior=1000/ReadSet | 1.22 ms ±3% | 483 KiB | 10.9k |  |
+| Lookups/prior=1000/NextReadHour | 11.2 µs ±1% | 1.35 KiB | 32 |  |
+| Lookups/prior=1000/RecordCopies | 172 µs ±1% | 3.84 KiB | 96 |  |
+| Lookups/prior=1000/KeyStanding/registered | 9.02 µs ±5% | 1.98 KiB | 53 |  |
+| Lookups/prior=1000/KeyStanding/tombstoned | 4.31 µs ±2% | 1016 B | 27 |  |
+| Lookups/prior=1000/KeyStanding/unknown | 8.93 µs ±7% | 1.98 KiB | 53 |  |
+| Lookups/prior=20000/ReadSet | 1.23 ms ±4% | 483 KiB | 10.9k |  |
+| Lookups/prior=20000/NextReadHour | 11.4 µs ±2% | 1.35 KiB | 32 |  |
+| Lookups/prior=20000/RecordCopies | 2.57 ms ±0% | 3.84 KiB | 96 |  |
+| Lookups/prior=20000/KeyStanding/registered | 9.05 µs ±1% | 1.98 KiB | 53 |  |
+| Lookups/prior=20000/KeyStanding/tombstoned | 4.3 µs ±2% | 1016 B | 27 |  |
+| Lookups/prior=20000/KeyStanding/unknown | 9.17 µs ±4% | 1.98 KiB | 53 |  |
+| Lookups/prior=200000/ReadSet | 1.22 ms ±3% | 483 KiB | 10.9k |  |
+| Lookups/prior=200000/NextReadHour | 11.3 µs ±1% | 1.35 KiB | 32 |  |
+| Lookups/prior=200000/RecordCopies | 27 ms ±0% | 3.85 KiB | 96 |  |
+| Lookups/prior=200000/KeyStanding/registered | 9.16 µs ±2% | 1.98 KiB | 53 |  |
+| Lookups/prior=200000/KeyStanding/tombstoned | 4.54 µs ±4% | 1016 B | 27 |  |
+| Lookups/prior=200000/KeyStanding/unknown | 9.09 µs ±1% | 1.98 KiB | 53 |  |
+| Resolve/prior=1000/held | 72.2 µs ±1% | 3.56 KiB | 95 |  |
+| Resolve/prior=1000/unheld | 72.1 µs ±0% | 3.56 KiB | 95 |  |
+| Resolve/prior=20000/held | 970 µs ±0% | 3.56 KiB | 95 |  |
+| Resolve/prior=20000/unheld | 968 µs ±1% | 3.56 KiB | 95 |  |
+| Resolve/prior=200000/held | 10.4 ms ±0% | 3.57 KiB | 95 |  |
+| Resolve/prior=200000/unheld | 10.4 ms ±1% | 3.57 KiB | 95 |  |
+| AuditWhileRegistering/registering=0 | 226 µs ±977% | 1016 B | 23 | yes |
+| AuditWhileRegistering/registering=1 | 5.47 ms ±60% | 480 KiB | 12.4k | yes |
+| AuditWhileRegistering/registering=4 | 8.32 ms ±10% | 1.04 MiB | 26.5k | yes |
+| AuditWhileRegistering/registering=16 | 30.6 ms ±24% | 3.89 MiB | 99k | yes |
+| PruneEvents/events=10000 | 2.14 ms ±4% | 3.23 KiB | 80 | yes |
+| PruneEvents/events=100000 | 21.1 ms ±1% | 3.23 KiB | 80 | yes |
+| PruneEvents/events=1000000 | 237 ms ±1% | 3.2 KiB | 80 | yes |
+| DeleteCandidates/merges=1000 | 1.95 ms ±2% | 233 KiB | 5046 |  |
+| DeleteCandidates/merges=100000 | 513 ms ±0% | 31.2 MiB | 500k |  |
+| DeleteCandidates/merges=1000000 | 6.46 s ±0% | 311 MiB | 5M |  |
+| EvictHour/conflicts=10 | 660 µs ±59% | 28 KiB | 738 | yes |
+| EvictHour/conflicts=1000 | 795 µs ±6% | 28 KiB | 738 | yes |
+| EvictHour/conflicts=100000 | 14.4 ms ±2% | 28.4 KiB | 735 | yes |
+
+### ingest (`internal/ingest`)
+
+`Acknowledge` ran at 50x, its large rows at 20x (`inline`, `claim-check`) and 5x (`parked`), since each iteration publishes its messages untimed and `-benchtime 1s` ran it for hours;
+`Flush` and `FlushDue` at 100x, their large rows at 20x, within their bound of 100.
+
+| Benchmark | time/op | B/op | allocs/op | sync |
+|---|---|---|---|---|
+| Flush/store=mem/payload=14B/records=100 | 4.25 ms ±1% | 593 KiB | 12.6k | yes |
+| Flush/store=mem/payload=14B/records=1000 | 29.6 ms ±17% | 5.87 MiB | 120k | yes |
+| Flush/store=mem/payload=1KiB/records=100 | 4.29 ms ±1% | 974 KiB | 12.6k | yes |
+| Flush/store=mem/payload=1KiB/records=1000 | 29.9 ms ±2% | 11.9 MiB | 120k | yes |
+| Flush/store=fs/payload=14B/records=100 | 4.94 ms ±2% | 569 KiB | 12.7k | yes |
+| Flush/store=fs/payload=14B/records=1000 | 29.7 ms ±1% | 5.61 MiB | 120k | yes |
+| Flush/store=fs/payload=1KiB/records=100 | 4.91 ms ±83% | 741 KiB | 12.7k | yes |
+| Flush/store=fs/payload=1KiB/records=1000 | 30.8 ms ±10% | 11.7 MiB | 120k | yes |
+| Flush/store=mem/payload=14B/records=10000 | 285 ms ±1% | 60.1 MiB | 1.19M | yes |
+| Flush/store=mem/payload=1KiB/records=10000 | 292 ms ±1% | 88.4 MiB | 1.19M | yes |
+| Flush/store=fs/payload=14B/records=10000 | 284 ms ±2% | 60.1 MiB | 1.19M | yes |
+| Flush/store=fs/payload=1KiB/records=10000 | 295 ms ±1% | 88.1 MiB | 1.19M | yes |
+| FlushDue/batches=2 | 8.54 ms ±1% | 1.18 MiB | 26.2k | yes |
+| FlushDue/batches=10 | 42.7 ms ±2% | 6.44 MiB | 131k | yes |
+| FlushDue/batches=50 | 221 ms ±2% | 49.9 MiB | 657k | yes |
+| Batcher/batches=1 | 232 ns ±5% | 464 B | 5 |  |
+| Batcher/batches=100 | 18.3 µs ±9% | 29.3 KiB | 228 |  |
+| Batcher/batches=1500 | 257 µs ±5% | 467 KiB | 3054 |  |
+| Act/held=100 | 334 ns ±2% | 296 B | 5 |  |
+| Act/held=1000 | 333 ns ±4% | 296 B | 5 |  |
+| Act/held=10000 | 312 ns ±8% | 296 B | 5 |  |
+| Heartbeat/held=100 | 27.9 µs ±1% | 38 KiB | 509 |  |
+| Heartbeat/held=1000 | 271 µs ±1% | 364 KiB | 5012 |  |
+| Heartbeat/held=10000 | 3.01 ms ±1% | 3.91 MiB | 50k |  |
+| Dispose/masking=off/inline | 27.2 µs ±1% | 6.05 KiB | 135 |  |
+| Dispose/masking=off/claim-check | 27.5 µs ±1% | 6.14 KiB | 137 |  |
+| Dispose/masking=on/inline | 31 µs ±6% | 10.4 KiB | 187 |  |
+| Dispose/masking=on/claim-check | 32 µs ±4% | 10.5 KiB | 189 |  |
+| Acknowledge/inline/messages=100 | 6.44 µs ±7% | 665 B | 0 |  |
+| Acknowledge/inline/messages=1000 | 72.4 µs ±8% | 41.9 KiB | 374 |  |
+| Acknowledge/claim-check/messages=100 | 1.58 ms ±13% | 1.21 MiB | 3170 |  |
+| Acknowledge/claim-check/messages=1000 | 12.3 ms ±2% | 3.8 MiB | 31.1k |  |
+| Acknowledge/parked/messages=100 | 61.9 ms ±2% | 2.85 MiB | 29.5k | yes |
+| Acknowledge/parked/messages=1000 | 626 ms ±4% | 15.6 MiB | 295k | yes |
+| Acknowledge/inline/messages=10000 | 942 µs ±12% | 823 KiB | 9431 |  |
+| Acknowledge/claim-check/messages=10000 | 120 ms ±1% | 28.4 MiB | 310k |  |
+| Acknowledge/parked/messages=10000 | 6.04 s ±3% | 143 MiB | 2.95M | yes |
+
+### records (`internal/records`)
+
+| Benchmark | time/op | B/op | allocs/op | sync |
+|---|---|---|---|---|
+| Read/records=1000/packs=1/disjoint | 237 µs ±5% | 196 KiB | 3173 |  |
+| Read/records=1000/packs=12/disjoint | 479 µs ±2% | 340 KiB | 4996 |  |
+| Read/records=1000/packs=12/overlapping | 667 µs ±1% | 626 KiB | 5027 |  |
+| Read/records=1000/packs=16/disjoint | 564 µs ±1% | 393 KiB | 5658 |  |
+| Read/records=1000/packs=16/overlapping | 774 µs ±1% | 622 KiB | 5631 |  |
+| Read/records=72000/packs=1/disjoint | 11 ms ±1% | 13.6 MiB | 216k |  |
+| Read/records=72000/packs=12/disjoint | 13.3 ms ±1% | 12.3 MiB | 218k |  |
+| Read/records=72000/packs=12/overlapping | 22.1 ms ±1% | 35.4 MiB | 218k |  |
+| Read/records=72000/packs=16/disjoint | 14.5 ms ±1% | 12.3 MiB | 219k |  |
+| Read/records=72000/packs=16/overlapping | 22.8 ms ±2% | 34.2 MiB | 219k |  |
+| Read/records=360000/packs=1/disjoint | 57.4 ms ±2% | 84 MiB | 1.08M |  |
+| Read/records=360000/packs=12/disjoint | 59.7 ms ±1% | 67.5 MiB | 1.08M |  |
+| Read/records=360000/packs=12/overlapping | 116 ms ±1% | 242 MiB | 1.08M |  |
+| Read/records=360000/packs=16/disjoint | 63.6 ms ±2% | 65.4 MiB | 1.08M |  |
+| Read/records=360000/packs=16/overlapping | 118 ms ±2% | 219 MiB | 1.08M |  |
+
+### api (`internal/api`)
+
+`QueryRecordsDay` reports its configuration reads: 25 an operation at 10 and 100 records an hour, 37 at 1,000.
+
+| Benchmark | time/op | B/op | allocs/op | sync |
+|---|---|---|---|---|
+| QueryRecords/records=1000/binary/first-page | 3.29 ms ±6% | 3.02 MiB | 48.9k |  |
+| QueryRecords/records=1000/binary/whole | 3.25 ms ±3% | 3.02 MiB | 48.9k |  |
+| QueryRecords/records=1000/json/first-page | 8.55 ms ±7% | 7.84 MiB | 152k |  |
+| QueryRecords/records=1000/json/whole | 8.92 ms ±6% | 7.84 MiB | 152k |  |
+| QueryRecords/records=1000/binary/seq-range | 917 µs ±1% | 368 KiB | 5192 |  |
+| QueryRecords/records=72000/binary/first-page | 11.4 ms ±1% | 14.4 MiB | 227k |  |
+| QueryRecords/records=72000/binary/whole | 172 ms ±1% | 210 MiB | 3.27M |  |
+| QueryRecords/records=72000/json/first-page | 32.3 ms ±2% | 38.1 MiB | 747k |  |
+| QueryRecords/records=72000/json/whole | 475 ms ±1% | 557 MiB | 10.8M |  |
+| QueryRecords/records=72000/binary/seq-range | 11.3 ms ±0% | 4.36 MiB | 76.2k |  |
+| QueryRecords/records=360000/binary/first-page | 12.7 ms ±1% | 17.1 MiB | 227k |  |
+| QueryRecords/records=360000/binary/whole | 972 ms ±2% | 1.22 GiB | 16.3M |  |
+| QueryRecords/records=360000/json/first-page | 34 ms ±1% | 42.1 MiB | 747k |  |
+| QueryRecords/records=360000/json/whole | 2.54 s ±1% | 2.97 GiB | 53.9M |  |
+| QueryRecords/records=360000/binary/seq-range | 48.2 ms ±1% | 22.2 MiB | 364k |  |
+| QueryRecordsDay/records-an-hour=10 | 3.4 ms ±1% | 1.34 MiB | 23.6k |  |
+| QueryRecordsDay/records-an-hour=100 | 8.53 ms ±1% | 7.06 MiB | 121k |  |
+| QueryRecordsDay/records-an-hour=1000 | 67.4 ms ±3% | 69.3 MiB | 1.1M |  |
+
+### store (`internal/store`)
+
+| Benchmark | time/op | B/op | allocs/op | sync |
+|---|---|---|---|---|
+| FSPut/bytes=1024/depth=1 | 683 µs ±1% | 2.55 KiB | 36 | yes |
+| FSPut/bytes=1024/depth=4 | 1.08 ms ±96% | 3.46 KiB | 67 | yes |
+| FSPut/bytes=1024/depth=8 | 728 µs ±1% | 5.32 KiB | 126 | yes |
+| FSPut/bytes=1048576/depth=1 | 1.03 ms ±0% | 33.6 KiB | 36 | yes |
+| FSPut/bytes=1048576/depth=4 | 1.04 ms ±1% | 34.6 KiB | 67 | yes |
+| FSPut/bytes=1048576/depth=8 | 1.07 ms ±1% | 36.4 KiB | 126 | yes |
+| FSPut/bytes=16777216/depth=1 | 4.11 ms ±0% | 33.6 KiB | 36 | yes |
+| FSPut/bytes=16777216/depth=4 | 4.11 ms ±1% | 34.5 KiB | 67 | yes |
+| FSPut/bytes=16777216/depth=8 | 4.13 ms ±1% | 36.4 KiB | 126 | yes |
+
+### service (`internal/service`)
+
+| Benchmark | time/op | B/op | allocs/op | sync |
+|---|---|---|---|---|
+| TLSFiles/unchanged/handshakes=1 | 5.46 µs ±2% | 2.66 KiB | 15 |  |
+| TLSFiles/unchanged/handshakes=8 | 5.64 µs ±1% | 2.9 KiB | 16 |  |
+| TLSFiles/reload | 27.2 µs ±1% | 14.3 KiB | 166 |  |
+
+### compact (`internal/compact`)
+
+The `objects=100000` orphan rows ran at 1x with fewer samples:
+`steady` at `-count 4`, since its seed registers 100,000 packs one at a time, about six minutes a run;
+`adopting` at `-count 5`, since one iteration takes about four minutes;
+benchstat gives no interval under six samples.
+`MergePass` `cycles=10` reports 10, 1 or 0 scopes failed a cycle as its name says, and nothing merged.
+
+| Benchmark | time/op | B/op | allocs/op | sync |
+|---|---|---|---|---|
+| Compare/records=1000 | 296 µs ±0% | 29 KiB | 293 |  |
+| Compare/records=10000 | 2.01 ms ±0% | 43.2 KiB | 293 |  |
+| Compare/records=100000 | 17.6 ms ±1% | 11.6 MiB | 376 |  |
+| MergeWrite/inputs=2/records=1000/masked=false | 1.26 ms ±1% | 50.6 KiB | 479 | yes |
+| MergeWrite/inputs=2/records=10000/masked=false | 4.51 ms ±1% | 239 KiB | 480 | yes |
+| MergeWrite/inputs=12/records=1000/masked=false | 4.17 ms ±4% | 6.76 MiB | 1939 | yes |
+| MergeWrite/inputs=12/records=10000/masked=false | 27.8 ms ±2% | 55.4 MiB | 2204 | yes |
+| MergeWrite/inputs=12/records=1000/masked=true | 7.94 ms ±1% | 18.7 MiB | 79.5k | yes |
+| MergeWrite/inputs=12/records=10000/masked=true | 38.3 ms ±3% | 64.5 MiB | 79.7k | yes |
+| MergeWrite/inputs=64/records=1000/masked=false | 18.4 ms ±2% | 52.3 MiB | 9156 | yes |
+| MergeWrite/inputs=64/records=10000/masked=false | 129 ms ±16% | 60 MiB | 9561 | yes |
+| MergePass/healthy=10/failing=0/fresh | 17.7 ms ±1% | 785 KiB | 12.2k | yes |
+| MergePass/healthy=10/failing=0/cycles=10 | 213 µs ±1% | 11.6 KiB | 310 |  |
+| MergePass/healthy=10/failing=1/fresh | 17.7 ms ±1% | 804 KiB | 12.6k | yes |
+| MergePass/healthy=10/failing=1/cycles=10 | 959 µs ±1% | 198 KiB | 3401 |  |
+| MergePass/healthy=10/failing=10/fresh | 18.5 ms ±5% | 974 KiB | 15.3k | yes |
+| MergePass/healthy=10/failing=10/cycles=10 | 7.22 ms ±4% | 1.84 MiB | 31k |  |
+| MergePass/healthy=100/failing=0/fresh | 164 ms ±2% | 7.61 MiB | 121k | yes |
+| MergePass/healthy=100/failing=0/cycles=10 | 285 µs ±7% | 11.6 KiB | 310 |  |
+| MergePass/healthy=100/failing=1/fresh | 163 ms ±2% | 7.65 MiB | 122k | yes |
+| MergePass/healthy=100/failing=1/cycles=10 | 1.03 ms ±4% | 198 KiB | 3401 |  |
+| MergePass/healthy=100/failing=10/fresh | 167 ms ±4% | 7.85 MiB | 125k | yes |
+| MergePass/healthy=100/failing=10/cycles=10 | 7.31 ms ±1% | 1.84 MiB | 31k |  |
+| MergePass/healthy=1000/failing=0/fresh | 1.67 s ±4% | 76.3 MiB | 1.22M | yes |
+| MergePass/healthy=1000/failing=0/cycles=10 | 655 µs ±1% | 11.6 KiB | 310 |  |
+| MergePass/healthy=1000/failing=1/fresh | 1.65 s ±2% | 76.3 MiB | 1.22M | yes |
+| MergePass/healthy=1000/failing=1/cycles=10 | 1.45 ms ±2% | 199 KiB | 3404 |  |
+| MergePass/healthy=1000/failing=10/fresh | 1.64 s ±3% | 76.6 MiB | 1.22M | yes |
+| MergePass/healthy=1000/failing=10/cycles=10 | 7.4 ms ±1% | 1.85 MiB | 31.1k |  |
+| Orphans/objects=1000/steady | 8.96 ms ±1% | 1.99 MiB | 53k |  |
+| Orphans/objects=1000/adopting | 499 ms ±3% | 28.7 MiB | 619k | yes |
+| Orphans/objects=10000/steady | 93.1 ms ±5% | 20.2 MiB | 530k |  |
+| Orphans/objects=10000/adopting | 6.61 s ±1% | 286 MiB | 6.21M | yes |
+| Orphans/objects=100000/steady | 1.04 s | 205 MiB | 5.3M |  |
+| Orphans/objects=100000/adopting | 232 s | 2.79 GiB | 62.1M | yes |
+| RetainClaimListing/objects=1000 | 5.82 ms ±1% | 1.05 MiB | 21.1k |  |
+| RetainClaimListing/objects=10000 | 60.8 ms ±1% | 11.1 MiB | 210k |  |
+| RetainClaimListing/objects=100000 | 717 ms ±1% | 115 MiB | 2.1M |  |
+
+### metrics (`internal/metrics`)
+
+| Benchmark | time/op | B/op | allocs/op | sync |
+|---|---|---|---|---|
+| ReadCatalog/tools=10 | 725 µs ±1% | 166 KiB | 4521 |  |
+| ReadCatalog/tools=150 | 11.4 ms ±4% | 2.4 MiB | 66.7k |  |
+| ReadCatalog/tools=1500 | 116 ms ±1% | 24 MiB | 667k |  |
+
+### the SDK (`producer/`, with `GOWORK=off`)
+
+`producer/internal/core`:
+
+| Benchmark | time/op | B/op | allocs/op | sync |
+|---|---|---|---|---|
+| Allocate | 20.7 ns ±0% | 0 B | 0 |  |
+| Observe/kind=data/payload=14 | 95.6 ns ±0% | 16 B | 1 |  |
+| Observe/kind=data/payload=1024 | 172 ns ±1% | 1 KiB | 1 |  |
+| Observe/kind=event | 87.4 ns ±0% | 0 B | 0 |  |
+| Observe/kind=data/payload=65536 | 4.07 µs ±20% | 64 KiB | 1 |  |
+
+`producer/secsobs`:
+
+| Benchmark | time/op | B/op | allocs/op | sync |
+|---|---|---|---|---|
+| Callback/callbacks=1 | 115 ns ±1% | 16 B | 1 |  |
+| Callback/callbacks=4 | 178 ns ±6% | 16 B | 1 |  |
+
+`producer`, whose `BenchmarkPublish` also reports 639,000 records a second (±2%):
+
+| Benchmark | time/op | B/op | allocs/op | sync |
+|---|---|---|---|---|
+| Publish | 401 µs ±2% | 670 KiB | 5634 |  |
+
+### Plans (step 9, the large seed)
+
+SQLite, before → after `ANALYZE`, one line a query; the large seed holds one capture, so after `ANALYZE` a capture's predicate selects every row and SQLite prefers a scan:
+
+| Query | Access path | After `ANALYZE` |
+|---|---|---|
+| `auditByCaptureQuery` | scan `audit_log` by `audit_log_at`, a temporary B-tree for the order | the same |
+| `auditByActorQuery` | scan `audit_log` by `audit_log_at`, a temporary B-tree for the order | the same |
+| `pruneFloorQuery` | search `scope_events` by its primary key | the same |
+| `deleteCandidatesQuery` | scan `packs` by its key; `merge_inputs` by `merge_inputs_pack`, `merges` and `packs` by key | scan `merges`; `packs` by key, `merge_inputs` by its key (covering), `packs` by key; a temporary B-tree for `DISTINCT` |
+| `evictConflicts` (select and delete) | scan `conflicts`, each `IN` list a search of `packs` by `packs_capture_hour_state` with a Bloom filter | the same |
+| `evictMergeInputsQuery` | search `merge_inputs` by its key (covering), its `IN` list a scan of `merges` | the same |
+| `evictMergesQuery` | scan `merges` | the same |
+| `overlapQuery` | search `pack_ranges` by `pack_ranges_capture_seq` (capture, `seq_from <`), `packs` by key | scan `pack_ranges`, `packs` by key |
+| `heldSeqQuery` | search `pack_ranges_capture_seq` (covering) | the same |
+| `frontierQuery` | search `captures` by key | the same |
+| `retainedQuery` | search `pack_ranges` by `pack_ranges_capture_seq` (capture), `packs` by key | scan `pack_ranges`, `packs` by key |
+| `evictedQuery` | search `evicted_ranges` by key (capture) | scan `evicted_ranges` |
+| `parkedQuery` | search `parked` by key (capture) | the same |
+| `lossesQuery` | search `packs` by `packs_capture_hour_state` (capture), `pack_losses` by key | scan `pack_losses`, `packs` by key |
+| `crashGapsQuery` | search `capture_closes` by key (capture) | the same |
+| `conflictsQuery` | search `conflicts` by key (capture) | the same |
+
+MariaDB: not yet run — `bench.yaml` runs only from the default branch; recorded after this branch merges.
+
+### The write-connection case (step 10)
+
+`TRACEKEEP_LOAD=baseline`, dev's flush of 10 s, a one-minute warm-up and twelve 10-second windows a point (the slopes and the bound in records a window):
+
+| K | offered fwd/s | made fwd/s | published rec/s | dropped | backlog slope | ring slope | reserved slope | bound | sustained |
+|---|---|---|---|---|---|---|---|---|---|
+| 1 | 100 | 100.0 | 200.0 | 0 | 3.35 | 0.00 | 0.00 | 10.00 | yes |
+| 1 | 200 | 200.0 | 400.0 | 0 | 9.53 | 0.00 | 0.00 | 20.00 | yes |
+| 1 | 400 | 400.0 | 800.0 | 0 | 17.47 | 0.00 | 0.00 | 40.00 | yes |
+| 1 | 800 | 799.8 | 1599.6 | 0 | 72.81 | 0.00 | 0.00 | 79.98 | yes |
+| 1 | 1600 | 1236.0 | 2472.0 | 0 | 85.65 | 0.00 | 0.00 | 123.60 | no: made 1236/s against 1600/s offered |
+| 10 | 100 | 100.0 | 200.0 | 0 | 0.29 | -0.28 | 0.00 | 10.00 | yes |
+| 10 | 200 | 200.0 | 400.0 | 0 | 2.20 | 0.22 | 0.00 | 20.00 | yes |
+| 10 | 400 | 400.0 | 800.1 | 0 | 24.37 | -0.30 | 0.00 | 40.00 | yes |
+| 10 | 800 | 800.0 | 1600.0 | 0 | 50.53 | 0.10 | 0.00 | 80.00 | yes |
+| 10 | 1600 | 1600.0 | 3200.0 | 0 | 91.15 | -0.66 | 0.00 | 160.00 | yes |
+| 10 | 3200 | 3198.6 | 6397.2 | 0 | 22956.21 | -0.01 | 0.00 | 319.86 | no: the backlog minima rise |
+| 100 | 100 | 100.0 | 200.1 | 0 | -11.82 | -1.16 | 0.00 | 10.00 | yes |
+| 100 | 200 | 200.0 | 400.1 | 0 | 3.36 | -2.82 | 0.00 | 20.00 | yes |
+| 100 | 400 | 400.0 | 800.0 | 0 | 8.47 | -0.06 | 0.00 | 40.00 | yes |
+| 100 | 800 | 800.0 | 1600.0 | 0 | 72.69 | 0.25 | 0.00 | 80.00 | yes |
+| 100 | 1600 | 1600.0 | 3200.0 | 0 | -54.06 | -3.36 | 0.00 | 160.00 | yes |
+| 100 | 3200 | 3200.0 | 6400.0 | 0 | 23668.86 | -2.35 | 0.00 | 320.00 | no: the backlog minima rise |
+
+The highest sustained rate is 800 fwd/s at K = 1, where one tool's loopback made only 1,236 of 1,600 a second, and 1,600 fwd/s at K = 10 and K = 100:
+at 3,200 fwd/s (6,400 records a second) ingest falls behind.
+**The offered rate is 800 fwd/s at K = 100, with dev's flush of 10 s**, shown sustained over sixty windows:
+800.0 fwd/s made, 1,600.0 records a second published, nothing dropped, the backlog slope −11.72 against a bound of 80.
+
+`PackURL` at that rate, 1,200 calls (more than the gate's 1,000, the windows run whole):
+
+| p50 | p99 | made | succeeded | superseded | failed | flushes | made fwd/s | published rec/s | sustained |
+|---|---|---|---|---|---|---|---|---|---|
+| 1.06 ms | 5.78 ms | 1,200 | 1,200 | 0 | 0 | 11 | 800.0 | 1,600.0 | yes |
+
+The gate (1,000 audited successes, p99 within 2 s) passes here; it is reported, not enforced, and 5.4 runs it.
+
+### What the numbers say
+
+Read for 5.4 and 5.5; no P row closes here.
+
+- **P1** (registration's evidence): 30 µs a delivery at 1,000 deliveries and 28 µs at 50,000 (1.39 s a pack, at every prior), so the audit's 1.3 s for 50k holds.
+- **Point 25**: the audit's 27 µs a delivery was registration's, 28 µs at 50,000 deliveries whatever the history;
+  `Dispose` costs its own 27 µs a message (masking off), a separate cost of the same size, which is why the scratch dispose benchmark showed the same figure.
+- **P2** (the overlap probe): 0.10, 1.3 and 13.9 ms a range at 1,000, 20,000 and 200,000 prior ranges, linear in the history, the audit's 14 ms at 200k confirmed;
+  one range costs 0.6, 1.8 and 13.8 ms, a hit no more than a miss, and `Resolve` 72 µs, 0.97 ms and 10.4 ms, held or not.
+- **P3** (the claim listing): 5.45 s steady and 6.64 s all new at a million attributed objects, 7.65 s and 9.22 s unattributed, 4.58 s all gone, linear from 100,000; the audit's 6 s holds.
+- **P4**: the prune 2.1, 21 and 237 ms at 10k, 100k and 1M events, linear, on the primary key;
+  `DeleteCandidates` 1.95 ms, 513 ms and 6.46 s at 1k, 100k and 1M merges, a scan of `packs`, then of `merges` after `ANALYZE`;
+  `EvictHour` 0.66, 0.80 and 14.4 ms at 10, 1,000 and 100,000 conflicts, a scan of `conflicts`;
+  the audit listings scan `audit_log` by time, as point 26 read.
+- **P5** (listings over history): with the one-hour window held, `ListPacks` takes 1.08, 9.2 and 120 ms over 24, 720 and 8,760 hours of history, `Completeness` 0.80, 8.8 and 117 ms, `ListDevices` 0.20, 0.98 and 13.8 ms, `ListCaptures` a flat 0.11 ms;
+  at 1,500 captures `ListPacks` takes 0.31 s and `Completeness` 0.14 s.
+- **P6** (an audit write beside registrations): 0.23 ms alone, 5.5 ms beside one registering writer, 8.3 ms beside 4 and 31 ms beside 16;
+  every interval is wide (±977%, ±60%, ±10%, ±24%), so the rows are inconclusive, but the waiting is plain.
+- **P7, P19, P21**: `Dispose` 27 µs a message inline and claim-check, 31 to 32 µs masked, so masking adds about 4 µs.
+- **P8**: an acknowledgement costs 64 to 94 ns a message inline, 12 µs claim-check and 0.6 ms a parked copy (6.0 s for 10,000).
+- **P9**: `FlushDue` 8.5, 42.7 and 221 ms for 2, 10 and 50 due batches, about 4.3 ms a batch, one `Flush` of 100 records each: the batches flush one after another.
+- **P10**: the heartbeat 0.27 to 0.30 µs a held message, `Act` a flat 0.3 µs, the batcher 0.17 µs a batch at 1,500.
+- **P11** (`fs` puts): 0.68 ms for 1 KiB at depth 1 and 0.73 ms at depth 8, 4.1 ms for 16 MiB at every depth; a flush on `fs` costs what one on memory does within noise.
+- **P12**: a 24-hour `QueryRecords` reads the capture's configuration 25 times at 10 and 100 records an hour, 37 times at 1,000.
+- **P13**: a narrow seq range costs 0.92 ms, 11.3 ms and 48 ms in an hour of 1,000, 72,000 and 360,000 records, against a first page's 3.3, 11.4 and 12.7 ms.
+- **P14**: JSON costs 2.6 to 2.8 times binary: the whole hour of 360,000 records 2.54 s and 2.97 GiB against 0.97 s and 1.22 GiB.
+- **P15**: the conflict check 0.30, 2.0 and 17.6 ms over two packs of 1k, 10k and 100k records.
+- **P16** (the orphan pass): steady 9.0 ms, 93 ms and 1.04 s over 1k, 10k and 100k objects, about 9 to 11 µs an object;
+  adopting 0.50 s, 6.6 s and 232 s, superlinear.
+- **P17**: ten cycles over 10 failing scopes take 7.2 to 7.4 ms whatever the healthy count, 74 µs a scope a cycle; a fresh cycle 17.7 ms, 164 ms and 1.65 s at 10, 100 and 1,000 healthy scopes, failures or not.
+- **P18**: the TLS files cost 5.5 µs a handshake, 5.6 µs with 8 at once, 27 µs a reload.
+- **The SDK** (`650-perf-sec.md`'s callback budget): an observe 96 ns at 14 B, 172 ns at 1 KiB and 4.07 µs at 64 KiB (±20%), the `secsobs` callback 115 ns, 178 ns with 4 at once; the publisher 639,000 records a second.
+
+Inconclusive under point 21 (an interval of ±5% or more), measured again before any comparison relies on them:
+- catalog: `RegisterPack/evidence/deliveries=100/prior=1000` (±34%), `RegisterPack/hit/prior=1000` (±73%), `RegisterPack/evidence/deliveries=100/prior=20000` (±32%), `RegisterPack/ranges/ranges=100/prior=1000` (±13%), `RegisterPack/evidence/deliveries=100/prior=200000` (±8%), `RecordListing/objects=10000/unattributed/gone` (±12%), `RecordListing/objects=1000000/attributed/gone` (±19%), `Listings/captures=100/devices=1/gaps=true/ListDevices` (±5%), `Listings/captures=100/devices=1/gaps=true/ListPacks` (±6%), `Listings/captures=100/devices=1/gaps=true/Completeness` (±6%), `Listings/captures=100/devices=100/gaps=true/ListCaptures` (±5%), `ListingHistory/hours=24/window=whole/ListDevices` (±5%), `ListingHistory/hours=24/window=whole/ListPacks` (±5%), `Lookups/prior=1000/KeyStanding/registered` (±5%), `Lookups/prior=1000/KeyStanding/unknown` (±7%), `AuditWhileRegistering/registering=0` (±977%), `AuditWhileRegistering/registering=1` (±60%), `AuditWhileRegistering/registering=4` (±10%), `AuditWhileRegistering/registering=16` (±24%), `EvictHour/conflicts=10` (±59%), `EvictHour/conflicts=1000` (±6%);
+- ingest: `Flush/store=mem/payload=14B/records=1000` (±17%), `Flush/store=fs/payload=1KiB/records=100` (±83%), `Flush/store=fs/payload=1KiB/records=1000` (±10%), `Batcher/batches=1` (±5%), `Batcher/batches=100` (±9%), `Batcher/batches=1500` (±5%), `Act/held=10000` (±8%), `Dispose/masking=on/inline` (±6%), `Acknowledge/inline/messages=100` (±7%), `Acknowledge/inline/messages=1000` (±8%), `Acknowledge/claim-check/messages=100` (±13%), `Acknowledge/inline/messages=10000` (±12%);
+- records: `Read/records=1000/packs=1/disjoint` (±5%);
+- api: `QueryRecords/records=1000/binary/first-page` (±6%), `QueryRecords/records=1000/json/first-page` (±7%), `QueryRecords/records=1000/json/whole` (±6%);
+- store: `FSPut/bytes=1024/depth=4` (±96%);
+- compact: `MergeWrite/inputs=64/records=10000/masked=false` (±16%), `MergePass/healthy=10/failing=10/fresh` (±5%), `MergePass/healthy=100/failing=0/cycles=10` (±7%), `Orphans/objects=10000/steady` (±5%), `Orphans/objects=100000/steady` (no interval, under six samples), `Orphans/objects=100000/adopting` (no interval, under six samples);
+- producer/internal/core: `Observe/kind=data/payload=65536` (±20%);
+- producer/secsobs: `Callback/callbacks=4` (±6%).
 
 ## The audit
 
