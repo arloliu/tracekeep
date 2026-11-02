@@ -332,6 +332,19 @@ func seedParked(tb testing.TB, c *Catalog, capture tracepack.UUID, hour int64, s
 	seedRows(tb, c, "parked", []string{"capture_id", "seq", "header", "payload_digest", "state", "reason", "hour", "terminated_by", "parked_at"}, rows)
 }
 
+// seedVersions writes a parked row of each delivery's version, exactly its key, in the state states names for it, as parking leaves it:
+// parking or parked unresolved, staged resolved at time 1.
+func seedVersions(tb testing.TB, c *Catalog, ds []Identity, states []VersionState) {
+	tb.Helper()
+	rows := make([][]any, len(ds))
+	for i, d := range ds {
+		v := &d.Version
+		resolved := sql.NullInt64{Int64: 1, Valid: states[i] == VersionStaged}
+		rows[i] = []any{v.Capture[:], int64(v.Seq), v.Header[:], v.Digest[:], string(states[i]), "unknown-capture", d.Hour, 0, resolved} //nolint:gosec // a seeded seq is small
+	}
+	seedRows(tb, c, "parked", []string{"capture_id", "seq", "header", "payload_digest", "state", "reason", "hour", "parked_at", "resolved_at"}, rows)
+}
+
 // seedEvicted writes capture's evicted ranges of hour, as an eviction leaves them.
 func seedEvicted(tb testing.TB, c *Catalog, capture tracepack.UUID, hour int64, ranges []Range) {
 	tb.Helper()
@@ -455,6 +468,17 @@ func TestSeedersOfCompleteness(t *testing.T) {
 		}
 		if cp, err := c.Completeness(ctx, captures[1]); err != nil || len(cp.CrashGaps) != 1 {
 			t.Fatalf("Completeness of the closed capture = %+v, %v; want its crash gap", cp, err)
+		}
+
+		vs := []Identity{{Version: VersionKey{Capture: capture, Seq: 210, Digest: [32]byte{1}}, Hour: 2}, {Version: VersionKey{Capture: capture, Seq: 211, Digest: [32]byte{1}}, Hour: 2}}
+		seedVersions(t, c, vs, []VersionState{VersionParking, VersionStaged})
+		for i, want := range []Resolution{Unresolved, ResolvedStaged} {
+			if got, err := c.Resolve(ctx, &vs[i].Version, 1, 1); err != nil || got != want {
+				t.Fatalf("Resolve of seeded version %d = %v, %v; want %v", i, got, err, want)
+			}
+		}
+		if got, err := readVersionState(ctx, c.read, &vs[0].Version); err != nil || got != VersionParking {
+			t.Fatalf("readVersionState of the seeded parking version = %q, %v", got, err)
 		}
 	})
 }
