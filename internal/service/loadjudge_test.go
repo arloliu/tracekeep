@@ -60,7 +60,9 @@ type packURLResult struct {
 // judgeLoad judges a sweep point: offered forwards a second, the sample at its origin (before the warm-up),
 // and its samples from the first window's start, cut into windows of a fixed duration by their timestamps;
 // a trailing part shorter than a window is left out of the windows, its drops counted.
-func judgeLoad(offered float64, origin loadSample, samples []loadSample, window time.Duration) loadVerdict {
+// ended is the last measured attempt's end, zero for none: the judged windows must hold a sample at or after it,
+// or the point is unjudged; the span is never stretched past its whole windows to reach it.
+func judgeLoad(offered float64, origin loadSample, samples []loadSample, window time.Duration, ended time.Time) loadVerdict {
 	t0 := samples[0].at
 	windows := int(samples[len(samples)-1].at.Sub(t0) / window)
 	end := t0.Add(time.Duration(windows) * window)
@@ -69,7 +71,7 @@ func judgeLoad(offered float64, origin loadSample, samples []loadSample, window 
 		judged = judged[:len(judged)-1]
 	}
 	v := loadVerdict{offered: offered, dropped: samples[len(samples)-1].dropped - origin.dropped}
-	if v.why = sampling(judged, windows); v.why != "" {
+	if v.why = sampling(samples, judged, windows, ended); v.why != "" {
 		return v
 	}
 	first, last := judged[0], judged[len(judged)-1]
@@ -108,24 +110,31 @@ func judgeLoad(offered float64, origin loadSample, samples []loadSample, window 
 	return v
 }
 
-// sampling names why samples cannot be judged over windows: none whole, or a gap above two sampling periods,
-// which would also leave a window short of samples; empty when they can.
-func sampling(samples []loadSample, windows int) string {
-	if windows < 1 {
-		return "sampling: shorter than one window"
-	}
+// sampling names why samples cannot be judged: a gap above two sampling periods among all of them, which would also leave a window short of samples,
+// no whole window in judged, or judged ending before ended, the last attempt's end; empty when they can.
+func sampling(samples, judged []loadSample, windows int, ended time.Time) string {
 	for i := 1; i < len(samples); i++ {
 		if gap := samples[i].at.Sub(samples[i-1].at); gap > 2*loadTick {
 			return fmt.Sprintf("sampling: a gap of %s after %s", gap, samples[i-1].at.Sub(samples[0].at))
 		}
 	}
+	if windows < 1 {
+		return "sampling: shorter than one window"
+	}
+	if last := judged[len(judged)-1].at; last.Before(ended) {
+		return fmt.Sprintf("sampling: the last attempt ended %s after the judged span's last sample", ended.Sub(last))
+	}
 
 	return ""
 }
 
-// windowsFor is the windows a measurement samples: at least least, and enough that the last whole window ends after its last call did.
-func windowsFor(least int, window, callsEnded time.Duration) int {
-	return max(least, int(math.Ceil(float64(callsEnded)/float64(window))))
+// collectFor is how long a measurement samples from its first sample: at least least windows,
+// and whole windows reaching two sampling periods past the last attempt's end, so that, with no gap above two periods,
+// a sample lies between that end and the last whole window's end.
+func collectFor(least int, window, callsEnded time.Duration) time.Duration {
+	n := max(least, int(math.Ceil(float64(callsEnded+2*loadTick)/float64(window))))
+
+	return time.Duration(n) * window
 }
 
 // slope is the least-squares slope of ys over their indexes.
@@ -242,7 +251,7 @@ func TestJudgeLoad(t *testing.T) {
 			}
 		}, false, "dropped"},
 	} {
-		v := judgeLoad(rate, tc.origin, synthetic(tc.origin, windows*window, time.Second, tc.made, tc.set), window)
+		v := judgeLoad(rate, tc.origin, synthetic(tc.origin, windows*window, time.Second, tc.made, tc.set), window, time.Time{})
 		if v.sustained != tc.sustained || !strings.Contains(v.why, tc.why) {
 			t.Errorf("%s: sustained %v (%s), want %v naming %q; %+v", name, v.sustained, v.why, tc.sustained, tc.why, v)
 		}
@@ -254,7 +263,7 @@ func TestJudgeLoadOrigins(t *testing.T) {
 	t.Parallel()
 	const windows, rate, window = 12, 100.0, 10 * time.Second
 	for _, origin := range []loadSample{{}, {made: 1_000_000, published: 3_000_000, dropped: 500}} {
-		v := judgeLoad(rate, origin, synthetic(origin, windows*window, time.Second, rate, nil), window)
+		v := judgeLoad(rate, origin, synthetic(origin, windows*window, time.Second, rate, nil), window, time.Time{})
 		if !v.sustained || v.made != rate || v.published != 2*rate || v.dropped != 0 || len(v.backlogMinima) != windows {
 			t.Errorf("origin %+v: %+v, want sustained at %v made, %v published, none dropped, %d windows", origin, v, rate, 2*rate, windows)
 		}
@@ -267,36 +276,67 @@ func TestJudgeLoadDelayedSamples(t *testing.T) {
 	t.Parallel()
 	const rate, window = 100.0, 10 * time.Second
 	late := synthetic(loadSample{}, 120*time.Second, 1100*time.Millisecond, rate, nil)
-	if v := judgeLoad(rate, loadSample{}, late, window); !v.sustained || math.Abs(v.made-rate) > 1 || math.Abs(v.published-2*rate) > 2 || len(v.backlogMinima) != 11 {
+	if v := judgeLoad(rate, loadSample{}, late, window, time.Time{}); !v.sustained || math.Abs(v.made-rate) > 1 || math.Abs(v.published-2*rate) > 2 || len(v.backlogMinima) != 11 {
 		t.Errorf("late samples: %+v, want sustained at %v made over 11 whole windows", v, rate)
 	}
 	gapped := synthetic(loadSample{}, 120*time.Second, time.Second, rate, nil)
 	gapped = slices.Delete(gapped, 50, 53) // four seconds between two samples
-	if v := judgeLoad(rate, loadSample{}, gapped, window); v.sustained || !strings.Contains(v.why, "sampling") {
+	if v := judgeLoad(rate, loadSample{}, gapped, window, time.Time{}); v.sustained || !strings.Contains(v.why, "sampling") {
 		t.Errorf("a gap of four periods: %+v, want unjudged naming sampling", v)
 	}
-	if v := judgeLoad(rate, loadSample{}, synthetic(loadSample{}, 5*time.Second, time.Second, rate, nil), window); v.sustained || !strings.Contains(v.why, "sampling") {
+	if v := judgeLoad(rate, loadSample{}, synthetic(loadSample{}, 5*time.Second, time.Second, rate, nil), window, time.Time{}); v.sustained || !strings.Contains(v.why, "sampling") {
 		t.Errorf("less than a window: %+v, want unjudged naming sampling", v)
 	}
 }
 
-// A call still running at the last of the least windows extends the measurement by whole windows past its end,
-// so the judged span holds every attempt.
-func TestWindowsFor(t *testing.T) {
+// A call still running at the last of the least windows extends the measurement by whole windows:
+// two sampling periods past the last attempt's end, rounded up to a whole window:
+// with no gap above two periods, a sample then lies between that end and the last whole window's.
+func TestCollectFor(t *testing.T) {
 	t.Parallel()
 	const window = 10 * time.Second
 	for _, tc := range []struct {
-		ended time.Duration
-		want  int
-	}{{100 * time.Second, 12}, {120 * time.Second, 12}, {120*time.Second + time.Millisecond, 13}, {125 * time.Second, 13}, {131 * time.Second, 14}} {
-		if got := windowsFor(12, window, tc.ended); got != tc.want {
-			t.Errorf("calls ending at %s: %d windows, want %d", tc.ended, got, tc.want)
+		ended, want time.Duration
+	}{
+		{0, 120 * time.Second}, {100 * time.Second, 120 * time.Second}, {118 * time.Second, 120 * time.Second},
+		{118*time.Second + time.Millisecond, 130 * time.Second}, {125 * time.Second, 130 * time.Second},
+		{129500 * time.Millisecond, 140 * time.Second}, {130 * time.Second, 140 * time.Second},
+	} {
+		if got := collectFor(12, window, tc.ended); got != tc.want {
+			t.Errorf("calls ending at %s: sample for %s, want %s", tc.ended, got, tc.want)
 		}
 	}
-	// Judged over the extended span, the windows are whole and end after the call.
-	v := judgeLoad(100, loadSample{}, synthetic(loadSample{}, 130*time.Second, time.Second, 100, nil), window)
-	if !v.sustained || len(v.backlogMinima) != 13 {
-		t.Errorf("a span of 13 windows: %+v, want 13 sustained windows", v)
+}
+
+// The judged span covers the last attempt: a sample at or after its end lies in the whole windows judged, or the point is unjudged.
+// Gaps are checked over every sample collected, before the trailing part shorter than a window is left out.
+func TestJudgeLoadCoversTheLastCall(t *testing.T) {
+	t.Parallel()
+	const rate, window = 100.0, 10 * time.Second
+	t0 := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	at := t0.Add
+	through := func(span time.Duration) []loadSample { return synthetic(loadSample{}, span, time.Second, rate, nil) }
+	for name, tc := range map[string]struct {
+		samples   []loadSample
+		ended     time.Time
+		windows   int
+		sustained bool
+		why       string
+	}{
+		// Samples through 129 s, the call ending at 129.5 s, and a final sample delayed to 135 s: the 6 s gap is seen.
+		"delayed final sample": {append(through(129*time.Second), synthetic(loadSample{}, 135*time.Second, 135*time.Second, rate, nil)[1]), at(129500 * time.Millisecond), 0, false, "gap"},
+		// Through 129 s with no later sample: the whole windows end at 120 s, before the call did.
+		"call ending past the whole windows": {through(129 * time.Second), at(129500 * time.Millisecond), 0, false, "last attempt"},
+		// Collected as collectFor asks, to 140 s: 14 windows judged, the call inside them.
+		"call ending off a boundary":      {through(140 * time.Second), at(129500 * time.Millisecond), 14, true, ""},
+		"call ending on a boundary":       {through(130 * time.Second), at(130 * time.Second), 13, true, ""},
+		"no call, the least windows":      {through(120 * time.Second), time.Time{}, 12, true, ""},
+		"call ending at the first sample": {through(120 * time.Second), t0, 12, true, ""},
+	} {
+		v := judgeLoad(rate, loadSample{}, tc.samples, window, tc.ended)
+		if v.sustained != tc.sustained || !strings.Contains(v.why, tc.why) || len(v.backlogMinima) != tc.windows {
+			t.Errorf("%s: sustained %v (%s) over %d windows, want %v naming %q over %d", name, v.sustained, v.why, len(v.backlogMinima), tc.sustained, tc.why, tc.windows)
+		}
 	}
 }
 

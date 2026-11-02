@@ -412,7 +412,7 @@ func (h *loadHarness) sample(tools []*loadTool) loadSample {
 
 // measure runs one point: rate forwards a second through tools, a warm-up, then at least windows of samples.
 // during, when not nil, runs from the first sample; its context ends once the least windows have passed,
-// and sampling goes on, by whole windows, until its last attempt has ended, so the judged span holds every attempt.
+// and sampling goes on, by whole windows, past its last attempt's end (collectFor), so the judged span holds every attempt.
 // Then the forwards stop and the queues and the backlog empty.
 func (h *loadHarness) measure(tools []*loadTool, rate float64, windows int, during func(context.Context)) loadVerdict {
 	ctx := h.t.Context()
@@ -438,7 +438,10 @@ func (h *loadHarness) measure(tools []*loadTool, rate float64, windows int, duri
 			ended <- time.Now()
 		}()
 	}
+	// Sampling stops at a sample at or past the endpoint collectFor gives once the last attempt has ended,
+	// which is past that end too.
 	least, need := time.Duration(windows)*h.spec.window, time.Duration(0)
+	var last time.Time
 	for need == 0 || samples[len(samples)-1].at.Sub(t0) < need {
 		<-tick.C
 		s := h.sample(tools)
@@ -447,15 +450,15 @@ func (h *loadHarness) measure(tools []*loadTool, rate float64, windows int, duri
 			end()
 		}
 		select {
-		case e := <-ended:
-			need = time.Duration(windowsFor(windows, h.spec.window, e.Sub(t0))) * h.spec.window
+		case last = <-ended:
+			need = collectFor(windows, h.spec.window, last.Sub(t0))
 		default:
 		}
 	}
 	stop()
 	h.quiesce(tools)
 
-	return judgeLoad(rate, origin, samples, h.spec.window)
+	return judgeLoad(rate, origin, samples, h.spec.window, last)
 }
 
 // quiesce waits for every producer's queues, then the stream's backlog, to empty.
