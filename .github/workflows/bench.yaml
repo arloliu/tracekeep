@@ -74,7 +74,7 @@ jobs:
           echo '|---|---|'
           echo '| catalog RegisterPack, RecordListing, AuditWhileRegistering, PruneEvents, EvictHour; ingest Flush, FlushDue, Acknowledge (its parked copies); compact MergePass, RetainClaimListing, Orphans adopting | yes: each catalog commit, SQLite at synchronous FULL, MariaDB as innodb_flush_log_at_trx_commit says |'
           echo '| ingest Flush, FlushDue on the fs store; store FSPut | yes, besides: the fs store syncs each object and its directory |'
-          echo '| compact MergeWrite | no: its work file is not synced |'
+          echo '| compact MergeWrite | yes: the archive syncs its working file |'
           echo '| catalog Listings, ListingHistory, Lookups, Resolve, DeleteCandidates; metrics ReadCatalog; compact Orphans steady, Compare; ingest Dispose, Batcher, Act, Heartbeat; api, records, service | no: reads, or memory only |'
         } | tee -a "$GITHUB_STEP_SUMMARY"
 
