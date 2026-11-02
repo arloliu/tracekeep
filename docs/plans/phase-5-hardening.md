@@ -1,6 +1,6 @@
 # Phase 5 — correctness, error handling and performance
 
-Status: active (2026-11-02) — 5.2 next
+Status: active (2026-11-02) — 5.2 in progress
 
 The owner's next phase after the roadmap's milestones:
 no new feature, but the service and the producer SDK made correct under faults, their failures reported, and their hot paths measured and made faster.
@@ -62,6 +62,43 @@ The answers are T-52.
     its reason `too-large` logged and counted, until the operator raises the bound or terminates the version (`ingest.md` §6.1, `parking.md`);
     a read takes at most the declared length plus one byte, so content beyond the declaration is found and refused as a mismatch, as today.
 
+Points 11 to 20 are 5.2's, read from the code at c4e73bb on 2026-11-02 and settled on the recommendations under the owner's standing instruction;
+the owner may override any before 5.2's spec step lands, which records them as T-53.
+
+11. **What a response may say about a dependency**:
+    the gate keeps a store's error text out of every response and log, but every catalog failure today answers `unavailable` with the catalog's whole error chain, a driver's host and port included.
+    Answered: a failure of a dependency (the catalog, the store, a key provider) answers a fixed message naming the dependency, never its error's text;
+    the log keeps the cause, a store's made keyless (`Keyless`) and a key's reference kept out as `masking-keys.md` §9 keeps it out of metrics.
+    tracekeep's own refusal texts (a bound, an hour, a pack id) stay in the response.
+12. **A client's cancellation (E1)**: one rule where every RPC is observed:
+    an error answered while the request's own context has ended becomes `canceled` or `deadline_exceeded` by that context, counted and never logged as a failure;
+    a dependency's own deadline leaves the request's context live and stays `unavailable`, an audit failure stays `internal`, and a refusal keeps its code.
+    A request cut by its replica's stop answers `canceled` too, which the client retries.
+13. **A pack that does not open (E2)**: `FindTransaction` answers `not_found` for a capture the catalog does not know,
+    and `data_loss` for a pack that does not open as one of the capture (corrupt, not a pack, an unsupported format, another capture's), which a retry cannot cure, logged as an error;
+    a pack the store cannot read stays `unavailable`.
+14. **Restore's read limit (carried from 5.1)**: a comparison past `api.records.held_bytes` or tracepack's read limit answers `resource_exhausted`, never a comparison of part.
+15. **An export's work file (carried from 5.1)**: a failure of the attempt's own work file (its creation, a write, its close, a full disk) fails the attempt as a store failure does,
+    so no pack is left out for it and no reason names a local path;
+    only the pack's own bytes (corrupt, not a pack, an unsupported format, a read limit) leave a pack out.
+16. **The SDK's counters (E4–E6, E18)**: every counter and every label value the SDK can emit is reported at zero when the publisher starts;
+    an observer's panic is `observer_panics_total`, and the publisher logs one error per report in which it rose, never the panic's value;
+    rotations are counted in the producer, off the lossy sink queue, and a log line the sink has no room for is `log_lines_dropped_total`;
+    no alert is added for panics, the runbook reads the counter.
+    The chart's gateway rules keep their fallback for a gateway on an SDK before this change (no `producer/` tag is cut in this phase).
+17. **The service's bus events (E3)**: logged (lost, restored, an async error, closed with an error), each server named redacted; no service metric is added.
+18. **A link without TLS (point 3, E12)**: judged once at a role's start: the bus by its connection's TLS state, so a `nats://` URL upgraded by the server is not warned,
+    and the S3 store by an `http://` endpoint; not the catalog's DSN, not `admin` or `status`, not a reconnect.
+19. **Bounds (E13)**: `auth.oidc.leeway` at most 5 min; session lifetime at most 24 h, login lifetime at most 1 h, the token exchange deadline at most 1 min;
+    `jwks_ttl` at most 24 h, its minimum fetch interval at most 1 h and below the TTL; `keys.vault.timeout` at most 1 min;
+    and 5.1's `ingest.stop_timeout` at most 10 min and `ingest.max_record_bytes` at most 4 GiB, HSMS's largest message.
+    The older durations without a maximum stay as they are.
+20. **Retries and fetches (E11, E14)**: a retried catalog transaction waits a random time up to a cap doubling from 10 ms to 1 s, under the caller's context,
+    and stops after 16 runs or once 30 s have passed since the first run, judged before each retry, never cutting a run in flight
+    (on SQLite, whose `busy_timeout` of 5 s is spent inside each run, the time bound comes first);
+    discovery and the JWKS are fetched again in the background once half their TTL has passed, under the existing minimum interval, a failure logged,
+    and cached keys never verify past their TTL.
+
 Not in this phase: new features, go-secs' changes (point 4), the eqp-hub side of phase G, and a `producer/` tag, which stays the owner's call.
 
 ## Phases
@@ -69,7 +106,7 @@ Not in this phase: new features, go-secs' changes (point 4), the eqp-hub side of
 | Phase | Scope | State |
 |---|---|---|
 | 5.1 — correctness and liveness | detailed below | done (#64) |
-| 5.2 — error handling and signals | spec first (`api.md` §10.1–§10.2, `operations.md` §10.4, `650-perf-sec.md`, the configuration guide), then E1–E15, E17–E19: each error with its own code, the SDK's panics, drops and sink events counted from zero, the service's bus events logged, dropped errors logged with keyless causes, readiness without internal text, retries with jittered backoff and a total bound, the warning for a link without TLS (point 3), configuration bounds, JWKS fetched ahead of its TTL, downloads' headers, the restore's store errors keyless; each error test injects sentinel keys, URLs, tokens and backend text and asserts their absence from the response and the log | pending |
+| 5.2 — error handling and signals | spec first (`api.md` §10.1–§10.2, `operations.md` §10.4, `650-perf-sec.md`, the configuration guide), then E1–E15, E17–E19: each error with its own code, the SDK's panics, drops and sink events counted from zero, the service's bus events logged, dropped errors logged with keyless causes, readiness without internal text, retries with jittered backoff and a total bound, the warning for a link without TLS (point 3), configuration bounds, JWKS fetched ahead of its TTL, downloads' headers, the restore's store errors keyless; each error test injects sentinel keys, URLs, tokens and backend text and asserts their absence from the response and the log; detailed below | in-progress |
 | 5.3 — measurement | benchmarks for the SDK's observe path, ingest's dispose, batch, flush and acknowledgement, the catalog's registration, listing and reads on both engines, `QueryRecords` over an hour of N records in K packs (binary and JSON measured apart), merge and the compactor's passes; P4's predicates explained on both engines; `pprof` on the metrics listener, opt-in; the baselines and the offered rate of the write-connection case recorded here | pending |
 | 5.4 — performance: the catalog and its writer | P1–P6, each measured before and after, each test on both engines: set-based registration, the overlap probe's index, the claim listing in bounded transactions that never forget a row from a chunk not yet listed, the confirmed indexes, listings bounded to their window with completeness unchanged (gaps beyond the window, a backward clock step, eviction, parked records), the API audit write's deadline and wait histogram (point 5) | pending |
 | 5.5 — performance: ingest, reads, compactor, API | P7–P18 that 5.3 shows worth their change, each measured before and after; concurrent acknowledgements only with completion tracked by identity, not as a prefix; any key-path change keeps the binding-check and cancellation tests | pending |
@@ -94,8 +131,28 @@ Every step after the first adds the failing case its row names before its fix: a
 | 9 | C12–C15 and C19, the SDK: a discarded rotation start released and skipped, not counted dropped; the `current_capture` gauge kept as state the sink applies, so an event lost to a full queue is repaired once the event producers have stopped and before `Close` returns; `Close` cancelling the publisher's and the lifecycle's waits, no capture installed after cancellation, the rotation's commit-point rule kept; a transient claim read retried, content proven wrong deleted and put again; the publisher's reads under a capture's lock merged into one, holding only the inspection. Failing cases: a discarded start and the drop counter; a blocked sink with a full queue, a capture ended, then the sink released and the producer closed, the gauge absent; publish, claim and rotation waits cancelled one at a time; a transient read error versus a short object versus metadata whose chunks were purged after an uncertain upload, on the real adapter; for C19, conformance rather than a race: a barrier inside the inspection holds a waiting callback that proceeds on its release, a barrier at the publisher's external waits holds no callback, and the merged read keeps the dependency barrier, the reservation timeout and the rotation's guarantees | done (#64) |
 | 10 | C16, C18: the testbus retry over test doubles: "peer offline" then success, a deadline then success, a permanent error, exhaustion and cancellation; the R3 consumer created through the retry; then 20 consecutive clustered runs as supplementary evidence; the simulator's rate bounded and a timed replay's end a success | done (#64) |
 
-Carried from 5.1 to 5.2: an export whose local work file fails (create, close, a full disk) still leaves the pack out, as neither a store failure nor the pack's own bytes;
-a restore past the merge's read limit still answers `unavailable`, no spec naming its code.
+Carried from 5.1 to 5.2 as points 14 and 15: an export whose local work file fails still leaves the pack out; a restore past the merge's read limit still answers `unavailable`.
+5.1's steps stay here while the gate cases cite them.
+
+## Phase 5.2 — error handling and signals
+
+Work on the branch `fix/phase-5/errors`, one commit per step, test first, each catalog test on both engines;
+the branch merges by pull request once the whole phase passes an external post-implementation review.
+Every step after the first adds its failing case before its fix.
+Each error case injects sentinels where its path can carry them (an object key, a store URL with a signature, a token, a password, a driver's host and backend text)
+and asserts the response's code and their absence from the response and from the whole log; a control case keeps the path's success.
+Steps 2 to 4 share `internal/api` and go to one implementer; the others touch disjoint packages.
+
+| Step | Scope | State |
+|---|---|---|
+| 1 | spec, with T-53 recording points 11 to 20: `api.md` §10.1's code table (`canceled`, `deadline_exceeded`, `data_loss`; `not_found` for an unknown capture in `FindTransaction`; `resource_exhausted` for a restore's read limit; a dependency's failure answered by a fixed message, point 11), *Exports* (the work file, point 15), *No key* (`Restore`'s copies), *Downloads* (the headers, step 4), an hour in an error written in RFC 3339; §10.2's JWKS and discovery fetched ahead of the TTL; `masking-keys.md` §9 (a restore's read limit, its copies keyless); `catalog.md`'s retry (point 20); `operations.md` §10.4 (the SDK's counters from zero, `abandoned`, `claim_puts_total`'s outcomes, `observer_panics_total`, `log_lines_dropped_total`, `/readyz` naming its failing checks without their text); `producer.md` (panics counted and logged); `650-perf-sec.md` and the configuration guide (the TLS warning, point 18; every new maximum, point 19) | pending |
+| 2 | E1, E2, E17 and point 11, in `internal/api`: the observing interceptor maps an error answered after the request's own context ended to `canceled` or `deadline_exceeded` and logs no failure; `PackURL`'s and an export's URL errors, `Restore`'s and `Digest`'s outcomes and a download's open do the same; `admin`'s mapping passes a cancellation through; `failed` answers `not_found` for an unknown capture and a fixed message for any other catalog failure, its cause logged; `FindTransaction` answers `data_loss` for a pack that does not open as the capture's (point 13), and the interceptor logs `data_loss` as an error; the two refusals naming an epoch hour name it in RFC 3339. Failing cases: a client cancelling and a client deadline passing while a handler is held at a stage hook, for `QueryRecords`, `FindTransaction`, `Restore`, `PackURL` and one listing, each asserting the code, the metric's code label, the outcome label and no error line; a dependency failing with a wrapped `context.DeadlineExceeded` while the request lives, still `unavailable` and logged once; a failing audit still `internal`; a request cut by the API's stop; an unknown capture; a pack with a corrupt header and one not a pack, asked twice, `data_loss` both times; a catalog error carrying a driver's host and backend sentinel, absent from the response | pending |
+| 3 | E19 and points 14, 15, in `internal/api`: `Restore` opens its copies through `records.Open`; a comparison past the held bytes or a read limit answers `resource_exhausted` with no audit row; an export's work-file failure (creation, write, close) fails the attempt, so the next fence exports every pack, and `LeftOut` names no local path. Failing cases: a copy whose open fails and one whose read fails with a key, a signed URL and backend text, asserting `unavailable` and the sentinels absent from the response and the log; two equal copies over a held-bytes bound of one byte; an export whose work file fails once, through a stage hook that makes the hour's directory unwritable, then succeeds under the next fence with nothing left out | pending |
+| 4 | E15, in `internal/api`: `/download/` answers `Content-Disposition: attachment` with a file name from the key's last element (a bundle's `<job_id>-<fence>.tar`) and a strong `ETag` derived from the key, which is never reused (`storage.md` §5.2), so `If-None-Match` and `If-Range` are answered as S3 does; no `Last-Modified`, which the store's interface cannot give. Failing cases: the headers on `GET`, `HEAD` and a 206; the same `ETag` on every request; `If-None-Match` answered 304 and a stale `If-Range` a whole 200; no header carries the token | pending |
+| 5 | E3, E9, E10, E12, in `internal/metrics`, `internal/service` and `cmd/tracekeep`: the service's bus connection logs a loss, a restoration, an async error and a close with an error, each server redacted; the dev IdP's serve error (a clean shutdown excepted) and the environment's close error logged, the exit code kept; `/readyz` names each failing check, never its error's text; a role's start warns once per link without TLS (point 18), `tracekeep dev` never. Failing cases: the embedded bus stopped and restarted, the lines logged, a password sentinel in the URL and in the configuration absent; a slow consumer's async error reaching the log; a check failing with a driver's host and a sentinel, the body naming the check without them, the four readiness assertions that read an error's text rewritten to read the check's name; a plain bus and an `http://` endpoint warned with the secrets absent, a TLS bus and an `https://` endpoint not, `dev` not. E9 has no seam that fails a serve or a close: its test is the clean stop's control, no line logged, and its fix two log calls | pending |
+| 6 | E7, E8, E11, in `internal/ingest`, `internal/compact` and `internal/catalog`: a parking publish that is not confirmed returns its error, so the ingester's existing line logs the cause before the deferral; the export cleanup's failed delete logs its cause made keyless; the retrying helper waits as point 20 states. Failing cases: a parking publisher failing with a sentinel, logged and deferred, never acknowledged; a delete failing with the key and backend text in its error, then a timeout, the cause logged without either; on both engines, an always-retryable transaction whose waits each lie within their cap and differ, one stopped by the time bound before its sixteenth run with the last error, and one cancelled during a wait returning at once with `context.Canceled`; the existing retry and lost-commit tests unchanged, with no real sleep | pending |
+| 7 | E13, E14, in `internal/config` and `internal/auth`: every maximum of point 19, each refused naming its key; the verifier fetches the JWKS and discovery again in the background from half their TTL, under the minimum interval, answering from the cache meanwhile, a failure logged with its URL redacted, and keys never verifying past their TTL. Failing cases: each key one past its maximum, and at it; a warm verifier past half its TTL answering while its background fetch is held, the fetch then moving the expiry; with the IdP down through the second half, one fetch per minimum interval, and a token refused once the TTL ends; one fetch in flight at a time | pending |
+| 8 | E4, E5, E6, E18, in `producer/` and the chart: point 16, with `claim_puts_total`'s outcomes and `records_observed_total`'s kinds and directions declared as the SDK emits them, and `Metrics.Add`'s documentation saying a zero delta declares the series; the chart's comment about a reason counted from its second drop corrected, its alert test gaining a gateway whose first drop fires `TracepubDropping`, the old case kept for an older SDK. Failing cases: a producer started and closed with no traffic, every counter and label value present at zero; a panic recovered at a callback entry, the counter at one and one error line without the panic's value; a blocked log sink with a full queue, rotations counted exactly and the dropped lines counted | pending |
 
 ## The audit
 
