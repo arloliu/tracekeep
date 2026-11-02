@@ -7,9 +7,15 @@ package service
 // It runs only when TRACEKEEP_LOAD is set, alone, without the race detector, which slows every path it measures,
 // and with a timeout of its own, since the full sweep takes hours:
 //
-//	TRACEKEEP_LOAD=1 go test ./internal/service/ -run '^TestLoad$' -count 1 -v -timeout 4h
+//	TRACEKEEP_LOAD=baseline go test ./internal/service/ -run '^TestLoad$' -count 1 -v -timeout 4h
 //
-// TRACEKEEP_LOAD=smoke runs two tools at a low rate over short windows instead, a check of the harness itself in a few minutes.
+// TRACEKEEP_LOAD names the run:
+//   - baseline records the numbers: the sweep, the offered rate, and a PackURL measurement of at least 1,000 audited successes,
+//     which must be a valid record; its gate verdict is reported and need not pass;
+//   - gate is the write-connection gate: the same measurement must also pass the gate (1,000 audited successes, p99 within 2 s);
+//   - smoke checks the harness itself in a few minutes: two tools at a low rate over short windows, no call count required.
+//
+// TRACEKEEP_LOAD_OFFERED, forwards a second, skips the sweep and offers that rate at the largest K, as the gate does with the rate a baseline recorded.
 // The results print (-v) as markdown tables for the plan's Baselines.
 
 import (
@@ -18,6 +24,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -42,8 +49,11 @@ import (
 type loadSpec struct {
 	// flush is dev's flush interval; warmup precedes a point's windows.
 	flush, warmup time.Duration
-	// perWindow are the one-second samples of a window; windows, a sweep point's windows; final, the offered rate's.
-	perWindow, windows, final int
+	// window is a window's duration; windows, a sweep point's windows; final, the offered rate's.
+	window         time.Duration
+	windows, final int
+	// calls are the audited PackURL successes a measurement runs until, its windows extended as needed.
+	calls int
 	// tools are the sweep's K, each swept from start forwards a second, doubling, to at most top.
 	tools      []int
 	start, top float64
@@ -52,12 +62,12 @@ type loadSpec struct {
 var (
 	// fullLoad is point 27's sweep, at dev's default flush interval.
 	fullLoad = loadSpec{
-		flush: 10 * time.Second, warmup: time.Minute, perWindow: 10, windows: 12, final: 60,
+		flush: 10 * time.Second, warmup: time.Minute, window: 10 * time.Second, windows: 12, final: 60, calls: gateCalls,
 		tools: []int{1, 10, 100}, start: 100, top: 102_400,
 	}
 	// smokeLoad checks the harness: one point of two tools, then the offered rate and PackURL, over short windows.
 	smokeLoad = loadSpec{
-		flush: time.Second, warmup: 5 * time.Second, perWindow: 5, windows: 6, final: 6,
+		flush: time.Second, warmup: 5 * time.Second, window: 5 * time.Second, windows: 6, final: 6,
 		tools: []int{2}, start: 20, top: 20,
 	}
 )
@@ -216,16 +226,65 @@ func TestLoad(t *testing.T) {
 	if mode == "" {
 		t.Skip("TRACEKEEP_LOAD is not set: the load harness runs alone, without -race; see load_test.go")
 	}
+	if mode != "baseline" && mode != "gate" && mode != "smoke" {
+		t.Fatalf("TRACEKEEP_LOAD=%q: want baseline, gate or smoke", mode)
+	}
 	spec := fullLoad
 	if mode == "smoke" {
 		spec = smokeLoad
 	}
+	var offered float64
+	if v := os.Getenv("TRACEKEEP_LOAD_OFFERED"); v != "" {
+		var err error
+		if offered, err = strconv.ParseFloat(v, 64); err != nil || offered <= 0 {
+			t.Fatalf("TRACEKEEP_LOAD_OFFERED=%q: want forwards a second", v)
+		}
+	}
 	h := newLoadHarness(t, spec)
 	// Printed however the run ends, so a sweep cut short still reports its points.
 	t.Cleanup(func() { t.Log("\n" + strings.Join(h.report, "\n")) })
-	h.log(fmt.Sprintf("flush %s, warm-up %s, %d windows of %d s a point, %d at the offered rate", spec.flush, spec.warmup, spec.windows, spec.perWindow, spec.final),
+	h.log(fmt.Sprintf("%s: flush %s, warm-up %s, %d windows of %s a point, %d at the offered rate", mode, spec.flush, spec.warmup, spec.windows, spec.window, spec.final),
 		"", "| K | offered fwd/s | made fwd/s | published rec/s | dropped | backlog slope | ring slope | reserved slope | bound | sustained |",
 		"|---|---|---|---|---|---|---|---|---|---|")
+	var tools []*loadTool
+	if offered == 0 {
+		tools, offered = h.sweep()
+		k := len(tools)
+		v := h.measure(tools, offered, spec.final, nil)
+		h.log("", fmt.Sprintf("Offered rate: %.0f fwd/s at K = %d over %d windows", offered, k, spec.final))
+		h.row(k, v)
+		if !v.sustained {
+			t.Errorf("the offered rate %.0f at K = %d is not sustained: %s", offered, k, v.why)
+		}
+	} else {
+		tools = h.startTools(spec.tools[len(spec.tools)-1])
+	}
+	defer h.stopTools(tools)
+	r := h.measurePackURL(tools, offered)
+	gate := r.gate()
+	h.log(fmt.Sprintf("gate (%d audited successes, p99 within %s): %s", gateCalls, gateP99, verdict(gate)))
+	switch err := r.accept(); {
+	case mode == "gate" && gate != nil:
+		t.Errorf("PackURL fails the gate: %v", gate)
+	case err != nil:
+		t.Errorf("PackURL is no valid record: %v", err)
+	default:
+	}
+}
+
+// verdict reads err as a verdict.
+func verdict(err error) string {
+	if err != nil {
+		return "fail: " + err.Error()
+	}
+
+	return "pass"
+}
+
+// sweep runs each K of the spec at doubling rates while sustained, and returns the largest K's tools, still running,
+// with the offered rate: half the highest rate sustained there.
+func (h *loadHarness) sweep() ([]*loadTool, float64) {
+	spec := h.spec
 	var tools []*loadTool
 	var highest float64
 	summary := make([]string, 0, 3+len(spec.tools))
@@ -245,22 +304,12 @@ func TestLoad(t *testing.T) {
 		summary = append(summary, fmt.Sprintf("| %d | %.0f |", k, highest))
 	}
 	h.log(summary...)
-	defer h.stopTools(tools)
-	k := len(tools)
-	offered := highest / 2
-	if offered == 0 {
-		t.Fatalf("no rate sustained at K = %d", k)
+	if highest == 0 {
+		h.stopTools(tools)
+		h.t.Fatalf("no rate sustained at K = %d", len(tools))
 	}
-	v := h.measure(tools, offered, spec.final, nil)
-	h.log("", fmt.Sprintf("Offered rate: %.0f fwd/s at K = %d over %d windows", offered, k, spec.final))
-	h.row(k, v)
-	if !v.sustained {
-		t.Errorf("the offered rate %.0f at K = %d is not sustained: %s", offered, k, v.why)
-	}
-	r := h.measurePackURL(tools, offered)
-	if err := r.accept(); err != nil {
-		t.Errorf("PackURL: %v", err)
-	}
+
+	return tools, highest / 2
 }
 
 func (h *loadHarness) log(lines ...string) { h.report = append(h.report, lines...) }
@@ -351,7 +400,7 @@ func (h *loadHarness) sample(tools []*loadTool) loadSample {
 	if err != nil {
 		h.t.Fatal(err)
 	}
-	s := loadSample{published: info.State.LastSeq, backlog: info.State.Msgs}
+	s := loadSample{at: time.Now(), published: info.State.LastSeq, backlog: info.State.Msgs}
 	for _, lt := range tools {
 		ring, reserved, dropped := lt.m.read()
 		s.made += lt.made.Load()
@@ -361,8 +410,10 @@ func (h *loadHarness) sample(tools []*loadTool) loadSample {
 	return s
 }
 
-// measure runs one point: rate forwards a second through tools, a warm-up, then windows of samples, during, when not nil,
-// running over the windows; then it stops the forwards and waits for the queues and the backlog to empty.
+// measure runs one point: rate forwards a second through tools, a warm-up, then at least windows of samples.
+// during, when not nil, runs from the first sample; its context ends once the least windows have passed,
+// and sampling goes on, by whole windows, until its last attempt has ended, so the judged span holds every attempt.
+// Then the forwards stop and the queues and the backlog empty.
 func (h *loadHarness) measure(tools []*loadTool, rate float64, windows int, during func(context.Context)) loadVerdict {
 	ctx := h.t.Context()
 	origin := h.sample(tools)
@@ -372,24 +423,39 @@ func (h *loadHarness) measure(tools []*loadTool, rate float64, windows int, duri
 		h.t.Fatal(ctx.Err())
 	case <-time.After(h.spec.warmup):
 	}
-	tick := time.NewTicker(time.Second)
+	tick := time.NewTicker(loadTick)
 	defer tick.Stop()
 	samples := []loadSample{h.sample(tools)}
+	t0 := samples[0].at
 	wctx, end := context.WithCancel(ctx)
-	var calls sync.WaitGroup
-	if during != nil {
-		calls.Go(func() { during(wctx) })
+	defer end()
+	ended := make(chan time.Time, 1) // when during's last attempt ended
+	if during == nil {
+		ended <- t0
+	} else {
+		go func() {
+			during(wctx)
+			ended <- time.Now()
+		}()
 	}
-	for len(samples) <= windows*h.spec.perWindow {
+	least, need := time.Duration(windows)*h.spec.window, time.Duration(0)
+	for need == 0 || samples[len(samples)-1].at.Sub(t0) < need {
 		<-tick.C
-		samples = append(samples, h.sample(tools))
+		s := h.sample(tools)
+		samples = append(samples, s)
+		if s.at.Sub(t0) >= least {
+			end()
+		}
+		select {
+		case e := <-ended:
+			need = time.Duration(windowsFor(windows, h.spec.window, e.Sub(t0))) * h.spec.window
+		default:
+		}
 	}
-	end()
-	calls.Wait()
 	stop()
 	h.quiesce(tools)
 
-	return judgeLoad(rate, origin, samples, h.spec.perWindow)
+	return judgeLoad(rate, origin, samples, h.spec.window)
 }
 
 // quiesce waits for every producer's queues, then the stream's backlog, to empty.
@@ -410,7 +476,7 @@ func (h *loadHarness) quiesce(tools []*loadTool) {
 	}
 }
 
-// measurePackURL runs a point at rate with the PackURL calls over its windows, on the first tool's newest pack,
+// measurePackURL runs a point at rate with the PackURL calls on the first tool's newest pack, over its windows extended until the spec's audited successes,
 // counting the flushes they spanned from that tool's segments: a flush registers one segment of a capture an hour.
 func (h *loadHarness) measurePackURL(tools []*loadTool, rate float64) packURLResult {
 	var r packURLResult
@@ -473,10 +539,10 @@ func (h *loadHarness) packURLs(ctx context.Context, cl tracekeepv1connect.Machin
 	var pack newestPack
 	var listed time.Time
 	for {
-		select {
-		case <-ctx.Done():
+		<-tick.C
+		// Past the least windows, the calls go on to the spec's audited successes, unless the record already fails.
+		if ctx.Err() != nil && (r.made == 0 || r.succeeded >= h.spec.calls || r.failed > 0 || r.superseded*20 > r.made) {
 			return
-		case <-tick.C:
 		}
 		for attempt := 0; attempt <= packURLRetries; attempt++ {
 			if attempt > 0 || time.Since(listed) >= time.Second {
