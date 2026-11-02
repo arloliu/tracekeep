@@ -105,9 +105,7 @@ func (in *completenessInputs) classify() Completeness {
 	var out Completeness
 	// The diagnostics stand on their own: a capture with no producer seq may still have a close or a declared loss.
 	// Each is put in one order of its own, so an answer never depends on the plan or the form of the read that found its rows.
-	out.Losses = slices.SortedFunc(slices.Values(in.losses), func(a, b DeclaredLoss) int {
-		return cmp.Or(cmpPtr(a.SeqFrom, b.SeqFrom), cmpPtr(a.SeqTo, b.SeqTo), cmpPtr(a.TSFrom, b.TSFrom), cmpPtr(a.TSTo, b.TSTo))
-	})
+	out.Losses = slices.SortedFunc(slices.Values(in.losses), cmpLoss)
 	out.CrashGaps = slices.SortedFunc(slices.Values(in.crashGaps), func(a, b CrashGap) int {
 		return cmp.Or(cmpPtr(a.Start, b.Start), cmpPtr(a.End, b.End))
 	})
@@ -149,6 +147,7 @@ func (in *completenessInputs) classify() Completeness {
 			explained = append(explained, Run{SeqFrom: *l.SeqFrom, SeqTo: *l.SeqTo, TSFrom: l.TSFrom, TSTo: l.TSTo})
 		}
 	}
+	slices.SortFunc(out.Losses, cmpLoss) // with the terminated versions'
 	out.Gaps = gaps(coalesceRuns(explained), frontier, in.origin)
 
 	return out
@@ -195,13 +194,13 @@ func (c *Catalog) snapshot(ctx context.Context, f func(tx *sqlx.Tx) error) (err 
 const completenessChunk = 128
 
 // The queries of a completeness's inputs (completenessInputs), each over the captures its IN (?) names, selecting the key first.
-// The parked rows come in seq order; classify orders the rest itself.
+// The parked rows come in their key's order, so a seq's versions do too; classify orders the rest itself.
 var (
 	frontierQuery = keyed(`SELECT capture_id, highest_seq, origin_ns FROM captures WHERE capture_id IN (?)`)
 	retainedQuery = keyed(`SELECT r.capture_id, r.seq_from, r.seq_to, r.ts_from, r.ts_to FROM pack_ranges r JOIN packs k ON k.pack_id = r.pack_id
 		WHERE r.capture_id IN (?) AND k.state <> 'deleted'`)
 	evictedQuery = keyed(`SELECT capture_id, seq_from, seq_to, ts_from, ts_to FROM evicted_ranges WHERE capture_id IN (?)`)
-	parkedQuery  = keyed(`SELECT capture_id, seq, header, state, terminated_by FROM parked WHERE capture_id IN (?) ORDER BY capture_id, seq`)
+	parkedQuery  = keyed(`SELECT capture_id, seq, header, state, terminated_by FROM parked WHERE capture_id IN (?) ORDER BY capture_id, seq, header, payload_digest`)
 	lossesQuery  = keyed(`SELECT k.capture_id, l.seq_from, l.seq_to, l.ts_from, l.ts_to FROM pack_losses l JOIN packs k ON k.pack_id = l.pack_id
 		WHERE k.capture_id IN (?) AND k.state <> 'deleted'`)
 	crashGapsQuery = keyed(`SELECT capture_id, gap_start, gap_end FROM capture_closes
@@ -340,6 +339,11 @@ func (c *Catalog) completenessInputs(ctx context.Context, tx *sqlx.Tx, captures 
 	}
 
 	return ins, nil
+}
+
+// cmpLoss orders declared losses by their values, the action last.
+func cmpLoss(a, b DeclaredLoss) int {
+	return cmp.Or(cmpPtr(a.SeqFrom, b.SeqFrom), cmpPtr(a.SeqTo, b.SeqTo), cmpPtr(a.TSFrom, b.TSFrom), cmpPtr(a.TSTo, b.TSTo), cmp.Compare(a.ActionID, b.ActionID))
 }
 
 // cmpPtr orders two optional values, an absent one first.

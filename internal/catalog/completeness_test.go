@@ -305,7 +305,8 @@ func TestInputQueryOneCapture(t *testing.T) {
 	}
 }
 
-// TestClassifyOrdersDiagnostics checks the losses, crash gaps and conflicts come in their own order, whatever order they were read in.
+// TestClassifyOrdersDiagnostics checks the losses, terminated versions' included, crash gaps and conflicts come in their own order,
+// whatever order they were read in.
 func TestClassifyOrdersDiagnostics(t *testing.T) {
 	u := func(v uint64) *uint64 { return &v }
 	i := func(v int64) *int64 { return &v }
@@ -313,9 +314,17 @@ func TestClassifyOrdersDiagnostics(t *testing.T) {
 		losses:    []DeclaredLoss{{SeqFrom: u(9), SeqTo: u(9)}, {TSFrom: i(5), TSTo: i(6)}, {SeqFrom: u(3), SeqTo: u(4)}, {SeqFrom: u(3), SeqTo: u(3)}},
 		crashGaps: []CrashGap{{Start: i(7)}, {End: i(2)}, {Start: i(1), End: i(2)}},
 		conflicts: []ConflictRange{{SeqFrom: 5, SeqTo: 6, State: "suspect"}, {SeqFrom: 5, SeqTo: 5, State: "confirmed"}, {SeqFrom: 1, SeqTo: 2}},
+		// Two terminated versions of one seq, read in either order.
+		parked:     []parkedSeq{{seq: 3, ts: 30, state: VersionTerminated, action: "b"}, {seq: 3, ts: 20, state: VersionTerminated, action: "a"}},
+		highest:    9,
+		hasHighest: true,
 	}
 	want := Completeness{
-		Losses:    []DeclaredLoss{{TSFrom: i(5), TSTo: i(6)}, {SeqFrom: u(3), SeqTo: u(3)}, {SeqFrom: u(3), SeqTo: u(4)}, {SeqFrom: u(9), SeqTo: u(9)}},
+		Losses: []DeclaredLoss{
+			{TSFrom: i(5), TSTo: i(6)}, {SeqFrom: u(3), SeqTo: u(3)},
+			{SeqFrom: u(3), SeqTo: u(3), TSFrom: i(20), TSTo: i(20), ActionID: "a"}, {SeqFrom: u(3), SeqTo: u(3), TSFrom: i(30), TSTo: i(30), ActionID: "b"},
+			{SeqFrom: u(3), SeqTo: u(4)}, {SeqFrom: u(9), SeqTo: u(9)},
+		},
 		CrashGaps: []CrashGap{{End: i(2)}, {Start: i(1), End: i(2)}, {Start: i(7)}},
 		Conflicts: []ConflictRange{{SeqFrom: 1, SeqTo: 2}, {SeqFrom: 5, SeqTo: 5, State: "confirmed"}, {SeqFrom: 5, SeqTo: 6, State: "suspect"}},
 	}
@@ -327,5 +336,6 @@ func TestClassifyOrdersDiagnostics(t *testing.T) {
 		slices.Reverse(in.losses)
 		slices.Reverse(in.crashGaps)
 		slices.Reverse(in.conflicts)
+		slices.Reverse(in.parked)
 	}
 }
