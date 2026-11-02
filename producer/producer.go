@@ -21,6 +21,8 @@ const (
 	goSecsPath = "github.com/arloliu/go-secs/v2"
 	// sinkEvents bounds the lifecycle events waiting for the sink goroutine.
 	sinkEvents = 256
+	// emitClosed is Close's mark in Producer.emits, above the count of emissions in flight.
+	emitClosed = uint64(1) << 63
 )
 
 // ErrNoBus reports a producer built without a publisher, which has no bus to check.
@@ -91,15 +93,16 @@ type Producer struct {
 	// are counted where they happen, the lifecycle lock held or not, and reported by the publisher (producer.md §4.3 *Diagnostics*).
 	rotations    [numRotationReasons]atomic.Uint64
 	linesDropped atomic.Uint64
-	// emitting counts the emissions in flight; closed is Close's mark, after which settled closes once none is.
-	emitting   atomic.Int64
-	closed     atomic.Bool
-	settled    chan struct{}
-	settleOnce sync.Once
-	closeOnce  sync.Once
+	// emits holds Close's mark (emitClosed) and the count of emissions in flight in one word,
+	// so an admission and the mark linearize; settled closes once the mark is set and the count is zero.
+	emits     atomic.Uint64
+	settled   chan struct{}
+	closeOnce sync.Once
 	// admitted and marked, set only by the package's tests, run once an emission is admitted and once Close set its mark.
 	admitted func()
 	marked   func()
+	// left, set only by the package's tests, runs once an emission left the in-flight count, before it acts on what it left.
+	left func()
 }
 
 type options struct {
@@ -256,12 +259,13 @@ func (p *Producer) shutdown() {
 	if p.conn != nil {
 		p.conn.close()
 	}
-	p.closed.Store(true)
+	// The mark and the count share one word, so the count read with the mark is current:
+	// none in flight, Close settles itself; otherwise the emission that brings the count to zero does.
+	if p.emits.Or(emitClosed) == 0 {
+		close(p.settled)
+	}
 	if p.marked != nil {
 		p.marked()
-	}
-	if p.emitting.Load() == 0 {
-		p.settle()
 	}
 	<-p.settled // every emission that saw no mark is queued or counted
 	close(p.sinkQuit)
