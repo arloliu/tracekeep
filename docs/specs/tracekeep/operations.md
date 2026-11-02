@@ -85,6 +85,8 @@ Deferred messages are the tool's unresolved parked versions, as `deferred list` 
 backlog is the traffic stream's messages on the tool's subjects, whose token after the prefix is the tool's (tracepack's `bus.Subject`),
 and the stream's bytes, which no subject divides, once for all tools.
 The probes of the Helm chart and the systemd unit's checks read these on the metrics listener (`metrics.listen`, default `:9090`), never on the API's port.
+With `metrics.pprof` on (default off) the same listener also serves Go's profiles under `/debug/pprof/`; it is refused with an empty `metrics.listen`,
+and since the listener is unauthenticated and a profile shows the heap and the command line, it is on only while the listener is reachable by its operators alone (T-54).
 
 The Helm chart ships alert rules (`architecture.md` §3.3), each with its runbook section in `docs/guides/runbook.md` as its `runbook_url` and the metric it reads;
 the thresholds are the chart's values, the defaults below.
