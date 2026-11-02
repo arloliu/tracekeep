@@ -5,7 +5,8 @@
 // and the allowance T, 5% plus r, and a 95% percentile bootstrap interval of median(head) / median(base1):
 // the metric passes when the interval's upper bound is at most 1 + T, regresses when its lower bound exceeds 1 + T,
 // and is inconclusive otherwise, to be measured again, never passed.
-// Allocations, and bytes from a zero base, are exact: any increase of the median regresses.
+// Allocations are exact when every sample of both base runs has the same count, and any metric from a zero base is exact:
+// any increase of the median regresses. Allocations whose base samples vary are judged by the interval, as a time is.
 // A rate, a unit ending in /s, is judged as its inverse, a time.
 // A row or a metric missing on any side fails; a row run with other -cpu is another row, so it fails too.
 // A row fails when its run's parameters differ between the sides, or within one, or its samples number differently:
@@ -308,8 +309,10 @@ func judgeMetric(rng *rand.Rand, row, metric string, b1, b2, h []float64) judgem
 			return j
 		}
 	}
+	// Allocations whose base never varied, and anything from a zero base, are exact; varying allocations are judged as a time is.
+	deterministic := metric == "allocs/op" && !slices.ContainsFunc(append(slices.Clone(b1), b2...), func(v float64) bool { return v != b1[0] })
 	j.base1, j.base2, j.head = median(b1), median(b2), median(h)
-	if metric == "allocs/op" || j.base1 == 0 {
+	if deterministic || j.base1 == 0 {
 		j.verdict, j.why = pass, "exact"
 		if j.head > j.base1 {
 			j.verdict = regress
