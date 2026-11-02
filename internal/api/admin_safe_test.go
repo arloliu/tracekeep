@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"connectrpc.com/connect"
+	"github.com/arloliu/go-secs/tracepack"
 
 	"github.com/arloliu/tracekeep/internal/admin"
 	"github.com/arloliu/tracekeep/internal/auth"
@@ -29,8 +30,44 @@ const (
 	safeTail = "; retry mysql://[fd00::1]:3306, then https://[redacted]"
 )
 
+// AdminService never quotes the words it refuses: each usage error names the command and the argument's role, and none of the words,
+// a bare token, a cookie, an authorization code, a password or a URL, reaches the answer or the log.
+func TestAdminUsageQuotesNoWords(t *testing.T) {
+	t.Parallel()
+	c := catalogtest.Open(t, catalog.EngineSQLite)
+	r := newRig(t, &Server{Catalog: c, Admin: &admin.Admin{Catalog: c}}, nil)
+	cl := tracekeepv1connect.NewAdminServiceClient(r.hs.Client(), r.hs.URL)
+	capture := tracepack.UUID{0x42}.String()
+	answers := make([]string, 0, 10)
+	for _, tc := range []struct {
+		words []string
+		named string
+	}{
+		{[]string{"capture", "show", "download-token-sentinel"}, "capture show: the capture id does not parse"},
+		{[]string{"parked", "list", "session=cookie-sentinel"}, "parked list: the capture id does not parse"},
+		{[]string{"parked", "terminate", capture, "code=authcode-sentinel"}, "parked terminate: the seq does not parse"},
+		{[]string{"conflict", "acknowledge", "password=pw-sentinel", "1"}, "conflict acknowledge: the capture id does not parse"},
+		{[]string{"scope", "merge", capture, "Bearer token-sentinel"}, "scope merge: the hour is not RFC 3339"},
+		{[]string{"policy", "show", "p", "password=pw2-sentinel"}, "policy show: the version is not a positive integer"},
+		{[]string{"config", "activate", "session=cookie2-sentinel"}, "config activate: the configuration id is not a positive integer"},
+		{[]string{"bus", "adopt-stream", "token-sentinel"}, "bus adopt-stream: the role is not traffic or parking"},
+		{[]string{"status", "session=cookie3-sentinel", passwordURL, ipv6URL}, "admin status: no such command"},
+		{[]string{"password=pw3-sentinel", "code=authcode2-sentinel"}, "admin: unknown command"},
+	} {
+		_, err := cl.Admin(t.Context(), withToken(&tkv1.AdminRequest{Words: tc.words}, adminToken))
+		<-r.done
+		answers = append(answers, errMessage(err))
+		if connect.CodeOf(err) != connect.CodeInvalidArgument || !strings.Contains(errMessage(err), tc.named) {
+			t.Errorf("%q = %v, want invalid_argument naming %q", tc.words, err, tc.named)
+		}
+	}
+	if text := strings.Join(answers, "\n") + r.logs.String(); strings.Contains(text, "sentinel") || strings.Contains(text, "host.invalid") {
+		t.Errorf("an answer or the log quotes the operator's words:\n%s", text)
+	}
+}
+
 // AdminService's answers and log lines keep a command's diagnostic, every URL in it cut to its scheme and host:
-// a usage error echoing its words, a command's failure and an audit failure whose catalog text names a DSN, bracketed IPv6 hosts included,
+// a command's failure and an audit failure whose catalog text names a DSN, bracketed IPv6 hosts included,
 // and a URL that does not parse cut to its scheme.
 func TestAdminAnswersNoCredential(t *testing.T) {
 	t.Parallel()
@@ -42,14 +79,7 @@ func TestAdminAnswersNoCredential(t *testing.T) {
 		_, err := cl.Admin(t.Context(), withToken(&tkv1.AdminRequest{Words: words}, adminToken))
 		return err
 	}
-	var answers []string
-	err := call("no", "such", passwordURL, tokenURL, ipv6URL)
-	answers = append(answers, errMessage(err))
-	if connect.CodeOf(err) != connect.CodeInvalidArgument || !strings.Contains(errMessage(err), "usage") ||
-		!strings.Contains(errMessage(err), "https://host.invalid ") || !strings.Contains(errMessage(err), "https://host2.invalid:8443") ||
-		!strings.Contains(errMessage(err), "https://[::1]:8443]") {
-		t.Errorf("a usage error = %v, want invalid_argument naming the usage and each URL's scheme and host", err)
-	}
+	answers := make([]string, 0, 2)
 	fault := fmt.Errorf("catalog: dial %s: connection refused; retry %s, then %s", dsnURL, ipv6DSN, badURL)
 	for _, tc := range []struct {
 		name string
@@ -67,7 +97,7 @@ func TestAdminAnswersNoCredential(t *testing.T) {
 			t.Errorf("%s = %v, want %v %q", tc.name, err, tc.code, tc.text)
 		}
 	}
-	for range 3 {
+	for range 2 {
 		<-r.done
 	}
 	if text := strings.Join(answers, "\n") + r.logs.String(); strings.Contains(text, "sentinel") {
