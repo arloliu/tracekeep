@@ -1,0 +1,92 @@
+name: Bench
+# The catalog's benchmarks on MariaDB (650-perf-sec.md, T-54): a base measured twice and a head once in one job, on one runner,
+# judged by benchjudge against the base's own repeatability; started by hand only.
+on:
+  workflow_dispatch:
+    inputs:
+      base:
+        description: The base commit, branch or tag
+        required: true
+      head:
+        description: The head commit, branch or tag
+        required: true
+      benchtime:
+        description: go test's -benchtime, longer to measure an inconclusive row again
+        default: 1s
+      scale:
+        description: TRACEKEEP_BENCH_SCALE, the largest size run
+        type: choice
+        options: [ small, medium, large ]
+        default: small
+
+permissions:
+  contents: read
+
+env:
+  # benchstat at a pinned version, so a comparison's tables are reproducible.
+  BENCHSTAT: golang.org/x/perf/cmd/benchstat@v0.0.0-20261009192801-be2c69fb417e
+  BENCHTIME: ${{ inputs.benchtime }}
+  TRACEKEEP_BENCH_SCALE: ${{ inputs.scale }}
+
+jobs:
+  mariadb:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+    - uses: actions/checkout@v7
+      with:
+        ref: ${{ inputs.head }}
+        path: head
+    - uses: actions/checkout@v7
+      with:
+        ref: ${{ inputs.base }}
+        path: base
+    # The head's tools measure both trees: the base may predate them.
+    - name: Setup Go from the head's mise.toml
+      uses: jdx/mise-action@v4
+      with:
+        working_directory: head
+        install_args: go
+    # The base's own mise.toml, if it pins another Go, must not pick the toolchain in its tree.
+    - name: Use the head's Go in both trees
+      run: dirname "$(cd head && mise which go)" >> "$GITHUB_PATH"
+
+    # What a baseline records besides the engine's flush setting, which catalog.sh prints: never a host, a runner or a vendor's model.
+    - name: Machine facts
+      run: |
+        echo "base: $(git -C base rev-parse HEAD)"
+        echo "head: $(git -C head rev-parse HEAD)"
+        go version
+        echo "benchstat: $BENCHSTAT"
+        echo "cores: $(nproc)"
+        lscpu | grep -E '^(Architecture|CPU\(s\)|Thread\(s\) per core|Core\(s\) per socket|Socket\(s\)|L2 cache|L3 cache|Hypervisor vendor):' || true
+        echo "filesystem of the work: $(stat -f -c %T "$GITHUB_WORKSPACE")"
+        echo "filesystem of the tests' temporary directory: $(stat -f -c %T "${TMPDIR:-/tmp}")"
+        echo "filesystem of MariaDB's data: $(sudo stat -f -c %T "$(docker info -f '{{.DockerRootDir}}')")"
+        echo "-count 10 -benchtime $BENCHTIME, scale $TRACEKEEP_BENCH_SCALE"
+
+    # The head between the base's two runs, so the base's repeatability spans the head's run.
+    - name: Benchmarks
+      run: |
+        mkdir out
+        (cd base && ../head/scripts/catalog.sh bench ../out/base1.txt)
+        (cd head && scripts/catalog.sh bench ../out/head.txt)
+        (cd base && ../head/scripts/catalog.sh bench ../out/base2.txt)
+
+    - name: Upload the raw samples
+      if: always()
+      uses: actions/upload-artifact@v7
+      with:
+        name: bench-${{ github.run_id }}
+        path: out/
+
+    - name: benchstat
+      run: |
+        echo "## the base's repeatability, base1 against base2"
+        go run "$BENCHSTAT" base1=out/base1.txt base2=out/base2.txt
+        echo "## the change, base1 against head"
+        go run "$BENCHSTAT" base=out/base1.txt head=out/head.txt
+
+    # Fails on a regression or a failed row, and on an inconclusive one (exit 3), which is measured again, never passed.
+    - name: Decisions
+      run: cd head && go run ./cmd/benchjudge ../out/base1.txt ../out/base2.txt ../out/head.txt
