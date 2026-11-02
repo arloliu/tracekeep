@@ -27,6 +27,9 @@ jobs:
     # then the service built with GOWORK=off; tests use the embedded nats-server, no external service.
     - name: make ci
       run: make ci
+    # Every benchmark once at its small size, without the race detector, so none rots; MariaDB's run in the catalog job.
+    - name: make bench-smoke
+      run: make bench-smoke
     # The SDK's minimum resolved graph, the one make ci tested.
     - name: Resolved module graph of the SDK
       run: cd producer && GOWORK=off go list -m all
@@ -70,7 +73,7 @@ jobs:
     - name: make test-vault
       run: make test-vault
 
-  # The catalog on MariaDB, and its migrations validated and checked against schema.hcl, each with a MariaDB container;
+  # The catalog on MariaDB, its tests and its benchmarks' smoke run, and its migrations validated and checked against schema.hcl, each with a MariaDB container;
   # make ci runs the catalog's tests on SQLite only.
   catalog:
     runs-on: ubuntu-latest
@@ -84,6 +87,9 @@ jobs:
       run: make migrate-check
     - name: make test-catalog
       run: make test-catalog
+    # The catalog's benchmarks once on MariaDB, failing rather than skipping without it.
+    - name: make bench-catalog-smoke
+      run: make bench-catalog-smoke
 
   # The frontend: its lint, type check and tests, then the release binary with the build embedded (api.md §10.3);
   # make ci needs no Node, so this job is the frontend's gate.

@@ -7,6 +7,7 @@ override VERBOSE_TAG := -v
 endif
 
 TEST_TIMEOUT := 10m
+OUT          ?= bench-catalog.txt
 GOLANGCI     ?= golangci-lint
 # The service module, the producer SDK, the SDK's bus-test module (T-35) and the simulator (T-38);
 # `./...` does not cross a module boundary, so every Go target visits each.
@@ -75,6 +76,16 @@ test-catalog: ## Run the catalog's tests on MariaDB in a container (needs docker
 
 bench: ## Run benchmarks in every module
 	@$(call in_module,go test ./... -run=^$$ -bench=. -benchmem)
+
+# Each benchmark once at its small size, without the race detector, so none rots (650-perf-sec.md); MariaDB's runs skip here.
+bench-smoke: ## Run every benchmark once at its small size in every module
+	@$(call in_module,TRACEKEEP_BENCH_SCALE=small go test ./... -run=^$$ -bench=. -benchtime=1x)
+
+bench-catalog: ## Run the catalog's benchmarks on MariaDB in a container into OUT (needs docker; COUNT, BENCHTIME)
+	@scripts/catalog.sh bench $(OUT)
+
+bench-catalog-smoke: ## Run the catalog's benchmarks once on MariaDB in a container, failing without it (needs docker)
+	@scripts/catalog.sh bench-smoke
 
 ##@ Catalog
 
@@ -145,4 +156,4 @@ packaging-standalone: ## The standalone leg: installs the unit on this host; ref
 ci: check docs-check data-check test ## Every gate, plus the service built without the workspace
 	@GOWORK=off go build ./...
 
-.PHONY: help lint fmt vet check docs-check data-check work hooks test test-latest test-s3 test-vault test-catalog migrate-diff migrate-check proto web web-check build image image-check chart-check alerts-check unit-check packaging-cluster packaging-standalone bench ci
+.PHONY: help lint fmt vet check docs-check data-check work hooks test test-latest test-s3 test-vault test-catalog migrate-diff migrate-check bench-smoke bench-catalog bench-catalog-smoke proto web web-check build image image-check chart-check alerts-check unit-check packaging-cluster packaging-standalone bench ci
