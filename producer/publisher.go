@@ -147,6 +147,8 @@ type flight struct {
 type publisherHooks struct {
 	afterSnapshot func()
 	afterPass     func()
+	// stopped runs once the stopping publisher made its last report.
+	stopped func()
 }
 
 // reported holds the counts already sent to Metrics, so each report adds the difference.
@@ -158,6 +160,8 @@ type reported struct {
 	dropBytes uint64
 	claimPuts map[string]uint64
 	pending   core.PendingCounters
+	rotations [numRotationReasons]uint64
+	lines     uint64
 }
 
 func newPublisher(p *Producer, bus Bus) *publisher {
@@ -234,6 +238,9 @@ func (pb *publisher) stop() {
 		c.Terminate()
 	}
 	pb.report(true)
+	if h := pb.hooks.stopped; h != nil {
+		h()
+	}
 }
 
 // end hands over the captures End stamped with its deadline; End calls it from its own goroutine.
@@ -818,6 +825,17 @@ func (pb *publisher) report(force bool) {
 			m.Add("claim_puts_total", map[string]string{"outcome": outcome}, float64(delta))
 		}
 		last.claimPuts[outcome] = n
+	}
+	for i := range pb.p.rotations {
+		n := pb.p.rotations[i].Load()
+		if delta := n - last.rotations[i]; delta > 0 {
+			m.Add("capture_rotations_total", map[string]string{"reason": rotationReasons[i]}, float64(delta))
+		}
+		last.rotations[i] = n
+	}
+	if n := pb.p.linesDropped.Load(); n > last.lines {
+		m.Add("log_lines_dropped_total", nil, float64(n-last.lines))
+		last.lines = n
 	}
 	depth, bytes := rec.OrdinaryDepth()
 	m.Set("ring_depth", nil, float64(depth))

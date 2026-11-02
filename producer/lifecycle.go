@@ -24,15 +24,16 @@ const faultRepeatWindow = time.Minute
 
 // Rotation reasons (capture_rotations_total).
 const (
-	reasonStart     = "start"
-	reasonHotReload = "hotreload"
-	reasonFault     = "fault"
-	reasonStop      = "stop"
-	reasonSeqLimit  = "seq_limit"
+	reasonStart rotationReason = iota
+	reasonHotReload
+	reasonFault
+	reasonStop
+	reasonSeqLimit
+	numRotationReasons
 )
 
 // rotationReasons labels capture_rotations_total.
-var rotationReasons = [...]string{reasonStart, reasonHotReload, reasonFault, reasonStop, reasonSeqLimit}
+var rotationReasons = [numRotationReasons]string{"start", "hotreload", "fault", "stop", "seq_limit"}
 
 var (
 	// ErrNotStarted reports a Rotate with no capture open: before Begin or after End.
@@ -60,6 +61,9 @@ type Report struct {
 	// Contended reports that another lifecycle call held the lifecycle lock past the deadline: End did nothing.
 	Contended bool
 }
+
+// rotationReason indexes rotationReasons.
+type rotationReason uint8
 
 // uuidV7 generates capture ids as UUIDv7 (RFC 9562 §5.7) that sort by creation,
 // within a millisecond by a 12-bit counter in rand_a (RFC 9562 §6.2, method 1).
@@ -154,7 +158,7 @@ func (p *Producer) End(ctx context.Context) Report {
 	}
 	id := cur.ID
 	p.last = &id
-	p.emit(func() { p.metrics.Add("capture_rotations_total", map[string]string{"reason": reasonStop}, 1) })
+	p.rotations[reasonStop].Add(1)
 	p.setCurrentMetric(nil, nil)
 	// The publisher is waited for outside the lifecycle lock, so a second End or a Begin is not held behind it.
 	p.unlockLife()
@@ -216,7 +220,7 @@ func (p *Producer) lockLife(dl time.Time, cancel <-chan struct{}) bool {
 func (p *Producer) unlockLife() { <-p.lifeSem }
 
 // rotateLocked builds a capture for d and rotates to it; the caller holds the lifecycle lock.
-func (p *Producer) rotateLocked(ctx context.Context, d *CaptureDescriptor, previous *tracepack.UUID, reason string) error {
+func (p *Producer) rotateLocked(ctx context.Context, d *CaptureDescriptor, previous *tracepack.UUID, reason rotationReason) error {
 	key, err := p.descriptorKey(d)
 	if err != nil {
 		return err
@@ -257,9 +261,9 @@ func (p *Producer) rotateLocked(ctx context.Context, d *CaptureDescriptor, previ
 		p.retired = append(p.retired, res.Old)
 	}
 	p.setCurrentMetric(c, d)
+	p.rotations[reason].Add(1)
 	p.emit(func() {
-		p.metrics.Add("capture_rotations_total", map[string]string{"reason": reason}, 1)
-		p.log.Info("producer: capture rotated", "reason", reason, "capture_id", id.String())
+		p.log.Info("producer: capture rotated", "reason", rotationReasons[reason], "capture_id", id.String())
 	})
 
 	return nil
@@ -316,45 +320,66 @@ func (p *Producer) setCurrentMetric(c *core.Capture, d *CaptureDescriptor) {
 	}
 }
 
-// emit hands a log line or a measurement to the sink goroutine without waiting:
+// emit hands a log line to the sink goroutine without waiting:
 // the lifecycle path never calls an integrator's Logger or Metrics, so neither can delay a bounded End.
-// When the sink falls behind, the event is dropped.
+// When the sink falls behind, the line is dropped and counted.
+// An emission enters the in-flight count, checks Close's mark, enqueues or counts its drop, and leaves the count;
+// none of it blocks, and one that finds the mark is discarded uncounted (producer.md §4.3 *Diagnostics*).
 func (p *Producer) emit(f func()) {
-	select {
-	case p.events <- f:
-	default:
+	p.emitting.Add(1)
+	if !p.closed.Load() {
+		if p.admitted != nil {
+			p.admitted()
+		}
+		select {
+		case p.events <- f:
+		default:
+			p.linesDropped.Add(1)
+		}
+	}
+	if p.emitting.Add(-1) == 0 && p.closed.Load() {
+		p.settle()
 	}
 }
 
-// sinkLoop runs the events the lifecycle path emitted and keeps current_capture as setCurrentMetric last set it,
-// deleting the previous label set; it applies the gauge once more when it stops.
+// settle tells Close that no emission is in flight past its mark.
+func (p *Producer) settle() { p.settleOnce.Do(func() { close(p.settled) }) }
+
+// sinkLoop runs the lines emitted and keeps current_capture as setCurrentMetric last set it, deleting the previous label set.
+// It stops as soon as Close asks, so a line still queued then is counted dropped, never run.
 func (p *Producer) sinkLoop() {
 	defer close(p.sinkDone)
-	var applied *map[string]string
-	apply := func() {
-		want := p.gauge.Load()
-		if want == applied {
-			return
-		}
-		if applied != nil {
-			p.metrics.Delete("current_capture", *applied)
-		}
-		if want != nil {
-			p.metrics.Set("current_capture", *want, 1)
-		}
-		applied = want
-	}
 	for {
 		select {
 		case <-p.sinkQuit:
-			apply()
+			return
+		default:
+		}
+		select {
+		case <-p.sinkQuit:
 			return
 		case <-p.gaugeSet:
-			apply()
+			p.applyGauge()
 		case f := <-p.events:
 			f()
 		}
 	}
+}
+
+// applyGauge applies the current_capture label set setCurrentMetric last stored;
+// the sink calls it, and Close once more after the sink stopped.
+func (p *Producer) applyGauge() {
+	want := p.gauge.Load()
+	if want == p.applied {
+		return
+	}
+	if p.applied != nil {
+		p.metrics.Delete("current_capture", *p.applied)
+	}
+	if want != nil {
+		p.metrics.Set("current_capture", *want, 1)
+	}
+	p.applied = want
 }
 
 // faultLoop rotates away from each capture the observers fault, on the producer's own goroutine.
