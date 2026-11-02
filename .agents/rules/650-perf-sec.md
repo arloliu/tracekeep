@@ -17,6 +17,10 @@ Hot paths:
 Everywhere:
 
 - Profile with `pprof` and benchmark before and after; don't optimize on intuition.
+  A benchmark uses `b.Loop` and `b.ReportAllocs`, asserts the work of each iteration and does the same work in each;
+  it runs once at its small size in CI, its larger sizes only when `TRACEKEEP_BENCH_SCALE` names them.
+  A change regresses a benchmark when the bootstrap interval of its ratio to the base lies above 5% plus the base's repeatability,
+  and an interval straddling that allowance is measured again, never passed (T-54).
 - Use `sync/atomic` for simple flags and counters, `sync.Mutex` for compound state.
 - Bounded queues only: handle the full signal instead of blocking.
 
@@ -42,4 +46,6 @@ Everywhere:
   A bus or S3 link without TLS is accepted, so no installation stops starting, but outside `tracekeep dev` each role warns at its start once per such link:
   the bus judged by its connection's TLS state (a `nats://` URL the server upgrades is not warned), the store by an `http://` endpoint (an empty one, the provider's default over TLS, is not);
   `all` warns once for its roles, and neither the catalog's DSN, `admin`, `status` nor a reconnect is judged.
+- **pprof** is off by default and served only on the metrics listener, which is unauthenticated (`operations.md` §10.4):
+  a profile shows the heap and the command line, so it is on only while that listener is reachable by its operators alone.
 - **gosec** is enabled; suppress a finding only with `//nolint:gosec // <specific reason>`.
