@@ -181,9 +181,11 @@ func (c *Catalog) evictPacks(ctx context.Context, tx *sqlx.Tx, s Scope, now int6
 	if err := tx.SelectContext(ctx, &packs, `SELECT pack_id, object_key FROM packs WHERE capture_id = ? AND hour = ?`, s.Capture[:], s.Hour); err != nil {
 		return nil, err
 	}
-	ids := make([]tracepack.UUID, 0, len(packs))
+	// Each id is boxed once, as a statement argument, for every statement that lists it.
+	ids, packArgs := make([]tracepack.UUID, 0, len(packs)), make([]any, 0, len(packs))
+	ev.Packs = slices.Grow(ev.Packs, len(packs))
 	for _, p := range packs {
-		ids, ev.Packs = append(ids, tracepack.UUID(p.ID)), append(ev.Packs, p.Key)
+		ids, packArgs, ev.Packs = append(ids, tracepack.UUID(p.ID)), append(packArgs, p.ID), append(ev.Packs, p.Key)
 	}
 	for _, key := range ev.Packs {
 		var n int
@@ -198,25 +200,25 @@ func (c *Catalog) evictPacks(ctx context.Context, tx *sqlx.Tx, s Scope, now int6
 	if err := c.evictRanges(ctx, tx, s); err != nil {
 		return nil, err
 	}
-	others, err := evictConflicts(ctx, tx, s, ids)
+	others, err := evictConflicts(ctx, tx, s, ids, packArgs)
 	if err != nil {
 		return nil, err
 	}
 	var merges [][]byte
-	if err := tx.SelectContext(ctx, &merges, evictMergesQuery, s.Capture[:], s.Hour); err != nil {
+	if err := tx.SelectContext(ctx, &merges, evictMergesDelete, s.Capture[:], s.Hour); err != nil {
 		return nil, err
 	}
-	mergeIDs := make([]tracepack.UUID, 0, len(merges))
-	for _, m := range merges {
-		mergeIDs = append(mergeIDs, tracepack.UUID(m))
+	mergeArgs := make([]any, len(merges))
+	for i, m := range merges {
+		mergeArgs[i] = m
 	}
 	// A merge input goes with its pack and with its merge, either of which may be the only one of the hour.
 	for _, stmt := range []struct {
 		q   string
-		ids []tracepack.UUID
+		ids []any
 	}{
-		{evictPackRangesDelete, ids}, {evictPackLossesDelete, ids}, {evictInputsByPackDelete, ids},
-		{evictInputsByMergeDelete, mergeIDs}, {evictMergesDelete, mergeIDs},
+		{evictPackRangesDelete, packArgs}, {evictPackLossesDelete, packArgs}, {evictInputsByPackDelete, packArgs},
+		{evictInputsByMergeDelete, mergeArgs},
 	} {
 		if err := execBatches(ctx, tx, stmt.q, stmt.ids); err != nil {
 			return nil, err
@@ -250,22 +252,20 @@ func (c *Catalog) evictPacks(ctx context.Context, tx *sqlx.Tx, s Scope, now int6
 const evictBatch = 500
 
 // The statements an eviction runs on the rows naming its packs and merges:
-// the merges of one (capture, hour), its two arguments, by merges_capture_hour;
-// then each delete, completed by a list of ids (inList), by the index leading with that id.
+// the merges of one (capture, hour) deleted, its two arguments, by merges_capture_hour, returning their ids;
+// then each delete, completed by a list of ids, by the index leading with that id.
 const (
-	evictMergesQuery         = `SELECT merge_id FROM merges WHERE capture_id = ? AND hour = ?`
+	evictMergesDelete        = `DELETE FROM merges WHERE capture_id = ? AND hour = ? RETURNING merge_id`
 	evictPackRangesDelete    = `DELETE FROM pack_ranges WHERE pack_id IN`
 	evictPackLossesDelete    = `DELETE FROM pack_losses WHERE pack_id IN`
 	evictInputsByPackDelete  = `DELETE FROM merge_inputs WHERE pack_id IN`
 	evictInputsByMergeDelete = `DELETE FROM merge_inputs WHERE merge_id IN`
-	evictMergesDelete        = `DELETE FROM merges WHERE merge_id IN`
 )
 
-// execBatches runs query, which ends in IN, over ids evictBatch at a time, lead its arguments before the list.
-func execBatches(ctx context.Context, tx *sqlx.Tx, query string, ids []tracepack.UUID, lead ...any) error {
+// execBatches runs query, which ends in IN, over ids, boxed ids, evictBatch at a time.
+func execBatches(ctx context.Context, tx *sqlx.Tx, query string, ids []any) error {
 	for batch := range slices.Chunk(ids, evictBatch) {
-		q, args := inList(query, batch, lead...)
-		if _, err := tx.ExecContext(ctx, q, args...); err != nil {
+		if _, err := tx.ExecContext(ctx, query+" "+listingTuple(len(batch)), batch...); err != nil {
 			return err
 		}
 	}
@@ -276,27 +276,26 @@ func execBatches(ctx context.Context, tx *sqlx.Tx, query string, ids []tracepack
 // evictConflictsSides are the two columns a conflict names a pack in, each with the other, which its deletion returns.
 var evictConflictsSides = [][2]string{{"pack_id", "other_pack_id"}, {"other_pack_id", "pack_id"}}
 
-// evictConflictsDelete deletes the conflicts of capture naming one of batch in column side, returning column other,
-// by conflicts_capture_pack or conflicts_capture_other_pack: a conflict and both its packs are of one capture, so the capture leads the lookup.
+// evictConflictsDelete deletes the conflicts of a capture naming one of n packs in column side, returning column other,
+// its arguments the capture, then the packs, by conflicts_capture_pack or conflicts_capture_other_pack:
+// a conflict and both its packs are of one capture, so the capture leads the lookup.
 // The delete returns what it removed, since a select of the other column first is answered on SQLite by the primary key, which covers it, over the capture's every conflict.
-func evictConflictsDelete(capture tracepack.UUID, side, other string, batch []tracepack.UUID) (string, []any) {
-	q, args := inList(`DELETE FROM conflicts WHERE capture_id = ? AND `+side+` IN`, batch, capture[:])
-
-	return q + ` RETURNING ` + other, args
+func evictConflictsDelete(side, other string, n int) string {
+	return `DELETE FROM conflicts WHERE capture_id = ? AND ` + side + ` IN ` + listingTuple(n) + ` RETURNING ` + other
 }
 
-// evictConflicts deletes the conflicts naming one of hour, the packs of s, and returns once each the packs of other hours they named.
-func evictConflicts(ctx context.Context, tx *sqlx.Tx, s Scope, hour []tracepack.UUID) ([]tracepack.UUID, error) {
+// evictConflicts deletes the conflicts naming one of hour, the packs of s, boxed in hourArgs, and returns once each the packs of other hours they named.
+func evictConflicts(ctx context.Context, tx *sqlx.Tx, s Scope, hour []tracepack.UUID, hourArgs []any) ([]tracepack.UUID, error) {
 	seen := make(map[tracepack.UUID]bool, len(hour))
 	for _, id := range hour {
 		seen[id] = true
 	}
 	var others []tracepack.UUID
-	for batch := range slices.Chunk(hour, evictBatch) {
+	for batch := range slices.Chunk(hourArgs, evictBatch) {
+		args := append([]any{s.Capture[:]}, batch...)
 		for _, side := range evictConflictsSides {
 			var named [][]byte
-			q, args := evictConflictsDelete(s.Capture, side[0], side[1], batch)
-			if err := tx.SelectContext(ctx, &named, q, args...); err != nil {
+			if err := tx.SelectContext(ctx, &named, evictConflictsDelete(side[0], side[1], len(batch)), args...); err != nil {
 				return nil, err
 			}
 			for _, id := range named {

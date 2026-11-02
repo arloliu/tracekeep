@@ -116,7 +116,8 @@ func seedPlans(tb testing.TB, c *Catalog, s planSeed) []planned {
 		return planned{name: name, query: q, args: args}
 	}
 	conflicts := func(name string, side [2]string, ids []tracepack.UUID) planned {
-		q, args := evictConflictsDelete(capture, side[0], side[1], ids)
+		_, args := inList("", ids, capture[:])
+		q := evictConflictsDelete(side[0], side[1], len(ids))
 
 		return planned{name: name, query: q, args: args}
 	}
@@ -131,13 +132,12 @@ func seedPlans(tb testing.TB, c *Catalog, s planSeed) []planned {
 		conflicts("evictConflictsDelete by other", evictConflictsSides[1], hourPacks),
 		conflicts("evictConflictsDelete by pack, last hour", evictConflictsSides[0], lastPacks),
 		conflicts("evictConflictsDelete by other, last hour", evictConflictsSides[1], lastPacks),
-		{name: "evictMergesQuery", query: evictMergesQuery, args: []any{id, int64(2)}},
-		{name: "evictMergesQuery, last hour", query: evictMergesQuery, args: []any{id, s.hours}},
+		{name: "evictMergesDelete", query: evictMergesDelete, args: []any{id, int64(2)}},
+		{name: "evictMergesDelete, last hour", query: evictMergesDelete, args: []any{id, s.hours}},
 		batch("evictPackRangesDelete", evictPackRangesDelete, hourPacks),
 		batch("evictPackLossesDelete", evictPackLossesDelete, hourPacks),
 		batch("evictInputsByPackDelete", evictInputsByPackDelete, hourPacks),
 		batch("evictInputsByMergeDelete", evictInputsByMergeDelete, hourMerges),
-		batch("evictMergesDelete", evictMergesDelete, hourMerges),
 		{name: "overlapQuery", query: overlapQuery, args: []any{id, other[:], top, top - 9, top - 9, id}},
 		{name: "heldSeqQuery", query: heldSeqQuery, args: []any{id, top, top, top, id}},
 		{name: "copiesInHourQuery", query: copiesInHourQuery, args: []any{id, top, top, s.hours, top, id}},
