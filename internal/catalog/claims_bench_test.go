@@ -11,6 +11,9 @@ import (
 	"github.com/arloliu/tracekeep/internal/benchscale"
 )
 
+// tinyListing is the objects of BenchmarkRecordListing's tiny listing.
+const tinyListing = 10
+
 // listingCase is one starting state of BenchmarkRecordListing: setup seeds it and returns the listing an iteration records,
 // added is the claim rows an iteration adds and claims and unattributed the rows it leaves,
 // and restore, nil for none, brings the starting state back outside the timer.
@@ -24,7 +27,8 @@ type listingCase struct {
 
 // BenchmarkRecordListing is the compactor's recording of a claim bucket listing, in one write transaction.
 // Its starting states hold 10,000, 100,000 or 1,000,000 objects (TRACEKEEP_BENCH_SCALE), attributed or unattributed apart:
-// steady, every listed object already recorded; new, none recorded yet; gone, every recorded object missing from an empty listing.
+// steady, every listed object already recorded; new, none recorded yet; gone, every recorded object missing from an empty listing;
+// and attributed/tiny, a listing of tinyListing of the recorded objects against the whole recorded history, which writes nothing.
 // One iteration records the listing and asserts the claim rows it added and the rows left, then restores the starting state outside the timer:
 // a new listing's rows deleted again, a gone listing's unattributed rows inserted again.
 func BenchmarkRecordListing(b *testing.B) {
@@ -80,6 +84,7 @@ func listingCases(n int) []listingCase {
 			return ls
 		}, added: n, claims: n, restore: deleteClaims},
 		{name: "attributed/gone", setup: func(tb testing.TB, c *Catalog) []Listed { claims(tb, c); return nil }, claims: n},
+		{name: "attributed/tiny", setup: func(tb testing.TB, c *Catalog) []Listed { return claims(tb, c)[:tinyListing] }, claims: n},
 		{name: "unattributed/steady", setup: func(tb testing.TB, c *Catalog) []Listed { return seedUnattributed(tb, c, n) }, unattributed: n},
 		{name: "unattributed/new", setup: func(tb testing.TB, c *Catalog) []Listed {
 			ls := seedUnattributed(tb, c, n)

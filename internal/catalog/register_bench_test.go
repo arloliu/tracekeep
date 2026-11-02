@@ -12,6 +12,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jmoiron/sqlx"
+
 	"github.com/arloliu/go-secs/tracepack"
 
 	"github.com/arloliu/tracekeep/internal/benchscale"
@@ -38,10 +40,33 @@ type history struct {
 }
 
 // regShape is what each iteration of BenchmarkRegisterPack registers: the ranges its pack adds and the suspects it records,
-// and pack, which builds iteration i's pack and evidence.
+// pack, which builds iteration i's pack and evidence, and parkedEvery, which parks every parkedEvery-th delivery's version first (none at zero).
 type regShape struct {
 	ranges, conflicts int
 	pack              func(tb testing.TB, h *history, i int) (*Pack, *Evidence)
+	parkedEvery       int
+}
+
+// parkedStates are the states a parked delivery's version is seeded in, in turn: those a registration reads and still registers past,
+// the unresolved two its staging moves to staged and one already staged.
+var parkedStates = []VersionState{VersionParking, VersionParked, VersionStaged}
+
+// parkShare seeds a parked row of every every-th delivery of ev, the k-th of them in parkedStates[k mod 3], and returns their versions.
+func parkShare(tb testing.TB, c *Catalog, ev *Evidence, every int) []VersionKey {
+	tb.Helper()
+	var ds []Identity
+	var states []VersionState
+	for i := 0; i < len(ev.Deliveries); i += every {
+		ds = append(ds, ev.Deliveries[i])
+		states = append(states, parkedStates[len(states)%len(parkedStates)])
+	}
+	seedVersions(tb, c, ds, states)
+	vs := make([]VersionKey, len(ds))
+	for i := range ds {
+		vs[i] = ds[i].Version
+	}
+
+	return vs
 }
 
 // benchLease takes the compactor lease for a day, so a long benchmark never outlives it.
@@ -136,6 +161,14 @@ func evidenceShape(d int) regShape {
 	}}
 }
 
+// parkedShape is evidenceShape(d) with a tenth of its deliveries' versions parked before the registration, which stages them.
+func parkedShape(d int) regShape {
+	s := evidenceShape(d)
+	s.parkedEvery = 10
+
+	return s
+}
+
 // rangesShape is a pack of n one-seq ranges, a seq apart, and one delivery: n overlap probes, with almost no evidence.
 func rangesShape(n int) regShape {
 	return regShape{ranges: n, pack: func(tb testing.TB, h *history, _ int) (*Pack, *Evidence) {
@@ -175,6 +208,8 @@ func hitShape() regShape {
 // Its starting state is one open capture with prior seeded ranges (1,000, 20,000 and 200,000 by TRACEKEEP_BENCH_SCALE), the scope of their last hour open.
 // One iteration registers a fresh pack, built outside the timer, and asserts it registered, the ranges it added and the suspects it recorded:
 //   - evidence: one range of 100, 1,000 or 50,000 seqs above the history, each delivered, every tenth by claim-check;
+//   - parked: as evidence, with every tenth delivery's version parked beforehand, outside the timer, in turn parking, parked and staged,
+//     so the registration reads each state it registers past; it asserts every one of them staged after;
 //   - ranges: as many one-seq ranges above the history, one delivered, measuring the overlap probe apart from the evidence;
 //   - miss and hit: one range of ten seqs, one delivered, just above the history or repeating a distinct seeded range from its top.
 //
@@ -185,6 +220,7 @@ func BenchmarkRegisterPack(b *testing.B) {
 	for _, prior := range priors {
 		for _, d := range records {
 			b.Run(fmt.Sprintf("evidence/deliveries=%d/prior=%d", d, prior), func(b *testing.B) { benchRegister(b, prior, evidenceShape(d)) })
+			b.Run(fmt.Sprintf("parked/deliveries=%d/prior=%d", d, prior), func(b *testing.B) { benchRegister(b, prior, parkedShape(d)) })
 			b.Run(fmt.Sprintf("ranges/ranges=%d/prior=%d", d, prior), func(b *testing.B) { benchRegister(b, prior, rangesShape(d)) })
 		}
 		b.Run(fmt.Sprintf("miss/prior=%d", prior), func(b *testing.B) { benchRegister(b, prior, missShape()) })
@@ -203,6 +239,10 @@ func benchRegister(b *testing.B, prior int, shape regShape) {
 		for b.Loop() {
 			b.StopTimer()
 			p, ev := shape.pack(b, h, i)
+			var parked []VersionKey
+			if shape.parkedEvery > 0 {
+				parked = parkShare(b, c, ev, shape.parkedEvery)
+			}
 			b.StartTimer()
 			out, err := c.RegisterPack(b.Context(), p, Registration{Evidence: ev})
 			b.StopTimer()
@@ -216,6 +256,11 @@ func benchRegister(b *testing.B, prior int, shape regShape) {
 				b.Fatalf("the pack recorded %d suspects, want %d", got, shape.conflicts)
 			}
 			checkReceipts(b, c, p, ev)
+			for _, v := range parked {
+				if state, err := readVersionState(b.Context(), c.read, &v); err != nil || state != VersionStaged {
+					b.Fatalf("the parked version of seq %d = %q, %v; want staged", v.Seq, state, err)
+				}
+			}
 			i++
 			b.StartTimer()
 		}
@@ -273,7 +318,11 @@ func checkReceipts(tb testing.TB, c *Catalog, p *Pack, ev *Evidence) {
 // Its starting state is one open capture with prior seeded ranges (1,000, 20,000 and 200,000 by TRACEKEEP_BENCH_SCALE)
 // and an active order covering every stream seq; no version is parked.
 // One iteration resolves one delivery and asserts its resolution: held, the top seeded seq, staged by its pack;
-// unheld, the seq above them, covered by the order. It writes nothing.
+// unheld, the seq above them, covered by the order; held-start, a seq of the first seeded range, far from the end, staged.
+// Then the history gains a merged hour above it, hour lastHour+1, whose archive holds one range of an hour's seqs (historyHourRanges*historySpan),
+// the widest range a capture stores: wide-stored resolves the top seeded seq again, staged, beside it;
+// then that hour is evicted, outside any timer, so its range leaves pack_ranges, and wide-evicted resolves the same seq, staged.
+// They write nothing.
 func BenchmarkResolve(b *testing.B) {
 	for _, prior := range benchscale.Sizes(b, 1000, 20000, 200000) {
 		b.Run(fmt.Sprintf("prior=%d", prior), func(b *testing.B) {
@@ -281,24 +330,58 @@ func BenchmarkResolve(b *testing.B) {
 				h := seedHistory(b, c, prior)
 				exec(b, c, `INSERT INTO termination_orders (action_id, capture_id, incarnation_id, cut_off, state) VALUES ('a1', ?, 1, ?, 'active')`,
 					h.capture[:], int64(1)<<40)
-				for _, tc := range []struct {
-					name string
-					seq  uint64
-					want Resolution
-				}{{"held", h.next - 1, ResolvedStaged}, {"unheld", h.next, CoveredByOrder}} {
-					v := VersionKey{Capture: h.capture, Seq: tc.seq, Header: [44]byte{1}, Digest: [32]byte{1}}
-					b.Run(tc.name, func(b *testing.B) {
+				resolve := func(name string, seq uint64, want Resolution) {
+					v := VersionKey{Capture: h.capture, Seq: seq, Header: [44]byte{1}, Digest: [32]byte{1}}
+					b.Run(name, func(b *testing.B) {
 						b.ReportAllocs()
 						for b.Loop() {
-							if got, err := c.Resolve(b.Context(), &v, 1, int64(tc.seq)+1); err != nil || got != tc.want { //nolint:gosec // a seeded seq is small
-								b.Fatalf("Resolve = %v, %v; want %v", got, err, tc.want)
+							if got, err := c.Resolve(b.Context(), &v, 1, int64(seq)+1); err != nil || got != want { //nolint:gosec // a seeded seq is small
+								b.Fatalf("Resolve = %v, %v; want %v", got, err, want)
 							}
 						}
 					})
 				}
+				resolve("held", h.next-1, ResolvedStaged)
+				resolve("unheld", h.next, CoveredByOrder)
+				resolve("held-start", historySpan/2, ResolvedStaged)
+				wide := seedWideHour(b, c, h)
+				resolve("wide-stored", h.next-1, ResolvedStaged)
+				l := benchLease(b, c)
+				if _, err := c.RecordRetention(b.Context(), l, month, delay, 0); err != nil {
+					b.Fatal(err)
+				}
+				ev, err := c.EvictHour(b.Context(), l, Scope{Capture: h.capture, Hour: wide}, hourNS(1<<20)+int64(month))
+				if err != nil || !ev.Evicted || len(ev.Packs) != 1 {
+					b.Fatalf("EvictHour = %+v, %v; want the merged hour evicted", ev, err)
+				}
+				if got := count(b, c, `SELECT COUNT(*) FROM pack_ranges WHERE capture_id = ?`, h.capture[:]); got != prior {
+					b.Fatalf("%d ranges after the eviction, want the %d seeded", got, prior)
+				}
+				resolve("wide-evicted", h.next-1, ResolvedStaged)
 			})
 		})
 	}
+}
+
+// seedWideHour writes a merged hour of h's capture above its history, hour lastHour+1:
+// its scope, and its archive holding one range of an hour's seqs from h.next, the merge's output; it returns the hour.
+// h.next stays below it, so the probes of the history are unchanged.
+func seedWideHour(tb testing.TB, c *Catalog, h *history) int64 {
+	tb.Helper()
+	hour, id := h.lastHour+1, newID(tb)
+	from, span := h.next, uint64(historyHourRanges*historySpan)
+	seedTx(tb, c, func(tx *sqlx.Tx) {
+		insertRows(tb, tx, "packs", []string{"pack_id", "capture_id", "tool_id", "hour", "role", "object_key", "size", "seq_start", "format_minor", "state", "adopted", "registered_at"},
+			[][]any{{id[:], h.capture[:], "T1", hour, RoleArchive, "staging/" + id.String(), 1 << 20, int64(from), 2, "staged", false, 0}}) //nolint:gosec // a seeded seq is small
+		insertRows(tb, tx, "pack_ranges", []string{"pack_id", "capture_id", "seq_from", "seq_to", "ts_from", "ts_to"},
+			[][]any{{id[:], h.capture[:], int64(from), int64(from + span - 1), hourNS(hour), hourNS(hour) + int64(span) - 1}}) //nolint:gosec // a seeded seq is small
+		insertRows(tb, tx, "scopes", []string{"capture_id", "hour", "state", "revision"}, [][]any{{h.capture[:], hour, "settled", 2}})
+	})
+	if got := count(tb, c, `SELECT COUNT(*) FROM pack_ranges WHERE capture_id = ? AND seq_to - seq_from = ?`, h.capture[:], int64(span)-1); got != 1 { //nolint:gosec // a small span
+		tb.Fatalf("seeded one wide range, found %d", got)
+	}
+
+	return hour
 }
 
 // writerSeed is the prior ranges each registering writer's capture holds, the population every registration probes.
