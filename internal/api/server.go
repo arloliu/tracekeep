@@ -62,6 +62,8 @@ type Server struct {
 	outer []connect.Interceptor
 	// restoreReader, set only by the package's tests, is the reader budget Restore opens its copies under; zero takes tracepack's defaults.
 	restoreReader tracepack.ReaderOptions
+	// runAdmin, set only by the package's tests, runs AdminService's commands in place of admin.Run.
+	runAdmin func(ctx context.Context, a *admin.Admin, words []string) (any, error)
 	// createWork, set only by the package's tests, creates an export attempt's work files; nil creates them with os.Create.
 	createWork func(path string) (workFile, error)
 }
