@@ -39,6 +39,26 @@ func described(t testing.TB, c *Catalog, s spec) tracepack.UUID {
 	if s.device == "" {
 		s.device = "eqp"
 	}
+	b := descriptorBytes(t, s)
+	id := newID(t)
+	d := &Descriptor{Bytes: b, ToolID: s.toolID, RecorderInstanceID: s.instance, Device: s.device, OriginNS: s.origin, PreviousCaptureID: s.previous}
+	if s.rejectIt {
+		if _, err := c.Reject(t.Context(), start(id), b); err != nil {
+			t.Fatal(err)
+		}
+
+		return id
+	}
+	if _, err := c.Admit(t.Context(), start(id), d); err != nil {
+		t.Fatal(err)
+	}
+
+	return id
+}
+
+// descriptorBytes encodes the start descriptor s states, one that decodes as a reader decodes it.
+func descriptorBytes(t testing.TB, s spec) []byte {
+	t.Helper()
 	mono, tolerance := int64(0), uint64(time.Second)
 	m := &tracepack.PackMeta{
 		ToolID: s.toolID, Transport: tracepack.TransportHSMSSS, CaptureMethod: tracepack.CaptureMethodRawStream,
@@ -56,20 +76,8 @@ func described(t testing.TB, c *Catalog, s spec) tracepack.UUID {
 	if err != nil {
 		t.Fatal(err)
 	}
-	id := newID(t)
-	d := &Descriptor{Bytes: b, ToolID: s.toolID, RecorderInstanceID: s.instance, Device: s.device, OriginNS: s.origin, PreviousCaptureID: s.previous}
-	if s.rejectIt {
-		if _, err := c.Reject(t.Context(), start(id), b); err != nil {
-			t.Fatal(err)
-		}
 
-		return id
-	}
-	if _, err := c.Admit(t.Context(), start(id), d); err != nil {
-		t.Fatal(err)
-	}
-
-	return id
+	return b
 }
 
 // exec runs a statement on c's write pool, setting up a state the test needs.

@@ -1,6 +1,8 @@
 // Package catalogtest opens fresh, migrated catalogs for the tests of the packages that use the catalog,
 // one per engine, so their catalog-touching cases run on SQLite and on MariaDB (.agents/rules/300-testing.md *Catalog*).
-// MariaDB runs when TRACEKEEP_MARIADB_DSN names a server (make test-catalog starts one) and is skipped otherwise.
+// MariaDB runs when TRACEKEEP_MARIADB_DSN names a server (make test-catalog starts one) and is skipped otherwise,
+// or fails when TRACEKEEP_REQUIRE_MARIADB is 1.
+// SeedFleet seeds a fleet of tools' open captures for other packages' benchmarks, and BenchEngines runs a benchmark on each engine.
 package catalogtest
 
 import (
@@ -21,6 +23,9 @@ import (
 
 // EnvMariaDB names the MariaDB server's DSN.
 const EnvMariaDB = "TRACEKEEP_MARIADB_DSN"
+
+// EnvRequireMariaDB set to 1 fails a MariaDB run without a server instead of skipping it, as the catalog's benchmark smoke run does.
+const EnvRequireMariaDB = "TRACEKEEP_REQUIRE_MARIADB"
 
 // Engines runs f once per engine, each in a parallel subtest with a fresh catalog.
 func Engines(t *testing.T, f func(t *testing.T, c *catalog.Catalog)) {
@@ -85,6 +90,9 @@ func ExecSQL(t testing.TB, c *catalog.Catalog, stmt string) {
 func mariadbDatabase(t testing.TB) string {
 	t.Helper()
 	dsn := os.Getenv(EnvMariaDB)
+	if dsn == "" && os.Getenv(EnvRequireMariaDB) == "1" {
+		t.Fatalf("%s not set, and %s requires MariaDB", EnvMariaDB, EnvRequireMariaDB)
+	}
 	if dsn == "" {
 		t.Skipf("%s not set: no MariaDB to test against", EnvMariaDB)
 	}
