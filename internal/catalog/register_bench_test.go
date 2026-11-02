@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"flag"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -214,6 +215,7 @@ func benchRegister(b *testing.B, prior int, shape regShape) {
 			if got := count(b, c, `SELECT COUNT(*) FROM conflicts WHERE pack_id = ?`, p.ID[:]); got != shape.conflicts {
 				b.Fatalf("the pack recorded %d suspects, want %d", got, shape.conflicts)
 			}
+			checkReceipts(b, c, p, ev)
 			i++
 			b.StartTimer()
 		}
@@ -222,6 +224,49 @@ func benchRegister(b *testing.B, prior int, shape regShape) {
 		}
 		b.Logf("pack_ranges of the capture: %d before, %d after %d packs", before, count(b, c, ranges, h.capture[:]), b.N)
 	})
+}
+
+// checkReceipts asserts the evidence p's registration wrote: a receipt of each claim-check record, naming p first, with its header and digest,
+// and its live claim object, and nothing else over p's seqs.
+func checkReceipts(tb testing.TB, c *Catalog, p *Pack, ev *Evidence) {
+	tb.Helper()
+	lo, hi := int64(p.Ranges[0].SeqFrom), int64(p.Ranges[len(p.Ranges)-1].SeqTo) //nolint:gosec // a seeded seq is small
+	want, wantKeys := make([]string, 0, len(ev.Receipts)), make([]string, 0, len(ev.Receipts))
+	for _, rc := range ev.Receipts {
+		want = append(want, fmt.Sprintf("%d/%x/%x", rc.Seq, rc.Header, rc.PayloadSHA256))
+		wantKeys = append(wantKeys, fmt.Sprintf("%d/%s/live", rc.Seq, rc.ObjectKey))
+	}
+	var receipts []struct {
+		Seq    int64  `db:"seq"`
+		Header []byte `db:"header"`
+		Digest []byte `db:"payload_sha256"`
+	}
+	err := c.read.SelectContext(tb.Context(), &receipts, `SELECT seq, header, payload_sha256 FROM claim_records
+		WHERE capture_id = ? AND seq BETWEEN ? AND ? AND first_pack_id = ? ORDER BY seq`, p.Capture[:], lo, hi, p.ID[:])
+	if err != nil {
+		tb.Fatal(err)
+	}
+	got := make([]string, 0, len(receipts))
+	for _, r := range receipts {
+		got = append(got, fmt.Sprintf("%d/%x/%x", r.Seq, r.Header, r.Digest))
+	}
+	var objects []struct {
+		Seq   int64  `db:"seq"`
+		Key   string `db:"object_key"`
+		State string `db:"state"`
+	}
+	err = c.read.SelectContext(tb.Context(), &objects, `SELECT seq, object_key, state FROM claim_objects
+		WHERE capture_id = ? AND seq BETWEEN ? AND ? ORDER BY seq`, p.Capture[:], lo, hi)
+	if err != nil {
+		tb.Fatal(err)
+	}
+	gotKeys := make([]string, 0, len(objects))
+	for _, o := range objects {
+		gotKeys = append(gotKeys, fmt.Sprintf("%d/%s/%s", o.Seq, o.Key, o.State))
+	}
+	if !slices.Equal(got, want) || !slices.Equal(gotKeys, wantKeys) {
+		tb.Fatalf("the pack wrote %d receipts and %d claim objects, want %d of each as its evidence names them", len(got), len(gotKeys), len(want))
+	}
 }
 
 // BenchmarkResolve is ingest's resolution of a delivery under an active termination order of its capture, which probes the held seqs.
@@ -256,18 +301,30 @@ func BenchmarkResolve(b *testing.B) {
 	}
 }
 
+// writerSeed is the prior ranges each registering writer's capture holds, the population every registration probes.
+const writerSeed = historyHourRanges
+
 // BenchmarkAuditWhileRegistering is an API write's wait for the write connection while ingest registers.
-// Its starting state is one open capture per registering writer, each writer registering packs of 100 delivered seqs above its capture's last,
-// one after another, from before the loop until after it; registering=0 is the idle control.
-// One iteration appends one audit row and asserts it written; after the loop the audit log grew by exactly the iterations
-// and every writer registered without error. The writers are 1, 4 and 16 by TRACEKEEP_BENCH_SCALE.
+// Its starting state is one open capture per registering writer, each seeded with writerSeed ranges in hour 1;
+// each writer registers one pack of 100 delivered seqs above them, every tenth by claim-check, then deletes that pack's rows in a second transaction,
+// over and over from before the loop until after it, so every registration probes the same population and nothing the writers write accumulates;
+// registering=0 is the idle control.
+// One iteration appends one audit row and asserts it written. After the loop the writers' tables hold what they were seeded with,
+// the audit log grew by exactly the iterations, and every writer ran without error; the counts before and after are logged.
+// The writers are 1, 4 and 16 by TRACEKEEP_BENCH_SCALE.
 func BenchmarkAuditWhileRegistering(b *testing.B) {
 	for _, writers := range append([]int{0}, benchscale.Sizes(b, 1, 4, 16)...) {
 		b.Run(fmt.Sprintf("registering=%d", writers), func(b *testing.B) {
 			benchEngines(b, func(b *testing.B, c *Catalog) {
 				captures := seedCaptures(b, c, 1, max(writers, 1))
-				stop, wait, registered := registering(b, c, captures[:writers])
-				before := count(b, c, `SELECT COUNT(*) FROM audit_log`)
+				hs := make([]*history, writers)
+				for i := range hs {
+					packs, next := seedPacks(b, c, captures[i], packsSeed{hour0: 1, hours: 1, packs: writerSeed / 10, ranges: 10, span: historySpan})
+					hs[i] = &history{capture: captures[i], prior: writerSeed, packs: packs, next: next, lastHour: 1}
+				}
+				population := tableCounts(b, c, writerTables...)
+				stop, wait, registered := registering(b, c, hs)
+				audits := count(b, c, `SELECT COUNT(*) FROM audit_log`)
 				regsBefore := registered.Load()
 				e := AuditEntry{Actor: "oidc:bench", Action: "restore", ActionID: "a1", Capture: &captures[0]}
 				b.ReportAllocs()
@@ -281,33 +338,60 @@ func BenchmarkAuditWhileRegistering(b *testing.B) {
 				if err := wait(); err != nil {
 					b.Fatalf("a writer failed: %v", err)
 				}
-				if got := count(b, c, `SELECT COUNT(*) FROM audit_log`); got != before+b.N {
-					b.Fatalf("audit rows %d, want %d", got, before+b.N)
+				if got := tableCounts(b, c, writerTables...); got != population {
+					b.Fatalf("the writers' tables hold %s, seeded with %s", got, population)
 				}
-				b.Logf("%d registrations completed during %d audit writes", during, b.N)
+				after := count(b, c, `SELECT COUNT(*) FROM audit_log`)
+				if after != audits+b.N {
+					b.Fatalf("audit rows %d, want %d", after, audits+b.N)
+				}
+				b.Logf("%d registrations completed during %d audit writes; the writers' tables %s before and after; audit rows %d before, %d after",
+					during, b.N, population, audits, after)
 			})
 		})
 	}
 }
 
-// registering starts one writer for each capture, registering packs of 100 delivered seqs until stop,
-// and returns once each has registered its first; wait joins them and returns the first error, and registered counts their packs.
-func registering(tb testing.TB, c *Catalog, captures []tracepack.UUID) (stop func(), wait func() error, registered *atomic.Int64) {
+// writerTables are the tables a registering writer writes.
+var writerTables = []string{"packs", "pack_ranges", "claim_records", "claim_objects", "scope_events", "conflicts"}
+
+// tableCounts counts the rows of tables, as one line.
+func tableCounts(tb testing.TB, c *Catalog, tables ...string) string {
+	tb.Helper()
+	parts := make([]string, 0, len(tables))
+	for _, table := range tables {
+		parts = append(parts, fmt.Sprintf("%s=%d", table, count(tb, c, `SELECT COUNT(*) FROM `+table)))
+	}
+
+	return strings.Join(parts, " ")
+}
+
+// registering starts one writer for each history, each registering a pack of 100 delivered seqs just above its history
+// and then deleting that pack's rows, until stop; it returns once each has registered its first.
+// wait joins them and returns the first error, and registered counts their registrations.
+func registering(tb testing.TB, c *Catalog, hs []*history) (stop func(), wait func() error, registered *atomic.Int64) {
 	tb.Helper()
 	regs := new(atomic.Int64)
 	done := make(chan struct{})
 	var wg, first sync.WaitGroup
-	errs := make(chan error, len(captures))
-	for _, capture := range captures {
-		h := &history{capture: capture, lastHour: 1}
-		shape := evidenceShape(100)
+	errs := make(chan error, len(hs))
+	for _, h := range hs {
+		shape, base := evidenceShape(100), h.next
 		first.Add(1)
 		wg.Go(func() {
 			once := sync.OnceFunc(first.Done)
 			defer once()
 			for {
+				h.next = base
 				p, ev := shape.pack(tb, h, 0)
-				if _, err := c.RegisterPack(tb.Context(), p, Registration{Evidence: ev}); err != nil {
+				out, err := c.RegisterPack(tb.Context(), p, Registration{Evidence: ev})
+				if err == nil && out != Registered {
+					err = fmt.Errorf("registration %v", out)
+				}
+				if err == nil {
+					err = unregister(tb, c, p)
+				}
+				if err != nil {
 					errs <- err
 					return
 				}
@@ -329,4 +413,31 @@ func registering(tb testing.TB, c *Catalog, captures []tracepack.UUID) (stop fun
 
 		return <-errs
 	}, regs
+}
+
+// unregister deletes, in one write transaction, the rows a registration of p into an open scope with evidence and no overlap wrote:
+// the pack, its ranges, its receipts and their claim objects.
+func unregister(tb testing.TB, c *Catalog, p *Pack) error {
+	tb.Helper()
+	tx, err := c.write.BeginTxx(tb.Context(), nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	lo, hi := int64(p.Ranges[0].SeqFrom), int64(p.Ranges[len(p.Ranges)-1].SeqTo) //nolint:gosec // a seeded seq is small
+	for _, stmt := range []struct {
+		q    string
+		args []any
+	}{
+		{`DELETE FROM pack_ranges WHERE pack_id = ?`, []any{p.ID[:]}},
+		{`DELETE FROM packs WHERE pack_id = ?`, []any{p.ID[:]}},
+		{`DELETE FROM claim_records WHERE capture_id = ? AND seq BETWEEN ? AND ?`, []any{p.Capture[:], lo, hi}},
+		{`DELETE FROM claim_objects WHERE capture_id = ? AND seq BETWEEN ? AND ?`, []any{p.Capture[:], lo, hi}},
+	} {
+		if _, err := tx.ExecContext(tb.Context(), stmt.q, stmt.args...); err != nil {
+			return err
+		}
+	}
+
+	return tx.Commit()
 }
