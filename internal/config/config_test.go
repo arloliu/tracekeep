@@ -174,3 +174,28 @@ func TestDev(t *testing.T) {
 		t.Errorf("dev configuration %+v", c)
 	}
 }
+
+// Each bounded duration and size is refused one past its maximum, naming its key, and taken at it;
+// the JWKS's fetch interval must be below its TTL.
+func TestMaxima(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct{ key, at, past string }{
+		{"auth.oidc.leeway", "auth:\n  oidc:\n    leeway: 5m\n", "auth:\n  oidc:\n    leeway: 5m1s\n"},
+		{"auth.people.session_lifetime", "auth:\n  people:\n    session_lifetime: 24h\n", "auth:\n  people:\n    session_lifetime: 24h1s\n"},
+		{"auth.people.login_lifetime", "auth:\n  people:\n    login_lifetime: 1h\n", "auth:\n  people:\n    login_lifetime: 1h1s\n"},
+		{"auth.people.exchange_timeout", "auth:\n  people:\n    exchange_timeout: 1m\n", "auth:\n  people:\n    exchange_timeout: 1m1s\n"},
+		{"auth.oidc.jwks_ttl", "auth:\n  oidc:\n    jwks_ttl: 24h\n", "auth:\n  oidc:\n    jwks_ttl: 24h1s\n"},
+		{"auth.oidc.fetch_interval", "auth:\n  oidc:\n    jwks_ttl: 2h\n    fetch_interval: 1h\n", "auth:\n  oidc:\n    jwks_ttl: 2h\n    fetch_interval: 1h1s\n"},
+		{"auth.oidc.fetch_interval", "auth:\n  oidc:\n    jwks_ttl: 1m\n    fetch_interval: 59s\n", "auth:\n  oidc:\n    jwks_ttl: 1m\n    fetch_interval: 1m\n"},
+		{"keys.vault.timeout", "keys:\n  vault:\n    timeout: 1m\n", "keys:\n  vault:\n    timeout: 1m1s\n"},
+		{"ingest.stop_timeout", "ingest:\n  stop_timeout: 10m\n", "ingest:\n  stop_timeout: 10m1s\n"},
+		{"ingest.max_record_bytes", "ingest:\n  max_record_bytes: 4GiB\n", "ingest:\n  max_record_bytes: 4294967297\n"},
+	} {
+		if _, err := Load(write(t, minimal+tc.at)); err != nil {
+			t.Errorf("%s at its maximum = %v", tc.key, err)
+		}
+		if _, err := Load(write(t, minimal+tc.past)); err == nil || !strings.Contains(err.Error(), tc.key) {
+			t.Errorf("%s past its maximum = %v, want an error naming it", tc.key, err)
+		}
+	}
+}

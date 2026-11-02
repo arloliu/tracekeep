@@ -9,6 +9,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
+	"net"
 	"net/http"
 	"net/url"
 	"slices"
@@ -51,14 +53,23 @@ type OIDCConfig struct {
 	Client *http.Client
 	// Now is the clock; nil is time.Now.
 	Now func() time.Time
+	// Log receives a failed fetch's line; nil logs nothing.
+	Log *slog.Logger
 }
 
 // Verifier validates service tokens against the IdP's JWKS, fetched lazily and cached with a TTL:
-// one fetch in flight, fetches started at least MinInterval apart, an unknown kid refreshing once.
+// one fetch in flight, fetches started at least MinInterval apart, an unknown kid refreshing once,
+// and keys past half their TTL refreshed in the background (api.md §10.2 *IdP outage*).
 type Verifier struct {
 	cfg OIDCConfig
+	// ctx is every fetch's context, which Close cancels; wg counts the fetches begun.
+	ctx    context.Context
+	cancel context.CancelFunc
+	wg     sync.WaitGroup
 
 	mu sync.Mutex
+	// closed, once Close has run, starts no fetch.
+	closed bool
 	// keys verify until until; inflight, while a fetch runs, is closed when it ends.
 	keys  []jose.JSONWebKey
 	until time.Time
@@ -69,8 +80,9 @@ type Verifier struct {
 	tried          bool
 	lastErr        error
 	inflight       chan struct{}
-	// onWait, set only by the package's tests, runs when a request starts waiting on the fetch in flight.
-	onWait func()
+	// onWait, set only by the package's tests, runs when a request starts waiting on the fetch in flight;
+	// onFetched runs once a fetch's outcome is published.
+	onWait, onFetched func()
 }
 
 // NewVerifier returns a verifier of cfg; it fetches nothing, so startup never waits on the IdP.
@@ -104,8 +116,29 @@ func NewVerifier(cfg OIDCConfig) *Verifier {
 	if cfg.Now == nil {
 		cfg.Now = time.Now
 	}
+	if cfg.Log == nil {
+		cfg.Log = slog.New(slog.DiscardHandler)
+	}
+	v := &Verifier{cfg: cfg}
+	v.ctx, v.cancel = context.WithCancel(context.Background())
 
-	return &Verifier{cfg: cfg}
+	return v
+}
+
+// Close cancels the fetch in flight, waits for it to end and starts none after; a nil verifier has none.
+// The API calls it on every exit once the verifier is built (api.md §10.2 *IdP outage*).
+func (v *Verifier) Close() error {
+	if v == nil {
+		return nil
+	}
+	// Marked closed under the lock start takes, so no fetch is begun, nor counted in wg, once Wait may run.
+	v.mu.Lock()
+	v.closed = true
+	v.mu.Unlock()
+	v.cancel()
+	v.wg.Wait()
+
+	return nil
 }
 
 // Verify validates the service token raw and returns its principal, or an *Error naming the reason.
@@ -275,26 +308,32 @@ func (v *Verifier) Endpoints(ctx context.Context) (Endpoints, error) {
 
 // await returns once have holds under v.mu: at once, or after one fetch, started by this request or waited on,
 // and otherwise with miss's refusal; a fetch is started only MinInterval after the previous one started.
+// A request answered from keys past half their TTL starts a fetch in the background.
 func (v *Verifier) await(ctx context.Context, have func() bool, miss func() error) error {
 	v.mu.Lock()
 	if have() {
+		if !v.cfg.Now().Before(v.until.Add(-v.cfg.TTL / 2)) {
+			if done := v.start(); done != nil {
+				go v.background(done)
+			}
+		}
 		v.mu.Unlock()
+
 		return nil
 	}
 	wait := v.inflight
 	if wait == nil {
-		now := v.cfg.Now()
-		if v.tried && now.Sub(v.attempted) < v.cfg.MinInterval {
+		if wait = v.start(); wait == nil {
 			err := miss()
 			v.mu.Unlock()
 
 			return err
 		}
-		v.tried, v.attempted = true, now
-		wait = make(chan struct{})
-		v.inflight = wait
 		v.mu.Unlock()
-		v.refresh(ctx, wait)
+		func() {
+			defer v.wg.Done()
+			v.refresh(wait)
+		}()
 	} else {
 		v.mu.Unlock()
 		if v.onWait != nil {
@@ -342,16 +381,40 @@ func (v *Verifier) miss(kid string) error {
 	return refuse(ReasonIDPUnavailable, err)
 }
 
-// refresh runs the fetch this request started and publishes its outcome, closing done.
-// The fetch outlives the request that started it, since others wait on it.
-func (v *Verifier) refresh(ctx context.Context, done chan struct{}) {
+// start begins a fetch when none is in flight, the verifier is open and MinInterval has passed since the last began,
+// and returns the channel its end closes; nil otherwise. v.mu is held.
+func (v *Verifier) start() chan struct{} {
+	now := v.cfg.Now()
+	if v.inflight != nil || v.closed || (v.tried && now.Sub(v.attempted) < v.cfg.MinInterval) {
+		return nil
+	}
+	v.tried, v.attempted = true, now
+	v.inflight = make(chan struct{})
+	v.wg.Add(1)
+
+	return v.inflight
+}
+
+// background runs a fetch no request waits on; a panic in it ends the fetch and is logged, never its value.
+func (v *Verifier) background(done chan struct{}) {
+	defer v.wg.Done()
+	defer func() {
+		if recover() != nil {
+			v.cfg.Log.Error("auth: idp fetch panicked")
+		}
+	}()
+	v.refresh(done)
+}
+
+// refresh runs a fetch start began, under the verifier's own context, never a request's, and publishes its outcome, closing done;
+// a failure keeps the cached keys and their expiry and is logged by its fields. Its caller marks the fetch's end in v.wg.
+func (v *Verifier) refresh(done chan struct{}) {
 	var keys []jose.JSONWebKey
 	var endpoints Endpoints
 	err := errors.New("the fetch did not complete")
 	// The fetch in flight ends, and its waiters wake, however the fetch returns.
 	defer func() {
 		v.mu.Lock()
-		defer v.mu.Unlock()
 		if err == nil {
 			v.keys, v.until, v.lastErr = keys, v.cfg.Now().Add(v.cfg.TTL), nil
 			if endpoints.Authorization != "" && endpoints.Token != "" {
@@ -362,8 +425,16 @@ func (v *Verifier) refresh(ctx context.Context, done chan struct{}) {
 		}
 		v.inflight = nil
 		close(done)
+		v.mu.Unlock()
+		var fe *fetchError
+		if errors.As(err, &fe) && v.ctx.Err() == nil {
+			fe.log(v.cfg.Log)
+		}
+		if v.onFetched != nil {
+			v.onFetched()
+		}
 	}()
-	keys, endpoints, err = v.fetch(context.WithoutCancel(ctx))
+	keys, endpoints, err = v.fetch(v.ctx)
 }
 
 // fetch reads the issuer's discovery document, which must name the configured issuer, and the public signing keys of its JWKS,
@@ -377,11 +448,13 @@ func (v *Verifier) fetch(ctx context.Context) ([]jose.JSONWebKey, Endpoints, err
 		Authorization string `json:"authorization_endpoint"`
 		Token         string `json:"token_endpoint"`
 	}
-	if err := v.get(ctx, strings.TrimSuffix(v.cfg.Issuer, "/")+"/.well-known/openid-configuration", &doc); err != nil {
+	discovery := strings.TrimSuffix(v.cfg.Issuer, "/") + "/.well-known/openid-configuration"
+	if err := v.get(ctx, discovery, &doc); err != nil {
 		return nil, Endpoints{}, fmt.Errorf("discovery: %w", err)
 	}
 	if doc.Issuer != v.cfg.Issuer || doc.JWKSURI == "" {
-		return nil, Endpoints{}, fmt.Errorf("discovery names issuer %q and jwks_uri %q", doc.Issuer, doc.JWKSURI)
+		u, _ := url.Parse(discovery)
+		return nil, Endpoints{}, fmt.Errorf("discovery: another issuer or no jwks_uri: %w", failed(u, classMalformed, 0))
 	}
 	var set struct {
 		Keys []json.RawMessage `json:"keys"`
@@ -399,7 +472,8 @@ func (v *Verifier) fetch(ctx context.Context) ([]jose.JSONWebKey, Endpoints, err
 	}
 
 	if len(keys) == 0 {
-		return nil, Endpoints{}, errors.New("jwks: no usable signing key")
+		u, _ := url.Parse(doc.JWKSURI)
+		return nil, Endpoints{}, fmt.Errorf("jwks: no usable signing key: %w", failed(u, classMalformed, 0))
 	}
 
 	return keys, Endpoints{Authorization: httpsOnly(doc.Authorization), Token: httpsOnly(doc.Token)}, nil
@@ -434,22 +508,81 @@ func usable(k jose.JSONWebKey) bool {
 	return k.Algorithm == "" || slices.Contains(algs, jose.SignatureAlgorithm(k.Algorithm))
 }
 
+// get reads the JSON document at target, over https, into dst; it fails with a *fetchError.
 func (v *Verifier) get(ctx context.Context, target string, dst any) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, target, http.NoBody)
 	if err != nil {
-		return err
+		return failed(nil, classMalformed, 0)
 	}
 	if req.URL.Scheme != "https" {
-		return fmt.Errorf("%s is not https", req.URL.Redacted())
+		return failed(req.URL, classMalformed, 0)
 	}
 	resp, err := v.cfg.Client.Do(req)
 	if err != nil {
-		return err
+		return failed(req.URL, classOf(err, classUnreachable), 0)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("%s: %s", target, resp.Status)
+		return failed(req.URL, classStatus, resp.StatusCode)
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, maxDocument)).Decode(dst); err != nil {
+		return failed(req.URL, classOf(err, classMalformed), 0)
 	}
 
-	return json.NewDecoder(io.LimitReader(resp.Body, maxDocument)).Decode(dst)
+	return nil
+}
+
+// The classes of a failed fetch.
+const (
+	classUnreachable = "unreachable"
+	classTimeout     = "timeout"
+	classStatus      = "status"
+	classMalformed   = "malformed"
+)
+
+// fetchError is a failed fetch of discovery or the JWKS, told by fields the verifier builds, never a cause's text,
+// which can hold a URL's query or user information (api.md §10.2 *IdP outage*).
+type fetchError struct {
+	scheme, host, path string
+	// status is the IdP's HTTP status, 0 when it answered none.
+	status int
+	class  string
+}
+
+// failed is the fetch of u (nil when it does not parse) failing in class, with the status the IdP answered, if any.
+func failed(u *url.URL, class string, status int) *fetchError {
+	e := &fetchError{class: class, status: status}
+	if u != nil {
+		e.scheme, e.host, e.path = u.Scheme, u.Host, u.Path
+	}
+
+	return e
+}
+
+// classOf is a transport's or a read's failure class: timeout for a deadline, else otherwise.
+func classOf(err error, otherwise string) string {
+	var ne net.Error
+	if errors.Is(err, context.DeadlineExceeded) || (errors.As(err, &ne) && ne.Timeout()) {
+		return classTimeout
+	}
+
+	return otherwise
+}
+
+func (e *fetchError) Error() string {
+	s := fmt.Sprintf("fetch %s://%s%s: %s", e.scheme, e.host, e.path, e.class)
+	if e.status != 0 {
+		s += fmt.Sprintf(" %d", e.status)
+	}
+
+	return s
+}
+
+// log writes e's one line to log.
+func (e *fetchError) log(log *slog.Logger) {
+	args := []any{"scheme", e.scheme, "host", e.host, "path", e.path, "class", e.class}
+	if e.status != 0 {
+		args = append(args, "status", e.status)
+	}
+	log.Warn("auth: idp fetch failed", args...)
 }

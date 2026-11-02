@@ -13,9 +13,11 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -357,26 +359,69 @@ func TestOneFetchInFlight(t *testing.T) {
 	}
 }
 
+// fetches counts the fetches v ends, each sent on the channel it returns once published; v is closed with the test.
+func fetches(t *testing.T, v *Verifier) chan struct{} {
+	t.Helper()
+	ch := make(chan struct{}, 64)
+	v.onFetched = func() { ch <- struct{}{} }
+	t.Cleanup(func() { _ = v.Close() })
+
+	return ch
+}
+
+// attempted is when v last started a fetch, and whether one is in flight.
+func attempted(v *Verifier) (time.Time, bool) {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+
+	return v.attempted, v.inflight != nil
+}
+
 // Cached keys verify through an outage until their TTL ends; with none cached a request is rejected as idp-unavailable,
 // and the IdP's return is noticed once the minimum interval passed.
+// Through the TTL's second half each request is answered from the cache and starts one fetch per minimum interval,
+// none of whose failures extends the cache's expiry.
 func TestVerifierThroughAnOutage(t *testing.T) {
 	t.Parallel()
 	p, c := newIDP(t), newClock()
 	s := p.newKey(t, "k1")
 	cold := p.verifier(c)
 	warm := p.verifier(c)
+	fetched := fetches(t, warm)
 	if _, err := warm.Verify(t.Context(), sign(t, s, p.claims(c.Now()))); err != nil {
 		t.Fatal(err)
 	}
+	<-fetched
 	p.down.Store(true)
 	if _, err := cold.Verify(t.Context(), sign(t, s, p.claims(c.Now()))); reason(err) != ReasonIDPUnavailable {
 		t.Errorf("cold Verify during the outage = %v, want idp-unavailable", err)
 	}
-	c.advance(59 * time.Minute)
-	if _, err := warm.Verify(t.Context(), sign(t, s, p.claims(c.Now()))); err != nil {
-		t.Errorf("warm Verify inside the TTL during the outage = %v", err)
+	c.advance(30 * time.Minute)
+	for range 3 {
+		if _, err := warm.Verify(t.Context(), sign(t, s, p.claims(c.Now()))); err != nil {
+			t.Errorf("warm Verify inside the TTL during the outage = %v", err)
+		}
+		started, _ := attempted(warm)
+		if !started.Equal(c.Now()) {
+			t.Fatalf("the request past half the TTL started no fetch: last at %v, now %v", started, c.Now())
+		}
+		<-fetched
+		c.advance(5 * time.Second)
+		if _, err := warm.Verify(t.Context(), sign(t, s, p.claims(c.Now()))); err != nil {
+			t.Errorf("warm Verify inside the minimum interval = %v", err)
+		}
+		if again, inflight := attempted(warm); !again.Equal(started) || inflight {
+			t.Errorf("a request inside the minimum interval started a fetch at %v", again)
+		}
+		c.advance(5 * time.Second)
 	}
-	c.advance(2 * time.Minute)
+	// The failures left the expiry as the first fetch set it: an hour after it, never extended.
+	c.advance(29*time.Minute + 30*time.Second)
+	if _, err := warm.Verify(t.Context(), sign(t, s, p.claims(c.Now()))); reason(err) != ReasonIDPUnavailable {
+		t.Errorf("Verify at the first fetch's TTL during the outage = %v, want idp-unavailable", err)
+	}
+	<-fetched
+	c.advance(time.Minute)
 	if _, err := warm.Verify(t.Context(), sign(t, s, p.claims(c.Now()))); reason(err) != ReasonIDPUnavailable {
 		t.Errorf("Verify past the TTL during the outage = %v, want idp-unavailable", err)
 	}
@@ -694,4 +739,260 @@ func (p *idp) grantChallenge(challenge, idToken string) string {
 	p.mu.Unlock()
 
 	return code
+}
+
+// lasting are a valid token's claims at now that stay valid for two hours, across the clock moves of a test.
+func (p *idp) lasting(now time.Time) map[string]any {
+	m := p.claims(now)
+	m["exp"] = now.Add(2 * time.Hour).Unix()
+
+	return m
+}
+
+// A request past half the TTL is answered from the cache while the fetch it started in the background is held at the IdP,
+// and another request meanwhile starts none; the fetch, once done, moves the expiry an hour past itself.
+func TestBackgroundRefreshPastHalfTheTTL(t *testing.T) {
+	t.Parallel()
+	p, c := newIDP(t), newClock()
+	s := p.newKey(t, "k1")
+	v := p.verifier(c)
+	fetched := fetches(t, v)
+	tok := sign(t, s, p.lasting(c.Now()))
+	if _, err := v.Verify(t.Context(), tok); err != nil {
+		t.Fatal(err)
+	}
+	<-fetched
+	c.advance(29 * time.Minute)
+	if _, err := v.Verify(t.Context(), tok); err != nil || p.jwks.Load() != 1 {
+		t.Fatalf("Verify before half the TTL = %v after %d fetches, want the cache alone", err, p.jwks.Load())
+	}
+	p.block, p.jwksEntered = make(chan struct{}), make(chan struct{}, 8)
+	c.advance(2 * time.Minute)
+	if _, err := v.Verify(t.Context(), tok); err != nil {
+		t.Fatalf("Verify past half the TTL = %v, want the cache's answer", err)
+	}
+	<-p.jwksEntered
+	if _, err := v.Verify(t.Context(), tok); err != nil {
+		t.Errorf("Verify while the background fetch is held = %v", err)
+	}
+	close(p.block)
+	<-fetched
+	if j := p.jwks.Load(); j != 2 {
+		t.Errorf("%d JWKS fetches, want the one background fetch beside the first", j)
+	}
+	// Past the first fetch's TTL, before half the second's: the cache answers and nothing is fetched.
+	c.advance(29*time.Minute + 30*time.Second)
+	if _, err := v.Verify(t.Context(), tok); err != nil {
+		t.Errorf("Verify past the first fetch's TTL = %v, want the refreshed keys", err)
+	}
+	if _, inflight := attempted(v); inflight || p.jwks.Load() != 2 {
+		t.Errorf("a fetch started before half the refreshed TTL (%d fetches)", p.jwks.Load())
+	}
+}
+
+// A request for an unknown kid, and a cold one whose cache has expired, share the background fetch in flight.
+func TestRequestsShareTheBackgroundFetch(t *testing.T) {
+	t.Parallel()
+	p, c := newIDP(t), newClock()
+	s := p.newKey(t, "k1")
+	v := p.verifier(c)
+	fetched := fetches(t, v)
+	known := sign(t, s, p.lasting(c.Now()))
+	if _, err := v.Verify(t.Context(), known); err != nil {
+		t.Fatal(err)
+	}
+	<-fetched
+	rotated := sign(t, p.newKey(t, "k2"), p.lasting(c.Now()))
+	waiting := make(chan struct{}, 8)
+	v.onWait = func() { waiting <- struct{}{} }
+	p.block, p.jwksEntered = make(chan struct{}), make(chan struct{}, 8)
+	c.advance(31 * time.Minute)
+	if _, err := v.Verify(t.Context(), known); err != nil {
+		t.Fatal(err)
+	}
+	<-p.jwksEntered
+	errs := make(chan error, 2)
+	go func() {
+		_, err := v.Verify(t.Context(), rotated)
+		errs <- err
+	}()
+	<-waiting
+	c.advance(30 * time.Minute) // past the TTL: the next request is cold
+	go func() {
+		_, err := v.Verify(t.Context(), known)
+		errs <- err
+	}()
+	<-waiting
+	close(p.block)
+	for range 2 {
+		if err := <-errs; err != nil {
+			t.Errorf("a request sharing the background fetch = %v", err)
+		}
+	}
+	if j := p.jwks.Load(); j != 2 {
+		t.Errorf("%d JWKS fetches, want the background one shared", j)
+	}
+}
+
+// Close cancels the fetch held at the IdP and returns once it ended; a request after it starts none, and a second Close returns at once.
+func TestCloseEndsTheFetch(t *testing.T) {
+	t.Parallel()
+	p, c := newIDP(t), newClock()
+	s := p.newKey(t, "k1")
+	v := p.verifier(c)
+	fetched := fetches(t, v)
+	tok := sign(t, s, p.lasting(c.Now()))
+	if _, err := v.Verify(t.Context(), tok); err != nil {
+		t.Fatal(err)
+	}
+	<-fetched
+	p.block, p.jwksEntered = make(chan struct{}), make(chan struct{}, 8)
+	t.Cleanup(func() { close(p.block) })
+	c.advance(31 * time.Minute)
+	if _, err := v.Verify(t.Context(), tok); err != nil {
+		t.Fatal(err)
+	}
+	<-p.jwksEntered
+	if err := v.Close(); err != nil {
+		t.Errorf("Close = %v", err)
+	}
+	select {
+	case <-fetched:
+	default:
+		t.Error("Close returned before the fetch it cancelled ended")
+	}
+	last, _ := attempted(v)
+	c.advance(time.Minute)
+	if _, err := v.Verify(t.Context(), tok); err != nil {
+		t.Errorf("Verify from the cache after Close = %v", err)
+	}
+	c.advance(time.Hour)
+	if _, err := v.Verify(t.Context(), tok); reason(err) != ReasonIDPUnavailable {
+		t.Errorf("Verify past the TTL after Close = %v, want idp-unavailable", err)
+	}
+	if again, inflight := attempted(v); !again.Equal(last) || inflight || p.jwks.Load() != 2 {
+		t.Errorf("a request after Close started a fetch (%d fetches)", p.jwks.Load())
+	}
+	if err := v.Close(); err != nil {
+		t.Errorf("a second Close = %v", err)
+	}
+}
+
+// A refresh racing Close, and two Closes racing each other, leave no fetch in flight once every call returned.
+func TestRefreshRacingClose(t *testing.T) {
+	t.Parallel()
+	p, c := newIDP(t), newClock()
+	s := p.newKey(t, "k1")
+	v := p.verifier(c)
+	tok := sign(t, s, p.lasting(c.Now()))
+	if _, err := v.Verify(t.Context(), tok); err != nil {
+		t.Fatal(err)
+	}
+	c.advance(31 * time.Minute)
+	var wg sync.WaitGroup
+	wg.Go(func() { _, _ = v.Verify(t.Context(), tok) })
+	wg.Go(func() { _ = v.Close() })
+	wg.Go(func() { _ = v.Close() })
+	wg.Wait()
+	if err := v.Close(); err != nil {
+		t.Errorf("Close = %v", err)
+	}
+	if _, inflight := attempted(v); inflight {
+		t.Error("a fetch is in flight after Close returned")
+	}
+}
+
+// A failed fetch is logged by the fields the verifier builds: the endpoint's scheme, host and path, the HTTP status and a class;
+// the user information and query of the JWKS URL discovery names appear neither in the line nor in the refusal.
+func TestFetchFailureLogged(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		class, status string
+		setup         func(p *idp)
+		timeout       time.Duration
+	}{
+		{class: "status", status: `"status":500`, setup: func(p *idp) { p.failJWKS.Store(true) }},
+		{class: "malformed", setup: func(p *idp) { p.jwksBody = "not json" }},
+		{class: "timeout", setup: func(p *idp) { p.block = make(chan struct{}) }, timeout: time.Second},
+	} {
+		t.Run(tc.class, func(t *testing.T) {
+			t.Parallel()
+			p, c := newIDP(t), newClock()
+			s := p.newKey(t, "k1")
+			host := p.srv.Listener.Addr().String()
+			p.set(func() { p.jwksURI = "https://user-sentinel:pw-sentinel@" + host + "/jwks?sig=query-sentinel" })
+			tc.setup(p)
+			if p.block != nil {
+				t.Cleanup(func() { close(p.block) })
+			}
+			client := p.srv.Client()
+			client.Timeout = tc.timeout
+			v := p.verifierWith(c, client)
+			var buf syncBuffer
+			v.cfg.Log = slog.New(slog.NewJSONHandler(&buf, nil))
+			_, err := v.Verify(t.Context(), sign(t, s, p.claims(c.Now())))
+			if reason(err) != ReasonIDPUnavailable {
+				t.Fatalf("Verify = %v, want idp-unavailable", err)
+			}
+			line := buf.String()
+			if strings.Count(line, "\n") != 1 || !strings.Contains(line, `"class":"`+tc.class+`"`) || !strings.Contains(line, `"path":"/jwks"`) ||
+				!strings.Contains(line, `"scheme":"https"`) || !strings.Contains(line, `"host":"`+host+`"`) || !strings.Contains(line, tc.status) {
+				t.Errorf("logged %q, want one line with the class %s, the endpoint and %s", line, tc.class, tc.status)
+			}
+			for _, leak := range []string{"sentinel", "sig="} {
+				if strings.Contains(line, leak) || strings.Contains(err.Error(), leak) {
+					t.Errorf("%q leaks into the line %q or the refusal %q", leak, line, err)
+				}
+			}
+		})
+	}
+}
+
+// A background fetch that panics is recovered and logged as one error line without the panic's value.
+func TestBackgroundPanicRecovered(t *testing.T) {
+	t.Parallel()
+	p, c := newIDP(t), newClock()
+	s := p.newKey(t, "k1")
+	tr := &panicky{rt: p.srv.Client().Transport}
+	v := p.verifierWith(c, &http.Client{Transport: tr})
+	var buf syncBuffer
+	v.cfg.Log = slog.New(slog.NewJSONHandler(&buf, nil))
+	fetched := fetches(t, v)
+	tok := sign(t, s, p.lasting(c.Now()))
+	if _, err := v.Verify(t.Context(), tok); err != nil {
+		t.Fatal(err)
+	}
+	<-fetched
+	tr.armed.Store(true)
+	c.advance(31 * time.Minute)
+	if _, err := v.Verify(t.Context(), tok); err != nil {
+		t.Fatal(err)
+	}
+	<-fetched
+	if err := v.Close(); err != nil { // waits for the background fetch, its recovery included
+		t.Fatal(err)
+	}
+	if line := buf.String(); strings.Count(line, "\n") != 1 || !strings.Contains(line, `"level":"ERROR"`) || strings.Contains(line, "transport") {
+		t.Errorf("logged %q, want one error line without the panic's value", line)
+	}
+}
+
+// syncBuffer is a buffer a log may write to while the test reads it.
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf strings.Builder
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	return b.buf.Write(p)
+}
+
+func (b *syncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	return b.buf.String()
 }

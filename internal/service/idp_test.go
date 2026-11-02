@@ -6,6 +6,7 @@ import (
 	"crypto/tls"
 	"encoding/base64"
 	"encoding/pem"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -240,4 +241,52 @@ func cookie(resp *http.Response, name string) *http.Cookie {
 	}
 
 	return nil
+}
+
+// The api role closes its verifier on every exit once it is built: a start failing after it cancels the fetch begun meanwhile,
+// held at the IdP, and joins it, and a request after the role returned starts no fetch.
+func TestAPIClosesItsVerifier(t *testing.T) {
+	t.Parallel()
+	entered := make(chan struct{}, 4)
+	var requests atomic.Int32
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		entered <- struct{}{}
+		<-r.Context().Done() // held until its client gives up
+	}))
+	t.Cleanup(srv.Close)
+	ca := filepath.Join(t.TempDir(), "idp-ca.pem")
+	if err := os.WriteFile(ca, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: srv.Certificate().Raw}), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	e := devEnv(t)
+	// No certificate: the start fails after the verifier is built.
+	e.Config.API.TLSCertFile, e.Config.API.TLSKeyFile = "", ""
+	e.Config.Auth.OIDC.Issuer, e.Config.Auth.OIDC.CAFile = srv.URL, ca
+	enc := base64.RawURLEncoding.EncodeToString
+	tok := enc([]byte(`{"alg":"ES256","kid":"k1"}`)) + "." + enc([]byte(`{}`)) + "." + enc([]byte("signature"))
+	var v *auth.Verifier
+	verified := make(chan error, 1)
+	e.verifierBuilt = func(built *auth.Verifier) {
+		v = built
+		go func() {
+			_, err := built.Verify(context.Background(), tok)
+			verified <- err
+		}()
+		<-entered
+	}
+	if err := API(t.Context(), e); err == nil {
+		t.Fatal("API started without its certificate")
+	}
+	// Cancelled by Close, the fetch failed unreachable, not by the client's timeout.
+	var ae *auth.Error
+	if err := <-verified; !errors.As(err, &ae) || ae.Reason != auth.ReasonIDPUnavailable || !strings.Contains(err.Error(), "unreachable") {
+		t.Errorf("the request whose fetch was held = %v, want idp-unavailable, its fetch cancelled", err)
+	}
+	if _, err := v.Verify(t.Context(), tok); !errors.As(err, &ae) || ae.Reason != auth.ReasonIDPUnavailable {
+		t.Errorf("a request after the role returned = %v, want idp-unavailable", err)
+	}
+	if n := requests.Load(); n != 1 {
+		t.Errorf("the IdP saw %d requests, want the one fetch begun before the role returned", n)
+	}
 }

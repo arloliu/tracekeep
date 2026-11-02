@@ -23,6 +23,7 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 	"golang.org/x/sync/errgroup"
 
+	"github.com/arloliu/tracekeep/internal/auth"
 	"github.com/arloliu/tracekeep/internal/bus"
 	"github.com/arloliu/tracekeep/internal/catalog"
 	"github.com/arloliu/tracekeep/internal/compact"
@@ -71,6 +72,8 @@ type Env struct {
 	apiBound    func()
 	apiShutdown time.Duration
 	apiIdle     time.Duration
+	// verifierBuilt, when not nil, is handed the api role's verifier once built; a test's barrier.
+	verifierBuilt func(*auth.Verifier)
 	// listening is closed once the api role's listener is bound.
 	listening     chan struct{}
 	listeningOnce sync.Once
