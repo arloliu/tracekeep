@@ -1,11 +1,35 @@
 package catalog
 
 import (
+	"context"
+	"database/sql"
+	"errors"
 	"slices"
 	"testing"
 
+	"github.com/jmoiron/sqlx"
+
 	"github.com/arloliu/go-secs/tracepack"
 )
+
+// ranges reads the seq runs query selects for capture, its one argument.
+func ranges(ctx context.Context, q sqlx.QueryerContext, query string, capture tracepack.UUID) ([]Range, error) {
+	var rows []struct {
+		From   int64 `db:"seq_from"`
+		To     int64 `db:"seq_to"`
+		TSFrom int64 `db:"ts_from"`
+		TSTo   int64 `db:"ts_to"`
+	}
+	if err := sqlx.SelectContext(ctx, q, &rows, query, capture[:]); err != nil {
+		return nil, err
+	}
+	rs := make([]Range, 0, len(rows))
+	for _, r := range rows {
+		rs = append(rs, Range{SeqFrom: uint64(r.From), SeqTo: uint64(r.To), TSFrom: r.TSFrom, TSTo: r.TSTo}) //nolint:gosec // stored seqs are below 2^63
+	}
+
+	return rs, nil
+}
 
 // pack registers a pack of capture in hour 5 holding the seq runs, each record's time its seq, as ingest's registration would.
 func pack(t *testing.T, c *Catalog, capture tracepack.UUID, runs ...[2]uint64) {
@@ -123,6 +147,16 @@ func TestCompletenessEmpty(t *testing.T) {
 		got := completeness(t, c, admitted(t, c))
 		if got.HasFrontier || len(got.Gaps) != 0 || got.UnknownTailFrom != 0 {
 			t.Errorf("completeness %+v, want no frontier and the unknown tail from 0", got)
+		}
+	})
+}
+
+// A capture the catalog does not hold has no completeness: the read fails with sql.ErrNoRows.
+func TestCompletenessUnknownCapture(t *testing.T) {
+	t.Parallel()
+	engines(t, func(t *testing.T, c *Catalog) {
+		if _, err := c.Completeness(t.Context(), newID(t)); !errors.Is(err, sql.ErrNoRows) {
+			t.Errorf("Completeness of an unknown capture = %v, want sql.ErrNoRows", err)
 		}
 	})
 }

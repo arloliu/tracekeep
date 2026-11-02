@@ -187,27 +187,65 @@ func (c *Catalog) ListDevices(ctx context.Context, sel Selector, q time.Duration
 			if ci.LastRecordNS != nil && (d.LastRecordNS == nil || *ci.LastRecordNS > *d.LastRecordNS) {
 				d.LastRecordNS = ci.LastRecordNS
 			}
-			if d.Gap {
-				continue
-			}
-			in, err := c.completenessInputs(ctx, tx, ci.ID)
-			if err != nil {
-				return err
-			}
-			d.Gap = slices.ContainsFunc(in.classify().Gaps, func(g Gap) bool { return g.meets(sel.From, sel.To) })
+		}
+		if err := c.deviceGaps(ctx, tx, sel, caps, byName); err != nil {
+			return err
 		}
 		for _, d := range byName {
 			out = append(out, *d)
 		}
-		slices.SortFunc(out, func(a, b DeviceInfo) int { return cmp.Compare(a.Name, b.Name) })
 
 		return nil
 	})
 	if err != nil {
 		return nil, fmt.Errorf("catalog: list devices: %w", err)
 	}
+	slices.SortFunc(out, func(a, b DeviceInfo) int { return cmp.Compare(a.Name, b.Name) })
 
 	return out, nil
+}
+
+// deviceGaps sets each device's gap from its captures' completeness, ordered by device, read a chunk at a time:
+// first every device's first capture, then the others of the devices still without a gap meeting sel's window,
+// so a device whose first capture has one costs that capture's reads alone, as when each capture was read apart.
+func (c *Catalog) deviceGaps(ctx context.Context, tx *sqlx.Tx, sel Selector, caps []CaptureInfo, byName map[string]*DeviceInfo) error {
+	var firsts, rest []CaptureInfo
+	for i, ci := range caps {
+		if i == 0 || caps[i-1].Device != ci.Device {
+			firsts = append(firsts, ci)
+		} else {
+			rest = append(rest, ci)
+		}
+	}
+	for _, round := range [][]CaptureInfo{firsts, rest} {
+		var pending []CaptureInfo
+		for _, ci := range round {
+			if !byName[ci.Device].Gap {
+				pending = append(pending, ci)
+			}
+		}
+		for chunk := range slices.Chunk(pending, completenessChunk) {
+			ids := make([]tracepack.UUID, 0, len(chunk))
+			for _, ci := range chunk {
+				if !byName[ci.Device].Gap {
+					ids = append(ids, ci.ID)
+				}
+			}
+			if len(ids) == 0 {
+				continue
+			}
+			ins, err := c.completenessInputs(ctx, tx, ids)
+			if err != nil {
+				return err
+			}
+			for i, id := range ids {
+				d := byName[chunk[slices.IndexFunc(chunk, func(ci CaptureInfo) bool { return ci.ID == id })].Device]
+				d.Gap = d.Gap || slices.ContainsFunc(ins[i].classify().Gaps, func(g Gap) bool { return g.meets(sel.From, sel.To) })
+			}
+		}
+	}
+
+	return nil
 }
 
 // meets reports whether the gap's time interval meets [from, to), a nil bound unbounded;
@@ -413,36 +451,41 @@ func (c *Catalog) ListPacks(ctx context.Context, sel Selector, q time.Duration) 
 		return Listing{}, fmt.Errorf("%w: %d hours, at most %d", ErrInvalidSelector, n, maxHours)
 	}
 	var out Listing
+	var caps []CaptureInfo
+	var ins []completenessInputs
 	err := c.snapshot(ctx, func(tx *sqlx.Tx) error {
 		err := tx.QueryRowxContext(ctx, `SELECT epoch, value FROM counters WHERE name = 'scope_events'`).Scan(&out.Cursor.Epoch, &out.Cursor.Seq)
 		if err != nil {
 			return err
 		}
 		c.hook(hookWatermarkRead)
-		caps, err := c.selectCaptures(ctx, tx, sel, q)
-		if err != nil {
+		if caps, err = c.selectCaptures(ctx, tx, sel, q); err != nil {
 			return err
 		}
-		for _, ci := range caps {
-			in, err := c.completenessInputs(ctx, tx, ci.ID)
+		ids := make([]tracepack.UUID, len(caps))
+		for i, ci := range caps {
+			ids[i] = ci.ID
+		}
+		for chunk := range slices.Chunk(ids, completenessChunk) {
+			read, err := c.completenessInputs(ctx, tx, chunk)
 			if err != nil {
 				return err
 			}
-			out.Captures = append(out.Captures, CaptureListing{CaptureInfo: ci, Completeness: in.classify()})
+			ins = append(ins, read...)
 		}
-		first, last := floorHour(sel.From), floorHour(sel.To-1)
-		out.Hours, err = listHours(ctx, tx, sel, first, last)
-		if err != nil {
-			return err
-		}
-		for i := range out.Hours {
-			out.Hours[i].fill(out.Captures)
-		}
+		out.Hours, err = listHours(ctx, tx, sel, floorHour(sel.From), floorHour(sel.To-1))
 
-		return nil
+		return err
 	})
 	if err != nil {
 		return Listing{}, fmt.Errorf("catalog: list packs: %w", err)
+	}
+	// Classified outside the snapshot: the inputs are all read.
+	for i, ci := range caps {
+		out.Captures = append(out.Captures, CaptureListing{CaptureInfo: ci, Completeness: ins[i].classify()})
+	}
+	for i := range out.Hours {
+		out.Hours[i].fill(out.Captures)
 	}
 
 	return out, nil
