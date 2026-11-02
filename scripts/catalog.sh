@@ -4,8 +4,10 @@
 #   scripts/catalog.sh diff <name>   generate a migration for both engines from schema.hcl
 #   scripts/catalog.sh check         validate both migration directories and check schema.hcl for drift
 #   scripts/catalog.sh test          run the catalog's tests on MariaDB
-#   scripts/catalog.sh bench <file>  run the catalog's benchmarks on MariaDB, -count ${COUNT:-10} -benchtime ${BENCHTIME:-1s} -cpu ${CPU:-nproc},
-#                                    then registration at its fixed N, into file without Go's cpu: line
+#   scripts/catalog.sh bench <file>  run the catalog's benchmarks on MariaDB alone (TRACEKEEP_BENCH_ENGINES=mariadb),
+#                                    -count ${COUNT:-10} -benchtime ${BENCHTIME:-1s} -cpu ${CPU:-nproc},
+#                                    over ${BENCH_PACKAGES:-every package reaching the catalog} and -bench ${BENCH:-.},
+#                                    then registration at its fixed N when BENCH is . or names RegisterPack, into file without Go's cpu: line
 #   scripts/catalog.sh bench-smoke   run them once each, failing rather than skipping without MariaDB
 set -euo pipefail
 
@@ -77,8 +79,9 @@ test)
 bench)
 	out=${2:?usage: catalog.sh bench <file>}
 	start_mariadb
-	cpu=${CPU:-$(nproc)}
-	export TRACEKEEP_MARIADB_DSN="root:$PASSWORD@tcp(127.0.0.1:$port)/catalog" TRACEKEEP_REQUIRE_MARIADB=1 GOWORK=off
+	cpu=${CPU:-$(nproc)} bench=${BENCH:-.} packages=${BENCH_PACKAGES:-$PACKAGES}
+	# Only MariaDB's rows: the engine loops skip SQLite's sub-benchmarks, which a local run measures without this script.
+	export TRACEKEEP_MARIADB_DSN="root:$PASSWORD@tcp(127.0.0.1:$port)/catalog" TRACEKEEP_REQUIRE_MARIADB=1 TRACEKEEP_BENCH_ENGINES=mariadb GOWORK=off
 	# The engines as a baseline records them (650-perf-sec.md), asked of each engine through the catalog, since the container is gone once the script ends;
 	# a tree older than TestEngineFacts is answered by this script's own tree.
 	facts() { TRACEKEEP_ENGINE_FACTS=1 go test ./internal/catalog/ -run '^TestEngineFacts$' -count 1 -v | grep -o 'engine facts: .*'; }
@@ -88,15 +91,20 @@ bench)
 	run() {
 		local bench=$1 benchtime=$2
 		printf 'benchtime: %s\ncount: %s\ncpus: %s\nscale: %s\n' "$benchtime" "${COUNT:-10}" "$cpu" "${TRACEKEEP_BENCH_SCALE:-small}"
-		go test $PACKAGES -run '^$' -bench "$bench" -benchtime "$benchtime" -benchmem -cpu "$cpu" -count "${COUNT:-10}" -timeout 0 | sed '/^cpu:/d'
+		go test $packages -run '^$' -bench "$bench" -benchtime "$benchtime" -benchmem -cpu "$cpu" -count "${COUNT:-10}" -timeout 0 | sed '/^cpu:/d'
 	}
 	# BenchmarkRegisterPack skips unless -benchtime is Nx with N times a pack's ranges at most a tenth of the seeded ranges (its godoc):
-	# its one-range cells (evidence, miss, hit) run at 100x, which every size's 1,000 or more seeded ranges allow,
+	# its one-range cells (evidence, parked, miss, hit) run at 100x, which every size's 1,000 or more seeded ranges allow,
 	# its ranges cells, 100 ranges a pack or more, at 1x, which the cells whose pack fits allow.
+	# Only a run that selects registration appends them: bench.yaml's registration group, or a local run of everything.
 	{
-		run "${BENCH:-.}" "${BENCHTIME:-1s}"
-		run '^BenchmarkRegisterPack$/^(evidence|miss|hit)$' 100x
-		run '^BenchmarkRegisterPack$/^ranges$' 1x
+		run "$bench" "${BENCHTIME:-1s}"
+		case "$bench" in
+		. | *RegisterPack*)
+			run '^BenchmarkRegisterPack$/^(evidence|parked|miss|hit)$' 100x
+			run '^BenchmarkRegisterPack$/^ranges$' 1x
+			;;
+		esac
 	} | tee "$out"
 	;;
 bench-smoke)
