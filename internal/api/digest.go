@@ -97,7 +97,7 @@ func (s *Server) digestInputs(ctx context.Context, m *tkv1.DigestRequest) (*conn
 		return nil, digestUnavailable, dependency(connect.CodeUnavailable, msgCatalog, fmt.Errorf("digest: %w", err))
 	}
 	if rules == nil {
-		return nil, digestInvalid, invalid("digest_key_id %q is no active or bound configuration's digest key", keyID)
+		return nil, digestInvalid, invalid("digest_key_id is no active or bound configuration's digest key")
 	}
 	for i, in := range inputs {
 		if err := rules.check(in); err != nil {
@@ -205,7 +205,7 @@ func (r *digestRules) check(in *tkv1.DigestInput) error {
 	switch in.GetKind() {
 	case kindItem:
 		if !r.item[d] {
-			return fmt.Errorf("%w: domain %q is no item rule's", errInput, d)
+			return fmt.Errorf("%w: the domain is no item rule's", errInput)
 		}
 		if !oneItem(in.GetOriginal()) {
 			return fmt.Errorf("%w: the original is not exactly one encoded SECS-II item", errInput)
@@ -216,10 +216,10 @@ func (r *digestRules) check(in *tkv1.DigestInput) error {
 		}
 	case kindAnnotation:
 		if !r.annotation[d] {
-			return fmt.Errorf("%w: domain %q is no annotation rule's", errInput, d)
+			return fmt.Errorf("%w: the domain is no annotation rule's", errInput)
 		}
 	default:
-		return fmt.Errorf("%w: kind %q, want item, text or annotation", errInput, in.GetKind())
+		return fmt.Errorf("%w: the kind is not item, text or annotation", errInput)
 	}
 
 	return nil

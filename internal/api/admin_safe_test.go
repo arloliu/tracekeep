@@ -22,10 +22,16 @@ const (
 	passwordURL = "https://user:pw-sentinel@host.invalid/a/b?sig=q-sentinel#f-sentinel"
 	tokenURL    = "https://tok-sentinel@host2.invalid:8443/p-sentinel"
 	dsnURL      = "mysql://tk:dsn-sentinel@db.invalid:3306/tk-sentinel?tls=t-sentinel"
+	// Bracketed IPv6 hosts, and a URL that does not parse.
+	ipv6URL  = "https://[::1]:8443/p-sentinel?sig=q6-sentinel"
+	ipv6DSN  = "mysql://tk:pw6-sentinel@[fd00::1]:3306/x-sentinel?tls=t6-sentinel"
+	badURL   = "https://u:bad-sentinel@[unclosed/x?q=bad-sentinel"
+	safeTail = "; retry mysql://[fd00::1]:3306, then https://[redacted]"
 )
 
 // AdminService's answers and log lines keep a command's diagnostic, every URL in it cut to its scheme and host:
-// a usage error echoing its words, a command's failure and an audit failure whose catalog text names a DSN.
+// a usage error echoing its words, a command's failure and an audit failure whose catalog text names a DSN, bracketed IPv6 hosts included,
+// and a URL that does not parse cut to its scheme.
 func TestAdminAnswersNoCredential(t *testing.T) {
 	t.Parallel()
 	c := catalogtest.Open(t, catalog.EngineSQLite)
@@ -37,20 +43,21 @@ func TestAdminAnswersNoCredential(t *testing.T) {
 		return err
 	}
 	var answers []string
-	err := call("no", "such", passwordURL, tokenURL)
+	err := call("no", "such", passwordURL, tokenURL, ipv6URL)
 	answers = append(answers, errMessage(err))
 	if connect.CodeOf(err) != connect.CodeInvalidArgument || !strings.Contains(errMessage(err), "usage") ||
-		!strings.Contains(errMessage(err), "https://host.invalid ") || !strings.Contains(errMessage(err), "https://host2.invalid:8443") {
+		!strings.Contains(errMessage(err), "https://host.invalid ") || !strings.Contains(errMessage(err), "https://host2.invalid:8443") ||
+		!strings.Contains(errMessage(err), "https://[::1]:8443]") {
 		t.Errorf("a usage error = %v, want invalid_argument naming the usage and each URL's scheme and host", err)
 	}
-	fault := fmt.Errorf("catalog: dial %s: connection refused", dsnURL)
+	fault := fmt.Errorf("catalog: dial %s: connection refused; retry %s, then %s", dsnURL, ipv6DSN, badURL)
 	for _, tc := range []struct {
 		name string
 		err  error
 		code connect.Code
 		text string
 	}{
-		{"a command's catalog fault", fault, connect.CodeFailedPrecondition, "catalog: dial mysql://db.invalid:3306: connection refused"},
+		{"a command's catalog fault", fault, connect.CodeFailedPrecondition, "catalog: dial mysql://db.invalid:3306: connection refused" + safeTail},
 		{"an audit failure", fmt.Errorf("%w: %w", catalog.ErrAudit, fault), connect.CodeInternal, msgAudit},
 	} {
 		s.runAdmin = func(context.Context, *admin.Admin, []string) (any, error) { return nil, tc.err }
@@ -66,7 +73,7 @@ func TestAdminAnswersNoCredential(t *testing.T) {
 	if text := strings.Join(answers, "\n") + r.logs.String(); strings.Contains(text, "sentinel") {
 		t.Errorf("an answer or the log holds a credential, a path or a query:\n%s", text)
 	}
-	if !strings.Contains(r.logs.String(), "mysql://db.invalid:3306") {
+	if !strings.Contains(r.logs.String(), "mysql://db.invalid:3306") || !strings.Contains(r.logs.String(), "mysql://[fd00::1]:3306") {
 		t.Errorf("the log = %s\nwant the audit failure's cause, its URL cut to its host", r.logs)
 	}
 }

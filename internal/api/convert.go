@@ -42,7 +42,7 @@ func selector(sel *tkv1.Selector) (catalog.Selector, error) {
 	if sel.CaptureId != nil {
 		id, err := tracepack.ParseUUID(sel.GetCaptureId())
 		if err != nil {
-			return catalog.Selector{}, invalid("capture_id %q: %v", sel.GetCaptureId(), err)
+			return catalog.Selector{}, invalid("capture_id is not a UUID")
 		}
 		out.Capture = &id
 	}

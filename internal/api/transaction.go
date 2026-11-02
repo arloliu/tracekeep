@@ -25,7 +25,7 @@ var errLookupPacks = errors.New("an hour of more packs than a lookup reads at on
 func (s *Server) FindTransaction(ctx context.Context, req *connect.Request[tkv1.FindTransactionRequest]) (*connect.Response[tkv1.FindTransactionResponse], error) {
 	capture, err := tracepack.ParseUUID(req.Msg.GetCaptureId())
 	if err != nil {
-		return nil, invalid("capture_id %q: %v", req.Msg.GetCaptureId(), err)
+		return nil, invalid("capture_id is not a UUID")
 	}
 	h := req.Msg.GetHour()
 	if !h.IsValid() || nanos(h)%hourNS != 0 {

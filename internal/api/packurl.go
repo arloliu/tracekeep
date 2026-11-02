@@ -47,7 +47,7 @@ const (
 func (s *Server) PackURL(ctx context.Context, req *connect.Request[tkv1.PackURLRequest]) (*connect.Response[tkv1.PackURLResponse], error) {
 	id, err := tracepack.ParseUUID(req.Msg.GetPackId())
 	if err != nil {
-		return nil, invalid("pack_id %q: %v", req.Msg.GetPackId(), err)
+		return nil, invalid("pack_id is not a UUID")
 	}
 	dl := &s.Downloads
 	now := dl.now()

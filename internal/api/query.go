@@ -198,10 +198,10 @@ func parseQuery(m *tkv1.QueryRecordsRequest) (*recordQuery, error) {
 
 // predicates parses the record predicates.
 func (q *recordQuery) predicates(m *tkv1.QueryRecordsRequest) error {
-	for _, text := range m.GetMessages() {
+	for i, text := range m.GetMessages() {
 		g := messagePattern.FindStringSubmatch(text)
 		if g == nil {
-			return invalid("message %q is not SxFy or SxF*", text)
+			return invalid("message %d is not SxFy or SxF*", i)
 		}
 		st, _ := strconv.Atoi(g[1])
 		msg := records.Message{AnyFunction: g[2] == "*"}
@@ -210,7 +210,7 @@ func (q *recordQuery) predicates(m *tkv1.QueryRecordsRequest) error {
 			fn, _ = strconv.Atoi(g[2])
 		}
 		if st > 255 || fn > 255 {
-			return invalid("message %q: a stream or function above 255", text)
+			return invalid("message %d: a stream or function above 255", i)
 		}
 		msg.Stream, msg.Function = uint8(st), uint8(fn) //nolint:gosec // both checked above
 		q.base.Messages = append(q.base.Messages, msg)
@@ -222,12 +222,12 @@ func (q *recordQuery) predicates(m *tkv1.QueryRecordsRequest) error {
 	case "to_equipment":
 		q.base.Dirs = []tracepack.Dir{tracepack.DirHostToEquipment}
 	default:
-		return invalid("direction %q is not to_host or to_equipment", m.GetDirection())
+		return invalid("direction is not to_host or to_equipment")
 	}
-	for _, k := range m.GetKinds() {
+	for i, k := range m.GetKinds() {
 		kind, ok := kindNames[k]
 		if !ok {
-			return invalid("kind %q is not data, control, transport-event or annotation", k)
+			return invalid("kind %d is not data, control, transport-event or annotation", i)
 		}
 		q.base.Kinds = append(q.base.Kinds, kind)
 	}
