@@ -228,7 +228,7 @@ func (c *Catalog) Policy(ctx context.Context, id string, version int64) (StoredP
 	case errors.Is(err, sql.ErrNoRows):
 		return StoredPolicy{}, false, nil
 	case err != nil:
-		return StoredPolicy{}, false, fmt.Errorf("catalog: policy %s version %d: %w", id, version, err)
+		return StoredPolicy{}, false, fmt.Errorf("catalog: policy version %d: %w", version, err) // the id is the caller's text, never quoted
 	}
 
 	return p, true, nil

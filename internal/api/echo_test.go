@@ -82,3 +82,30 @@ func TestScopeChangesRefusalQuotesNoTool(t *testing.T) {
 		t.Errorf("an answer or the log quotes the request's tool:\n%s", text)
 	}
 }
+
+// policy show whose catalog read fails answers the read's failure with its version, never the id asked for, on both engines;
+// an absent policy stays the command's refusal, the id unquoted either way.
+func TestPolicyShowQuotesNoID(t *testing.T) {
+	t.Parallel()
+	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
+		r := newRig(t, &Server{Catalog: c, Admin: &admin.Admin{Catalog: c}}, nil)
+		cl := tracekeepv1connect.NewAdminServiceClient(r.hs.Client(), r.hs.URL)
+		show := func(id string) error {
+			_, err := cl.Admin(t.Context(), withToken(&tkv1.AdminRequest{Words: []string{"policy", "show", id, "1"}}, adminToken))
+			<-r.done
+			return err
+		}
+		answers := []string{errMessage(show("session=cookie-sentinel"))}
+		catalogtest.ExecSQL(t, c, "ALTER TABLE policies RENAME TO policies_gone")
+		for _, id := range []string{"password=pw-sentinel", "Bearer token-sentinel"} {
+			err := show(id)
+			answers = append(answers, errMessage(err))
+			if connect.CodeOf(err) != connect.CodeFailedPrecondition || !strings.Contains(errMessage(err), "policy version 1") {
+				t.Errorf("policy show %q over a failed read = %v, want failed_precondition naming the version", id, err)
+			}
+		}
+		if text := strings.Join(answers, "\n") + r.logs.String(); strings.Contains(text, "sentinel") {
+			t.Errorf("an answer or the log quotes the policy id asked for:\n%s", text)
+		}
+	})
+}
