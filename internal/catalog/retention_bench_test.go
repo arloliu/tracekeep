@@ -7,8 +7,6 @@ import (
 
 	"github.com/jmoiron/sqlx"
 
-	"github.com/arloliu/go-secs/tracepack"
-
 	"github.com/arloliu/tracekeep/internal/benchscale"
 )
 
@@ -75,11 +73,16 @@ func BenchmarkDeleteCandidates(b *testing.B) {
 	}
 }
 
+// evictedHour is the hour BenchmarkEvictHour seeds and evicts each iteration.
+const evictedHour = 10
+
 // BenchmarkEvictHour is retention's eviction of one hour of a capture holding many conflicts elsewhere.
 // Its starting state is one open capture under a recorded retention, two packs of hour 1 with 10, 1,000 or 100,000 conflicts between them
-// (TRACEKEEP_BENCH_SCALE), and the hour to evict, seeded outside the timer before each iteration as a fresh hour:
-// two packs of one range each, a conflict between them and one with hour 1's first pack.
-// One iteration evicts that hour and asserts it evicted with its two packs tombstoned and hour 1's conflicts kept.
+// (TRACEKEEP_BENCH_SCALE). Before each iteration, outside the timer, the hour to evict is seeded the same way each time:
+// two packs of one range each in evictedHour, their seqs just above hour 1's, a conflict between them and one with hour 1's first pack.
+// One iteration evicts that hour and asserts it evicted with its two packs tombstoned and hour 1's conflicts kept;
+// then, outside the timer, the hour's evicted ranges, its keys' tombstones and the conflict event it emitted are deleted,
+// and every table it touches is asserted back to its starting count, which is logged.
 func BenchmarkEvictHour(b *testing.B) {
 	for _, n := range benchscale.Sizes(b, 10, 1000, 100000) {
 		b.Run(fmt.Sprintf("conflicts=%d", n), func(b *testing.B) {
@@ -90,15 +93,18 @@ func BenchmarkEvictHour(b *testing.B) {
 					b.Fatal(err)
 				}
 				capture := seedCaptures(b, c, 1, 1)[0]
-				kept, next := seedPacks(b, c, capture, packsSeed{hour0: 1, hours: 1, packs: 2, ranges: 1, span: 10})
+				kept, seq0 := seedPacks(b, c, capture, packsSeed{hour0: 1, hours: 1, packs: 2, ranges: 1, span: 10})
 				seedConflicts(b, c, capture, kept[0], kept[1], 0, n)
 				now := hourNS(1<<20) + int64(month)
-				hour := int64(10)
+				start := tableCounts(b, c, evictTables...)
+				var lastEvent int64
+				if err := c.read.GetContext(ctx, &lastEvent, `SELECT COALESCE(MAX(seq), 0) FROM scope_events`); err != nil {
+					b.Fatal(err)
+				}
 				b.ReportAllocs()
 				for b.Loop() {
 					b.StopTimer()
-					var packs []tracepack.UUID
-					packs, next = seedPacks(b, c, capture, packsSeed{hour0: hour, hours: 1, packs: 2, ranges: 1, span: 10, seq0: next})
+					packs, next := seedPacks(b, c, capture, packsSeed{hour0: evictedHour, hours: 1, packs: 2, ranges: 1, span: 10, seq0: seq0})
 					seedTx(b, c, func(tx *sqlx.Tx) {
 						insertRows(b, tx, "conflicts", []string{"capture_id", "seq_from", "seq_to", "pack_id", "other_pack_id", "state"}, [][]any{
 							{capture[:], int64(next) - 1, int64(next) - 1, packs[0][:], packs[1][:], "suspect"}, //nolint:gosec // a seeded seq is small
@@ -106,18 +112,38 @@ func BenchmarkEvictHour(b *testing.B) {
 						})
 					})
 					b.StartTimer()
-					ev, err := c.EvictHour(ctx, l, Scope{Capture: capture, Hour: hour}, now)
+					ev, err := c.EvictHour(ctx, l, Scope{Capture: capture, Hour: evictedHour}, now)
 					b.StopTimer()
 					if err != nil || !ev.Evicted || len(ev.Packs) != 2 || ev.Tombstoned != 2 {
-						b.Fatalf("EvictHour = %+v, %v; want hour %d evicted with its two packs", ev, err, hour)
+						b.Fatalf("EvictHour = %+v, %v; want hour %d evicted with its two packs", ev, err, evictedHour)
 					}
 					if got := count(b, c, `SELECT COUNT(*) FROM conflicts WHERE capture_id = ?`, capture[:]); got != n {
 						b.Fatalf("%d conflicts left, want hour 1's %d", got, n)
 					}
-					hour++
+					seedTx(b, c, func(tx *sqlx.Tx) {
+						for _, stmt := range []struct {
+							q    string
+							args []any
+						}{
+							{`DELETE FROM evicted_ranges WHERE capture_id = ? AND hour = ?`, []any{capture[:], evictedHour}},
+							{`DELETE FROM tombstones WHERE object_key IN (?, ?)`, []any{ev.Packs[0], ev.Packs[1]}},
+							{`DELETE FROM scope_events WHERE seq > ?`, []any{lastEvent}},
+						} {
+							if _, err := tx.ExecContext(ctx, stmt.q, stmt.args...); err != nil {
+								b.Fatal(err)
+							}
+						}
+					})
+					if got := tableCounts(b, c, evictTables...); got != start {
+						b.Fatalf("after the restore the tables hold %s, starting from %s", got, start)
+					}
 					b.StartTimer()
 				}
+				b.Logf("the tables an eviction touches: %s before and after each iteration", start)
 			})
 		})
 	}
 }
+
+// evictTables are the tables an eviction writes.
+var evictTables = []string{"packs", "pack_ranges", "scopes", "conflicts", "evicted_ranges", "tombstones", "scope_events"}
