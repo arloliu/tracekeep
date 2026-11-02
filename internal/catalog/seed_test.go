@@ -88,21 +88,34 @@ func seedConfig(tb testing.TB, c *Catalog) int64 {
 // each with a decodable start descriptor and bound to a decodable configuration, and returns them in order.
 func seedCaptures(tb testing.TB, c *Catalog, devices, n int) []tracepack.UUID {
 	tb.Helper()
+	infos := seedCaptureInfos(tb, c, devices, n)
+	ids := make([]tracepack.UUID, n)
+	for i := range infos {
+		ids[i] = infos[i].ID
+	}
+
+	return ids
+}
+
+// seedCaptureInfos is seedCaptures, returning each capture as ListCaptures reports it before any registration.
+func seedCaptureInfos(tb testing.TB, c *Catalog, devices, n int) []CaptureInfo {
+	tb.Helper()
 	const tool = "T1"
 	cfg := seedConfig(tb, c)
-	ids := make([]tracepack.UUID, n)
+	infos := make([]CaptureInfo, n)
 	rows := make([][]any, n)
 	for i := range n {
-		ids[i] = newID(tb)
+		id := newID(tb)
 		s := spec{instance: newID(tb), device: fmt.Sprintf("eqp-%d", i%devices), origin: 1 + int64(i), toolID: tool}
-		rows[i] = []any{ids[i][:], "open", descriptorBytes(tb, s), tool, s.instance[:], s.device, s.origin, cfg, 1, 0}
+		rows[i] = []any{id[:], "open", descriptorBytes(tb, s), tool, s.instance[:], s.device, s.origin, cfg, 1, 0}
+		infos[i] = CaptureInfo{ID: id, State: StateOpen, Device: s.device, RecorderInstanceID: s.instance, OriginNS: s.origin, ConfigID: &cfg}
 	}
 	seedRows(tb, c, "captures", []string{"capture_id", "state", "descriptor", "tool_id", "recorder_instance_id", "device", "origin_ns", "config_id", "data_revision", "created_at"}, rows)
 	if got := count(tb, c, `SELECT COUNT(*) FROM captures WHERE tool_id = ? AND state = 'open'`, tool); got < n {
 		tb.Fatalf("seeded %d open captures of %s, found %d", n, tool, got)
 	}
 
-	return ids
+	return infos
 }
 
 // packsSeed shapes seedPacks' population of one capture.
