@@ -39,4 +39,7 @@ Everywhere:
   issued only after the role check, living less than the deletion delay D, never logged.
   `api.md` §10.1 *Downloads*.
 - **Transport**: TLS for NATS, S3, Vault and the API.
+  A bus or S3 link without TLS is accepted, so no installation stops starting, but outside `tracekeep dev` each role warns at its start once per such link:
+  the bus judged by its connection's TLS state (a `nats://` URL the server upgrades is not warned), the store by an `http://` endpoint (an empty one, the provider's default over TLS, is not);
+  `all` warns once for its roles, and neither the catalog's DSN, `admin`, `status` nor a reconnect is judged.
 - **gosec** is enabled; suppress a finding only with `//nolint:gosec // <specific reason>`.
