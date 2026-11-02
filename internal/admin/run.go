@@ -21,7 +21,8 @@ var reads = []string{"status", "deferred list", "parked list", "capture show", "
 
 // Run runs the operator command words name (operations.md §10.4) and returns what it prints as JSON:
 // the one dispatch tracekeep admin and status share, whether the CLI runs it on the catalog or the api process does (api.md §10.1).
-// Every command is audited under a.Actor: one that only reads by a row written here before its answer is returned.
+// Every command is audited under a.Actor: one that only reads by a row written here, after it ran, before its answer is returned,
+// under a deadline of a second within ctx's own (api.md §10.1, T-55).
 func Run(ctx context.Context, a *Admin, words []string) (any, error) {
 	if len(words) == 0 {
 		return nil, fmt.Errorf("%w: admin needs a command", ErrUsage)
@@ -40,7 +41,7 @@ func Run(ctx context.Context, a *Admin, words []string) (any, error) {
 			entry.Capture = &id
 		}
 	}
-	if err := a.Catalog.Audit(ctx, entry); err != nil {
+	if err := a.Catalog.AuditWithin(ctx, entry); err != nil {
 		return nil, fmt.Errorf("admin: audit %s: %w", cmd, err)
 	}
 

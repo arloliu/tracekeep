@@ -120,12 +120,12 @@ func (h *held) PackDownload(ctx context.Context, pack tracepack.UUID, delay time
 	return h.Catalog.PackDownload(ctx, pack, delay)
 }
 
-func (h *held) Audit(ctx context.Context, e catalog.AuditEntry) error {
-	if h.holds(ctx, "Audit") {
+func (h *held) AuditWithin(ctx context.Context, e catalog.AuditEntry) error {
+	if h.holds(ctx, "AuditWithin") {
 		return h.fail(ctx)
 	}
 
-	return h.Catalog.Audit(ctx, e)
+	return h.Catalog.AuditWithin(ctx, e)
 }
 
 func (h *held) Capture(ctx context.Context, id tracepack.UUID) (catalog.Capture, error) {
@@ -390,7 +390,7 @@ func TestClientGoneRacingADecidedCode(t *testing.T) {
 		err            error
 		logged         bool
 	}{
-		{"an audit failure", "Audit", "internal", nil, true},
+		{"an audit failure", "AuditWithin", "internal", nil, true},
 		{"a refusal", "PackDownload", "not_found", catalog.ErrUnknownPack, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -571,4 +571,4 @@ func (c *stubCatalog) ExportJob(context.Context, tracepack.UUID, string) (catalo
 	return c.job, nil
 }
 
-func (c *stubCatalog) Audit(context.Context, catalog.AuditEntry) error { return nil }
+func (c *stubCatalog) AuditWithin(context.Context, catalog.AuditEntry) error { return nil }

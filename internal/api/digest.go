@@ -129,7 +129,7 @@ func (s *Server) digestInputs(ctx context.Context, m *tkv1.DigestRequest) (*conn
 		Actor: p.Subject, Action: "digest",
 		Detail: fmt.Sprintf("digest key %s, %d inputs, domains %s", keyID, len(inputs), strings.Join(slices.Compact(domains), ", ")),
 	}
-	if err := s.Catalog.Audit(ctx, entry); err != nil {
+	if err := s.Catalog.AuditWithin(ctx, entry); err != nil {
 		return nil, digestAuditFailed, dependency(connect.CodeInternal, msgAudit, fmt.Errorf("digest: %w", err))
 	}
 

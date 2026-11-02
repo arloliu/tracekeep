@@ -83,7 +83,7 @@ type Catalog interface {
 	ListPacks(ctx context.Context, sel catalog.Selector, q time.Duration) (catalog.Listing, error)
 	ListScopeChanges(ctx context.Context, after catalog.Cursor, sel catalog.Selector, limit int) (catalog.Changes, error)
 	PackDownload(ctx context.Context, pack tracepack.UUID, delay time.Duration) (catalog.Download, error)
-	Audit(ctx context.Context, e catalog.AuditEntry) error
+	AuditWithin(ctx context.Context, e catalog.AuditEntry) error
 	Capture(ctx context.Context, id tracepack.UUID) (catalog.Capture, error)
 	ConfigContent(ctx context.Context, id int64) ([]byte, error)
 	RecordCopies(ctx context.Context, capture tracepack.UUID, seq uint64, hour int64, limit int) ([]catalog.Copy, bool, error)

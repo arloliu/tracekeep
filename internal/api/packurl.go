@@ -81,7 +81,7 @@ func (s *Server) PackURL(ctx context.Context, req *connect.Request[tkv1.PackURLR
 		Actor: p.Subject, Action: "pack-url", Capture: &d.Capture,
 		Detail: fmt.Sprintf("pack %s, %s URL expiring %s", id, u.kind, u.expires.UTC().Format(time.RFC3339)),
 	}
-	if err := s.Catalog.Audit(ctx, entry); err != nil {
+	if err := s.Catalog.AuditWithin(ctx, entry); err != nil {
 		return nil, dependency(connect.CodeInternal, msgAudit, err)
 	}
 	s.stalled("audited")

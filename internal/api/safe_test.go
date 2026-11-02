@@ -31,7 +31,7 @@ func TestMachineServiceAnswersAndLogsSafe(t *testing.T) {
 		logged string
 	}{
 		{"a catalog failure", failing(stub, "ListCaptures", fault), requests[1].call, connect.CodeUnavailable, "mysql://[fd00::1]:3306"},
-		{"an audit failure", failing(stub, "Audit", fmt.Errorf("%w: %w", catalog.ErrAudit, fault)), requests[5].call, connect.CodeInternal, "mysql://[fd00::1]:3306"},
+		{"an audit failure", failing(stub, "AuditWithin", fmt.Errorf("%w: %w", catalog.ErrAudit, fault)), requests[5].call, connect.CodeInternal, "mysql://[fd00::1]:3306"},
 		{"a malformed capture_id in Restore", stub, func(ctx context.Context, cl tracekeepv1connect.MachineServiceClient) error {
 			_, err := cl.Restore(ctx, withToken(&tkv1.RestoreRequest{CaptureId: passwordURL, Seq: 1, Hour: hourTS(hour)}, restorerToken))
 			return err

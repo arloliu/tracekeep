@@ -93,8 +93,8 @@ func TestAuditFailureAnswersNoCause(t *testing.T) {
 		held string
 		call func(ctx context.Context, cl tracekeepv1connect.MachineServiceClient) error
 	}{
-		"PackURL": {"Audit", requests[5].call},
-		"GetExport": {"Audit", func(ctx context.Context, cl tracekeepv1connect.MachineServiceClient) error {
+		"PackURL": {"AuditWithin", requests[5].call},
+		"GetExport": {"AuditWithin", func(ctx context.Context, cl tracekeepv1connect.MachineServiceClient) error {
 			_, err := cl.GetExport(ctx, withToken(&tkv1.GetExportRequest{JobId: stub.job.ID.String()}, exporterToken))
 			return err
 		}},

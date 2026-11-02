@@ -121,7 +121,7 @@ func (s *Server) GetExport(ctx context.Context, req *connect.Request[tkv1.GetExp
 		Actor: owner, Action: "export-url",
 		Detail: fmt.Sprintf("job %s, %s URL expiring %s", j.ID, u.kind, u.expires.UTC().Format(time.RFC3339)),
 	}
-	if err := s.Catalog.Audit(ctx, entry); err != nil {
+	if err := s.Catalog.AuditWithin(ctx, entry); err != nil {
 		return nil, dependency(connect.CodeInternal, msgAudit, err)
 	}
 	// A URL its audit row's write left below the floor is withheld, as PackURL withholds one.

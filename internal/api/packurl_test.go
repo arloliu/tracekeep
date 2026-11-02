@@ -253,7 +253,7 @@ func TestPackURLExpiryInWholeSeconds(t *testing.T) {
 // failingAudit is a catalog whose audit appends fail.
 type failingAudit struct{ *catalog.Catalog }
 
-func (failingAudit) Audit(context.Context, catalog.AuditEntry) error {
+func (failingAudit) AuditWithin(context.Context, catalog.AuditEntry) error {
 	return errors.New(auditSentinel)
 }
 

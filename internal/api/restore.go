@@ -136,7 +136,7 @@ func (s *Server) restoreRecord(ctx context.Context, m *tkv1.RestoreRequest) (*co
 		Actor: p.Subject, Action: "restore", Capture: &capture,
 		Detail: fmt.Sprintf("seq %d, hour %d, pack %s, encryption key %s", seq, hour, copies[named].Pack, keyID),
 	}
-	if err := s.Catalog.Audit(ctx, entry); err != nil {
+	if err := s.Catalog.AuditWithin(ctx, entry); err != nil {
 		clear(original)
 		return nil, restoreAuditFailed, dependency(connect.CodeInternal, msgAudit, fmt.Errorf("restore %s: %w", at, err))
 	}
