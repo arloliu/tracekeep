@@ -78,7 +78,7 @@ const (
 	hookLocked
 	// hookBeforeCommit runs once a transaction's statements succeeded, before its commit.
 	hookBeforeCommit
-	// hookCompletenessRead runs between the reads of a completeness, inside its snapshot.
+	// hookCompletenessRead runs after each of a chunk's completeness reads, inside the listing's snapshot.
 	hookCompletenessRead
 	// hookWatermarkRead runs once a listing read its watermark, inside its snapshot.
 	hookWatermarkRead
