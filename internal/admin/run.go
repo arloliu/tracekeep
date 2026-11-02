@@ -56,6 +56,10 @@ func operate(ctx context.Context, a *Admin, cmd string, args []string) (any, err
 		slices.Contains([]string{"capture terminate", "capture show", "capture close"}, cmd) && len(args) == 3:
 		return onCapture(ctx, a, cmd, args[2:])
 	case cmd == "bus adopt-stream" && len(args) == 3:
+		if args[2] != catalog.RoleTraffic && args[2] != catalog.RoleParking {
+			return nil, fmt.Errorf("%w: bus adopt-stream: the role is not traffic or parking", ErrUsage)
+		}
+
 		return a.AdoptStream(ctx, args[2])
 	case cmd == "key verify" && len(args) == 3:
 		return a.KeyVerify(ctx, args[2])
@@ -65,8 +69,22 @@ func operate(ctx context.Context, a *Admin, cmd string, args []string) (any, err
 		cmd == "scope exclude-input" && len(args) == 3:
 		return onScope(ctx, a, cmd, args[2:])
 	default:
-		return nil, fmt.Errorf("%w: admin %v", ErrUsage, args)
+		return nil, unknown(cmd)
 	}
+}
+
+// verbs are the first words of the operator commands.
+var verbs = []string{"status", "deferred", "parked", "object", "capture", "bus", "key", "policy", "config", "conflict", "scope"}
+
+// unknown is the usage error of words no command takes: it names the command's first word when it is a known verb, and never the words themselves,
+// which may hold anything an operator typed (api.md §10.1 *What an answer says*).
+func unknown(cmd string) error {
+	verb, _, _ := strings.Cut(cmd, " ")
+	if slices.Contains(verbs, verb) {
+		return fmt.Errorf("%w: admin %s: no such command, or not these arguments", ErrUsage, verb)
+	}
+
+	return fmt.Errorf("%w: admin: unknown command", ErrUsage)
 }
 
 // listing reports whether args are a command that only reads, with the arguments it takes.
@@ -89,7 +107,7 @@ func listing(cmd string, args []string) bool {
 func onList(ctx context.Context, a *Admin, cmd string, args []string) (any, error) {
 	var capture *tracepack.UUID
 	if (cmd == "deferred list" && len(args) == 4) || (cmd == "parked list" && len(args) == 3) {
-		id, err := parseCapture(args[len(args)-1])
+		id, err := parseCapture(cmd, args[len(args)-1])
 		if err != nil {
 			return nil, err
 		}
@@ -114,7 +132,7 @@ func onList(ctx context.Context, a *Admin, cmd string, args []string) (any, erro
 
 // onCapture runs an operator command on one capture, args being the capture and, for parked terminate, a seq.
 func onCapture(ctx context.Context, a *Admin, cmd string, args []string) (any, error) {
-	capture, err := parseCapture(args[0])
+	capture, err := parseCapture(cmd, args[0])
 	if err != nil {
 		return nil, err
 	}
@@ -130,7 +148,7 @@ func onCapture(ctx context.Context, a *Admin, cmd string, args []string) (any, e
 		if len(args) == 2 {
 			n, err := strconv.ParseUint(args[1], 10, 64)
 			if err != nil {
-				return nil, fmt.Errorf("%w: seq %q", ErrUsage, args[1])
+				return nil, fmt.Errorf("%w: parked terminate: the seq does not parse", ErrUsage)
 			}
 			seq = &n
 		}
@@ -143,7 +161,12 @@ func onCapture(ctx context.Context, a *Admin, cmd string, args []string) (any, e
 func onScope(ctx context.Context, a *Admin, cmd string, args []string) (any, error) {
 	id, err := tracepack.ParseUUID(args[0])
 	if err != nil {
-		return nil, fmt.Errorf("%w: %q: %w", ErrUsage, args[0], err)
+		what := "the capture id"
+		if cmd == "scope exclude-input" {
+			what = "the pack id"
+		}
+
+		return nil, fmt.Errorf("%w: %s: %s does not parse", ErrUsage, cmd, what)
 	}
 	switch cmd {
 	case "scope exclude-input":
@@ -151,24 +174,25 @@ func onScope(ctx context.Context, a *Admin, cmd string, args []string) (any, err
 	case "scope merge":
 		at, err := time.Parse(time.RFC3339, args[1])
 		if err != nil {
-			return nil, fmt.Errorf("%w: hour %q: %w", ErrUsage, args[1], err)
+			return nil, fmt.Errorf("%w: scope merge: the hour is not RFC 3339", ErrUsage)
 		}
 
 		return a.ScopeMerge(ctx, id, tracepack.HourOf(at))
 	default: // conflict acknowledge
 		seq, err := strconv.ParseUint(args[1], 10, 63)
 		if err != nil {
-			return nil, fmt.Errorf("%w: seq %q", ErrUsage, args[1])
+			return nil, fmt.Errorf("%w: conflict acknowledge: the seq does not parse", ErrUsage)
 		}
 
 		return a.ConflictAcknowledge(ctx, id, seq)
 	}
 }
 
-func parseCapture(s string) (tracepack.UUID, error) {
+// parseCapture parses cmd's capture id s; its refusal names the command and the argument, never s.
+func parseCapture(cmd, s string) (tracepack.UUID, error) {
 	id, err := tracepack.ParseUUID(s)
 	if err != nil {
-		return tracepack.UUID{}, fmt.Errorf("%w: capture %q: %w", ErrUsage, s, err)
+		return tracepack.UUID{}, fmt.Errorf("%w: %s: the capture id does not parse", ErrUsage, cmd)
 	}
 
 	return id, nil
@@ -182,7 +206,7 @@ func onConfig(ctx context.Context, a *Admin, cmd string, args []string) (any, er
 	case cmd == "policy show" && len(args) == 4:
 		v, err := strconv.ParseInt(args[3], 10, 64)
 		if err != nil || v <= 0 {
-			return nil, fmt.Errorf("%w: version %q", ErrUsage, args[3])
+			return nil, fmt.Errorf("%w: policy show: the version is not a positive integer", ErrUsage)
 		}
 
 		return a.PolicyShow(ctx, args[2], v)
@@ -191,14 +215,14 @@ func onConfig(ctx context.Context, a *Admin, cmd string, args []string) (any, er
 	case cmd == "config activate" && len(args) == 3:
 		id, err := strconv.ParseInt(args[2], 10, 64)
 		if err != nil || id <= 0 {
-			return nil, fmt.Errorf("%w: configuration %q", ErrUsage, args[2])
+			return nil, fmt.Errorf("%w: config activate: the configuration id is not a positive integer", ErrUsage)
 		}
 
 		return a.ConfigActivate(ctx, id)
 	case cmd == "config stage":
 		return onStage(ctx, a, args[2:])
 	default:
-		return nil, fmt.Errorf("%w: admin %v", ErrUsage, args)
+		return nil, unknown(cmd)
 	}
 }
 

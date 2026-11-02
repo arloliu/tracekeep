@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"strconv"
 	"time"
@@ -57,7 +58,7 @@ func (a *Admin) PolicyShow(ctx context.Context, id string, version int64) (polic
 	case err != nil:
 		return policy.Policy{}, err
 	case !ok:
-		return policy.Policy{}, fmt.Errorf("admin: no policy %s version %d", id, version)
+		return policy.Policy{}, fmt.Errorf("admin: no such policy at version %d", version)
 	}
 
 	return policy.FromCanonical(stored.Body)
@@ -84,6 +85,11 @@ func (a *Admin) ConfigStage(ctx context.Context, digestKeyID, encryptionKeyID, f
 	if file != "" {
 		doc, err := os.ReadFile(file)
 		if err != nil {
+			var pe *fs.PathError
+			if errors.As(err, &pe) {
+				err = pe.Err // the path is the operator's words, never echoed
+			}
+
 			return Staged{}, fmt.Errorf("admin: policy file: %w", err)
 		}
 		if p, err = policy.Parse(doc); err != nil {
