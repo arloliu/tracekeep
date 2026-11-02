@@ -104,7 +104,11 @@ it is never dropped silently and never holds the source.
 
 The log stage converts in real time, as `ingest` does for HSMS traffic.
 
-- **Consume** continuously, with per-message acks (`AckExplicit`) and in-progress acks while an entry is held (`architecture.md` §3.1).
+- **Consume** continuously, with per-message acks (`AckExplicit`) and **no in-progress acks**:
+  the feed consumer's `ack_wait` exceeds F plus a flush's upload and registration (default 2 × F),
+  since at the held entries *Sizing* counts an in-progress ack every `ack_wait` / 3 would send more acks a second than the feed sends entries.
+  A crash redelivers after `ack_wait`, and pairing rebuilds from the redelivery.
+  The traffic consumer's heartbeat (`architecture.md` §3.1) keeps every held message in progress the same way, so at a fleet of this size it meets the same load: noted for the traffic ingest, not changed here.
 - **Order.** Entries are converted in arrival order, through a short reorder window (`logfeed.reorder_window`, seconds) that releases a file's entries in offset order;
   it covers the jitter of several Vector instances, since fluent-bit sends one file in order.
 - **Dedup and late entries.** The catalog keeps the last converted offset per (source, file), written in the registration transaction.
@@ -157,7 +161,7 @@ The log stage converts in real time, as `ingest` does for HSMS traffic.
 - **recorder_instance_id**: derived from the source's id and stable, never the gateway's,
   so a source's captures form their own series for successor lookup (`catalog.md` §7.3);
   a capture of the next file of a source and connection names its predecessor in `previous_capture_id` ([FMT I-7]).
-- `source_ref`: the file's base name; `source_dialect`: `host-sml-feed/1`, the suffix being the field schema version.
+- `source_ref`: `<source>/<base name>`, since dated base names repeat across sources and a pack read outside tracekeep (an export, an archive) must say whose file it was; `source_dialect`: `host-sml-feed/1`, the suffix being the field schema version.
 - The compactor's close of a capture left open (`compactor.md` §8.2) never applies; the converter writes the stop.
 
 ## Time
@@ -191,6 +195,8 @@ Decided: option A1.
   the files' last converted offsets, written in the same transaction; no receipt and no `parked` state.
   Two catalog tables are new: the capture key (source, connection, file → `capture_id`) and the file offset (source, file → last converted offset).
 - **Segments**: generation-0, under [STO §3] keys, flushed every F with `flush_interval_ns`, merged by the compactor as any scope.
+  The library needs no change: the writer's `PackFacts.DurableRecorder` is set, under which `PackMeta.Validate` takes `flush_interval_ns`,
+  and each record is built and written with `SegmentWriter.Append` (fidelity `reconstructed`, its `decode_status` and `field_validity` set), since `AppendFrame` refuses `capture_method=log`.
 - **Completeness** (`catalog.md` §7.3): a log capture's seq is dense by construction, so it shows no gap, and that proves nothing about the log;
   its span starts at its first record.
 - **Masking** (`masking-keys.md` §9) applies as to every capture: the bound policy masks the reconstructed frames' items.
@@ -315,9 +321,11 @@ To go back to the go-secs session; tracekeep does not edit go-secs.
    writing each capture's start and stop boundaries itself.
    Its captures claim no byte-exact coverage, and their `notes` say so:
    item 7's coverage, item 8's source file set, content digest and `capture_id` derivation, and item 9's finite input do not apply to it;
-   each pack's `source_ref` names the capture's one source file by its base name, and a capture keeps the `capture_id` it was created with."
+   each pack's `source_ref` names the capture's one source file by its source and base name, and a capture keeps the `capture_id` it was created with."
 2. **G5-249, one sentence**:
    "A live converter that consumes a non-tracepack feed and writes packs by [STO §7] is a log conversion that never publishes over the bus."
+3. **`tracepack-go.md` §2**: a row in the producer table for tracekeep's log ingest, a live converter of `capture_method=log`.
+4. **`PackFacts.DurableRecorder`'s godoc**: a live converter sets it too (today it says a standalone recorder and a converter never do).
 
 ## What it does not do
 
