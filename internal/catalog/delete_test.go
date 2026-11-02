@@ -2,6 +2,8 @@ package catalog
 
 import (
 	"errors"
+	"math"
+	"slices"
 	"testing"
 	"time"
 
@@ -238,4 +240,80 @@ func TestDeletePackOfALegacyMerge(t *testing.T) {
 			t.Errorf("deadline = %d, %v, %v, want %d", got, ok, err, due)
 		}
 	})
+}
+
+// Both deadlines at their boundary in one population: a recorded delete_at due at now and not at now + 1,
+// a legacy zero's time plus D due at now and not a nanosecond later;
+// an input of two merges, one due by each deadline, is one candidate, and only the due inputs are deleted.
+func TestDeleteCandidatesAtBothDeadlines(t *testing.T) {
+	t.Parallel()
+	engines(t, func(t *testing.T, c *Catalog) {
+		l := compactorLease(t, c, "w")
+		capture := seedCaptures(t, c, 1, 1)[0]
+		now, d := int64(10*time.Hour), time.Hour
+		recorded := seedMerges(t, c, capture, 1, 1, 1, 0, now)
+		legacy := seedMerges(t, c, capture, 1, 1, 1, now-int64(d), 0)
+		later := append(seedMerges(t, c, capture, 1, 1, 1, 0, now+1), seedMerges(t, c, capture, 1, 1, 1, now-int64(d)+1, 0)...)
+		// The legacy merge also names the recorded merge's input.
+		shared := mergeInputs(t, c, recorded)[0]
+		id, err := tracepack.ParseUUID(shared)
+		if err != nil {
+			t.Fatal(err)
+		}
+		exec(t, c, `INSERT INTO merge_inputs (merge_id, pack_id) VALUES (?, ?)`, legacy[0][:], id[:])
+		want := slices.Compact(mergeInputs(t, c, append(recorded, legacy...)))
+		if len(want) != 2 {
+			t.Fatalf("the due merges' inputs = %v, want the shared one and the legacy merge's own", want)
+		}
+		got, err := c.DeleteCandidates(t.Context(), now, d)
+		if err != nil {
+			t.Fatal(err)
+		}
+		packs := make([]string, 0, len(got))
+		for _, p := range got {
+			packs = append(packs, p.Pack.String())
+		}
+		slices.Sort(packs)
+		if !slices.Equal(packs, want) {
+			t.Fatalf("candidates at now = %v, want each due input once, %v", packs, want)
+		}
+		for _, in := range mergeInputs(t, c, later) {
+			id, err := tracepack.ParseUUID(in)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if ok, err := c.DeletePack(t.Context(), l, Deletable{Pack: id, Capture: capture, Key: "staging/" + in}, now, d); err != nil || ok {
+				t.Errorf("DeletePack of an input not yet due = %v, %v, want refused", ok, err)
+			}
+		}
+		for _, p := range got {
+			if ok, err := c.DeletePack(t.Context(), l, p, now, d); err != nil || !ok {
+				t.Errorf("DeletePack of a due input = %v, %v", ok, err)
+			}
+		}
+		if n := count(t, c, `SELECT COUNT(*) FROM packs WHERE state = 'deleted'`); n != len(want) {
+			t.Errorf("%d packs deleted, want %d", n, len(want))
+		}
+	})
+}
+
+// now - D is clamped to int64's range rather than wrapping.
+func TestLegacyCut(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		now   int64
+		delay time.Duration
+		want  int64
+	}{
+		{int64(10 * time.Hour), time.Hour, int64(9 * time.Hour)},
+		{math.MinInt64 + 10, 10, math.MinInt64},
+		{math.MinInt64 + 9, 10, math.MinInt64},
+		{math.MaxInt64 - 9, -10, math.MaxInt64},
+		{math.MaxInt64 - 10, -10, math.MaxInt64},
+	}
+	for _, tc := range cases {
+		if got := legacyCut(tc.now, tc.delay); got != tc.want {
+			t.Errorf("legacyCut(%d, %d) = %d, want %d", tc.now, tc.delay, got, tc.want)
+		}
+	}
 }
