@@ -4,6 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net/url"
+	"regexp"
+	"strings"
 
 	"connectrpc.com/connect"
 
@@ -28,23 +31,49 @@ func (a adminService) Admin(ctx context.Context, req *connect.Request[tkv1.Admin
 	p, _ := PrincipalFrom(ctx)
 	op := *a.s.Admin
 	op.Actor = p.Subject
-	out, err := admin.Run(ctx, &op, req.Msg.GetWords())
-	// The operator reads the operator's log, so an answer keeps a command's text; an audit failure answers internal wherever the catalog wrote it,
-	// and a command its request's context ended passes as unavailable, which the observer decides as a client gone (api.md §10.1 *Admin over the API*).
+	run := admin.Run
+	if a.s.runAdmin != nil {
+		run = a.s.runAdmin
+	}
+	out, err := run(ctx, &op, req.Msg.GetWords())
+	// The operator reads the operator's log, so an answer keeps a command's diagnostic, every URL in it cut to its scheme and host;
+	// an audit failure answers internal wherever the catalog wrote it, and only a failure that is a context's passes as unavailable,
+	// which the observer decides as a client gone when the request's own context ended, so a command's refusal keeps its code
+	// (api.md §10.1 *Admin over the API*, *A client gone*).
 	switch {
 	case errors.Is(err, admin.ErrUsage):
-		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+		return nil, connect.NewError(connect.CodeInvalidArgument, operatorSafe(err))
 	case errors.Is(err, catalog.ErrAudit):
-		return nil, dependency(connect.CodeInternal, msgAudit, err)
-	case err != nil && ctx.Err() != nil:
-		return nil, connect.NewError(connect.CodeUnavailable, err)
+		return nil, dependency(connect.CodeInternal, msgAudit, operatorSafe(err))
+	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
+		return nil, connect.NewError(connect.CodeUnavailable, operatorSafe(err))
 	case err != nil:
-		return nil, connect.NewError(connect.CodeFailedPrecondition, err)
+		return nil, connect.NewError(connect.CodeFailedPrecondition, operatorSafe(err))
 	}
 	b, err := json.MarshalIndent(out, "", "  ")
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, err)
+		return nil, connect.NewError(connect.CodeInternal, operatorSafe(err))
 	}
 
 	return connect.NewResponse(&tkv1.AdminResponse{Json: string(b)}), nil
+}
+
+// urlPattern finds a URL in a diagnostic's text.
+var urlPattern = regexp.MustCompile(`[A-Za-z][A-Za-z0-9+.-]*://[^\s"'<>\[\]]+`)
+
+// operatorSafe is err's text as the operator may read it (operations.md §10.4 *Logs*): every URL cut to its scheme and host,
+// without user information, path, query or fragment, and the rest of the diagnostic kept.
+func operatorSafe(err error) error {
+	return errors.New(urlPattern.ReplaceAllStringFunc(err.Error(), func(s string) string {
+		// Punctuation the diagnostic put after the URL stays after it.
+		trimmed := strings.TrimRight(s, ".,;:)")
+		tail := s[len(trimmed):]
+		scheme, _, _ := strings.Cut(trimmed, "://")
+		u, perr := url.Parse(trimmed)
+		if perr != nil {
+			return scheme + "://" + tail
+		}
+
+		return u.Scheme + "://" + u.Host + tail
+	}))
 }
