@@ -242,7 +242,7 @@ func (k *Keys) Accepted(ctx context.Context, kind, keyID string) ([]byte, error)
 	}
 	if !slices.Contains(p.Accepted, keyID) {
 		k.metrics.Resolution(kind, "refused")
-		return nil, fmt.Errorf("%w: %s under %s", ErrUnknownKey, keyID, kind)
+		return nil, fmt.Errorf("%w under %s", ErrUnknownKey, kind) // never the id asked for, which may be any text
 	}
 
 	return k.resolve(ctx, kind, keyID)
@@ -274,7 +274,7 @@ func (k *Keys) Encryption(ctx context.Context, capture tracepack.UUID, keyID str
 func (k *Keys) declaredAs(ctx context.Context, kind, keyID string) ([]byte, error) {
 	if d, ok := k.declared[keyID]; !ok || d.Kind != kind {
 		k.metrics.Resolution(kind, "refused")
-		return nil, fmt.Errorf("%w: %s under %s", ErrUnknownKey, keyID, kind)
+		return nil, fmt.Errorf("%w under %s", ErrUnknownKey, kind) // never the id asked for, which may be any text
 	}
 
 	return k.resolve(ctx, kind, keyID)
