@@ -19,7 +19,7 @@ func testConfig() Config {
 }
 
 // executor runs on c with one configuration, executed by a leased member, so admissions bind it.
-func executor(t *testing.T, c *catalog.Catalog, cl *claims) *Executor {
+func executor(t testing.TB, c *catalog.Catalog, cl *claims) *Executor {
 	t.Helper()
 	cfg, err := c.ActivateConfig(t.Context(), []byte("phase-1"))
 	if err != nil {
@@ -36,7 +36,7 @@ func executor(t *testing.T, c *catalog.Catalog, cl *claims) *Executor {
 	}
 }
 
-func dispose(t *testing.T, x *Executor, m Message) (*Delivery, Decision) {
+func dispose(t testing.TB, x *Executor, m Message) (*Delivery, Decision) {
 	t.Helper()
 	d, dec, err := x.Dispose(t.Context(), m)
 	if err != nil {

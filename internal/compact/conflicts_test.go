@@ -25,7 +25,7 @@ func recordsAt(hr int64, seqs ...uint64) []tracepack.Record {
 }
 
 // segmentOf writes recs as a segment of capture's hour hr, its metadata adjusted by adjust.
-func segmentOf(t *testing.T, capture tracepack.UUID, hr int64, recs []tracepack.Record, adjust func(*tracepack.PackMeta)) built {
+func segmentOf(t testing.TB, capture tracepack.UUID, hr int64, recs []tracepack.Record, adjust func(*tracepack.PackMeta)) built {
 	t.Helper()
 	b := writeRecords(t, capture, tracepack.PackRoleSegment, hr, recs, adjust)
 	key, err := tracepack.SegmentKey("", tool, capture, recs[0].Seq, b.id)

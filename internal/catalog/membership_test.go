@@ -211,7 +211,7 @@ func TestBindableConfig(t *testing.T) {
 	})
 }
 
-func activate(t *testing.T, c *Catalog, content string) int64 {
+func activate(t testing.TB, c *Catalog, content string) int64 {
 	t.Helper()
 	id, err := c.ActivateConfig(t.Context(), []byte(content))
 	if err != nil {

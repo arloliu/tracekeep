@@ -58,7 +58,7 @@ func query(capture tracepack.UUID, edit func(*tkv1.QueryRecordsRequest)) *connec
 }
 
 // streamed is a stream's messages and its error.
-func (w *world) streamed(t *testing.T, req *connect.Request[tkv1.QueryRecordsRequest]) ([]*tkv1.QueryRecordsResponse, error) {
+func (w *world) streamed(t testing.TB, req *connect.Request[tkv1.QueryRecordsRequest]) ([]*tkv1.QueryRecordsResponse, error) {
 	t.Helper()
 	s, err := w.cl.QueryRecords(t.Context(), req)
 	if err != nil {

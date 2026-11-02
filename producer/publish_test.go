@@ -73,14 +73,14 @@ func (m *metrics) has(key string) bool {
 }
 
 type harness struct {
-	t   *testing.T
+	t   testing.TB
 	p   *producer.Producer
 	bus *producertest.Bus
 	m   *metrics
 	rec *core.Recorder
 }
 
-func newHarness(t *testing.T, tun producer.Tunables, opts ...producer.Option) *harness {
+func newHarness(t testing.TB, tun producer.Tunables, opts ...producer.Option) *harness {
 	t.Helper()
 	bus := producertest.NewBus()
 	m := &metrics{counts: map[string]float64{}}

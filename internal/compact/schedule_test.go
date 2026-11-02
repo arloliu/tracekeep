@@ -200,7 +200,7 @@ func TestArchiveMergedAgain(t *testing.T) {
 }
 
 // writeSegment writes a segment of capture holding seqs, its metadata adjusted by adjust.
-func writeSegment(t *testing.T, capture tracepack.UUID, seqs []uint64, adjust func(*tracepack.PackMeta)) built {
+func writeSegment(t testing.TB, capture tracepack.UUID, seqs []uint64, adjust func(*tracepack.PackMeta)) built {
 	t.Helper()
 
 	return segmentOf(t, capture, hour, recordsAt(hour, seqs...), adjust)

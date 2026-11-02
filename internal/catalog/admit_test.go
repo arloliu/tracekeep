@@ -5,14 +5,14 @@ import (
 	"testing"
 )
 
-func descriptor(t *testing.T, b string) *Descriptor {
+func descriptor(t testing.TB, b string) *Descriptor {
 	t.Helper()
 
 	return &Descriptor{Bytes: []byte(b), ToolID: "T1", RecorderInstanceID: newID(t), Device: "eqp", OriginNS: 1}
 }
 
 // gate registers one member executing a fresh configuration, so admissions can bind it.
-func gate(t *testing.T, c *Catalog) int64 {
+func gate(t testing.TB, c *Catalog) int64 {
 	t.Helper()
 	cfg := activate(t, c, "config")
 	if _, err := c.Register(t.Context(), "r", []int64{cfg}, ttl); err != nil {

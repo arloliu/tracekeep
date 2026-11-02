@@ -55,7 +55,7 @@ type replica struct {
 	cat    *catalog.Catalog
 }
 
-func newReplica(t *testing.T, c *catalog.Catalog) *replica {
+func newReplica(t testing.TB, c *catalog.Catalog) *replica {
 	t.Helper()
 	ctx := t.Context()
 	srv := testbus.StartServer(t, testbus.Options{})
@@ -108,7 +108,7 @@ func newReplica(t *testing.T, c *catalog.Catalog) *replica {
 }
 
 // publish publishes m on its capture's subject, putting a claim-check record's payload in the bucket first.
-func (r *replica) publish(t *testing.T, m Message, claim []byte) {
+func (r *replica) publish(t testing.TB, m Message, claim []byte) {
 	t.Helper()
 	subject, err := tpbus.Subject(prefix, "T1", m.Raw().Version.Capture)
 	if err != nil {
@@ -123,7 +123,7 @@ func (r *replica) publish(t *testing.T, m Message, claim []byte) {
 }
 
 // publishTo publishes m, its headers and body, on subject: a copy on the parking stream, as a delayed publish would store it.
-func (r *replica) publishTo(t *testing.T, subject string, m Message) *jetstream.PubAck {
+func (r *replica) publishTo(t testing.TB, subject string, m Message) *jetstream.PubAck {
 	t.Helper()
 	nm := nats.NewMsg(subject)
 	nm.Data = m.Body

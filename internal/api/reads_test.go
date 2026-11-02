@@ -25,7 +25,7 @@ const (
 	hour = int64(495_000)
 )
 
-func newID(t *testing.T) tracepack.UUID {
+func newID(t testing.TB) tracepack.UUID {
 	t.Helper()
 	var id tracepack.UUID
 	if _, err := rand.Read(id[:]); err != nil {
@@ -45,7 +45,7 @@ type world struct {
 	hs    *httptest.Server
 }
 
-func newWorld(t *testing.T, c *catalog.Catalog) *world {
+func newWorld(t testing.TB, c *catalog.Catalog) *world {
 	t.Helper()
 	w := &world{c: c, srv: &Server{Catalog: c, QuietPeriod: 15 * time.Minute, Auth: testAuthenticator(nil)}}
 	w.hs = httptest.NewServer(w.srv.Handler())
@@ -56,7 +56,7 @@ func newWorld(t *testing.T, c *catalog.Catalog) *world {
 }
 
 // admit admits a fresh capture of device eqp begun at hour's start, as ingest's admission of its start would.
-func (w *world) admit(t *testing.T) tracepack.UUID {
+func (w *world) admit(t testing.TB) tracepack.UUID {
 	t.Helper()
 	if _, err := w.c.ActivateConfig(t.Context(), []byte("config")); err != nil {
 		t.Fatal(err)
@@ -66,7 +66,7 @@ func (w *world) admit(t *testing.T) tracepack.UUID {
 }
 
 // admitActive is admit under the configurations already active, the capture binding the newest.
-func (w *world) admitActive(t *testing.T) tracepack.UUID {
+func (w *world) admitActive(t testing.TB) tracepack.UUID {
 	t.Helper()
 	origin := hour * nsPerHour
 	ctx := t.Context()
@@ -106,7 +106,7 @@ func (w *world) admitActive(t *testing.T) tracepack.UUID {
 }
 
 // stage registers a segment of capture in hour holding seqs 0..9, their records at hour's start plus the seq in ns.
-func (w *world) stage(t *testing.T, capture tracepack.UUID) *catalog.Pack {
+func (w *world) stage(t testing.TB, capture tracepack.UUID) *catalog.Pack {
 	t.Helper()
 	from, to := uint64(0), uint64(9)
 	id := newID(t)

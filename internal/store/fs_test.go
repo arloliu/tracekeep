@@ -109,7 +109,7 @@ func TestFSRefusesKeysOutsideTheStore(t *testing.T) {
 	}
 }
 
-func newFS(t *testing.T, dir string) *store.FS {
+func newFS(t testing.TB, dir string) *store.FS {
 	t.Helper()
 	s, err := store.NewFS(dir)
 	if err != nil {

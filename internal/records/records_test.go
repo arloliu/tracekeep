@@ -52,7 +52,7 @@ func closeRecord(t *testing.T) tracepack.Record {
 	}
 }
 
-func newID(t *testing.T) tracepack.UUID {
+func newID(t testing.TB) tracepack.UUID {
 	t.Helper()
 	var id tracepack.UUID
 	if _, err := rand.Read(id[:]); err != nil {
@@ -74,7 +74,7 @@ type world struct {
 }
 
 // newWorld is a world over an fs store in a fresh directory.
-func newWorld(t *testing.T) *world {
+func newWorld(t testing.TB) *world {
 	t.Helper()
 	st, err := store.NewFS(t.TempDir())
 	if err != nil {
@@ -139,14 +139,14 @@ func (w *world) serve(packs ...[]catalog.ReadPack) {
 }
 
 // pack writes recs as a pack of role and state, puts it unless absent, and returns its read-set entry with one range over its producer seqs.
-func (w *world) pack(t *testing.T, role string, state string, absent bool, recs ...tracepack.Record) catalog.ReadPack {
+func (w *world) pack(t testing.TB, role string, state string, absent bool, recs ...tracepack.Record) catalog.ReadPack {
 	t.Helper()
 
 	return w.packAt(t, hour, role, state, absent, recs...)
 }
 
 // packAt is pack for hour h.
-func (w *world) packAt(t *testing.T, h int64, role string, state string, absent bool, recs ...tracepack.Record) catalog.ReadPack {
+func (w *world) packAt(t testing.TB, h int64, role string, state string, absent bool, recs ...tracepack.Record) catalog.ReadPack {
 	t.Helper()
 	name, origin, mono, tolerance, interval := "eqp", int64(1000), int64(0), uint64(time.Second), uint64(5*time.Minute)
 	prole := tracepack.PackRoleSegment

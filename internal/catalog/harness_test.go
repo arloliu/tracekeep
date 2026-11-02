@@ -29,7 +29,7 @@ func engines(t *testing.T, f func(t *testing.T, c *Catalog)) {
 	}
 }
 
-func newCatalog(t *testing.T, engine string) *Catalog {
+func newCatalog(t testing.TB, engine string) *Catalog {
 	t.Helper()
 	cfg := Config{Engine: engine}
 	switch engine {
@@ -51,7 +51,7 @@ func newCatalog(t *testing.T, engine string) *Catalog {
 }
 
 // mariadbDatabase creates a database of the test's own on the configured server, migrates it and returns its DSN.
-func mariadbDatabase(t *testing.T) string {
+func mariadbDatabase(t testing.TB) string {
 	t.Helper()
 	dsn := mariadbEmpty(t)
 	mc, err := mysql.ParseDSN(dsn)
@@ -66,7 +66,7 @@ func mariadbDatabase(t *testing.T) string {
 }
 
 // mariadbEmpty creates an empty database of the test's own on the configured server and returns its DSN.
-func mariadbEmpty(t *testing.T) string {
+func mariadbEmpty(t testing.TB) string {
 	t.Helper()
 	dsn := os.Getenv(envMariaDB)
 	if dsn == "" {
@@ -97,7 +97,7 @@ func mariadbEmpty(t *testing.T) string {
 	return mc.FormatDSN()
 }
 
-func migrate(t *testing.T, driver, dsn, engine string) {
+func migrate(t testing.TB, driver, dsn, engine string) {
 	t.Helper()
 	db, err := sql.Open(driver, dsn)
 	if err != nil {
@@ -109,7 +109,7 @@ func migrate(t *testing.T, driver, dsn, engine string) {
 	}
 }
 
-func newID(t *testing.T) tracepack.UUID {
+func newID(t testing.TB) tracepack.UUID {
 	t.Helper()
 	var id tracepack.UUID
 	_, _ = rand.Read(id[:])

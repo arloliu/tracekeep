@@ -30,7 +30,7 @@ type spec struct {
 }
 
 // described admits a capture of tool T1 (or s.toolID) with a real descriptor, as ingest's admission of its start would.
-func described(t *testing.T, c *Catalog, s spec) tracepack.UUID {
+func described(t testing.TB, c *Catalog, s spec) tracepack.UUID {
 	t.Helper()
 	gate(t, c)
 	if s.toolID == "" {
@@ -73,7 +73,7 @@ func described(t *testing.T, c *Catalog, s spec) tracepack.UUID {
 }
 
 // exec runs a statement on c's write pool, setting up a state the test needs.
-func exec(t *testing.T, c *Catalog, query string, args ...any) {
+func exec(t testing.TB, c *Catalog, query string, args ...any) {
 	t.Helper()
 	if _, err := c.write.ExecContext(t.Context(), query, args...); err != nil {
 		t.Fatal(err)

@@ -191,7 +191,7 @@ func TestExecutableKeepsARetiredBoundConfiguration(t *testing.T) {
 }
 
 // masking is a masking configuration of the go-secs/v2.8.0 classifier under p, with d-1 and m-1 bound in c.
-func masking(t *testing.T, c *catalog.Catalog, p *policy.Policy) Config {
+func masking(t testing.TB, c *catalog.Catalog, p *policy.Policy) Config {
 	t.Helper()
 	for id, kind := range map[string]string{"d-1": catalog.KindDigest, "m-1": catalog.KindMaster} {
 		if _, err := c.BindKey(t.Context(), catalog.KeyBinding{KeyID: id, Kind: kind, ProviderRef: "file:/k/" + id, Fingerprint: "fp-" + id}); err != nil {

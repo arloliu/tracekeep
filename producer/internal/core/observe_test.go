@@ -8,7 +8,7 @@ import (
 	"github.com/arloliu/go-secs/tracepack"
 )
 
-func newTestRecorder(t *testing.T, p RecorderParams) (*Recorder, *Capture) {
+func newTestRecorder(t testing.TB, p RecorderParams) (*Recorder, *Capture) {
 	t.Helper()
 	if p.ReservedCap == 0 {
 		p.ReservedCap = 8

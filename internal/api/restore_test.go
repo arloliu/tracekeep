@@ -49,7 +49,7 @@ type masked struct {
 }
 
 // maskingKeys declares d-1 (digest) and m-1 (master) as 0600 files under t's directory, resolved through c's bindings.
-func maskingKeys(t *testing.T, c *catalog.Catalog) *keys.Keys {
+func maskingKeys(t testing.TB, c *catalog.Catalog) *keys.Keys {
 	t.Helper()
 	dir := t.TempDir()
 	declared := map[string]keys.Declaration{}
@@ -69,7 +69,7 @@ func maskingKeys(t *testing.T, c *catalog.Catalog) *keys.Keys {
 }
 
 // maskingContent is the baseline's masking configuration under d-1 and m-1, as ingest stages it.
-func maskingContent(t *testing.T, k *keys.Keys) procconfig.Content {
+func maskingContent(t testing.TB, k *keys.Keys) procconfig.Content {
 	t.Helper()
 	b := policy.Baseline()
 	_, sum := b.Canonical()
@@ -96,7 +96,7 @@ func maskingContent(t *testing.T, k *keys.Keys) procconfig.Content {
 	return content
 }
 
-func newMasked(t *testing.T, c *catalog.Catalog) *masked {
+func newMasked(t testing.TB, c *catalog.Catalog) *masked {
 	t.Helper()
 	k := maskingKeys(t, c)
 	b := policy.Baseline()
@@ -145,7 +145,7 @@ func recordAt(c *maskingtest.Carrier, h int64, seq uint64) tracepack.Record {
 }
 
 // mask masks rs as ingest does, returning the masked records and their entries in seq order.
-func (m *masked) mask(t *testing.T, capture tracepack.UUID, rs []tracepack.Record) ([]tracepack.Record, []tracepack.RedactionEntry) {
+func (m *masked) mask(t testing.TB, capture tracepack.UUID, rs []tracepack.Record) ([]tracepack.Record, []tracepack.RedactionEntry) {
 	t.Helper()
 	out := make([]tracepack.Record, 0, len(rs))
 	var entries []tracepack.RedactionEntry
@@ -161,7 +161,7 @@ func (m *masked) mask(t *testing.T, capture tracepack.UUID, rs []tracepack.Recor
 }
 
 // put writes rs, masked or not, as a segment of capture's hour h under policy, puts it and registers it.
-func (m *masked) put(t *testing.T, capture tracepack.UUID, h int64, rs []tracepack.Record, entries []tracepack.RedactionEntry, rp *tracepack.RedactionPolicy) *catalog.Pack {
+func (m *masked) put(t testing.TB, capture tracepack.UUID, h int64, rs []tracepack.Record, entries []tracepack.RedactionEntry, rp *tracepack.RedactionPolicy) *catalog.Pack {
 	t.Helper()
 	cp, err := m.c.Capture(t.Context(), capture)
 	if err != nil {
@@ -218,7 +218,7 @@ func (m *masked) put(t *testing.T, capture tracepack.UUID, h int64, rs []tracepa
 }
 
 // carriers are the baseline's carriers.
-func carriers(t *testing.T) []maskingtest.Carrier {
+func carriers(t testing.TB) []maskingtest.Carrier {
 	t.Helper()
 	b := policy.Baseline()
 	cs, err := maskingtest.Carriers(&b)
