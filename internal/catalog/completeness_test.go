@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -301,5 +302,30 @@ func TestInputQueryOneCapture(t *testing.T) {
 		if n := strings.Count(q.sql(3), "?"); n != 3 {
 			t.Errorf("three captures bind %d in %q", n, q.sql(3))
 		}
+	}
+}
+
+// TestClassifyOrdersDiagnostics checks the losses, crash gaps and conflicts come in their own order, whatever order they were read in.
+func TestClassifyOrdersDiagnostics(t *testing.T) {
+	u := func(v uint64) *uint64 { return &v }
+	i := func(v int64) *int64 { return &v }
+	in := completenessInputs{
+		losses:    []DeclaredLoss{{SeqFrom: u(9), SeqTo: u(9)}, {TSFrom: i(5), TSTo: i(6)}, {SeqFrom: u(3), SeqTo: u(4)}, {SeqFrom: u(3), SeqTo: u(3)}},
+		crashGaps: []CrashGap{{Start: i(7)}, {End: i(2)}, {Start: i(1), End: i(2)}},
+		conflicts: []ConflictRange{{SeqFrom: 5, SeqTo: 6, State: "suspect"}, {SeqFrom: 5, SeqTo: 5, State: "confirmed"}, {SeqFrom: 1, SeqTo: 2}},
+	}
+	want := Completeness{
+		Losses:    []DeclaredLoss{{TSFrom: i(5), TSTo: i(6)}, {SeqFrom: u(3), SeqTo: u(3)}, {SeqFrom: u(3), SeqTo: u(4)}, {SeqFrom: u(9), SeqTo: u(9)}},
+		CrashGaps: []CrashGap{{End: i(2)}, {Start: i(1), End: i(2)}, {Start: i(7)}},
+		Conflicts: []ConflictRange{{SeqFrom: 1, SeqTo: 2}, {SeqFrom: 5, SeqTo: 5, State: "confirmed"}, {SeqFrom: 5, SeqTo: 6, State: "suspect"}},
+	}
+	for range 2 {
+		got := in.classify()
+		if !reflect.DeepEqual(got.Losses, want.Losses) || !reflect.DeepEqual(got.CrashGaps, want.CrashGaps) || !reflect.DeepEqual(got.Conflicts, want.Conflicts) {
+			t.Fatalf("classify = %+v %+v %+v, want %+v %+v %+v", got.Losses, got.CrashGaps, got.Conflicts, want.Losses, want.CrashGaps, want.Conflicts)
+		}
+		slices.Reverse(in.losses)
+		slices.Reverse(in.crashGaps)
+		slices.Reverse(in.conflicts)
 	}
 }
