@@ -1,7 +1,7 @@
 package producer
 
 // Metrics receives the producer's measurements; an integrator wires it to its own registry (no Prometheus dependency).
-// The producer calls it only from its own goroutines, never from an observer callback:
+// The producer calls it only from its own goroutines, and from Close for its final report, never from an observer callback:
 // callbacks count into atomics the publisher reports from,
 // so a slow or allocating implementation cannot reach the connection's critical path.
 // Names and labels are listed in docs/specs/tracekeep/operations.md.

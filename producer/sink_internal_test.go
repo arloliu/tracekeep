@@ -68,14 +68,56 @@ func TestBlockedLoggerStallsOnlyTheSink(t *testing.T) {
 	}
 }
 
-// gaugeMetrics records which current_capture series are set.
+// gaugeMetrics records which current_capture series are set, and every counter as name or name{reason}.
 type gaugeMetrics struct {
 	nopMetrics
-	mu  sync.Mutex
-	set map[string]bool
+	mu     sync.Mutex
+	set    map[string]bool
+	counts map[string]float64
+	// hold, when set, blocks every Add until it closes.
+	hold chan struct{}
+	// final is set once the publisher stopped, so a report after it is Close's; finals counts those reports,
+	// each signalling finalEntered and waiting for finalRelease when they are set, then setting finalDone.
+	final        atomic.Bool
+	finals       atomic.Int32
+	finalEntered chan struct{}
+	finalRelease chan struct{}
+	finalDone    atomic.Bool
+}
+
+func (m *gaugeMetrics) Add(name string, labels map[string]string, delta float64) {
+	if m.hold != nil {
+		<-m.hold
+	}
+	if r, ok := labels["reason"]; ok {
+		name += "{" + r + "}"
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.counts == nil {
+		m.counts = map[string]float64{}
+	}
+	m.counts[name] += delta
+}
+
+func (m *gaugeMetrics) count(name string) float64 {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	return m.counts[name]
 }
 
 func (m *gaugeMetrics) Set(name string, labels map[string]string, _ float64) {
+	if name == "bus_connected" && m.final.Load() { // once per report
+		m.finals.Add(1)
+		if m.finalEntered != nil {
+			m.finalEntered <- struct{}{}
+		}
+		if m.finalRelease != nil {
+			<-m.finalRelease
+		}
+		m.finalDone.Store(true)
+	}
 	if name == "current_capture" {
 		m.mu.Lock()
 		defer m.mu.Unlock()

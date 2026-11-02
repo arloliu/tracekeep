@@ -80,11 +80,26 @@ type Producer struct {
 	stop   context.Context
 	cancel context.CancelFunc
 	quit   <-chan struct{}
-	// wg joins the goroutines that emit events; the sink, joined by sinkDone, stops after them.
+	// wg joins the producer's own goroutines; the sink, joined by sinkDone, stops after every emission settled.
 	wg       sync.WaitGroup
 	sinkQuit chan struct{}
 	sinkDone chan struct{}
-	sinkOnce sync.Once
+	// applied is the current_capture label set the sink last applied, nil for none.
+	applied *map[string]string
+
+	// rotations, by reason, and linesDropped, the lines the sink had no room for or still held when it stopped,
+	// are counted where they happen, the lifecycle lock held or not, and reported by the publisher (producer.md §4.3 *Diagnostics*).
+	rotations    [numRotationReasons]atomic.Uint64
+	linesDropped atomic.Uint64
+	// emitting counts the emissions in flight; closed is Close's mark, after which settled closes once none is.
+	emitting   atomic.Int64
+	closed     atomic.Bool
+	settled    chan struct{}
+	settleOnce sync.Once
+	closeOnce  sync.Once
+	// admitted and marked, set only by the package's tests, run once an emission is admitted and once Close set its mark.
+	admitted func()
+	marked   func()
 }
 
 type options struct {
@@ -167,6 +182,7 @@ func New(cfg Config, opts ...Option) (*Producer, error) {
 		now:      core.Now,
 		sinkQuit: make(chan struct{}),
 		sinkDone: make(chan struct{}),
+		settled:  make(chan struct{}),
 		gaugeSet: make(chan struct{}, 1),
 		events:   make(chan func(), sinkEvents),
 		lifeSem:  make(chan struct{}, 1),
@@ -221,20 +237,43 @@ func WithMetrics(m Metrics) Option {
 	return func(o *options) { o.metrics = m }
 }
 
-// Close stops the producer's goroutines and closes the connection New dialed;
+// Close stops the producer's goroutines and closes the connection New dialed, leaving one WithConn brought open;
 // call it after End, whose drain it does not wait for.
 // It cancels whatever its goroutines wait on, a publish, a claim-object operation or a fault rotation, rather than wait it out.
-// The sink stops last, once nothing emits, so current_capture is left as the last lifecycle call set it.
+// Then it cuts off the producer's log lines: a line emitted after that, by a late connection callback or a first dial still running,
+// is discarded uncounted, and a line still queued for the Logger is counted in log_lines_dropped_total.
+// It reports the counters once more, so the counts are final, and leaves current_capture as the last lifecycle call set it.
+// A second or concurrent Close waits for the first and does nothing again.
 func (p *Producer) Close() error {
+	p.closeOnce.Do(p.shutdown)
+	return nil
+}
+
+// shutdown is Close's one run, in the order producer.md §4.3 *Diagnostics* gives.
+func (p *Producer) shutdown() {
 	p.cancel()
 	p.wg.Wait()
-	p.sinkOnce.Do(func() { close(p.sinkQuit) })
-	<-p.sinkDone
 	if p.conn != nil {
 		p.conn.close()
 	}
-
-	return nil
+	p.closed.Store(true)
+	if p.marked != nil {
+		p.marked()
+	}
+	if p.emitting.Load() == 0 {
+		p.settle()
+	}
+	<-p.settled // every emission that saw no mark is queued or counted
+	close(p.sinkQuit)
+	<-p.sinkDone
+	for range len(p.events) {
+		<-p.events
+		p.linesDropped.Add(1)
+	}
+	if p.pub != nil {
+		p.pub.report(true) // the publisher is joined, so its state is Close's now
+	}
+	p.applyGauge()
 }
 
 // preflightOnConnect runs Preflight once the connection first comes up and logs what it finds,
