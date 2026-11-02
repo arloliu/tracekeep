@@ -19,7 +19,7 @@ type Metrics interface {
 }
 
 // Logger receives the producer's log lines; *slog.Logger satisfies it.
-// The producer logs only from its own goroutines, never from an observer callback,
+// The producer logs only from its own goroutines, and from Close for its final report, never from an observer callback,
 // and an alert is one Warn or Error per state change, not per record.
 type Logger interface {
 	// Info logs a state change worth knowing, such as a rotation.

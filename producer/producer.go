@@ -292,12 +292,17 @@ func (p *Producer) preflightOnConnect(nb *natsBus) {
 			return
 		}
 	}
+	p.autoPreflight()
+}
+
+// autoPreflight runs Preflight within τ and logs what it finds through the sink.
+func (p *Producer) autoPreflight() {
 	ctx, cancel := context.WithTimeout(p.stop, p.tun.PublishTimeout)
 	defer cancel()
 	problems, err := p.Preflight(ctx)
 	log := sinkLogger{p}
 	if err != nil {
-		log.Warn("producer: preflight could not finish", "error", err)
+		log.Warn("producer: preflight could not finish", errFields(err)...)
 	}
 	for _, pr := range problems {
 		log.Warn("producer: preflight", "check", pr.Check, "problem", pr.Detail)
