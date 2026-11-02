@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/jmoiron/sqlx"
@@ -39,68 +41,199 @@ type Listed struct {
 	Attr *ClaimObject
 }
 
+// listingChunk is the most listed objects one transaction of RecordListing records, and the most unattributed rows a page of its sweep reads.
+const listingChunk = 1024
+
+// listingParams is the most placeholders one statement of RecordListing binds.
+const listingParams = 900
+
 // RecordListing records a listing of the claim bucket under l at now (compactor.md §8.3–§8.4):
 // an attributed object without a row gets a live one, whatever its capture's state, and a row it finds stays as it is;
 // an unattributed object without a row is recorded with its first sighting, and one the listing no longer holds,
 // or that has gained a row since, is forgotten.
-// It returns how many claim object rows it added.
+// The listing is read against the rows already recorded and written in transactions of at most listingChunk objects,
+// each checking the lease, so a steady listing writes nothing; the lease is verified even then.
+// The unattributed rows are forgotten page by page only once every chunk committed, so a failure before then forgets nothing,
+// and the rows added so far stay for a retry, which adds only what is still missing.
+// It returns how many claim object rows it added, zero with any error.
 func (c *Catalog) RecordListing(ctx context.Context, l Lease, objs []Listed, now int64) (int, error) {
+	if err := c.VerifyLease(ctx, l); err != nil {
+		return 0, fmt.Errorf("catalog: record the claim listing: %w", err)
+	}
+	// listed is the listing's unattributed keys, which the sweep keeps unless a row attributes them.
+	listed := map[string]bool{}
 	added := 0
-	err := c.inTx(ctx, func(tx *sqlx.Tx) error {
-		added = 0
-		if err := c.checkLease(ctx, tx, l); err != nil {
-			return err
+	for chunk := range slices.Chunk(objs, listingChunk) {
+		n, err := c.recordChunk(ctx, l, chunk, now, listed)
+		if err != nil {
+			return 0, fmt.Errorf("catalog: record the claim listing: %w", err)
 		}
-		listed := map[string]bool{}
-		for _, o := range objs {
-			if o.Attr == nil {
-				// An object with a row, a receipt's, is attributed by it; only one without is the operator's.
-				var n int
-				if err := tx.GetContext(ctx, &n, `SELECT COUNT(*) FROM claim_objects WHERE object_key = ?`, o.Key); err != nil {
-					return err
-				}
-				if n > 0 {
-					continue
-				}
-				listed[o.Key] = true
-				_, err := tx.ExecContext(ctx, c.d.insertIgnore+` INTO unattributed_objects (object_key, size, seen_at) VALUES (?, ?, ?)`, o.Key, o.Size, now)
-				if err != nil {
-					return err
-				}
-
-				continue
-			}
-			res, err := tx.ExecContext(ctx, c.d.insertIgnore+` INTO claim_objects (object_key, capture_id, seq, hour, size, state) VALUES (?, ?, ?, ?, ?, 'live')`,
-				o.Key, o.Attr.Capture[:], int64(o.Attr.Seq), o.Attr.Hour, o.Size) //nolint:gosec // a parsed seq is below 2^63
-			if err != nil {
-				return err
-			}
-			if n, err := res.RowsAffected(); err != nil {
-				return err
-			} else if n > 0 {
-				added++
-			}
-		}
-		var known []string
-		if err := tx.SelectContext(ctx, &known, `SELECT object_key FROM unattributed_objects`); err != nil {
-			return err
-		}
-		for _, key := range known {
-			if listed[key] {
-				continue
-			}
-			if _, err := tx.ExecContext(ctx, `DELETE FROM unattributed_objects WHERE object_key = ?`, key); err != nil {
-				return err
-			}
-		}
-
-		return nil
-	})
-	if err != nil {
+		added += n
+	}
+	if err := c.sweepUnattributed(ctx, l, listed); err != nil {
 		return 0, fmt.Errorf("catalog: record the claim listing: %w", err)
 	}
 
 	return added, nil
+}
+
+// recordChunk writes what chunk adds to the rows recorded, in one transaction under l if it adds any, adding its unattributed keys to listed;
+// it returns the claim object rows it added.
+func (c *Catalog) recordChunk(ctx context.Context, l Lease, chunk []Listed, now int64, listed map[string]bool) (int, error) {
+	keys := make([]string, len(chunk))
+	var odd []string
+	for i, o := range chunk {
+		keys[i] = o.Key
+		if o.Attr == nil {
+			odd = append(odd, o.Key)
+			listed[o.Key] = true
+		}
+	}
+	claimed, err := c.recordedKeys(ctx, "claim_objects", keys)
+	if err != nil {
+		return 0, err
+	}
+	known, err := c.recordedKeys(ctx, "unattributed_objects", odd)
+	if err != nil {
+		return 0, err
+	}
+	c.hook(hookListingRead)
+	var claims, unattributed [][]any
+	for _, o := range chunk {
+		switch {
+		case claimed[o.Key]:
+			// An object with a row, a receipt's, is attributed by it; only one without is the operator's.
+		case o.Attr != nil:
+			claims = append(claims, []any{o.Key, o.Attr.Capture[:], int64(o.Attr.Seq), o.Attr.Hour, o.Size, "live"}) //nolint:gosec // a parsed seq is below 2^63
+			claimed[o.Key] = true
+		case !known[o.Key]:
+			unattributed = append(unattributed, []any{o.Key, o.Size, now})
+			known[o.Key] = true
+		default:
+			// Recorded unattributed already: its first sighting stays.
+		}
+	}
+	if len(claims)+len(unattributed) == 0 {
+		return 0, nil
+	}
+	added := 0
+	err = c.inTx(ctx, func(tx *sqlx.Tx) error {
+		added = 0
+		if err := c.checkLease(ctx, tx, l); err != nil {
+			return err
+		}
+		n, err := insertListed(ctx, tx, c.d.insertIgnore+` INTO claim_objects (object_key, capture_id, seq, hour, size, state) VALUES `, claims)
+		if err != nil {
+			return err
+		}
+		added = n
+		_, err = insertListed(ctx, tx, c.d.insertIgnore+` INTO unattributed_objects (object_key, size, seen_at) VALUES `, unattributed)
+
+		return err
+	})
+
+	return added, err
+}
+
+// recordedKeys returns which of keys table holds, read in statements of at most listingParams keys.
+func (c *Catalog) recordedKeys(ctx context.Context, table string, keys []string) (map[string]bool, error) {
+	found := map[string]bool{}
+	for batch := range slices.Chunk(keys, listingParams) {
+		var got []string
+		if err := c.read.SelectContext(ctx, &got, `SELECT object_key FROM `+table+` WHERE object_key IN `+listingTuple(len(batch)), listingArgs(batch)...); err != nil {
+			return nil, err
+		}
+		for _, k := range got {
+			found[k] = true
+		}
+	}
+
+	return found, nil
+}
+
+// insertListed runs the multi-row insert prefix ... VALUES over rows, in statements of at most listingParams placeholders,
+// and returns the rows it inserted.
+func insertListed(ctx context.Context, tx *sqlx.Tx, prefix string, rows [][]any) (int, error) {
+	if len(rows) == 0 {
+		return 0, nil
+	}
+	row := listingTuple(len(rows[0]))
+	inserted := 0
+	for batch := range slices.Chunk(rows, listingParams/len(rows[0])) {
+		args := make([]any, 0, len(batch)*len(batch[0]))
+		for _, r := range batch {
+			args = append(args, r...)
+		}
+		res, err := tx.ExecContext(ctx, prefix+strings.TrimSuffix(strings.Repeat(row+", ", len(batch)), ", "), args...)
+		if err != nil {
+			return 0, err
+		}
+		n, err := res.RowsAffected()
+		if err != nil {
+			return 0, err
+		}
+		inserted += int(n)
+	}
+
+	return inserted, nil
+}
+
+// sweepUnattributed forgets, page by page under l, the unattributed rows whose keys are not listed or have gained a claim object row;
+// a page with nothing to forget writes nothing.
+func (c *Catalog) sweepUnattributed(ctx context.Context, l Lease, listed map[string]bool) error {
+	after := ""
+	for {
+		var page []struct {
+			Key   string         `db:"object_key"`
+			Claim sql.NullString `db:"claim_key"`
+		}
+		err := c.read.SelectContext(ctx, &page, `SELECT u.object_key, c.object_key AS claim_key FROM unattributed_objects u
+			LEFT JOIN claim_objects c ON c.object_key = u.object_key
+			WHERE u.object_key > ? ORDER BY u.object_key LIMIT `+strconv.Itoa(listingChunk), after)
+		if err != nil {
+			return err
+		}
+		var gone []string
+		for _, r := range page {
+			if !listed[r.Key] || r.Claim.Valid {
+				gone = append(gone, r.Key)
+			}
+		}
+		if len(gone) > 0 {
+			err := c.inTx(ctx, func(tx *sqlx.Tx) error {
+				if err := c.checkLease(ctx, tx, l); err != nil {
+					return err
+				}
+				for batch := range slices.Chunk(gone, listingParams) {
+					if _, err := tx.ExecContext(ctx, `DELETE FROM unattributed_objects WHERE object_key IN `+listingTuple(len(batch)), listingArgs(batch)...); err != nil {
+						return err
+					}
+				}
+
+				return nil
+			})
+			if err != nil {
+				return err
+			}
+		}
+		if len(page) < listingChunk {
+			return nil
+		}
+		after = page[len(page)-1].Key
+	}
+}
+
+// listingTuple is a parenthesized list of n placeholders.
+func listingTuple(n int) string { return "(?" + strings.Repeat(", ?", n-1) + ")" }
+
+// listingArgs is keys as statement arguments.
+func listingArgs(keys []string) []any {
+	args := make([]any, len(keys))
+	for i, k := range keys {
+		args[i] = k
+	}
+
+	return args
 }
 
 type claimRecord struct {

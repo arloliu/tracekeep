@@ -25,7 +25,7 @@ type listingCase struct {
 	restore              func(tb testing.TB, c *Catalog)
 }
 
-// BenchmarkRecordListing is the compactor's recording of a claim bucket listing, in one write transaction.
+// BenchmarkRecordListing is the compactor's recording of a claim bucket listing, in bounded transactions.
 // Its starting states hold 10,000, 100,000 or 1,000,000 objects (TRACEKEEP_BENCH_SCALE), attributed or unattributed apart:
 // steady, every listed object already recorded; new, none recorded yet; gone, every recorded object missing from an empty listing;
 // and attributed/tiny, a listing of tinyListing of the recorded objects against the whole recorded history, which writes nothing.

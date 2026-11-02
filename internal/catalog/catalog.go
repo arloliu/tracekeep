@@ -86,6 +86,8 @@ const (
 	// hookIncarnationAllocated once it allocated one, before its insert.
 	hookIncarnationChecked
 	hookIncarnationAllocated
+	// hookListingRead runs once a claim listing's chunk read the keys already recorded, outside any transaction.
+	hookListingRead
 	numHooks
 )
 
