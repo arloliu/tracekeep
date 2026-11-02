@@ -181,7 +181,8 @@ func insertListed(ctx context.Context, tx *sqlx.Tx, prefix string, rows [][]any)
 // sweepUnattributed forgets, page by page under l, the unattributed rows whose keys are not listed or have gained a claim object row;
 // a page with nothing to forget writes nothing.
 func (c *Catalog) sweepUnattributed(ctx context.Context, l Lease, listed map[string]bool) error {
-	after := ""
+	// The first page binds nothing, so on MariaDB it is one round trip rather than a prepared statement's three.
+	from, args := "", []any{}
 	for {
 		var page []struct {
 			Key   string         `db:"object_key"`
@@ -189,7 +190,7 @@ func (c *Catalog) sweepUnattributed(ctx context.Context, l Lease, listed map[str
 		}
 		err := c.read.SelectContext(ctx, &page, `SELECT u.object_key, c.object_key AS claim_key FROM unattributed_objects u
 			LEFT JOIN claim_objects c ON c.object_key = u.object_key
-			WHERE u.object_key > ? ORDER BY u.object_key LIMIT `+strconv.Itoa(listingChunk), after)
+			`+from+` ORDER BY u.object_key LIMIT `+strconv.Itoa(listingChunk), args...)
 		if err != nil {
 			return err
 		}
@@ -219,7 +220,7 @@ func (c *Catalog) sweepUnattributed(ctx context.Context, l Lease, listed map[str
 		if len(page) < listingChunk {
 			return nil
 		}
-		after = page[len(page)-1].Key
+		from, args = `WHERE u.object_key > ?`, []any{page[len(page)-1].Key}
 	}
 }
 
