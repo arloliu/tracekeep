@@ -2,10 +2,14 @@ package api
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"io"
+	"mime"
 	"net/http"
 	"os"
+	"path"
 	"strconv"
 	"strings"
 	"time"
@@ -78,7 +82,12 @@ func (s *Server) serveDownload(w *downloadWriter, r *http.Request) {
 	if dl, ok := ctx.Deadline(); ok {
 		_ = http.NewResponseController(w).SetWriteDeadline(dl)
 	}
-	w.Header().Set("Content-Type", "application/octet-stream")
+	h := w.Header()
+	h.Set("Content-Type", "application/octet-stream")
+	h.Set("Content-Disposition", mime.FormatMediaType("attachment", map[string]string{"filename": fileName(key)}))
+	// A key is never reused (storage.md §5.2), so an opaque digest of it is a strong validator, which ServeContent answers If-None-Match and If-Range by.
+	sum := sha256.Sum256([]byte(key))
+	h.Set("ETag", `"`+hex.EncodeToString(sum[:16])+`"`)
 	rd := &ctxReaderAt{ctx: ctx, r: obj}
 	// ServeContent answers HEAD, Range (206) and its refusals (416); no modification time is sent.
 	// Its status is sent before its first read, so a failure it meets ends the body short of its length, which the client sees cut.
@@ -94,6 +103,18 @@ func (s *Server) serveDownload(w *downloadWriter, r *http.Request) {
 		s.downloadFailed(w.status, rd.err)
 	default:
 	}
+}
+
+// fileName is the name a download is saved under, the only part of its key a header carries:
+// a bundle's <job_id>-<fence>.tar from exports/<job_id>/<fence>.tar, else the key's last element.
+func fileName(key string) string {
+	if rest, ok := strings.CutPrefix(key, "exports/"); ok {
+		if job, fence, ok := strings.Cut(rest, "/"); ok && !strings.Contains(fence, "/") {
+			return job + "-" + fence
+		}
+	}
+
+	return path.Base(key)
 }
 
 // downloadFailed logs a download's failure, its error keyless, as one line.
