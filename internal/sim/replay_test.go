@@ -198,6 +198,16 @@ func TestCheckRate(t *testing.T) {
 	}
 }
 
+// Forward refuses a rate it cannot tick at before it touches the pair, rather than panicking in time.NewTicker.
+func TestForwardRefusesARateItCannotTick(t *testing.T) {
+	t.Parallel()
+	for _, rate := range []float64{0, -1, math.NaN(), 1e300, 1e-300} {
+		if err := Forward(t.Context(), nil, rate, nil); err == nil {
+			t.Errorf("Forward at rate %v = nil, want the rate refused", rate)
+		}
+	}
+}
+
 func TestReplayRefusesAMissingPack(t *testing.T) {
 	t.Parallel()
 	l := newTestLoopbackWith(t, producer.Config{}, testOptions(), producer.WithBus(producertest.NewBus()))

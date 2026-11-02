@@ -121,7 +121,7 @@ func run(ctx context.Context, c *config) error {
 		// The pack's last requests get their waits before the device stops.
 		_ = sim.SleepUntil(ctx, time.Now().Add(c.opts.T3))
 	} else {
-		sim.Forward(ctx, l, c.rate, log)
+		runErr = sim.Forward(ctx, l, c.rate, log)
 	}
 	sctx, cancel := context.WithTimeout(context.Background(), stopTimeout)
 	defer cancel()
