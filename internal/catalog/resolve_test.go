@@ -1,8 +1,40 @@
 package catalog
 
 import (
+	"errors"
 	"testing"
 )
+
+// A failed audit write wraps ErrAudit wherever it runs: alone on the write pool, and inside a transaction, which then rolls back.
+func TestAuditFailureTagged(t *testing.T) {
+	t.Parallel()
+	engines(t, func(t *testing.T, c *Catalog) {
+		ctx := t.Context()
+		e := AuditEntry{Actor: "operator", Action: "status"}
+		if err := c.Audit(ctx, e); err != nil {
+			t.Fatalf("Audit = %v", err)
+		}
+		if _, err := c.write.ExecContext(ctx, `ALTER TABLE audit_log RENAME TO audit_log_gone`); err != nil {
+			t.Fatal(err)
+		}
+		if err := c.Audit(ctx, e); !errors.Is(err, ErrAudit) {
+			t.Errorf("Audit with no audit table = %v, want ErrAudit", err)
+		}
+		id := newID(t)
+		if err := c.CreateExport(ctx, id, "oidc:person-1", []byte(`{}`), e); !errors.Is(err, ErrAudit) {
+			t.Errorf("CreateExport with no audit table = %v, want ErrAudit", err)
+		}
+		if _, err := c.ExportJob(ctx, id, "oidc:person-1"); !errors.Is(err, ErrExportNotFound) {
+			t.Errorf("the export whose audit failed = %v, want it rolled back", err)
+		}
+		if _, err := c.StageConfig(ctx, Staging{Content: []byte("config"), Audit: &e}); !errors.Is(err, ErrAudit) {
+			t.Errorf("StageConfig with no audit table = %v, want ErrAudit", err)
+		}
+		if infos, err := c.Configs(ctx); err != nil || len(infos) != 0 {
+			t.Errorf("configurations after a failed audit = %v, %v; want none", infos, err)
+		}
+	})
+}
 
 func TestResolve(t *testing.T) {
 	t.Parallel()

@@ -32,7 +32,7 @@ var (
 	ErrExportNotFound = errors.New("catalog: no such export job")
 	// ErrExportEnded refuses to cancel a job that has ended.
 	ErrExportEnded = errors.New("catalog: the export job has ended")
-	// ErrAudit marks a transaction that rolled back because its audit row could not be written.
+	// ErrAudit marks an audit row that could not be written, alone or in a transaction, which then rolled back.
 	ErrAudit = errors.New("catalog: the audit row could not be written")
 )
 
@@ -130,11 +130,8 @@ func (c *Catalog) CreateExport(ctx context.Context, id tracepack.UUID, owner str
 		if err != nil {
 			return err
 		}
-		if err := c.auditIn(ctx, tx, audit); err != nil {
-			return fmt.Errorf("%w: %w", ErrAudit, err)
-		}
 
-		return nil
+		return c.auditIn(ctx, tx, audit)
 	})
 	if err != nil {
 		return fmt.Errorf("catalog: create export %s: %w", id, err)
@@ -302,11 +299,8 @@ func (c *Catalog) CancelExport(ctx context.Context, job tracepack.UUID, owner st
 		} else if err != nil {
 			return err
 		}
-		if err := c.auditIn(ctx, tx, audit); err != nil {
-			return fmt.Errorf("%w: %w", ErrAudit, err)
-		}
 
-		return nil
+		return c.auditIn(ctx, tx, audit)
 	})
 	if err != nil {
 		return fmt.Errorf("catalog: cancel export %s: %w", job, err)

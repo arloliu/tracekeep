@@ -19,13 +19,14 @@ func invalid(format string, args ...any) error {
 	return connect.NewError(connect.CodeInvalidArgument, fmt.Errorf(format, args...))
 }
 
-// failed maps a catalog error: a refused selector as invalid, anything else as the catalog unavailable, which a client retries.
+// failed maps a catalog error: a refused selector as invalid, anything else as the catalog unavailable, which a client retries,
+// its cause logged and never answered.
 func failed(err error) error {
 	if errors.Is(err, catalog.ErrInvalidSelector) {
 		return connect.NewError(connect.CodeInvalidArgument, err)
 	}
 
-	return connect.NewError(connect.CodeUnavailable, err)
+	return dependency(connect.CodeUnavailable, msgCatalog, err)
 }
 
 // selector parses sel, refusing a missing selector or window bound and an id that does not parse;
@@ -68,6 +69,9 @@ func ts(ns int64) *timestamppb.Timestamp { return timestamppb.New(time.Unix(0, n
 func hourTS(hour int64) *timestamppb.Timestamp {
 	return &timestamppb.Timestamp{Seconds: hour * int64(time.Hour/time.Second)}
 }
+
+// hourRFC is the start of hour in RFC 3339, as a refusal names an hour (api.md §10.1 *What an answer says*).
+func hourRFC(hour int64) string { return hourTS(hour).AsTime().Format(time.RFC3339) }
 
 func optTS(ns *int64) *timestamppb.Timestamp {
 	if ns == nil {

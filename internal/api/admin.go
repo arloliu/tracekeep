@@ -8,6 +8,7 @@ import (
 	"connectrpc.com/connect"
 
 	"github.com/arloliu/tracekeep/internal/admin"
+	"github.com/arloliu/tracekeep/internal/catalog"
 	tkv1 "github.com/arloliu/tracekeep/proto/tracekeep/v1"
 	"github.com/arloliu/tracekeep/proto/tracekeep/v1/tracekeepv1connect"
 )
@@ -28,9 +29,15 @@ func (a adminService) Admin(ctx context.Context, req *connect.Request[tkv1.Admin
 	op := *a.s.Admin
 	op.Actor = p.Subject
 	out, err := admin.Run(ctx, &op, req.Msg.GetWords())
+	// The operator reads the operator's log, so an answer keeps a command's text; an audit failure answers internal wherever the catalog wrote it,
+	// and a command its request's context ended passes as unavailable, which the observer decides as a client gone (api.md §10.1 *Admin over the API*).
 	switch {
 	case errors.Is(err, admin.ErrUsage):
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	case errors.Is(err, catalog.ErrAudit):
+		return nil, dependency(connect.CodeInternal, msgAudit, err)
+	case err != nil && ctx.Err() != nil:
+		return nil, connect.NewError(connect.CodeUnavailable, err)
 	case err != nil:
 		return nil, connect.NewError(connect.CodeFailedPrecondition, err)
 	}

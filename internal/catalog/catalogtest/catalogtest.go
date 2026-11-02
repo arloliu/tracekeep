@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/go-sql-driver/mysql"
@@ -50,8 +51,34 @@ func Open(t testing.TB, engine string) *catalog.Catalog {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = c.Close() })
+	driver, dsn := "mysql", cfg.DSN
+	if engine == catalog.EngineSQLite {
+		driver, dsn = "sqlite", catalog.SQLiteURI(cfg.DSN)
+	}
+	opened.Store(c, [2]string{driver, dsn})
 
 	return c
+}
+
+// opened is each catalog Open returned, with its driver and DSN, for ExecSQL.
+var opened sync.Map
+
+// ExecSQL runs stmt on c's database over a connection of its own, as a test breaks the schema under the catalog to make a real statement fail.
+func ExecSQL(t testing.TB, c *catalog.Catalog, stmt string) {
+	t.Helper()
+	v, ok := opened.Load(c)
+	if !ok {
+		t.Fatal("catalogtest: ExecSQL of a catalog Open did not return")
+	}
+	conn, _ := v.([2]string)
+	db, err := sql.Open(conn[0], conn[1])
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if _, err := db.ExecContext(context.Background(), stmt); err != nil {
+		t.Fatalf("%s: %v", stmt, err)
+	}
 }
 
 // mariadbDatabase creates a database of the test's own on the configured server, migrates it and returns its DSN.

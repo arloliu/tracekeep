@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -16,16 +17,24 @@ import (
 // opDownload labels the download endpoint's requests in the request metrics.
 const opDownload = "Download"
 
+// statusGone counts a download whose client went (api.md §10.1 *Downloads*); it is never sent.
+const statusGone = 499
+
 // download serves the object a download token in the path names (api.md §10.1 *Downloads*):
 // HEAD and ranged GET as S3 answers them, through the store's ReaderAt; a refused token is forbidden and an absent object not found.
 // Neither the path nor the token is logged, and no response is cached or sent as a referrer.
+// A client gone is answered nothing more, counted under statusGone and never logged.
 func (s *Server) download(w *downloadWriter, r *http.Request) {
 	start := time.Now()
 	s.serveDownload(w, r)
-	s.Metrics.Request(opDownload, strconv.Itoa(w.status), time.Since(start))
+	status := w.status
+	if w.gone {
+		status = statusGone
+	}
+	s.Metrics.Request(opDownload, strconv.Itoa(status), time.Since(start))
 }
 
-func (s *Server) serveDownload(w http.ResponseWriter, r *http.Request) {
+func (s *Server) serveDownload(w *downloadWriter, r *http.Request) {
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
 		w.Header().Set("Allow", "GET, HEAD")
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -34,56 +43,92 @@ func (s *Server) serveDownload(w http.ResponseWriter, r *http.Request) {
 	}
 	key, expiry, err := s.Downloads.Tokens.ObjectUntil(r.Context(), strings.TrimPrefix(r.URL.Path, "/download/"))
 	if err != nil {
-		http.Error(w, "download refused", http.StatusForbidden)
+		w.gone = r.Context().Err() != nil
+		if !w.gone {
+			http.Error(w, "download refused", http.StatusForbidden)
+		}
+
 		return
 	}
 	// The download ends at the token's expiry plus the margin, at most its object's deadline, so no read it serves outlives the object.
 	// Measured by the downloads' clock, the one the token's expiry is judged by.
 	ctx, cancel := context.WithTimeout(r.Context(), expiry.Add(s.Downloads.Margin).Sub(s.Downloads.now()))
 	defer cancel()
-	r = r.WithContext(ctx)
 	obj, err := records.Open(ctx, s.Store, key)
-	if errors.Is(err, store.ErrNotFound) {
-		http.Error(w, "not found", http.StatusNotFound)
-		return
+	if err == nil {
+		defer obj.Close()
 	}
-	if err != nil {
-		if s.Log != nil {
-			s.Log.Error("api: open a download", "error", err) // keyless, as records.Open makes it
-		}
+	switch {
+	case r.Context().Err() != nil:
+		w.gone = true
+
+		return
+	case errors.Is(err, store.ErrNotFound):
+		http.Error(w, "not found", http.StatusNotFound)
+
+		return
+	case err != nil:
+		// The budget's end or the store's failure, before any header: keyless, as records.Open makes it.
+		s.downloadFailed(http.StatusBadGateway, err)
 		http.Error(w, "the store failed", http.StatusBadGateway)
 
 		return
 	}
-	defer obj.Close()
 	// The transfer ends with ctx: each read checks it, whatever the store does with it, and the writes are bounded by its deadline.
 	if dl, ok := ctx.Deadline(); ok {
 		_ = http.NewResponseController(w).SetWriteDeadline(dl)
 	}
 	w.Header().Set("Content-Type", "application/octet-stream")
+	rd := &ctxReaderAt{ctx: ctx, r: obj}
 	// ServeContent answers HEAD, Range (206) and its refusals (416); no modification time is sent.
-	http.ServeContent(w, r, "", time.Time{}, io.NewSectionReader(ctxReaderAt{ctx: ctx, r: obj}, 0, obj.Size()))
+	// Its status is sent before its first read, so a failure it meets ends the body short of its length, which the client sees cut.
+	http.ServeContent(w, r.WithContext(ctx), "", time.Time{}, io.NewSectionReader(rd, 0, obj.Size()))
+	// A failed write ends the request's context too, so a write's failure is judged by its own error:
+	// past the download's deadline, the budget ended; anything else, the client went.
+	switch {
+	case w.err != nil && errors.Is(w.err, os.ErrDeadlineExceeded):
+		s.downloadFailed(w.status, errors.New("the response's write passed the download's deadline"))
+	case w.err != nil, rd.err != nil && r.Context().Err() != nil:
+		w.gone = true
+	case rd.err != nil:
+		s.downloadFailed(w.status, rd.err)
+	default:
+	}
 }
 
-// ctxReaderAt is r whose reads fail once ctx is done.
+// downloadFailed logs a download's failure, its error keyless, as one line.
+func (s *Server) downloadFailed(status int, err error) {
+	if s.Log != nil {
+		s.Log.Error("api: download failed", "status", status, "error", err)
+	}
+}
+
+// ctxReaderAt is r whose reads fail once ctx is done; err is the first read's failure.
 type ctxReaderAt struct {
 	ctx context.Context //nolint:containedctx // the download's context, which bounds every read of its transfer
 	r   io.ReaderAt
+	err error
 }
 
-func (c ctxReaderAt) ReadAt(p []byte, off int64) (int, error) {
-	if err := c.ctx.Err(); err != nil {
-		return 0, err
+func (c *ctxReaderAt) ReadAt(p []byte, off int64) (int, error) {
+	n, err := 0, c.ctx.Err()
+	if err == nil {
+		n, err = c.r.ReadAt(p, off)
+	}
+	if err != nil && !errors.Is(err, io.EOF) && c.err == nil {
+		c.err = err
 	}
 
-	return c.r.ReadAt(p, off)
+	return n, err
 }
 
 // downloadWriter stamps every response it commits as uncached and sent as no referrer, whatever the handler removed before,
-// and records the status.
+// and records the status, the first write's failure, and whether the client went.
 type downloadWriter struct {
 	http.ResponseWriter
 	status int
+	err    error
+	gone   bool
 }
 
 func (d *downloadWriter) WriteHeader(status int) {
@@ -103,6 +148,10 @@ func (d *downloadWriter) Write(b []byte) (int, error) {
 	if d.status == 0 {
 		d.WriteHeader(http.StatusOK)
 	}
+	n, err := d.ResponseWriter.Write(b)
+	if err != nil && d.err == nil {
+		d.err = err
+	}
 
-	return d.ResponseWriter.Write(b)
+	return n, err
 }

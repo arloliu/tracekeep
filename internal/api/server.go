@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net/http"
 	"path"
+	"slices"
 	"strings"
 	"time"
 
@@ -57,6 +58,8 @@ type Server struct {
 	stall func(stage string)
 	// exportStall, set only by the package's tests, runs at each stage of an export attempt: built, put, and each renewal.
 	exportStall func(stage string)
+	// outer, set only by the package's tests, are interceptors run outside the observing one.
+	outer []connect.Interceptor
 }
 
 func (s *Server) stalled(stage string) {
@@ -123,7 +126,7 @@ const opUnknown = "unknown"
 // a download's token in the redirect.
 func (s *Server) routes(impl tracekeepv1connect.MachineServiceHandler) http.Handler {
 	mux := http.NewServeMux()
-	opts := append(codecs(), connect.WithCompression("gzip", nil, nil), connect.WithInterceptors(s.observe()))
+	opts := append(codecs(), connect.WithCompression("gzip", nil, nil), connect.WithInterceptors(append(slices.Clone(s.outer), s.observe())...))
 	prefix, h := tracekeepv1connect.NewMachineServiceHandler(impl, opts...)
 	mux.Handle(prefix, s.authenticate(prefix, h))
 	adminPrefix, ah := tracekeepv1connect.NewAdminServiceHandler(adminService{s: s}, opts...)
@@ -188,7 +191,8 @@ func refusal(err error) error {
 	return connect.NewError(connect.CodeUnauthenticated, errors.New(e.Reason))
 }
 
-// observe records each handled request's operation, code and duration, a stream's at its end, and logs a failure and a refused restore.
+// observe decides each handled request's code as its handler returns (decide) and records its operation, code and duration, a stream's at its end;
+// it logs a failure and a refused restore, each with the cause its answer leaves out.
 func (s *Server) observe() connect.Interceptor { return observer{s} }
 
 type observer struct{ s *Server }
@@ -197,7 +201,8 @@ func (o observer) WrapUnary(next connect.UnaryFunc) connect.UnaryFunc {
 	return func(ctx context.Context, req connect.AnyRequest) (connect.AnyResponse, error) {
 		start := time.Now()
 		resp, err := next(ctx, req)
-		o.s.observed(req.Spec().Procedure, start, err)
+		gone, err := decide(ctx, err)
+		o.s.observed(req.Spec().Procedure, start, gone, err)
 
 		return resp, err
 	}
@@ -210,27 +215,91 @@ func (o observer) WrapStreamingClient(next connect.StreamingClientFunc) connect.
 func (o observer) WrapStreamingHandler(next connect.StreamingHandlerFunc) connect.StreamingHandlerFunc {
 	return func(ctx context.Context, conn connect.StreamingHandlerConn) error {
 		start := time.Now()
-		err := next(ctx, conn)
-		o.s.observed(conn.Spec().Procedure, start, err)
+		gone, err := decide(ctx, next(ctx, conn))
+		o.s.observed(conn.Spec().Procedure, start, gone, err)
 
 		return err
 	}
 }
 
-func (s *Server) observed(procedure string, start time.Time, err error) {
+// observed counts a request and logs its failure once, with the cause its answer leaves out; a client gone is counted and never logged.
+func (s *Server) observed(procedure string, start time.Time, gone bool, err error) {
 	op := procedure[strings.LastIndex(procedure, "/")+1:]
 	s.Metrics.Request(op, code(err), time.Since(start))
-	if err == nil || s.Log == nil {
+	if err == nil || gone || s.Log == nil {
 		return
 	}
+	attrs := []any{"operation", op, "error", err}
+	var a *answer
+	if errors.As(err, &a) && a.cause != nil {
+		attrs = append(attrs, "cause", a.cause)
+	}
 	switch c := connect.CodeOf(err); {
-	case c == connect.CodeInternal || c == connect.CodeUnavailable:
-		s.Log.Error("api: request failed", "operation", op, "error", err)
-	case op == auth.OpRestore:
-		// A refused restore is logged too, its error naming the request and the reason (masking-keys.md §9).
-		s.Log.Warn("api: request refused", "operation", op, "error", err)
+	case c == connect.CodeInternal || c == connect.CodeUnavailable || c == connect.CodeDataLoss:
+		s.Log.Error("api: request failed", attrs...)
+	case op == auth.OpRestore || a != nil && a.cause != nil:
+		// A refused restore is logged too, its error naming the request and the reason (masking-keys.md §9),
+		// as is any refusal whose cause its answer leaves out.
+		s.Log.Warn("api: request refused", attrs...)
 	default: // another operation's refusal is only counted
 	}
+}
+
+// Fixed messages of a dependency's failure (api.md §10.1 *What an answer says*): the answer names what failed, the log alone why.
+const (
+	msgCatalog    = "the catalog failed"
+	msgStore      = "the store failed"
+	msgKeys       = "a key provider failed"
+	msgKeyRefused = "the key provider refused the key"
+	msgAudit      = "the audit row could not be written"
+)
+
+// answer is a handler's Connect error with the cause the log alone carries, never the answer;
+// decided marks a code decided where its handler returned, and gone a client gone (api.md §10.1 *A client gone*).
+type answer struct {
+	err     *connect.Error
+	cause   error
+	decided bool
+	gone    bool
+}
+
+func (a *answer) Error() string { return a.err.Error() }
+
+// Unwrap lets Connect find the error it answers.
+func (a *answer) Unwrap() error { return a.err }
+
+// dependency is the answer of code with the fixed message msg to a dependency's failure, cause.
+func dependency(code connect.Code, msg string, cause error) error {
+	return &answer{err: connect.NewError(code, errors.New(msg)), cause: cause}
+}
+
+// decide decides err's code once, where its handler returned, in the order of api.md §10.1 *A client gone*:
+// a code other than unavailable and unknown is kept, a refusal's and an audit failure's among them;
+// an unavailable or unknown answer given once ctx, the request's own context, ended becomes canceled or deadline_exceeded by it, reported gone;
+// a dependency's own deadline leaves ctx live, and its answer stays.
+// The error returned is marked decided, and one already decided is returned as it is.
+func decide(ctx context.Context, err error) (bool, error) {
+	if err == nil {
+		return false, nil
+	}
+	a := &answer{}
+	if errors.As(err, &a) && a.decided {
+		return a.gone, err
+	}
+	if c := connect.CodeOf(err); (c == connect.CodeUnavailable || c == connect.CodeUnknown) && ctx.Err() != nil {
+		code := connect.CodeCanceled
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			code = connect.CodeDeadlineExceeded
+		}
+
+		return true, &answer{err: connect.NewError(code, ctx.Err()), decided: true, gone: true}
+	}
+	out := &answer{cause: a.cause, decided: true}
+	if !errors.As(err, &out.err) {
+		out.err = connect.NewError(connect.CodeUnknown, err)
+	}
+
+	return false, out
 }
 
 // code is err's Connect code as a label, ok for none.

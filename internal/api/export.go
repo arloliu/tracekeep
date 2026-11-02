@@ -115,14 +115,14 @@ func (s *Server) GetExport(ctx context.Context, req *connect.Request[tkv1.GetExp
 
 		return connect.NewResponse(out), nil
 	} else if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, keylessURL(err))
+		return nil, dependency(connect.CodeUnavailable, msgStore, keylessURL(err))
 	}
 	entry := catalog.AuditEntry{
 		Actor: owner, Action: "export-url",
 		Detail: fmt.Sprintf("job %s, %s URL expiring %s", j.ID, u.kind, u.expires.UTC().Format(time.RFC3339)),
 	}
 	if err := s.Catalog.Audit(ctx, entry); err != nil {
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit: %w", err))
+		return nil, dependency(connect.CodeInternal, msgAudit, err)
 	}
 	// A URL its audit row's write left below the floor is withheld, as PackURL withholds one.
 	if u.expires.Sub(dl.now()) < dl.Floor {
@@ -193,7 +193,7 @@ func (s *Server) CancelExport(ctx context.Context, req *connect.Request[tkv1.Can
 // exportFailed maps an export transaction's error: an audit row that could not be written is internal, anything else the catalog unavailable.
 func exportFailed(err error) error {
 	if errors.Is(err, catalog.ErrAudit) {
-		return connect.NewError(connect.CodeInternal, err)
+		return dependency(connect.CodeInternal, msgAudit, err)
 	}
 
 	return failed(err)

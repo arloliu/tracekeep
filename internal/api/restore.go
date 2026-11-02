@@ -39,6 +39,8 @@ const (
 	restoreAuditFailed    = "audit-failed"
 	restoreInvalidRequest = "invalid"
 	restoreExhausted      = "resource-exhausted"
+	// outcomeCancelled is a restore's or a digest's whose client went (api.md §10.1 *A client gone*).
+	outcomeCancelled = "cancelled"
 )
 
 // closeSentinel is the close record's seq, never a record a restore can name.
@@ -50,6 +52,11 @@ const closeSentinel = uint64(1)<<63 - 1
 // An error names the request and the reason, never a byte of the record.
 func (s *Server) Restore(ctx context.Context, req *connect.Request[tkv1.RestoreRequest]) (*connect.Response[tkv1.RestoreResponse], error) {
 	resp, outcome, err := s.restoreRecord(ctx, req.Msg)
+	// Decided before it is counted, so the code, the outcome and the log agree (api.md §10.1 *A client gone*).
+	gone, err := decide(ctx, err)
+	if gone {
+		outcome = outcomeCancelled
+	}
 	s.Metrics.Restore(outcome)
 
 	return resp, err
@@ -81,10 +88,10 @@ func (s *Server) restoreRecord(ctx context.Context, m *tkv1.RestoreRequest) (*co
 	bound := cmp.Or(s.Records.MaxReaders, 16)
 	copies, inHour, err := s.Catalog.RecordCopies(ctx, capture, seq, hour, bound+1)
 	if err != nil {
-		return nil, restoreUnavailable, connect.NewError(connect.CodeUnavailable, fmt.Errorf("restore %s: %w", at, err))
+		return nil, restoreUnavailable, dependency(connect.CodeUnavailable, msgCatalog, fmt.Errorf("restore %s: %w", at, err))
 	}
 	if !inHour {
-		return nil, restoreNotFound, connect.NewError(connect.CodeNotFound, fmt.Errorf("restore %s: no copy in hour %d", at, hour))
+		return nil, restoreNotFound, connect.NewError(connect.CodeNotFound, fmt.Errorf("restore %s: no copy in hour %s", at, hourRFC(hour)))
 	}
 	named := slices.IndexFunc(copies, func(c catalog.Copy) bool { return c.Hour == hour })
 	if len(copies) > bound || named < 0 {
@@ -97,23 +104,23 @@ func (s *Server) restoreRecord(ctx context.Context, m *tkv1.RestoreRequest) (*co
 	case errors.Is(err, errConflict):
 		return nil, restoreConflict, conflict(capture, seq)
 	case err != nil:
-		return nil, restoreUnavailable, connect.NewError(connect.CodeUnavailable, fmt.Errorf("restore %s: %w", at, err))
+		return nil, restoreUnavailable, dependency(connect.CodeUnavailable, msgStore, fmt.Errorf("restore %s: %w", at, err))
 	}
 	keyID, err := s.encryptionKeyID(ctx, capture)
 	switch {
 	case errors.Is(err, errNotRestorable):
 		return nil, restoreNotRestorable, notRestorable(at, err)
 	case err != nil:
-		return nil, restoreUnavailable, connect.NewError(connect.CodeUnavailable, fmt.Errorf("restore %s: %w", at, err))
+		return nil, restoreUnavailable, dependency(connect.CodeUnavailable, msgCatalog, fmt.Errorf("restore %s: %w", at, err))
 	}
 	if err := v.restorable(keyID); err != nil {
 		return nil, restoreNotRestorable, notRestorable(at, err)
 	}
 	key, err := s.Keys.Encryption(ctx, capture, keyID)
 	if keys.Refused(err) {
-		return nil, restoreKeyRefused, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("restore %s: %w", at, err))
+		return nil, restoreKeyRefused, &answer{err: connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("restore %s: %s", at, msgKeyRefused)), cause: err}
 	} else if err != nil {
-		return nil, restoreUnavailable, connect.NewError(connect.CodeUnavailable, fmt.Errorf("restore %s: %w", at, err))
+		return nil, restoreUnavailable, dependency(connect.CodeUnavailable, msgKeys, fmt.Errorf("restore %s: %w", at, err))
 	}
 	original, err := redact.Restore(capture, &v.record, &v.marking, v.policy, key)
 	clear(key)
@@ -127,7 +134,7 @@ func (s *Server) restoreRecord(ctx context.Context, m *tkv1.RestoreRequest) (*co
 	}
 	if err := s.Catalog.Audit(ctx, entry); err != nil {
 		clear(original)
-		return nil, restoreAuditFailed, connect.NewError(connect.CodeInternal, fmt.Errorf("restore %s: audit: %w", at, err))
+		return nil, restoreAuditFailed, dependency(connect.CodeInternal, msgAudit, fmt.Errorf("restore %s: %w", at, err))
 	}
 
 	return connect.NewResponse(&tkv1.RestoreResponse{Payload: original, Time: ts(v.record.TSUTCNs), Kind: v.record.Kind.String()}), restoreOK, nil

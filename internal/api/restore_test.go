@@ -404,8 +404,6 @@ func TestRestoreRefusals(t *testing.T) {
 
 	var errs []string
 	logged := 0
-	// The request as an error names it: the capture, or the capture id given when it does not parse, and the seq.
-	locator := regexp.MustCompile(`restore ([0-9a-f-]{36}|capture_id \\?"[^"\\]*\\?") seq \d+`)
 	refused := func(name string, code connect.Code, err error) {
 		t.Helper()
 		if connect.CodeOf(err) != code {
@@ -414,12 +412,8 @@ func TestRestoreRefusals(t *testing.T) {
 		if err != nil {
 			errs = append(errs, err.Error())
 		}
-		// Each refusal the handler answers leaves one line naming the operation, the request and the reason; auth logs its own.
-		line := m.logs.String()[logged:]
-		if code != connect.CodePermissionDenied &&
-			(strings.Count(line, "\n") != 1 || !strings.Contains(line, "operation=Restore") || !strings.Contains(line, code.String()) ||
-				!locator.MatchString(err.Error()) || !locator.MatchString(line)) {
-			t.Errorf("%s: error %v logged %q, want one line naming Restore, the request and %v", name, err, line, code)
+		if code != connect.CodePermissionDenied {
+			refusalLogged(t, name, code, err, m.logs.String()[logged:])
 		}
 		logged = m.logs.Len()
 	}
@@ -442,6 +436,9 @@ func TestRestoreRefusals(t *testing.T) {
 	refused("an absent seq under a configuration without encryption", connect.CodeNotFound, err)
 	_, err = m.restore(t, plain, 1, hour+1)
 	refused("an absent hour under a configuration without encryption", connect.CodeNotFound, err)
+	if !strings.Contains(errMessage(err), "no copy in hour 2026-06-21T01:00:00Z") {
+		t.Errorf("an absent hour = %q, want it named in RFC 3339", errMessage(err))
+	}
 	_, err = m.restore(t, plain, 3, hour)
 	var ce *connect.Error
 	if refused("differing copies under a configuration without encryption", connect.CodeFailedPrecondition, err); !errors.As(err, &ce) || len(ce.Details()) != 1 {
@@ -452,10 +449,10 @@ func TestRestoreRefusals(t *testing.T) {
 	_, err = m.cl.Restore(t.Context(), withToken(&tkv1.RestoreRequest{CaptureId: capture.String(), Seq: 1, Hour: hourTS(hour)}, readerToken))
 	refused("a pack-reader", connect.CodePermissionDenied, err)
 
-	m.srv.Keys = failingKeys{fmt.Errorf("%w: m-1", keys.ErrUnknownKey)}
+	m.srv.Keys = failingKeys{fmt.Errorf("%w: m-1, %s", keys.ErrUnknownKey, keySentinel)}
 	_, err = m.restore(t, capture, 1, hour)
 	refused("a key refused", connect.CodeFailedPrecondition, err)
-	m.srv.Keys = failingKeys{errors.New("provider down")}
+	m.srv.Keys = failingKeys{errors.New("provider down: " + keySentinel)}
 	_, err = m.restore(t, capture, 1, hour)
 	refused("a key unavailable", connect.CodeUnavailable, err)
 	m.srv.Keys = m.keys
@@ -498,6 +495,13 @@ func TestRestoreRefusals(t *testing.T) {
 	if d := auditDetails(t, c); len(d) != 0 {
 		t.Errorf("refusals wrote audit rows %v", d)
 	}
+	// A key provider's and an audit's errors reach the log and never an answer.
+	if answers := strings.Join(errs, "\n"); strings.Contains(answers, "sentinel") {
+		t.Errorf("an answer holds a dependency's error: %s", answers)
+	}
+	if !strings.Contains(m.logs.String(), "ref-sentinel") || !strings.Contains(m.logs.String(), auditSentinel) {
+		t.Errorf("the log = %s\nwant the key provider's and the audit's causes", m.logs)
+	}
 	text := strings.Join(errs, "\n") + m.logs.String()
 	for _, cr := range cs {
 		for _, s := range cr.Secrets {
@@ -505,6 +509,23 @@ func TestRestoreRefusals(t *testing.T) {
 				t.Errorf("a refusal's error or log holds %q", s)
 			}
 		}
+	}
+}
+
+// restoreLocator is the request as an error names it: the capture, or the capture id given when it does not parse, and the seq.
+var restoreLocator = regexp.MustCompile(`restore ([0-9a-f-]{36}|capture_id \\?"[^"\\]*\\?") seq \d+`)
+
+// refusalLogged checks that a refused restore left line, one line naming the operation, the request and the reason;
+// a dependency's failure answers a fixed message, which names neither the request nor the cause, and the line logs both.
+func refusalLogged(t *testing.T, name string, code connect.Code, err error, line string) {
+	t.Helper()
+	fixed := code == connect.CodeUnavailable || code == connect.CodeInternal
+	if strings.Count(line, "\n") != 1 || !strings.Contains(line, "operation=Restore") || !strings.Contains(line, code.String()) ||
+		restoreLocator.MatchString(err.Error()) == fixed || !restoreLocator.MatchString(line) {
+		t.Errorf("%s: error %v logged %q, want one line naming Restore, the request and %v", name, err, line, code)
+	}
+	if fixed && !slices.Contains([]string{msgCatalog, msgStore, msgKeys, msgAudit}, errMessage(err)) {
+		t.Errorf("%s: answered %q, want a fixed message", name, errMessage(err))
 	}
 }
 

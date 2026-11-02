@@ -77,6 +77,11 @@ func (l *DigestLimit) allow(subject string, n int) bool {
 // the key resolved, every input digested, the audit row written, and only then the answer.
 func (s *Server) Digest(ctx context.Context, req *connect.Request[tkv1.DigestRequest]) (*connect.Response[tkv1.DigestResponse], error) {
 	resp, outcome, err := s.digestInputs(ctx, req.Msg)
+	// Decided before it is counted, so the code, the outcome and the log agree (api.md §10.1 *A client gone*).
+	gone, err := decide(ctx, err)
+	if gone {
+		outcome = outcomeCancelled
+	}
 	s.Metrics.Digest(outcome, len(req.Msg.GetInputs()))
 
 	return resp, err
@@ -89,7 +94,7 @@ func (s *Server) digestInputs(ctx context.Context, m *tkv1.DigestRequest) (*conn
 	}
 	rules, err := s.digestRules(ctx, keyID)
 	if err != nil {
-		return nil, digestUnavailable, connect.NewError(connect.CodeUnavailable, fmt.Errorf("digest: %w", err))
+		return nil, digestUnavailable, dependency(connect.CodeUnavailable, msgCatalog, fmt.Errorf("digest: %w", err))
 	}
 	if rules == nil {
 		return nil, digestInvalid, invalid("digest_key_id %q is no active or bound configuration's digest key", keyID)
@@ -105,9 +110,9 @@ func (s *Server) digestInputs(ctx context.Context, m *tkv1.DigestRequest) (*conn
 	}
 	key, err := s.Keys.Digest(ctx, keyID)
 	if keys.Refused(err) {
-		return nil, digestKeyRefused, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("digest: %w", err))
+		return nil, digestKeyRefused, &answer{err: connect.NewError(connect.CodeFailedPrecondition, errors.New("digest: "+msgKeyRefused)), cause: fmt.Errorf("digest: %w", err)}
 	} else if err != nil {
-		return nil, digestUnavailable, connect.NewError(connect.CodeUnavailable, fmt.Errorf("digest: %w", err))
+		return nil, digestUnavailable, dependency(connect.CodeUnavailable, msgKeys, fmt.Errorf("digest: %w", err))
 	}
 	// key is the keys module's cached material, shared by every use: never cleared or changed here.
 	out := &tkv1.DigestResponse{DigestKeyId: keyID, Digests: make([][]byte, len(inputs))}
@@ -125,7 +130,7 @@ func (s *Server) digestInputs(ctx context.Context, m *tkv1.DigestRequest) (*conn
 		Detail: fmt.Sprintf("digest key %s, %d inputs, domains %s", keyID, len(inputs), strings.Join(slices.Compact(domains), ", ")),
 	}
 	if err := s.Catalog.Audit(ctx, entry); err != nil {
-		return nil, digestAuditFailed, connect.NewError(connect.CodeInternal, fmt.Errorf("digest: audit: %w", err))
+		return nil, digestAuditFailed, dependency(connect.CodeInternal, msgAudit, fmt.Errorf("digest: %w", err))
 	}
 
 	return connect.NewResponse(out), digestOK, nil

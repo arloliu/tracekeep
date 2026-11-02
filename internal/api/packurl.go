@@ -74,7 +74,7 @@ func (s *Server) PackURL(ctx context.Context, req *connect.Request[tkv1.PackURLR
 		return nil, superseded(id)
 	}
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, keylessURL(err))
+		return nil, dependency(connect.CodeUnavailable, msgStore, keylessURL(err))
 	}
 	p, _ := PrincipalFrom(ctx)
 	entry := catalog.AuditEntry{
@@ -82,7 +82,7 @@ func (s *Server) PackURL(ctx context.Context, req *connect.Request[tkv1.PackURLR
 		Detail: fmt.Sprintf("pack %s, %s URL expiring %s", id, u.kind, u.expires.UTC().Format(time.RFC3339)),
 	}
 	if err := s.Catalog.Audit(ctx, entry); err != nil {
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit: %w", err))
+		return nil, dependency(connect.CodeInternal, msgAudit, err)
 	}
 	s.stalled("audited")
 	// A row naming a URL withheld here is a URL issued and never delivered, which nobody can use.
