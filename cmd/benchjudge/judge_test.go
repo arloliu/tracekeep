@@ -196,6 +196,41 @@ func TestExactMetrics(t *testing.T) {
 	}
 }
 
+func TestAllocations(t *testing.T) {
+	t.Parallel()
+	const n = "BenchmarkX-8"
+	// allocs returns ten samples of 100 ns/op and the given allocations, cycling through them.
+	allocs := func(counts ...int) []string {
+		out := make([]string, 10)
+		for i := range out {
+			out[i] = fmt.Sprintf("100 ns/op\t%d allocs/op", counts[i%len(counts)])
+		}
+
+		return out
+	}
+	for name, tc := range map[string]struct {
+		base, head []string
+		want       verdict
+	}{
+		"a deterministic base, one more":       {allocs(4521), allocs(4522), regress},
+		"a deterministic base, as many":        {allocs(4521), allocs(4521), pass},
+		"a wobbling base, head within it":      {allocs(4521, 4522), allocs(4522), pass},
+		"a wobbling base, head well above it":  {allocs(4521, 4522), allocs(5000), regress},
+		"a zero base, one more":                {allocs(0), allocs(1), regress},
+		"a zero base, still none":              {allocs(0), allocs(0), pass},
+		"a wobbling zero base, head above it":  {allocs(0, 1), allocs(2), regress},
+		"a wobbling zero base, head inside it": {allocs(0, 1), allocs(0), pass},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			base := output(map[string][]string{n: tc.base})
+			if j := judged(t, base, base, output(map[string][]string{n: tc.head}), n, "allocs/op"); j.verdict != tc.want {
+				t.Errorf("%s: %v (%s), interval [%v, %v]; want %v", name, j.verdict, j.why, j.low, j.high, tc.want)
+			}
+		})
+	}
+}
+
 func TestRateIsJudgedAsItsInverse(t *testing.T) {
 	t.Parallel()
 	const n = "BenchmarkPublish-8"
