@@ -248,7 +248,7 @@ func TestEvictHourGuards(t *testing.T) {
 	})
 }
 
-// An eviction finds the hour's conflicts from either side, in batches of evictBatch packs:
+// An eviction finds the hour's conflicts from either side, in batches of evictBatch packs, every batch holding some on each side:
 // one within the hour goes once, with no event; those naming a pack of hours 2 and 3, from either side and two of them the same pack,
 // advance each of those hours once with one conflict event; one between hours 2 and 3 stays.
 func TestEvictHourConflictsOnBothSides(t *testing.T) {
@@ -260,16 +260,26 @@ func TestEvictHourConflictsOnBothSides(t *testing.T) {
 		hour, seq := seedPacks(t, c, capture, packsSeed{hour0: 1, hours: 1, packs: evictBatch + 1, ranges: 1, span: 10})
 		two, seq := seedPacks(t, c, capture, packsSeed{hour0: 2, hours: 1, packs: 2, ranges: 1, span: 10, seq0: seq})
 		three, _ := seedPacks(t, c, capture, packsSeed{hour0: 3, hours: 1, packs: 1, ranges: 1, span: 10, seq0: seq})
-		last := hour[evictBatch] // in the second batch
+		last := hour[evictBatch]
 		conflict := func(seq int64, a, b tracepack.UUID) []any { return []any{capture[:], seq, seq, a[:], b[:], "suspect"} }
-		seedRows(t, c, "conflicts", []string{"capture_id", "seq_from", "seq_to", "pack_id", "other_pack_id", "state"}, [][]any{
+		rows := [][]any{
 			conflict(1, hour[0], hour[1]),
 			conflict(2, hour[0], two[0]),
 			conflict(3, two[0], last),
 			conflict(4, last, two[1]),
 			conflict(5, three[0], hour[2]),
 			conflict(6, two[1], three[0]),
-		})
+		}
+		// Every other pack of the hour conflicts with hour 2's first pack, from alternating sides,
+		// so whichever order the hour's packs are batched in, each batch holds conflicts on both sides.
+		for i := 3; i < evictBatch; i++ {
+			if i%2 == 0 {
+				rows = append(rows, conflict(int64(100+i), hour[i], two[0]))
+			} else {
+				rows = append(rows, conflict(int64(100+i), two[0], hour[i]))
+			}
+		}
+		seedRows(t, c, "conflicts", []string{"capture_id", "seq_from", "seq_to", "pack_id", "other_pack_id", "state"}, rows)
 		rev2, rev3 := scopeOf(t, c, capture, 2).Revision, scopeOf(t, c, capture, 3).Revision
 		before := len(events(t, c))
 		if ev := evict(t, c, l, Scope{capture, 1}, hourEvictedNow); !ev.Evicted || len(ev.Packs) != evictBatch+1 {
