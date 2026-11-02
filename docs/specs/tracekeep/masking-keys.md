@@ -101,6 +101,7 @@ Contract changes go through proposals, which the subject [README.md](README.md) 
     An error names the key id, its kind, its provider, reference and version, and a provider's status,
     never the material, a token, a secret id or a provider's response body,
     and a log line or a metric holds no more than the error.
+    The operator's log holds the error whole; a `MachineService` answer holds none of its text, only a fixed message naming the key provider, so a reference never reaches a client (`api.md` §10.1 *What an answer says*).
   - **`redact.Keys` per use**: its methods take no context,
     so the adapter `redact.Mask` is given is built for one use, a batch's masking or one API request, over that use's context and never kept beyond it;
     a shared resolution runs under the provider's deadline, not under any one use's context,
@@ -153,10 +154,13 @@ Contract changes go through proposals, which the subject [README.md](README.md) 
     a merged input included beside its archive.
     A pack registered after the snapshot is not seen, and the answer holds as of the snapshot;
     a pack merged after it stays readable for D (`compactor.md` §8.3);
-    a copy whose object cannot be opened or read refuses the restore as unavailable, and the client retries into a fresh snapshot.
+    a copy whose object cannot be opened or read, a corrupt one included, refuses the restore as unavailable, and the client retries into a fresh snapshot.
+    The copies are opened through the records reader, whose store errors are keyless (`api.md` §10.1 *No key*), so neither the answer nor the log names an object key or a store's text.
   - **Bounds** (T-52): a restore holds one of the replica's `api.records.max_reads` read slots, taken before the copies are listed;
     the snapshot lists at most `api.records.max_readers` copies plus one, after the named hour's check below, and a record with more is refused as `resource_exhausted` before any object opens, the comparison never made on part of them;
     the copies' merge holds at most `api.records.held_bytes` of blocks, as a record read's does (`api.md` §10.1 *Records*).
+    A comparison past that bound, or a copy whose read meets tracepack's read limit (an error, or an incompleteness of reason `read-limit`), is refused as `resource_exhausted`,
+    with no payload and no audit row, never a comparison of part (T-53).
   - **The hour names where to look**: it is an hour start, and a request whose hour holds no copy is answered not found;
     the comparison spans every copy of the snapshot, whatever hour is named (T-42).
   - **Copies are compared whole**: the stored record, header and payload, and the seq's redaction entries in each pack's metadata;

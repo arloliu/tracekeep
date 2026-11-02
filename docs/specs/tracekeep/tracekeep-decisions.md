@@ -682,3 +682,30 @@ The plan splits the phase into six sub-phases, correctness before error handling
 Considered and not taken: refusing a link without TLS, which stops installations that rely on one; a lock-free mirror of the reservation state, which puts the dependency barrier at risk for a wait the callbacks already accept from each other;
 a separate audit database file, whose rows could not commit with the domain rows they record.
 
+### T-53 — what the phase 5 plan's error handling settled (2026-11-02)
+
+Ten points the phase 5 plan raised before its error-handling sub-phase, read from the code and settled on the plan's recommendations under the owner's standing instruction.
+**What an answer says about a dependency**: an `unavailable` or `internal` answer of `MachineService` carries a fixed message naming what failed (the catalog, the store, a key provider, the audit), never an error's text;
+tracekeep's own refusals keep their text, an hour in one written in RFC 3339.
+`AdminService` answers its operator, so it may carry what the operator's log may, a catalog's cause included; a failed audit write answers `internal` there too.
+**What a log may carry**: a catalog's cause, a bus error's text and a key provider's error with its reference;
+never an object key, a store's error text, a URL's query or user information, a token, a password, a secret, a cookie, an authorization code or a clear payload,
+so a boundary whose error may hold such material logs fields it builds itself (`operations.md` §10.4 *Logs*).
+**A client gone** is decided once, where the handler returns: tracekeep's refusal keeps its code and an audit failure stays `internal`;
+otherwise an `unavailable` or `unknown` answer after the request's own context ended becomes `canceled` or `deadline_exceeded`, outcome `cancelled`, never logged as a failure;
+a dependency's deadline with the request live stays `unavailable`, as does a download URL that could not be made.
+A download whose client is gone counts under 499; one cut after its status is sent ends short and counts under that status (`api.md` §10.1).
+**A pack that does not open as one of its capture** answers `FindTransaction` with `data_loss`, an unknown capture `not_found`, a missing or unreadable pack `unavailable`.
+**A restore past its held bytes or tracepack's read limit** answers `resource_exhausted`, never a comparison of part (`masking-keys.md` §9).
+**An export's own work file failing** fails the attempt as a store failure does, so no pack is left out for it.
+**The SDK reports every counter and label value from zero**, counts observer panics and the log lines its sink drops, logs its own failures as fields it builds,
+and `Close` cuts emission off before one final report (`producer.md` §4.3 *Diagnostics*).
+**The service's bus connection logs** its loss, restoration, asynchronous errors and a close with an error, each server redacted.
+**A link without TLS** is warned of once at a role's start, the bus by its connection's TLS state and the store by an `http://` endpoint (`650-perf-sec.md`).
+**New maxima**: `auth.oidc.leeway` 5 min, session lifetime 24 h, login lifetime 1 h, token exchange 1 min, `jwks_ttl` 24 h, its fetch interval 1 h and below the TTL, `keys.vault.timeout` 1 min, `ingest.stop_timeout` 10 min, `ingest.max_record_bytes` 4 GiB.
+**A retried catalog transaction** waits a random time under a cap doubling from 10 ms to 1 s and stops before a further run once 16 runs are made or 30 s have passed, never cutting a run in flight (`catalog.md` §7.2).
+**Discovery and the JWKS** are refreshed in the background by a request past half their TTL, under the verifier's own context, which its `Close` cancels and joins;
+a failed fetch is logged by fields, never its text (`api.md` §10.2).
+Considered and not taken: fixed messages on `AdminService`, whose reader is the operator; a panic alert, the runbook reading the counter instead; a service metric for bus events;
+warning of the catalog's DSN, of `admin` and `status`, or at a reconnect; a retry bound that cuts a run in flight; `Last-Modified` on downloads, which the store's interface cannot give; maxima on the older durations.
+

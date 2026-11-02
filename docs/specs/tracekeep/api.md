@@ -59,6 +59,8 @@ A running service holds its SQLite catalog alone (§7.4), so `tracekeep admin` o
 which runs the same command there and returns the JSON the command prints.
 It checks the `admin` role and audits the command as every admin command is audited, the actor being the principal's subject;
 the CLI's `--actor` names the actor of the direct path only.
+A usage error answers `invalid_argument` and any other failure of the command `failed_precondition`, each with its text,
+except a failed audit write, which answers `internal` wherever the catalog wrote it (alone or inside the command's transaction), and a client gone, which answers as *A client gone* below states.
 The CLI authenticates with the configuration's static token that holds `admin` (`auth.static`, its flag on),
 reaching the service at `api.public_url` and trusting its certificate (`api.tls_cert_file`) beside the system's roots;
 without such a token it refuses and says so.
@@ -102,16 +104,35 @@ A refused request carries a Connect code:
 | `permission_denied` | `forbidden`: no role of the principal admits the operation |
 | `invalid_argument` | a selector, a cursor or a pack id that does not parse or breaks the bounds above, a `ListScopeChanges` limit above 10,000, a request that does not decode, a `Restore` or `FindTransaction` hour that is not an hour start, a `QueryRecords` predicate or cursor *Records* refuses, or a `Digest` input its checks refuse (`masking-keys.md` §9), naming the input's index |
 | `unimplemented` | an export of `kind=filtered` (T-48) |
-| `not_found` | an export job that is not the principal's or does not exist; a `PackURL` of a pack the catalog does not know, an evicted one included: eviction deletes its hour's rows (`compactor.md` §8.3); a `Restore` whose hour holds no copy of the record |
+| `not_found` | an export job that is not the principal's or does not exist; a `PackURL` of a pack the catalog does not know, an evicted one included: eviction deletes its hour's rows (`compactor.md` §8.3); a `Restore` whose hour holds no copy of the record; a `FindTransaction` of a capture the catalog does not know |
 | `permission_denied` (exports) | an export operation by a principal with an empty subject |
 | `failed_precondition` | `pack-superseded`, with the error detail `tracekeep.v1.PackSuperseded` naming the pack; a `Restore` of differing versions, with the detail `tracekeep.v1.RecordConflict`, or of a record that is not restorable; a key refused (`masking-keys.md` §9 *Failures*); a `FindTransaction` of a withheld capture, or of a record that is not a transaction's primary and that nothing read explains; a `CancelExport` of a job that has ended |
-| `unavailable` | a `PackURL` before the compactor's first retention record, when no deadline exists (`compactor.md` §8.3), any read the catalog fails, a key unavailable, or a copy of a record whose object cannot be read, which the client retries |
-| `resource_exhausted` | a `Digest` beyond its principal's rate limit, a request message above 16 MiB, refused before it is decoded, or a record read beyond the replica's concurrent reads, a `FindTransaction` hour beyond its pack bound, or tracepack's read limit in a lookup (*Records* below); an export whose selection passes the export bounds (*Exports* below); a `Restore` whose copies pass its bound (`masking-keys.md` §9) |
-| `internal` | an audit row that could not be written; nothing is returned |
+| `unavailable` | a `PackURL` before the compactor's first retention record, when no deadline exists (`compactor.md` §8.3), any read the catalog fails, a key unavailable, a copy of a record whose object cannot be read, a pack `FindTransaction` finds missing or the store cannot read, or a download URL that could not be made (a presigning or a download token's failure, for `PackURL` and an export's fetch), each while the request's own context lives, a dependency's own deadline included; the client retries |
+| `canceled`, `deadline_exceeded` | an `unavailable` or `unknown` answer given once the request's own context was cancelled or passed its deadline, in the order of *A client gone* below |
+| `data_loss` | a `FindTransaction` pack that does not open as a pack of the capture (corrupt, not a pack, an unsupported format, another capture's), which a retry cannot cure |
+| `resource_exhausted` | a `Digest` beyond its principal's rate limit, a request message above 16 MiB, refused before it is decoded, or a record read beyond the replica's concurrent reads, a `FindTransaction` hour beyond its pack bound, or tracepack's read limit in a lookup (*Records* below); an export whose selection passes the export bounds (*Exports* below); a `Restore` whose copies pass its bound, or whose comparison passes `api.records.held_bytes` or meets tracepack's read limit (`masking-keys.md` §9) |
+| `internal` | an audit row that could not be written, on `MachineService` and `AdminService` alike; nothing is returned |
 
 `Restore` answers the original payload with the record's time and kind; `Digest` answers each input's digest in order with the key id.
 Neither original nor digest appears in an error, a log line or an audit row;
 a request that does not decode is refused with one fixed message, which quotes none of its bytes.
+
+**A client gone.**
+A request's code is decided once, where its handler returns, in this order:
+a refusal tracekeep decides keeps its code, a `QueryRecords` send that made no progress (`deadline_exceeded`, *Records* below) included;
+an audit failure stays `internal`;
+otherwise an `unavailable` or `unknown` answer given once the request's own context has ended becomes `canceled` or `deadline_exceeded` by that context,
+its outcome `cancelled` where the operation counts outcomes, and it is counted but never logged as a failure;
+a dependency's own deadline leaves the request's context live, and its answer stays `unavailable`.
+`Restore` and `Digest` decide before they count their outcome, and every other operation is decided as it returns, so the code, the outcome and the log agree.
+A request cut by its replica's stop is counted and logged as `canceled`; its client, whose connection closes, receives nothing.
+
+**What an answer says.**
+An `unavailable` or `internal` answer of a `MachineService` operation carries a fixed message naming what failed (the catalog, the store, a key provider, the audit), never an error's text;
+the cause is logged once, by the log rule of `operations.md` §10.4 *Logs*.
+tracekeep's own refusals (a bound, an hour, a pack id, the details `PackSuperseded` and `RecordConflict`) keep their text,
+and an hour a refusal names is written in RFC 3339, never as an epoch hour.
+`AdminService` answers its operator, who reads the operator's log, so its answer may carry what that log may (a catalog's cause included) and never what it may not (*Admin over the API* above).
 
 Every issued `PackURL` appends an `audit_log` row naming the principal's subject, the capture, the pack and the URL's expiry, never the URL:
 the VE service reads packs that hold ciphertext in place (T-5), one row per URL issued.
@@ -206,7 +227,7 @@ Every read set a read reads is checked, so a resumed stream, whatever its cursor
   gone again, or the hour's scope evicted, the rest of the hour is reported `incomplete`.
   A merged input usually still serves for the deletion delay (`compactor.md` §8.3), but a stream's length is not bounded by it, so the re-read is what a reader relies on.
 - **Bounds**: a replica serves at most `api.records.max_reads` reads at once, `QueryRecords` streams, `FindTransaction` lookups and `Restore`s together (default 8), refusing one more as `resource_exhausted` before reading (T-52).
-  A `QueryRecords` stream whose client takes less than 16 KiB of it within `api.records.send_timeout` (default 1 min) is ended, its read slot and memory freed;
+  A `QueryRecords` stream whose client takes less than 16 KiB of it within `api.records.send_timeout` (default 1 min) is ended as `deadline_exceeded`, its read slot and memory freed;
   a client that keeps reading at least that is never ended by it, however long the stream, and resumes an ended one from its last cursor.
   A `QueryRecords` merge opens at most `api.records.max_readers` packs (default 16), and a cluster above that is not read and is reported `incomplete`;
   a `FindTransaction` lookup passes an hour's whole read set, and an hour of more than `api.records.max_lookup_packs` packs (default 64) is refused as `resource_exhausted`, naming the hour.
@@ -221,6 +242,9 @@ Every read set a read reads is checked, so a resumed stream, whatever its cursor
   the hours searched, and each gap, conflict and unreadable pack tracepack reports, the gap of a window no record read bounds naming the hours scheduled.
   A withheld capture, or a record that is not a primary and that nothing read explains, is refused as `failed_precondition`;
   tracepack's read limit is refused as `resource_exhausted`, and an object that cannot be read as `unavailable`.
+  A capture the catalog does not know is `not_found`;
+  a pack that does not open as a pack of the capture (corrupt, not a pack, an unsupported format, another capture's) is `data_loss`, which a retry cannot cure, logged as an error;
+  a pack missing, or one the store cannot read, its deadline included, stays `unavailable`.
 
 **Exports.**
 `StartExport(selector, kind)`, `GetExport(job)`, `ListExports()` and `CancelExport(job)` serve the export job of the table above, each checking `exporter`.
@@ -247,6 +271,9 @@ only the owner reads, lists or cancels a job, and another's answers `not_found`.
   an object found gone discards the hour's files and exports the hour again from its read set read again, once, as a merge in between may have replaced its packs;
   gone again, the hour's packs are left out and named in the manifest. An exporter's error on the pack's own bytes (tracepack's error of a corrupt or unreadable pack) discards that pack's partial file; its pack is left out and named.
   A store's failure to read a pack, its deadline included, fails the attempt instead, so a later attempt under a new fence exports it, and the failed attempt can complete nothing (T-52).
+  So does a failure of the attempt's own work files, a pack's file or the tar (its creation, a write, a seek, a sync, its close, a full disk):
+  no pack is left out for it, and no reason names a local path (T-53).
+  Only the pack's own bytes (corrupt, not a pack, an unsupported format, a read limit) leave a pack out.
   A read set without a scope whose hour retention evicted, at the first read or the second, puts the hour in the manifest as evicted,
   so the manifest says what the bundle holds, apart from the completeness the capture had when the bundle began.
   The bounds hold over what is read: the packs and object bytes the attempt actually exports, an hour read again included, are counted, and passing `exports.max_packs` or `exports.max_bytes` fails the job;
@@ -259,7 +286,8 @@ only the owner reads, lists or cancels a job, and another's answers `not_found`.
   A bundle holds masked packs only, so no clear body: the JSONL carries each payload in base64 and each transport-event or annotation body by name,
   which the tests check on the unpacked JSONL, every base64 field decoded (payloads, header extensions, annotation bodies, redaction entries), against every baseline carrier, with an unmasked control.
 - **No key**: no error, manifest entry, metric label or log line of an export names an object key, a store's errors made keyless as the records reader makes them (`Keyless`);
-  this phase brings *Downloads* and `PackURL` to the same rule, their store and presigning errors made keyless, and the compactor's export cleanup names a job and a fence, never a key.
+  *Downloads*, `PackURL` and `Restore` follow the same rule, their store and presigning errors made keyless, `Restore` opening its copies through the records reader,
+  and the compactor's export cleanup names a job and a fence, never a key, its failed delete logged with its cause made keyless.
 - **The upload**: each attempt puts its own key, `exports/<job_id>/<fence>.tar`, never reused.
   Before the put, an `export_objects` row names the key in state `intended` with its **put deadline**, the catalog's now plus `exports.put_timeout` (default 10 min), in a transaction under the attempt's guard, else the attempt ends and puts nothing;
   the put runs under a context ending at that deadline, and a put stopped so leaves nothing visible (`storage.md` §5.2), so no object appears after the deadline.
@@ -275,6 +303,7 @@ only the owner reads, lists or cancels a job, and another's answers `not_found`.
   and `GetExport` for a `done` job a download URL issued as *Downloads* below issues one, its deadline the bundle's, each URL audited as a `PackURL` is.
   A `done` job whose deadline leaves less than the floor answers the state `expired` and no URL, derived at the answer, never stored, and is counted with `download_urls_refused_total`:
   the refusal *Downloads* calls `pack-superseded`, which a bundle, never replaced, answers as `expired`.
+  A URL that could not be made answers as `PackURL`'s does, `unavailable` while the request lives (*A client gone* above).
 - **Cleanup** is the compactor's, under its lease (`compactor.md` §8.3), and no `api` replica deletes an export object:
   an `export_objects` row still `intended` once its put deadline plus twice the clock skew (2 min) has passed is first made `deleting` by compare-and-set, which a completion can then never find `intended`,
   and only then is its object deleted and its row;
@@ -331,6 +360,15 @@ otherwise it is a URL on the API itself carrying a download token, and the API s
   so an object outlives every token issued for it as it outlives every presigned URL.
 - The API answers `HEAD` and ranged `GET` (`Range`, `206 Partial Content`) as S3 does, reading through `ObjectStore.Open`'s `io.ReaderAt`,
   so tracepack's reader works over either kind of URL unchanged.
+- Its answers carry `Content-Disposition: attachment` with a file name, a pack's the last element of its key and a bundle's `<job_id>-<fence>.tar` from the last two of `exports/<job_id>/<fence>.tar`,
+  and a strong `ETag`, the quoted hex of the first 16 bytes of the key's SHA-256: an opaque digest of an identity never reused (`storage.md` §5.2),
+  so `If-None-Match` and `If-Range` are answered as S3 answers them.
+  No `Last-Modified` is sent, since the store's interface gives none, and no header carries the token or any part of the key but the file name.
+- A request whose own context ends (its client gone) is answered nothing more, logs no failure and is counted under the status 499.
+  The download's own budget (its token's expiry plus the margin) ending, or the store failing, while the client is there,
+  answers 502 and logs one keyless line if no header has been sent;
+  once the status is sent, it ends the transfer short of its length, which the client sees as a cut body, logs one keyless line and is counted under the status sent.
+  The object is closed in every case.
 - A download URL, presigned or not, is a bearer credential until it expires and is never logged.
 - A URL on the API is `<api.public_url>/download/<token>`, the token in the path;
   its responses carry `Cache-Control: no-store` and `Referrer-Policy: no-referrer`, and the server logs neither the path nor the token.
@@ -364,7 +402,7 @@ otherwise it is a URL on the API itself carrying a download token, and the API s
     The client CA, like the API's own certificate and key, is read again when its file changes,
     so a renewal needs no restart;
     a change that does not load keeps the previous material.
-- **IdP outage**: discovery and JWKS are fetched lazily with retry and cached with a TTL;
+- **IdP outage**: discovery and JWKS are fetched when first needed, cached with a TTL and refreshed in the background before it ends;
   startup never blocks on the IdP;
   an unknown `kid` triggers one refresh, then rejection;
   existing sessions and cached keys keep working until expiry; new logins fail.
@@ -372,11 +410,17 @@ otherwise it is a URL on the API itself carrying a download token, and the API s
   discovery reads `<issuer>/.well-known/openid-configuration`, whose `issuer` must equal the configured one, for its `jwks_uri`,
   both fetched over https only, every redirect included, trusting the system's roots and the certificates of `auth.oidc.ca_file` when it is set;
   a JWKS holding no usable public signing key is a failed fetch, which leaves the keys cached before it;
-  the JWKS is cached with a TTL (default 1 h) and fetched by the first request that needs it, never at start;
-  one fetch is in flight at a time, and concurrent requests wait on it;
+  discovery and the JWKS are cached with a TTL (default 1 h), never fetched at start:
+  a request that finds none cached waits on a fetch;
+  a request that finds them cached past half their TTL is answered from the cache and starts one fetch in the background (T-53);
+  one fetch is in flight at a time, run under the verifier's own context, never a request's,
+  and a request that must wait, a cold or an unknown-`kid` one, shares the one in flight;
   fetches start at least a minimum interval apart (default 10 s), so neither an outage nor a flood of unknown `kid`s drives the IdP harder;
   an unknown `kid` refreshes once when the interval allows and is then rejected;
-  cached keys verify until their TTL ends, and with none the request is rejected as `idp-unavailable`.
+  cached keys verify until their TTL ends, a failed fetch never extending it, and with none the request is rejected as `idp-unavailable`.
+  A failed fetch is logged with fields the verifier builds (the endpoint's scheme, host and path, an HTTP status by its number, a class: `unreachable`, `timeout`, `status`, `malformed`),
+  never the error's text, which can hold a URL's query or user information.
+  The verifier's `Close`, which the API calls on every exit once the verifier is built, cancels the fetch in flight, waits for it to end, and starts none after.
   The **static-token provider** for a standalone host without an IdP is an explicit flag and is never activated by a failure:
   with the flag on, a bearer token is compared in constant time with each configured static token, read by reference, which names its subject and roles;
   with it off, none is consulted, whatever the IdP's state.

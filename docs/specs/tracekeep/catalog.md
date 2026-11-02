@@ -147,6 +147,11 @@ whose answers each transaction above re-validates instead of trusting.
 **Retries stay inside the module.**
 A MariaDB deadlock or an `SQLITE_BUSY` re-runs the whole transaction from the helper (§7.4), so its guards are read again;
 the write pool's one connection, `BEGIN IMMEDIATE` and the second writer's refusal to start are the module's, never a caller's.
+The helper makes at most 16 runs: before each further run it waits a random time up to a cap that doubles from 10 ms to 1 s, under the caller's context,
+and after that wait it stops once 30 s have passed since the first run began; either way it returns the last error, and no wait follows the sixteenth run (T-53).
+That bound never cuts a run in flight, which only the caller's context ends;
+on SQLite `busy_timeout` (5 s) bounds each statement's wait for the lock inside a run, so under contention the time bound usually comes before the count,
+and neither bounds the whole call, which the caller's context does.
 A failed scope-revision or lease check rolls back the whole transaction (§8.1), as does every other guard that aborts,
 except the durable write a guard's own outcome names (a tombstone, an `abandoned` intent, a `terminated` version), which commits alone in its place;
 the transaction returns that outcome and is not retried,
@@ -275,9 +280,9 @@ An **attempt's guard** is the job `running` at the attempt's fence with `lease_u
 - **Recommended stack**: `database/sql` + `sqlx`, hand-written SQL, `go-sql-driver/mysql` and `modernc.org/sqlite` (no cgo).
   A `dialect` value isolates insert-ignore and the upsert clause; both engines use `CHECK` constraints, not `ENUM`;
   the transactions are CAS-based and engine-neutral (§7.2).
-- **MariaDB** 11.1 or later: `READ COMMITTED`, the session in UTC, strings compared byte for byte, trailing spaces included (`utf8mb4_nopad_bin`), as on SQLite; every multi-statement transaction retries whole on deadlock;
+- **MariaDB** 11.1 or later: `READ COMMITTED`, the session in UTC, strings compared byte for byte, trailing spaces included (`utf8mb4_nopad_bin`), as on SQLite; every multi-statement transaction retries whole on deadlock, with the helper's backoff and bound (§7.2 *Retries stay inside the module*);
   the capture row, the `leases` row and the two `counters` rows are the intended lock waits, always in the order of §7.2.
-- **SQLite**: one writer connection (`MaxOpenConns = 1` on the write pool), `BEGIN IMMEDIATE` for every write transaction, `busy_timeout` set, retry whole on `SQLITE_BUSY`;
+- **SQLite**: one writer connection (`MaxOpenConns = 1` on the write pool), `BEGIN IMMEDIATE` for every write transaction, `busy_timeout` 5 s, retry whole on `SQLITE_BUSY` with the same backoff and bound;
   only the `all` process writes, enforced by deployment and checked at start (a second writer refuses to start on SQLite).
 - **Tests**: the repository tests run the same adversarial schedules on both engines with barriers, not timing,
   against the transactions of §7.2:

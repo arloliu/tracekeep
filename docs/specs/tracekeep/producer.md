@@ -125,6 +125,7 @@ and this section is the contract between them.
      and push the record;
      a push that fails releases the reservation and drops with the seq.
   The entry is wrapped in a recover; the unlock is deferred, so a panic never leaves the lock held.
+  Every panic recovered there is counted (`observer_panics_total`, §4.3 *Diagnostics*), never logged in the callback.
   A panic after seq allocation leaves a seq gap;
   a panic after a reservation and before step 6 leaves a reservation the publisher turns into a fault;
   a panic **before** allocation (steps 1–3, a bug with no identity) is counted and **faults the capture**,
@@ -290,10 +291,30 @@ and this section is the contract between them.
 | Producer bug or panic | recovered at each callback entry with the lock released; an unqueued reservation or a full reserved lane puts the capture in the fault state; it ends `stop-unclean` on the consumer side | propagate to the device |
 | `Stop` drain deadline passed | remainder dropped and counted; `Stop` returns the connection's result only | return a trace error from `Stop` |
 
-Its metrics live in their own namespace (`tracepub_records_observed`, `_published`, `_dropped{reason}`, `_ring_depth`, `_ring_bytes`, `_bus_connected`, `_claim_puts`)
+Its metrics live in their own namespace (`tracepub_records_observed`, `_published`, `_dropped{reason}`, `_ring_depth`, `_ring_bytes`, `_bus_connected`, `_claim_puts`, `_observer_panics`, `_log_lines_dropped`; `operations.md` §10.4)
 and it **never** calls `IncDeviceErrors` or changes device state:
 eqp-hub's circuit breakers and election act on device health,
 so counting bus faults there would make the bus critical by the back door.
+
+**Diagnostics** (T-53).
+- **From zero**: every counter and every label value the SDK can emit is reported at zero when the publisher starts, so a first event after a start is seen by its increase.
+- **Panics**: an observer's panic recovered at a callback's entry is `observer_panics_total`;
+  the publisher logs one error line for each report in which the counter rose, never the panic's value.
+- **Counted where they happen**: rotations, and the log lines the SDK's sink has no room for (`log_lines_dropped_total`), are counted by atomic adds at the event, the lifecycle lock held or not,
+  never by a call into the integrator there;
+  the sink is a bounded queue that drops rather than waits, and the publisher reports the counts with the rest, outside every lock.
+- **`Close` cuts off emission** in this order:
+  it stops the publisher, the lifecycle's workers and the fault worker, closes the bus connection it owns (a connection given through `WithConn` is left open, its publisher only cleaned up), and marks the producer closed.
+  An emission (a log line or a measurement handed to the sink) enters an in-flight count, checks that mark, enqueues or counts its drop, none of which blocks, and leaves the count;
+  `Close` sets the mark, then waits for the count to reach zero,
+  so every emission that saw no mark has settled before what follows, and one that sees it (a late callback, the first dial still running) is discarded uncounted, which `Close`'s documentation says.
+  The sink then stops, counting every line still queued as dropped,
+  and `Close` reports once more on its own goroutine, before the sink's last apply, so the counts it reports are final.
+  A second or concurrent `Close` does none of it again.
+- **The SDK's own lines**: a bus callback's, a publish's and a claim object's failure is logged as fields the SDK builds (a NATS or JetStream error code, a context error, an HTTP status, else a class),
+  never the error's text, which can hold a server URL with credentials, an object name or a backend's text;
+  the fields are built outside every lifecycle and capture lock, and the SDK imports nothing of the service.
+- No alert reads the panic counter; the runbook does.
 
 ### 4.4 Transport events and timeouts (LS-3)
 
