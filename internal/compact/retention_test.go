@@ -75,7 +75,7 @@ func (b *memBucket) names() []string {
 }
 
 // sdkObject is the claim object the SDK writes for capture's seq at ts: its name and the metadata of its record header and time.
-func sdkObject(t *testing.T, capture tracepack.UUID, seq uint64, ts int64) ClaimInfo {
+func sdkObject(t testing.TB, capture tracepack.UUID, seq uint64, ts int64) ClaimInfo {
 	t.Helper()
 	br := tpbus.NewRecord(&tracepack.Record{Seq: seq, TSUTCNs: ts, Kind: tracepack.KindData, Payload: bytes.Repeat([]byte{1}, 64)})
 	br.ClaimCheck, br.Bucket = true, "claims"
