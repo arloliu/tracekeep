@@ -62,6 +62,8 @@ type Catalog struct {
 	hooks [numHooks]func()
 	// retried observes each retry of a transaction with its reason; nil observes none.
 	retried func(reason string)
+	// auditWaited observes each standalone audit write's wait for its connection with its outcome; nil observes none.
+	auditWaited func(outcome string, wait time.Duration)
 	// testRetryable, set only by the package's tests, is an error a transaction retries like a deadlock.
 	testRetryable error
 	// testCommit, set only by the package's tests, fails a commit whose statements succeeded when it returns an error.
