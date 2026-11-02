@@ -168,6 +168,22 @@ func (h *held) ExportJobs(ctx context.Context, owner string, limit int) ([]catal
 	return h.Catalog.ExportJobs(ctx, owner, limit)
 }
 
+func (h *held) ReadSet(ctx context.Context, capture tracepack.UUID, hour int64) (catalog.ReadSet, error) {
+	if h.holds(ctx, "ReadSet") {
+		return catalog.ReadSet{}, h.fail(ctx)
+	}
+
+	return h.Catalog.ReadSet(ctx, capture, hour)
+}
+
+func (h *held) NextReadHour(ctx context.Context, capture tracepack.UUID, from, to int64) (int64, bool, error) {
+	if h.holds(ctx, "NextReadHour") {
+		return 0, false, h.fail(ctx)
+	}
+
+	return h.Catalog.NextReadHour(ctx, capture, from, to)
+}
+
 func (h *held) CreateExport(ctx context.Context, id tracepack.UUID, owner string, request []byte, audit catalog.AuditEntry) error {
 	if h.holds(ctx, "CreateExport") {
 		return h.fail(ctx)

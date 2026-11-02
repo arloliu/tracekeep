@@ -337,10 +337,10 @@ func readFailed(err error) error {
 	}
 }
 
-// storeFailed tells whether err is the store's: an object missing or unreadable, or a read's context ended, as records.Keyless makes them.
+// storeFailed tells whether err is the store's, as records.Keyless marks it where it starts: an object missing or unreadable,
+// its own deadline included. A context's error alone is never inferred to be the store's: the catalog's deadline is the catalog's.
 func storeFailed(err error) bool {
-	return errors.Is(err, records.ErrStore) || errors.Is(err, store.ErrNotFound) || errors.Is(err, tracepack.ErrSourceRead) ||
-		errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
+	return errors.Is(err, records.ErrStore) || errors.Is(err, store.ErrNotFound) || errors.Is(err, tracepack.ErrSourceRead)
 }
 
 // start is c's start marker with its completeness in the window, cut to fit a message when it would not.
