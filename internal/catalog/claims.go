@@ -98,16 +98,23 @@ func (c *Catalog) recordChunk(ctx context.Context, l Lease, chunk []Listed, now 
 		return 0, err
 	}
 	c.hook(hookListingRead)
-	var claims, unattributed [][]any
+	// Each table's rows, their values flat, claimWidth and unattributedWidth a row, sized for the chunk once a row is added.
+	var claims, unattributed []any
 	for _, o := range chunk {
 		switch {
 		case claimed[o.Key]:
 			// An object with a row, a receipt's, is attributed by it; only one without is the operator's.
 		case o.Attr != nil:
-			claims = append(claims, []any{o.Key, o.Attr.Capture[:], int64(o.Attr.Seq), o.Attr.Hour, o.Size, "live"}) //nolint:gosec // a parsed seq is below 2^63
+			if claims == nil {
+				claims = make([]any, 0, claimWidth*(len(chunk)-len(odd)))
+			}
+			claims = append(claims, o.Key, o.Attr.Capture[:], int64(o.Attr.Seq), o.Attr.Hour, o.Size, "live") //nolint:gosec // a parsed seq is below 2^63
 			claimed[o.Key] = true
 		case !known[o.Key]:
-			unattributed = append(unattributed, []any{o.Key, o.Size, now})
+			if unattributed == nil {
+				unattributed = make([]any, 0, unattributedWidth*len(odd))
+			}
+			unattributed = append(unattributed, o.Key, o.Size, now)
 			known[o.Key] = true
 		default:
 			// Recorded unattributed already: its first sighting stays.
@@ -122,12 +129,12 @@ func (c *Catalog) recordChunk(ctx context.Context, l Lease, chunk []Listed, now 
 		if err := c.checkLease(ctx, tx, l); err != nil {
 			return err
 		}
-		n, err := insertListed(ctx, tx, c.d.insertIgnore+` INTO claim_objects (object_key, capture_id, seq, hour, size, state) VALUES `, claims)
+		n, err := insertListed(ctx, tx, c.d.insertIgnore+` INTO claim_objects (object_key, capture_id, seq, hour, size, state) VALUES `, claimWidth, claims)
 		if err != nil {
 			return err
 		}
 		added = n
-		_, err = insertListed(ctx, tx, c.d.insertIgnore+` INTO unattributed_objects (object_key, size, seen_at) VALUES `, unattributed)
+		_, err = insertListed(ctx, tx, c.d.insertIgnore+` INTO unattributed_objects (object_key, size, seen_at) VALUES `, unattributedWidth, unattributed)
 
 		return err
 	})
@@ -151,20 +158,19 @@ func (c *Catalog) recordedKeys(ctx context.Context, table string, keys []string)
 	return found, nil
 }
 
-// insertListed runs the multi-row insert prefix ... VALUES over rows, in statements of at most listingParams placeholders,
+// The values a row of claim_objects and of unattributed_objects binds in RecordListing's inserts.
+const (
+	claimWidth        = 6
+	unattributedWidth = 3
+)
+
+// insertListed runs the multi-row insert prefix ... VALUES over rows, width values a row, in statements of at most listingParams placeholders,
 // and returns the rows it inserted.
-func insertListed(ctx context.Context, tx *sqlx.Tx, prefix string, rows [][]any) (int, error) {
-	if len(rows) == 0 {
-		return 0, nil
-	}
-	row := listingTuple(len(rows[0]))
+func insertListed(ctx context.Context, tx *sqlx.Tx, prefix string, width int, rows []any) (int, error) {
+	row := listingTuple(width)
 	inserted := 0
-	for batch := range slices.Chunk(rows, listingParams/len(rows[0])) {
-		args := make([]any, 0, len(batch)*len(batch[0]))
-		for _, r := range batch {
-			args = append(args, r...)
-		}
-		res, err := tx.ExecContext(ctx, prefix+strings.TrimSuffix(strings.Repeat(row+", ", len(batch)), ", "), args...)
+	for args := range slices.Chunk(rows, listingParams/width*width) {
+		res, err := tx.ExecContext(ctx, prefix+strings.TrimSuffix(strings.Repeat(row+", ", len(args)/width), ", "), args...)
 		if err != nil {
 			return 0, err
 		}
