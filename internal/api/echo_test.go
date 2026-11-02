@@ -95,7 +95,8 @@ func TestPolicyShowQuotesNoID(t *testing.T) {
 			<-r.done
 			return err
 		}
-		answers := []string{errMessage(show("session=cookie-sentinel"))}
+		answers := make([]string, 0, 3)
+		answers = append(answers, errMessage(show("session=cookie-sentinel")))
 		catalogtest.ExecSQL(t, c, "ALTER TABLE policies RENAME TO policies_gone")
 		for _, id := range []string{"password=pw-sentinel", "Bearer token-sentinel"} {
 			err := show(id)
