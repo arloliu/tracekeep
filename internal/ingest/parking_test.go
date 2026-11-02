@@ -1,11 +1,13 @@
 package ingest
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"log/slog"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -240,6 +242,58 @@ func TestIngesterActsOnParking(t *testing.T) {
 		es, err = c.AuditEntries(ctx, admitted)
 		if err != nil || !slices.ContainsFunc(es, func(e catalog.AuditEntry) bool { return e.Action == ReasonBeyondRetention }) {
 			t.Errorf("audit %+v, %v; want the beyond-retention termination", es, err)
+		}
+	})
+}
+
+// An unconfirmed copy's publish is logged by fields the ingester builds, never its text, which can hold a server's description,
+// a URL or a credential, and its original deferred, never acknowledged;
+// the confirmation's controls keep their disposition: 10071 with a sequence confirms, a duplicate is suppressed,
+// a malformed 10071 and an unrelated error back off.
+func TestIngesterLogsAnUnconfirmedPublish(t *testing.T) {
+	t.Parallel()
+	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
+		ctx := t.Context()
+		p := newPipeline(t, c)
+		var logs bytes.Buffer
+		g := p.ingester(slog.New(slog.NewTextHandler(&logs, nil)))
+		g.Park = true
+		sentinels := []string{"pw-sentinel", "sig-sentinel", "tok-sentinel", "nats://", "https://"}
+		described := apiError(10077, "stream unavailable at https://user:pw-sentinel@host/path?X-Amz-Signature=sig-sentinel")
+		nested := fmt.Errorf("publish: %w", fmt.Errorf("dial nats://user:pw-sentinel@host?token=tok-sentinel: %w", errors.New("refused")))
+		ctxErr := fmt.Errorf("nats://user:pw-sentinel@host: %w", context.DeadlineExceeded)
+		backoff := []string{"nak " + nakDelay(3).String()}
+		for i, tc := range []struct {
+			name   string
+			bus    Publisher
+			want   []string
+			logged string // the fields of the failure line, empty for none
+		}{
+			{"an API error", answering{err: described}, backoff, "publish.code=400 publish.error_code=10077"},
+			{"an error wrapped twice", answering{err: nested}, backoff, "publish.class=publish-failed"},
+			{"a context error", answering{err: ctxErr}, backoff, `publish.error="context deadline exceeded"`},
+			{"10071 with a sequence", answering{err: apiError(10071, "wrong last sequence: 5")}, []string{"double-ack"}, ""},
+			{"a duplicate", answering{ack: &jetstream.PubAck{Sequence: 1, Duplicate: true}}, []string{"nak " + suppressedNakDelay.String()}, ""},
+			{"a malformed 10071", answering{err: apiError(10071, "wrong last sequence: x")}, backoff, "publish.code=400 publish.error_code=10071"},
+			{"an unrelated error", answering{err: jetstream.ErrNoStreamResponse}, backoff, "publish.class=publish-failed"},
+		} {
+			logs.Reset()
+			g.Coordinator = &Coordinator{Catalog: c, Bus: tc.bus, ParkPrefix: busconfig.DefaultParkPrefix}
+			h := &msg{}
+			d := delivered(transported(t, inline(t, tracepack.UUID{40, byte(i)}, dataRecord(5, now), nil)))
+			g.park(ctx, Entry{D: d, Msg: h}, ReasonUnknownCapture, 3)
+			if got := h.done(); !slices.Equal(got, tc.want) {
+				t.Errorf("%s: %v, want %v", tc.name, got, tc.want)
+			}
+			line := logs.String()
+			if failed := strings.Contains(line, "parking failed"); failed != (tc.logged != "") || !strings.Contains(line, tc.logged) {
+				t.Errorf("%s: the log %q, want a failure line holding %q", tc.name, line, tc.logged)
+			}
+			for _, s := range sentinels {
+				if strings.Contains(line, s) {
+					t.Errorf("%s: the log %q holds %q", tc.name, line, s)
+				}
+			}
 		}
 	})
 }

@@ -2,6 +2,7 @@ package ingest
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"slices"
@@ -61,8 +62,8 @@ func TestConfirmationFailuresConverge(t *testing.T) {
 		for i := range failures {
 			d, m := r.fetch(t)
 			p, err := k.Park(ctx, Entry{D: d, Msg: m}, ReasonUnknownCapture, 0)
-			if err != nil || p.Confirmation != Unconfirmed {
-				t.Fatalf("attempt %d (%v) = %+v, %v; want unconfirmed", i+1, failures[i], p, err)
+			if !errors.Is(err, failures[i]) || p.Confirmation != Unconfirmed {
+				t.Fatalf("attempt %d (%v) = %+v, %v; want unconfirmed with the publish's error", i+1, failures[i], p, err)
 			}
 			if n := msgs(t, parked); n != 0 || r.pending(t) != 1 {
 				t.Fatalf("attempt %d: %d copies stored, %d originals; want none and the original kept", i+1, n, r.pending(t))

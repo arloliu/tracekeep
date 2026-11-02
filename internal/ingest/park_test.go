@@ -268,8 +268,8 @@ func TestPark(t *testing.T) {
 
 		d, m := r.fetch(t)
 		p, err := k.Park(ctx, Entry{D: d, Msg: m}, ReasonUnknownCapture, 0)
-		if err != nil || p.Confirmation != Unconfirmed || p.Begun.State != catalog.VersionParking {
-			t.Fatalf("Park with the PubAck lost = %+v, %v; want unconfirmed", p, err)
+		if !errors.Is(err, context.DeadlineExceeded) || p.Confirmation != Unconfirmed || p.Begun.State != catalog.VersionParking {
+			t.Fatalf("Park with the PubAck lost = %+v, %v; want unconfirmed with the publish's error", p, err)
 		}
 		if err := m.NakWithDelay(0); err != nil {
 			t.Fatal(err)
