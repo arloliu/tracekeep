@@ -220,6 +220,7 @@ func TestAllocations(t *testing.T) {
 		"a zero base, still none":              {allocs(0), allocs(0), pass},
 		"a wobbling zero base, head above it":  {allocs(0, 1), allocs(2), regress},
 		"a wobbling zero base, head inside it": {allocs(0, 1), allocs(0), pass},
+		"a varying base with a zero median":    {allocs(0, 0, 1, 0, 0, 1, 0, 1, 0, 1), allocs(0, 0, 100, 0, 0, 100, 0, 100, 0, 100), inconclusive},
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
