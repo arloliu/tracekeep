@@ -8,6 +8,7 @@ import (
 	"crypto/x509"
 	"errors"
 	"fmt"
+	"net"
 	"net/url"
 	"os"
 	"strings"
@@ -66,6 +67,39 @@ type natsObjects struct {
 
 // errNotConnected reports a call on a dialed bus whose first dial has not returned.
 var errNotConnected = errors.New("producer: traffic connection not established yet")
+
+// errDirectReads refuses a claim bucket whose stream allows direct reads, which a lagging replica can answer (T-28).
+var errDirectReads = errors.New("producer: the claim bucket's stream allows direct reads, which a lagging replica can answer")
+
+// errClasses names the errors a log line knows by a class, matched in order.
+var errClasses = []struct {
+	err   error
+	class string
+}{
+	{errNotConnected, "not_connected"},
+	{errNoMaxPayload, "not_connected"},
+	{errClaimConflict, "claim_conflict"},
+	{ErrObjectNotFound, "object_not_found"},
+	{ErrObjectIncomplete, "object_incomplete"},
+	{ErrStreamNotFound, "stream_not_found"},
+	{errDirectReads, "direct_reads"},
+	{jetstream.ErrNoStreamResponse, "no_stream_response"},
+	{nats.ErrTimeout, "timeout"},
+	{nats.ErrNoResponders, "no_responders"},
+	{nats.ErrConnectionClosed, "connection_closed"},
+	{nats.ErrConnectionReconnecting, "reconnecting"},
+	{nats.ErrNoServers, "no_servers"},
+	{nats.ErrAuthorization, "authorization"},
+	{nats.ErrAuthExpired, "auth_expired"},
+	{nats.ErrAccountAuthExpired, "auth_expired"},
+	{nats.ErrAuthRevoked, "auth_revoked"},
+	{nats.ErrPermissionViolation, "permission"},
+	{nats.ErrSlowConsumer, "slow_consumer"},
+	{nats.ErrStaleConnection, "stale_connection"},
+	{nats.ErrMaxPayload, "max_payload"},
+	{nats.ErrSecureConnRequired, "tls"},
+	{nats.ErrSecureConnWanted, "tls"},
+}
 
 // newNATSBus builds the default bus over nc, or, when nc is nil, one that dial connects from cfg.
 func newNATSBus(cfg *Config, tun *Tunables, nc *nats.Conn) (*natsBus, error) {
@@ -148,22 +182,25 @@ func dialOptions(cfg *Config, b *natsBus) ([]nats.Option, error) {
 		nats.RetryOnFailedConnect(true),
 		nats.IgnoreAuthErrorAbort(),
 		nats.DisconnectErrHandler(func(_ *nats.Conn, err error) {
-			b.log.Warn("producer: traffic connection lost", "error", err)
+			b.log.Warn("producer: traffic connection lost", errFields(err)...)
 		}),
 		nats.ReconnectHandler(func(nc *nats.Conn) {
 			b.log.Info("producer: traffic connection restored", "server", nc.ConnectedUrlRedacted())
 		}),
 		nats.ErrorHandler(func(_ *nats.Conn, _ *nats.Subscription, err error) {
-			b.log.Warn("producer: traffic connection error", "error", err)
+			b.log.Warn("producer: traffic connection error", errFields(err)...)
 		}),
-		nats.ClosedHandler(func(nc *nats.Conn) {
-			if err := nc.LastError(); err != nil {
-				b.log.Error("producer: traffic connection closed", "error", err)
-			}
-		}),
+		nats.ClosedHandler(func(nc *nats.Conn) { b.closedWith(nc.LastError()) }),
 	}, auth...)
 
 	return append(opts, tlsOptions(&cfg.TLS)...), nil
+}
+
+// closedWith logs a connection that closed with err; a clean close, err nil, logs nothing.
+func (b *natsBus) closedWith(err error) {
+	if err != nil {
+		b.log.Error("producer: traffic connection closed", errFields(err)...)
+	}
 }
 
 // dial makes the first connection, which nats.go attempts on the calling goroutine before it retries in the background,
@@ -172,13 +209,13 @@ func dialOptions(cfg *Config, b *natsBus) ([]nats.Option, error) {
 func (b *natsBus) dial(tun *Tunables) {
 	nc, err := b.opts.Connect()
 	if err != nil {
-		b.log.Error("producer: traffic connection cannot be made", "error", redact(err))
+		b.log.Error("producer: traffic connection cannot be made", errFields(err)...)
 		return
 	}
 	c, err := newNATSConn(nc, tun)
 	if err != nil {
 		nc.Close()
-		b.log.Error("producer: traffic connection cannot be made", "error", redact(err))
+		b.log.Error("producer: traffic connection cannot be made", errFields(err)...)
 
 		return
 	}
@@ -230,6 +267,45 @@ func checkTLSFiles(t *TLSConfig) error {
 	}
 
 	return nil
+}
+
+// errFields describes err for a log line by fields the SDK builds, never by its text,
+// which can hold a server URL with credentials, an object name or a backend's text (producer.md §4.3 *Diagnostics*):
+// a context's end, a JetStream API error's status and error code, else a class.
+func errFields(err error) []any {
+	var api jetstream.JetStreamError
+	switch {
+	case err == nil:
+		return nil
+	case errors.Is(err, context.DeadlineExceeded):
+		return []any{"context", "deadline_exceeded"}
+	case errors.Is(err, context.Canceled):
+		return []any{"context", "canceled"}
+	case errors.As(err, &api) && api.APIError() != nil:
+		a := api.APIError()
+		return []any{"status", a.Code, "error_code", int(a.ErrorCode)}
+	}
+	for _, c := range errClasses {
+		if errors.Is(err, c.err) {
+			return []any{"class", c.class}
+		}
+	}
+	var (
+		ne   net.Error
+		op   *net.OpError
+		cert *tls.CertificateVerificationError
+		hdr  tls.RecordHeaderError
+	)
+	switch {
+	case errors.As(err, &cert), errors.As(err, &hdr):
+		return []any{"class", "tls"}
+	case errors.As(err, &ne) && ne.Timeout():
+		return []any{"class", "timeout"}
+	case errors.As(err, &op):
+		return []any{"class", "network"}
+	default:
+		return []any{"class", "other"}
+	}
 }
 
 // redact drops the URL from a url.Error, which spells it with any credentials it holds.
@@ -347,7 +423,7 @@ func (b *natsBus) Objects(ctx context.Context, bucket string) (Objects, error) {
 		return nil, fmt.Errorf("producer: claim bucket %s: %w", bucket, err)
 	}
 	if s.CachedInfo().Config.AllowDirect {
-		return nil, fmt.Errorf("producer: claim bucket %s: its stream %s allows direct reads, which a lagging replica can answer", bucket, stream)
+		return nil, fmt.Errorf("claim bucket %s, stream %s: %w", bucket, stream, errDirectReads)
 	}
 	store, err := c.js.ObjectStore(ctx, bucket)
 	if err != nil {

@@ -418,7 +418,7 @@ func (pb *publisher) publishReserved(st *capState, pd *pending, now time.Time) b
 
 func (pb *publisher) retryReserved(st *capState, now time.Time, err error) {
 	if st.fails == 0 {
-		pb.p.log.Warn("producer: reserved record not accepted, retrying", "capture_id", st.cap.ID.String(), "error", err)
+		pb.p.log.Warn("producer: reserved record not accepted, retrying", append([]any{"capture_id", st.cap.ID.String()}, errFields(err)...)...)
 	}
 	pb.failed(err)
 	st.fails++
@@ -709,7 +709,7 @@ func (pb *publisher) failed(err error) {
 		return // Close cancelled the attempt: no sign of the bus
 	}
 	if !pb.busDown {
-		pb.p.log.Warn("producer: traffic bus unreachable", "error", err)
+		pb.p.log.Warn("producer: traffic bus unreachable", errFields(err)...)
 	}
 	pb.setBusDown(true)
 }

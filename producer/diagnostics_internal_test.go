@@ -2,13 +2,19 @@ package producer
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"net"
+	"net/url"
 	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 
 	"github.com/arloliu/go-secs/tracepack"
 )
@@ -25,7 +31,7 @@ type LineLog struct {
 func NewLineLog() *LineLog { return &LineLog{Seen: make(chan string, 64)} }
 
 func (l *LineLog) line(level, msg string, args []any) {
-	s := level + " " + msg + " " + fmt.Sprint(args...)
+	s := level + " " + msg + " " + fmt.Sprint(args)
 	l.mu.Lock()
 	l.lines = append(l.lines, s)
 	l.mu.Unlock()
@@ -50,6 +56,34 @@ func (l *LineLog) Lines() []string {
 	defer l.mu.Unlock()
 
 	return slices.Clone(l.lines)
+}
+
+// logSentinels are what an error's text may carry and no log line of the SDK may:
+// a URL's user information and query, a token, a password, an object name and a backend's text.
+var logSentinels = []string{"sentinel-user", "sentinel-password", "sentinel-query", "sentinel-token", "sentinel-object", "sentinel-backend"}
+
+// SentinelError returns an error nested twice whose text holds every one of logSentinels.
+func SentinelError() error {
+	u := &url.Error{
+		Op:  "dial",
+		URL: "nats://sentinel-user:sentinel-password@bus.invalid:4222/?q=sentinel-query&auth=sentinel-token",
+		Err: errors.New("sentinel-backend refused sentinel-object"),
+	}
+
+	return fmt.Errorf("outer: %w", fmt.Errorf("middle: %w", u))
+}
+
+// CheckFieldLine fails t when line holds any of logSentinels or describes no error by a field the SDK builds.
+func CheckFieldLine(t *testing.T, line string) {
+	t.Helper()
+	for _, s := range logSentinels {
+		if strings.Contains(line, s) {
+			t.Errorf("line %q holds %s", line, s)
+		}
+	}
+	if !strings.Contains(line, "class ") && !strings.Contains(line, "status ") && !strings.Contains(line, "context ") {
+		t.Errorf("line %q describes no error by its fields", line)
+	}
 }
 
 // closeAsync runs Close on a goroutine of its own and closes the returned channel once it returned.
@@ -318,5 +352,93 @@ func TestConcurrentCloseReportsOnce(t *testing.T) {
 	}
 	if got := m.finals.Load(); got != 1 {
 		t.Errorf("%d final reports, want 1", got)
+	}
+}
+
+// The connection's disconnect, async-error and closed callbacks log an error by the fields the SDK builds, never its text.
+func TestBusCallbacksLogFieldsNotText(t *testing.T) {
+	t.Parallel()
+	tun := Tunables{}.withDefaults()
+	b, err := newNATSBus(&Config{Servers: []string{"nats://127.0.0.1:4222"}}, &tun, nil)
+	if err != nil {
+		t.Fatalf("newNATSBus: %v", err)
+	}
+	log := NewLineLog()
+	b.log = log
+	for _, tc := range []struct {
+		name string
+		err  error
+		want string
+	}{
+		{"nested", SentinelError(), "class other"},
+		{"jetstream", fmt.Errorf("publish: %w", &jetstream.APIError{Code: 503, ErrorCode: 10077, Description: "sentinel-backend holds sentinel-object"}), "status 503 error_code 10077"},
+		{"deadline", fmt.Errorf("%w: %w", context.DeadlineExceeded, SentinelError()), "context deadline_exceeded"},
+		{"network", fmt.Errorf("read: %w", &net.OpError{Op: "dial", Net: "tcp", Err: SentinelError()}), "class network"},
+		{"nats", fmt.Errorf("%w: %w", nats.ErrAuthorization, SentinelError()), "class authorization"},
+	} {
+		before := len(log.Lines())
+		b.opts.DisconnectedErrCB(nil, tc.err)
+		b.opts.AsyncErrorCB(nil, nil, tc.err)
+		b.closedWith(tc.err)
+		lines := log.Lines()[before:]
+		if len(lines) != 3 {
+			t.Fatalf("%s: %d lines, want 3", tc.name, len(lines))
+		}
+		for _, l := range lines {
+			CheckFieldLine(t, l)
+			if !strings.Contains(l, tc.want) {
+				t.Errorf("%s: line %q, want %q", tc.name, l, tc.want)
+			}
+		}
+	}
+}
+
+// failDialer fails every dial with err.
+type failDialer struct{ err error }
+
+func (d failDialer) Dial(string, string) (net.Conn, error) { return nil, d.err }
+
+// The first dial's failure is logged by its fields: neither the server URL's credentials nor the dialer's text reach the line.
+func TestFirstDialFailureLogsFieldsNotText(t *testing.T) {
+	t.Parallel()
+	tun := Tunables{}.withDefaults()
+	cfg := Config{Servers: []string{"nats://sentinel-user:sentinel-password@127.0.0.1:1/?q=sentinel-query"}}
+	b, err := newNATSBus(&cfg, &tun, nil)
+	if err != nil {
+		t.Fatalf("newNATSBus: %v", err)
+	}
+	log := NewLineLog()
+	b.log = log
+	b.opts.RetryOnFailedConnect = false
+	b.opts.CustomDialer = failDialer{err: &net.OpError{Op: "dial", Net: "tcp", Err: SentinelError()}}
+	b.dial(&tun)
+	lines := log.Lines()
+	if len(lines) != 1 {
+		t.Fatalf("lines %q, want the dial's one", lines)
+	}
+	CheckFieldLine(t, lines[0])
+}
+
+// infoFailBus is a recBus whose stream reads fail with err.
+type infoFailBus struct {
+	*recBus
+	err error
+}
+
+func (b infoFailBus) StreamInfo(context.Context, string) (StreamInfo, error) {
+	return StreamInfo{}, b.err
+}
+
+// The automatic preflight's failure is logged by its fields, never the bus error's text.
+func TestAutomaticPreflightFailureLogsFieldsNotText(t *testing.T) {
+	t.Parallel()
+	log := NewLineLog()
+	p := newSinkProducer(t, log, nopMetrics{}, WithBus(infoFailBus{recBus: newRecBus(), err: SentinelError()}))
+	p.autoPreflight()
+	select {
+	case l := <-log.Seen:
+		CheckFieldLine(t, l)
+	case <-t.Context().Done():
+		t.Fatal("no preflight line")
 	}
 }

@@ -247,8 +247,8 @@ func TestClaimBucketWithDirectReadsIsRefused(t *testing.T) {
 	}
 	// At the minimum max_payload the start itself goes by claim-check.
 	line := log.wait(t, "producer: reserved record not accepted")
-	if !strings.Contains(line, "direct reads") {
-		t.Fatalf("retry logged %q, want the direct-read refusal", line)
+	if !strings.Contains(line, "class direct_reads") {
+		t.Fatalf("retry logged %q, want the direct-read refusal's class", line)
 	}
 
 	ctx := t.Context()
@@ -290,7 +290,7 @@ func TestStartPublishMakesOneAttempt(t *testing.T) {
 	if took := time.Since(start); took >= 400*time.Millisecond {
 		t.Errorf("the start's first failure came after %v: the client retried it", took)
 	}
-	if !strings.Contains(line, "no response from stream") {
+	if !strings.Contains(line, "class no_stream_response") {
 		t.Errorf("first failure %q, want no response from a stream", line)
 	}
 }

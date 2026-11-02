@@ -1,10 +1,12 @@
 package producer_test
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
 	"github.com/arloliu/go-secs/tracepack"
+	tpbus "github.com/arloliu/go-secs/tracepack/bus"
 	"github.com/arloliu/tracekeep/producer"
 )
 
@@ -65,6 +67,70 @@ func TestEveryCounterIsReportedFromZero(t *testing.T) {
 	}
 	if n != len(observed) {
 		t.Errorf("%d records_observed_total series, want only the %d the SDK emits", n, len(observed))
+	}
+}
+
+// failureLines waits for the publisher's two lines about a reserved record's failed attempt and returns them;
+// every other line it reads must hold no sentinel either.
+func failureLines(t *testing.T, log *producer.LineLog) []string {
+	t.Helper()
+	var got []string
+	for len(got) < 2 {
+		select {
+		case l := <-log.Seen:
+			if strings.Contains(l, "not accepted") || strings.Contains(l, "bus unreachable") {
+				got = append(got, l)
+			} else if strings.Contains(l, "sentinel-") {
+				t.Errorf("line %q holds a sentinel", l)
+			}
+		case <-t.Context().Done():
+			t.Fatalf("lines %q, want the retry's and the bus's", got)
+		}
+	}
+
+	return got
+}
+
+// A publish failing with a credential in a wrapped error is logged by the fields the SDK builds, never the error's text.
+func TestPublishFailureLogsFieldsNotText(t *testing.T) {
+	t.Parallel()
+	log := producer.NewLineLog()
+	h := newHarness(t, producer.Tunables{}, producer.WithLogger(log))
+	h.bus.FailPublish(func(*producer.Msg) error { return producer.SentinelError() })
+	h.begin()
+	for _, l := range failureLines(t, log) {
+		producer.CheckFieldLine(t, l)
+	}
+}
+
+// A reserved record's claim read and put failing with the object's name and a backend's text are logged by their fields.
+func TestClaimFailureLogsFieldsNotText(t *testing.T) {
+	t.Parallel()
+	for _, op := range []string{"info", "put"} {
+		t.Run(op, func(t *testing.T) {
+			t.Parallel()
+			log := producer.NewLineLog()
+			h := newHarness(t, producer.Tunables{}, producer.WithLogger(log))
+			h.bus.SetMaxPayload(tpbus.MinMaxPayload) // the start's body no longer fits inline: it goes by claim-check
+			h.bus.FailObjects(func(o, name string) error {
+				if o == op {
+					return fmt.Errorf("%s %s: %w", o, name, producer.SentinelError())
+				}
+
+				return nil
+			})
+			c := h.begin()
+			name, err := tpbus.MsgID(c.ID, 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, l := range failureLines(t, log) {
+				producer.CheckFieldLine(t, l)
+				if strings.Contains(l, name) {
+					t.Errorf("line %q names the claim object", l)
+				}
+			}
+		})
 	}
 }
 
