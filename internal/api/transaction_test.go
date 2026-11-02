@@ -171,8 +171,10 @@ func TestFindTransactionRefusals(t *testing.T) {
 			t.Errorf("an hour that is not an hour's start = %v, want invalid_argument", err)
 		}
 		m.srv.Records.MaxLookupPacks = 1
-		if _, err := find(m, t, capture, 1, viewerToken); connect.CodeOf(err) != connect.CodeResourceExhausted {
-			t.Errorf("an hour of two packs, at most one = %v, want resource_exhausted", err)
+		// The refusal names the hour in RFC 3339; tracepack's own text, which names it as an epoch hour, is go-secs' (T-53).
+		if _, err := find(m, t, capture, 1, viewerToken); connect.CodeOf(err) != connect.CodeResourceExhausted ||
+			!strings.Contains(err.Error(), "hour 2026-06-21T00:00:00Z holds") {
+			t.Errorf("an hour of two packs, at most one = %v, want resource_exhausted naming the hour in RFC 3339", err)
 		}
 	})
 }

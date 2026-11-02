@@ -254,7 +254,7 @@ func TestPackURLExpiryInWholeSeconds(t *testing.T) {
 type failingAudit struct{ *catalog.Catalog }
 
 func (failingAudit) Audit(context.Context, catalog.AuditEntry) error {
-	return errors.New("audit refused")
+	return errors.New(auditSentinel)
 }
 
 // A URL whose audit row cannot be written is not issued.
@@ -346,7 +346,7 @@ func (brokenSigner) PresignGet(_ context.Context, key string, _ time.Time) (stri
 	return "", time.Time{}, fmt.Errorf("presign %s: the store broke", key)
 }
 
-// A presign that fails answers internal without the object's key.
+// A presign that fails answers the store unavailable, without the object's key or the store's text.
 func TestPackURLNamesNoKey(t *testing.T) {
 	t.Parallel()
 	w := newWorld(t, catalogtest.Open(t, catalog.EngineSQLite))
@@ -355,7 +355,7 @@ func TestPackURLNamesNoKey(t *testing.T) {
 	w.srv.Downloads.Presigner = brokenSigner{}
 	p := w.stage(t, w.admit(t))
 	_, err := packURL(t, w, p.ID.String())
-	if connect.CodeOf(err) != connect.CodeInternal || strings.Contains(err.Error(), p.Key) || strings.Contains(err.Error(), "broke") {
-		t.Errorf("PackURL over a broken signer = %v; want internal, without the key or the store's text", err)
+	if connect.CodeOf(err) != connect.CodeUnavailable || strings.Contains(err.Error(), p.Key) || strings.Contains(err.Error(), "broke") {
+		t.Errorf("PackURL over a broken signer = %v; want unavailable, without the key or the store's text", err)
 	}
 }

@@ -37,7 +37,9 @@ func (s *Server) FindTransaction(ctx context.Context, req *connect.Request[tkv1.
 	}
 	defer release()
 	c, err := s.Catalog.Capture(ctx, capture)
-	if err != nil {
+	if errors.Is(err, catalog.ErrUnknownCapture) {
+		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("find transaction of %s: the catalog knows no such capture", capture))
+	} else if err != nil {
 		return nil, failed(err)
 	}
 	if withheld, err := s.withholds(ctx, &c.ConfigID); err != nil {
@@ -56,7 +58,12 @@ func (s *Server) FindTransaction(ctx context.Context, req *connect.Request[tkv1.
 	return connect.NewResponse(src.response(&res, key.Hour)), nil
 }
 
-// lookupFailed maps a lookup's error to its Connect code.
+// errOtherCapture refuses a pack the catalog files under a capture its header does not name.
+var errOtherCapture = errors.New("the pack is of another capture")
+
+// lookupFailed maps a lookup's error to its Connect code:
+// the store's failure, a pack missing or unreadable included, before a pack that does not open as one of the capture,
+// which a retry cannot cure (api.md §10.1 *Records*), as tracepack wraps a failed read in what it reports.
 func lookupFailed(capture tracepack.UUID, seq uint64, err error) error {
 	err = fmt.Errorf("find transaction of %s seq %d: %w", capture, seq, err)
 	switch {
@@ -68,8 +75,13 @@ func lookupFailed(capture tracepack.UUID, seq uint64, err error) error {
 		return connect.NewError(connect.CodeResourceExhausted, err)
 	case connect.CodeOf(err) != connect.CodeUnknown:
 		return err
+	case storeFailed(err):
+		return dependency(connect.CodeUnavailable, msgStore, err)
+	case errors.Is(err, tracepack.ErrCorrupt), errors.Is(err, tracepack.ErrNotTracepack), errors.Is(err, tracepack.ErrUnsupportedFormat),
+		errors.Is(err, errOtherCapture):
+		return connect.NewError(connect.CodeDataLoss, err)
 	default:
-		return connect.NewError(connect.CodeUnavailable, err)
+		return dependency(connect.CodeUnavailable, msgCatalog, err)
 	}
 }
 
@@ -99,7 +111,7 @@ func (src *hourSource) Readers(ctx context.Context, hour int64) ([]*tracepack.Re
 		return nil, records.ErrWithheld
 	}
 	if len(rs.Packs) > src.limit {
-		return nil, fmt.Errorf("%w: hour %d holds %d packs, at most %d", errLookupPacks, hour, len(rs.Packs), src.limit)
+		return nil, fmt.Errorf("%w: hour %s holds %d packs, at most %d", errLookupPacks, hourRFC(hour), len(rs.Packs), src.limit)
 	}
 	out := make([]*tracepack.Reader, 0, len(rs.Packs))
 	for _, p := range rs.Packs {
@@ -110,7 +122,7 @@ func (src *hourSource) Readers(ctx context.Context, hour int64) ([]*tracepack.Re
 		src.objs = append(src.objs, obj)
 		r, err := tracepack.Open(ctx, obj, obj.Size(), tracepack.ReaderOptions{})
 		if err == nil && r.Header().CaptureID != src.capture {
-			err = errors.New("of another capture")
+			err = errOtherCapture
 		}
 		if err != nil {
 			return nil, fmt.Errorf("open pack %s: %w", p.ID, err)

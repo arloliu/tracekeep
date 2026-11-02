@@ -143,6 +143,7 @@ func (c *Catalog) Audit(ctx context.Context, e AuditEntry) error {
 }
 
 // auditIn appends e on q: the write pool, or the transaction whose audit row it is.
+// Its failure wraps ErrAudit, so a caller tells a failed audit row from the rest of a transaction's failures (api.md §10.1).
 func (c *Catalog) auditIn(ctx context.Context, q sqlx.ExecerContext, e AuditEntry) error {
 	var id [16]byte
 	_, _ = rand.Read(id[:])
@@ -153,7 +154,7 @@ func (c *Catalog) auditIn(ctx context.Context, q sqlx.ExecerContext, e AuditEntr
 	_, err := q.ExecContext(ctx, `INSERT INTO audit_log (audit_id, at, actor, action, action_id, capture_id, detail) VALUES (?, ?, ?, ?, ?, ?, ?)`,
 		id[:], c.now(), e.Actor, e.Action, nullString(e.ActionID), capture, nullString(e.Detail))
 	if err != nil {
-		return fmt.Errorf("catalog: audit %s: %w", e.Action, err)
+		return fmt.Errorf("%w: %s: %w", ErrAudit, e.Action, err)
 	}
 
 	return nil

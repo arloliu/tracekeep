@@ -25,6 +25,7 @@ import (
 	"github.com/arloliu/tracekeep/internal/catalog"
 	"github.com/arloliu/tracekeep/internal/procconfig"
 	"github.com/arloliu/tracekeep/internal/records"
+	"github.com/arloliu/tracekeep/internal/store"
 	tkv1 "github.com/arloliu/tracekeep/proto/tracekeep/v1"
 )
 
@@ -322,16 +323,24 @@ func (w *recordWriter) capture(ctx context.Context, c *catalog.CaptureInfo) erro
 }
 
 // readFailed maps a read's error to its Connect code: the limit passes through, a withheld capture is a failed precondition,
-// anything else not already a Connect error is unavailable, which the client retries.
+// anything else not already a Connect error is the store or the catalog unavailable, which the client retries.
 func readFailed(err error) error {
 	switch {
 	case errors.Is(err, errLimit) || connect.CodeOf(err) != connect.CodeUnknown:
 		return err
 	case errors.Is(err, records.ErrWithheld):
 		return connect.NewError(connect.CodeFailedPrecondition, err)
+	case storeFailed(err):
+		return dependency(connect.CodeUnavailable, msgStore, err)
 	default:
-		return connect.NewError(connect.CodeUnavailable, err)
+		return dependency(connect.CodeUnavailable, msgCatalog, err)
 	}
+}
+
+// storeFailed tells whether err is the store's: an object missing or unreadable, or a read's context ended, as records.Keyless makes them.
+func storeFailed(err error) bool {
+	return errors.Is(err, records.ErrStore) || errors.Is(err, store.ErrNotFound) || errors.Is(err, tracepack.ErrSourceRead) ||
+		errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
 }
 
 // start is c's start marker with its completeness in the window, cut to fit a message when it would not.
@@ -403,7 +412,7 @@ func (s *Server) withholds(ctx context.Context, config *int64) (bool, error) {
 	}
 	content, err := procconfig.Decode(b)
 	if err != nil {
-		return false, connect.NewError(connect.CodeInternal, fmt.Errorf("api: configuration %d: %w", *config, err))
+		return false, dependency(connect.CodeInternal, msgCatalog, fmt.Errorf("api: configuration %d: %w", *config, err))
 	}
 
 	return content.Policy == nil, nil

@@ -427,8 +427,10 @@ func TestDownloadEndsWithAStalledReader(t *testing.T) {
 	expiry := time.Now().Add(2 * time.Second).Truncate(time.Second)
 	clock, sent := requestClock(expiry, 300*time.Millisecond)
 	tokens := &auth.Downloads{Keys: downloadKeys(t, c), Now: clock}
+	var logs bytes.Buffer
 	st := closes{ObjectStore: mem, closed: make(chan struct{}, 1)}
-	s := &Server{Catalog: c, Auth: testAuthenticator(nil), Store: st, Downloads: Downloads{Tokens: tokens, Now: clock}}
+	s := &Server{Catalog: c, Auth: testAuthenticator(nil), Store: st, Downloads: Downloads{Tokens: tokens, Now: clock},
+		Log: slog.New(slog.NewTextHandler(&logs, nil))}
 	srv := httptest.NewServer(s.Handler())
 	t.Cleanup(srv.Close)
 	tok, err := tokens.Sign(t.Context(), objectKey, expiry)
@@ -452,6 +454,10 @@ func TestDownloadEndsWithAStalledReader(t *testing.T) {
 	case <-st.closed:
 	case <-time.After(10 * time.Second):
 		t.Error("a transfer to a reader that stopped outlived its deadline")
+	}
+	// The write that passed the deadline after the headers is logged once, keyless.
+	if strings.Count(logs.String(), "api: download failed") != 1 || strings.Contains(logs.String(), objectKey) {
+		t.Errorf("the log = %q, want one keyless failure line", logs.String())
 	}
 }
 

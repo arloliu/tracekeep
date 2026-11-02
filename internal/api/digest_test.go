@@ -146,13 +146,18 @@ func TestDigestRefusals(t *testing.T) {
 	if connect.CodeOf(err) != connect.CodePermissionDenied {
 		t.Errorf("Digest as a restorer = %v, want permission denied", err)
 	}
-	m.srv.Keys = failingKeys{fmt.Errorf("%w: d-1", keys.ErrUnknownKey)}
-	if _, err := m.cl.Digest(t.Context(), digestReq("d-1", good...)); connect.CodeOf(err) != connect.CodeFailedPrecondition {
-		t.Errorf("Digest with its key refused = %v, want failed precondition", err)
+	// A key provider's error, its reference included, reaches the log and never the answer, which says what failed.
+	m.srv.Keys = failingKeys{fmt.Errorf("%w: d-1, %s", keys.ErrUnknownKey, keySentinel)}
+	if _, err := m.cl.Digest(t.Context(), digestReq("d-1", good...)); connect.CodeOf(err) != connect.CodeFailedPrecondition ||
+		errMessage(err) != "digest: "+msgKeyRefused {
+		t.Errorf("Digest with its key refused = %v, want failed precondition with a fixed message", err)
 	}
-	m.srv.Keys = failingKeys{errors.New("provider down")}
-	if _, err := m.cl.Digest(t.Context(), digestReq("d-1", good...)); connect.CodeOf(err) != connect.CodeUnavailable {
-		t.Errorf("Digest with its key unavailable = %v, want unavailable", err)
+	m.srv.Keys = failingKeys{errors.New("provider down: " + keySentinel)}
+	if _, err := m.cl.Digest(t.Context(), digestReq("d-1", good...)); connect.CodeOf(err) != connect.CodeUnavailable || errMessage(err) != msgKeys {
+		t.Errorf("Digest with its key unavailable = %v, want unavailable with a fixed message", err)
+	}
+	if strings.Count(m.logs.String(), "ref-sentinel") != 2 {
+		t.Errorf("the log = %s\nwant each key failure's cause", m.logs)
 	}
 	// The checks run before the key is resolved: an invalid input is refused as invalid, the provider down notwithstanding.
 	if _, err := m.cl.Digest(t.Context(), digestReq("d-1", with(func(in *tkv1.DigestInput) { in.Kind = "record" })...)); connect.CodeOf(err) != connect.CodeInvalidArgument {
@@ -160,8 +165,11 @@ func TestDigestRefusals(t *testing.T) {
 	}
 	m.srv.Keys = m.keys
 	m.srv.Catalog = failingAudit{c}
-	if resp, err := m.cl.Digest(t.Context(), digestReq("d-1", good...)); connect.CodeOf(err) != connect.CodeInternal || resp != nil {
-		t.Errorf("Digest with a failing audit = %v, %v; want nothing", resp, err)
+	if resp, err := m.cl.Digest(t.Context(), digestReq("d-1", good...)); connect.CodeOf(err) != connect.CodeInternal || resp != nil || errMessage(err) != msgAudit {
+		t.Errorf("Digest with a failing audit = %v, %v; want nothing, and a fixed message", resp, err)
+	}
+	if !strings.Contains(m.logs.String(), auditSentinel) {
+		t.Errorf("the log = %s\nwant the audit failure's cause", m.logs)
 	}
 	m.srv.Catalog = c
 	if rows, err := c.AuditByActor(t.Context(), "scorer"); err != nil || len(rows) != 0 {
