@@ -8,10 +8,12 @@
 // Allocations, and bytes from a zero base, are exact: any increase of the median regresses.
 // A rate, a unit ending in /s, is judged as its inverse, a time.
 // A row or a metric missing on any side fails; a row run with other -cpu is another row, so it fails too.
+// A row a -fixed pattern matches runs at a fixed -benchtime Nx: every sample on every side must show the same iterations, or it fails.
+// Each -require pattern must match a row on every side, or the run fails, so a benchmark that skipped everywhere is not passed.
 //
 // Usage:
 //
-//	benchjudge base1.txt base2.txt head.txt
+//	benchjudge [-fixed regexp]... [-require regexp]... base1.txt base2.txt head.txt
 //
 // It prints a table and exits 0 when every metric passes, 3 when some are inconclusive and none regressed,
 // and 1 when one regressed or failed, or nothing was compared.
@@ -19,11 +21,14 @@ package main
 
 import (
 	"bufio"
+	"flag"
 	"fmt"
 	"io"
+	"maps"
 	"math"
 	"math/rand/v2"
 	"os"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -54,8 +59,38 @@ const (
 
 func (v verdict) String() string { return [...]string{"pass", "inconclusive", "REGRESS", "FAIL"}[v] }
 
-// rows maps a row, its package and its name with the -cpu suffix, to its samples of each metric.
-type rows map[string]map[string][]float64
+// rows maps a row, its package and its name with the -cpu suffix, to its samples.
+type rows map[string]*row
+
+// row is a row's samples: the iterations of each, and each metric's values.
+type row struct {
+	iters   []int64
+	metrics map[string][]float64
+}
+
+// patterns is a repeatable flag of regular expressions, matched against a row's package and name.
+type patterns []*regexp.Regexp
+
+func (p *patterns) String() string { return fmt.Sprint(*p) }
+
+func (p *patterns) Set(v string) error {
+	re, err := regexp.Compile(v)
+	if err != nil {
+		return err
+	}
+	*p = append(*p, re)
+
+	return nil
+}
+
+func (p patterns) match(name string) bool {
+	return slices.ContainsFunc(p, func(re *regexp.Regexp) bool { return re.MatchString(name) })
+}
+
+// options are the rows run at a fixed N and the rows required on every side.
+type options struct {
+	fixed, require patterns
+}
 
 // judgement is one metric of one row: the sides' medians, the repeatability and allowance, the interval and the verdict.
 type judgement struct {
@@ -68,12 +103,16 @@ type judgement struct {
 }
 
 func main() {
-	if len(os.Args) != 4 {
-		fmt.Fprintln(os.Stderr, "usage: benchjudge base1.txt base2.txt head.txt")
+	var o options
+	flag.Var(&o.fixed, "fixed", "a `regexp` of rows run at a fixed -benchtime Nx, whose iterations must match; repeatable")
+	flag.Var(&o.require, "require", "a `regexp` that must match a row on every side; repeatable")
+	flag.Parse()
+	if flag.NArg() != 3 {
+		fmt.Fprintln(os.Stderr, "usage: benchjudge [-fixed regexp]... [-require regexp]... base1.txt base2.txt head.txt")
 		os.Exit(2)
 	}
-	sets := make([]rows, 3)
-	for i, path := range os.Args[1:] {
+	var sets [3]rows
+	for i, path := range flag.Args() {
 		f, err := os.Open(path) //nolint:gosec // the operator names the files to read
 		if err != nil {
 			fmt.Fprintln(os.Stderr, err)
@@ -86,7 +125,7 @@ func main() {
 			os.Exit(2)
 		}
 	}
-	js := judge(sets[0], sets[1], sets[2])
+	js := judge(sets, o)
 	report(os.Stdout, js)
 	os.Exit(exitCode(js))
 }
@@ -108,35 +147,42 @@ func parse(r io.Reader) (rows, error) {
 		if len(f) < 4 || !strings.HasPrefix(f[0], "Benchmark") || len(f)%2 != 0 {
 			continue
 		}
-		if _, err := strconv.ParseInt(f[1], 10, 64); err != nil {
+		iters, err := strconv.ParseInt(f[1], 10, 64)
+		if err != nil {
 			continue
 		}
-		row := pkg + " " + f[0]
-		if out[row] == nil {
-			out[row] = map[string][]float64{}
+		name := pkg + " " + f[0]
+		if out[name] == nil {
+			out[name] = &row{metrics: map[string][]float64{}}
 		}
+		r := out[name]
+		r.iters = append(r.iters, iters)
 		for i := 2; i < len(f); i += 2 {
 			v, err := strconv.ParseFloat(f[i], 64)
 			if err != nil {
-				return nil, fmt.Errorf("%s: %q is not a value", row, f[i])
+				return nil, fmt.Errorf("%s: %q is not a value", name, f[i])
 			}
 			if strings.HasSuffix(f[i+1], "/s") {
 				v = 1 / v // a rate is judged as the time it takes
 			}
-			out[row][f[i+1]] = append(out[row][f[i+1]], v)
+			r.metrics[f[i+1]] = append(r.metrics[f[i+1]], v)
 		}
 	}
 
 	return out, sc.Err()
 }
 
-// judge judges every metric of every row any side holds, in the order of their names.
-func judge(base1, base2, head rows) []judgement {
+// sideNames name the three sides, in the order judge takes them.
+var sideNames = [3]string{"base1", "base2", "head"}
+
+// judge judges every metric of every row any side holds, in the order of their names,
+// a fixed-N row whose iterations differ failing whole; then it fails each required pattern no row of a side matches.
+func judge(sides [3]rows, o options) []judgement {
 	names := map[string]bool{}
-	for _, set := range []rows{base1, base2, head} {
-		for row, metrics := range set {
-			for metric := range metrics {
-				names[row+"\x00"+metric] = true
+	for _, set := range sides {
+		for name, r := range set {
+			for metric := range r.metrics {
+				names[name+"\x00"+metric] = true
 			}
 		}
 	}
@@ -148,11 +194,52 @@ func judge(base1, base2, head rows) []judgement {
 	out := make([]judgement, 0, len(keys))
 	rng := rand.New(rand.NewPCG(1, 2)) //nolint:gosec // a reproducible bootstrap, not a secret
 	for _, k := range keys {
-		row, metric, _ := strings.Cut(k, "\x00")
-		out = append(out, judgeMetric(rng, row, metric, base1[row][metric], base2[row][metric], head[row][metric]))
+		name, metric, _ := strings.Cut(k, "\x00")
+		if o.fixed.match(name) {
+			if why := iterationsDiffer(sides, name); why != "" {
+				out = append(out, judgement{row: name, metric: metric, verdict: fail, why: why})
+
+				continue
+			}
+		}
+		var s [3][]float64
+		for i, set := range sides {
+			if r := set[name]; r != nil {
+				s[i] = r.metrics[metric]
+			}
+		}
+		out = append(out, judgeMetric(rng, name, metric, s[0], s[1], s[2]))
+	}
+	for _, re := range o.require {
+		for i, set := range sides {
+			if !slices.ContainsFunc(slices.Collect(maps.Keys(set)), re.MatchString) {
+				out = append(out, judgement{row: "-require " + re.String(), metric: "-", verdict: fail, why: "no row in " + sideNames[i]})
+			}
+		}
 	}
 
 	return out
+}
+
+// iterationsDiffer explains why a fixed-N row's samples ran different iterations, on one side or between sides, or returns "".
+func iterationsDiffer(sides [3]rows, name string) string {
+	var first int64
+	for i, set := range sides {
+		r := set[name]
+		if r == nil {
+			continue
+		}
+		for _, n := range r.iters {
+			if first == 0 {
+				first = n
+			}
+			if n != first {
+				return fmt.Sprintf("fixed N differs: %d, and %d in %s", first, n, sideNames[i])
+			}
+		}
+	}
+
+	return ""
 }
 
 func judgeMetric(rng *rand.Rand, row, metric string, b1, b2, h []float64) judgement {
