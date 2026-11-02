@@ -56,7 +56,12 @@ func API(ctx context.Context, e *Env) error {
 	if err != nil {
 		return err
 	}
-	idp := verifier(&c.Auth, client)
+	idp := verifier(&c.Auth, client, log)
+	// The verifier's fetches end with the role, however it returns (api.md §10.2 *IdP outage*).
+	defer func() { _ = idp.Close() }()
+	if e.verifierBuilt != nil {
+		e.verifierBuilt(idp)
+	}
 	s := &api.Server{
 		Catalog: e.Catalog, QuietPeriod: c.Compact.QuietPeriod, Store: e.Store, Metrics: m, Log: log, Dev: e.Dev,
 		Auth: authenticator(&c.Auth, idp, nil, m, log),
@@ -215,9 +220,9 @@ func idpClient(caFile string) (*http.Client, error) {
 	return &http.Client{Transport: tr}, nil
 }
 
-// verifier is the IdP's verifier of a, fetching with client (nil for the default), shared by service tokens and people's sign-in,
-// or nil without an issuer.
-func verifier(a *config.Auth, client *http.Client) *auth.Verifier {
+// verifier is the IdP's verifier of a, fetching with client (nil for the default) and logging its failed fetches to log,
+// shared by service tokens and people's sign-in, or nil without an issuer.
+func verifier(a *config.Auth, client *http.Client, log *slog.Logger) *auth.Verifier {
 	o := a.OIDC
 	if o.Issuer == "" {
 		return nil
@@ -225,7 +230,7 @@ func verifier(a *config.Auth, client *http.Client) *auth.Verifier {
 
 	return auth.NewVerifier(auth.OIDCConfig{
 		Issuer: o.Issuer, Audience: o.Audience, PeopleClient: a.People.ClientID, RolesClaim: o.RolesClaim, Roles: o.Roles,
-		TTL: o.JWKSTTL, MinInterval: o.FetchInterval, Leeway: o.Leeway, Client: client,
+		TTL: o.JWKSTTL, MinInterval: o.FetchInterval, Leeway: o.Leeway, Client: client, Log: log,
 	})
 }
 

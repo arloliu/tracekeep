@@ -276,6 +276,7 @@ func (c *Config) check(dev bool) error {
 		errs = append(errs, fmt.Errorf("api.public_url %q must be an https URL", c.API.PublicURL))
 	}
 	errs = append(errs, c.checkPeople()...)
+	errs = append(errs, c.checkMaxima()...)
 	if (c.Bus.CertFile == "") != (c.Bus.KeyFile == "") {
 		errs = append(errs, errors.New("bus.cert_file and bus.key_file go together, for mutual TLS"))
 	}
@@ -311,6 +312,40 @@ func Dev(dir, url string, flush time.Duration) (*Config, error) {
 	}
 
 	return &c, nil
+}
+
+// maxRecordBytes is HSMS's largest message, 4 GiB, the most ingest.max_record_bytes may be.
+const maxRecordBytes = 4 << 30
+
+// checkMaxima refuses a value past its key's maximum (T-53), and a JWKS fetch interval not below its TTL.
+func (c *Config) checkMaxima() []error {
+	var errs []error
+	o, p := c.Auth.OIDC, c.Auth.People
+	for _, b := range []struct {
+		key      string
+		val, max time.Duration
+	}{
+		{"auth.oidc.leeway", o.Leeway, 5 * time.Minute},
+		{"auth.oidc.jwks_ttl", o.JWKSTTL, 24 * time.Hour},
+		{"auth.oidc.fetch_interval", o.FetchInterval, time.Hour},
+		{"auth.people.session_lifetime", p.SessionLifetime, 24 * time.Hour},
+		{"auth.people.login_lifetime", p.LoginLifetime, time.Hour},
+		{"auth.people.exchange_timeout", p.ExchangeTimeout, time.Minute},
+		{"keys.vault.timeout", c.Keys.Vault.Timeout, time.Minute},
+		{"ingest.stop_timeout", c.Ingest.StopTimeout, 10 * time.Minute},
+	} {
+		if b.val > b.max {
+			errs = append(errs, fmt.Errorf("%s %s must be at most %s", b.key, b.val, b.max))
+		}
+	}
+	if o.FetchInterval >= o.JWKSTTL {
+		errs = append(errs, fmt.Errorf("auth.oidc.fetch_interval %s must be below auth.oidc.jwks_ttl %s", o.FetchInterval, o.JWKSTTL))
+	}
+	if n := c.Ingest.MaxRecordBytes.Int64(); n > maxRecordBytes {
+		errs = append(errs, fmt.Errorf("ingest.max_record_bytes %d must be at most 4 GiB, HSMS's largest message", n))
+	}
+
+	return errs
 }
 
 // checkPeople refuses people's sign-in without what it needs (api.md §10.2 *People's sign-in*):
