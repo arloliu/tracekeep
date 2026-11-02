@@ -90,14 +90,18 @@ func CheckRate(rate float64) error {
 	return nil
 }
 
-// Forward relays requests at rate per second until ctx ends; rate must pass CheckRate.
-func Forward(ctx context.Context, l *Loopback, rate float64, log *slog.Logger) {
+// Forward relays requests at rate per second until ctx ends, returning nil then;
+// a rate CheckRate refuses is returned as its error before anything is sent.
+func Forward(ctx context.Context, l *Loopback, rate float64, log *slog.Logger) error {
+	if err := CheckRate(rate); err != nil {
+		return err
+	}
 	tick := time.NewTicker(time.Duration(float64(time.Second) / rate))
 	defer tick.Stop()
 	for {
 		select {
 		case <-ctx.Done():
-			return
+			return nil
 		case <-tick.C:
 			if err := l.Forward(ctx); err != nil && ctx.Err() == nil {
 				log.Warn("sim: forward failed", "error", err)

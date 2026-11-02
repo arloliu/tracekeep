@@ -64,7 +64,7 @@ func TestClaimCheckStartAtTheMinimumMaxPayload(t *testing.T) {
 		forwarding := make(chan struct{})
 		go func() {
 			defer close(forwarding)
-			sim.Forward(run, l, 50, slog.New(slog.DiscardHandler)) // traffic keeps flushes coming
+			_ = sim.Forward(run, l, 50, slog.New(slog.DiscardHandler)) // traffic keeps flushes coming; 50 a second always ticks
 		}()
 		done := make(chan error, 1)
 		go func() { done <- Ingest(run, e) }()

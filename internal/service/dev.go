@@ -39,7 +39,7 @@ type DevOptions struct {
 	Port int
 	// Flush is ingest's flush interval, short enough to watch a capture arrive.
 	Flush time.Duration
-	// Rate is the simulator's forwarded requests per second; 0 runs no simulator.
+	// Rate is the simulator's forwarded requests per second; 0 runs no simulator, and one sim.CheckRate refuses is refused.
 	Rate float64
 	// API is where the machine API listens, over TLS; empty takes 127.0.0.1:8080.
 	// IdP is where the test IdP listens; empty takes 127.0.0.1:8444.
@@ -65,6 +65,11 @@ type Dev struct {
 
 // NewDev starts the embedded bus, creates the catalog when the directory has none, opens the environment and migrates the bus.
 func NewDev(ctx context.Context, o DevOptions) (*Dev, error) {
+	if o.Rate != 0 {
+		if err := sim.CheckRate(o.Rate); err != nil {
+			return nil, fmt.Errorf("dev: %w", err)
+		}
+	}
 	for _, d := range []string{"bus", "packs"} {
 		if err := os.MkdirAll(filepath.Join(o.Dir, d), 0o750); err != nil {
 			return nil, fmt.Errorf("dev: %w", err)
@@ -226,12 +231,12 @@ func (d *Dev) simulate(ctx context.Context) error {
 	if err := l.Start(ctx); err != nil {
 		return errors.Join(err, l.Close())
 	}
-	sim.Forward(ctx, l, d.opts.Rate, d.Env.Log.With("role", "sim"))
+	ferr := sim.Forward(ctx, l, d.opts.Rate, d.Env.Log.With("role", "sim"))
 	sctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), simStop)
 	defer cancel()
 	l.Stop(sctx)
 
-	return nil
+	return ferr
 }
 
 // Close closes the environment and shuts the embedded bus down.

@@ -169,3 +169,17 @@ func TestDevRefusesACatalogWithoutRevisions(t *testing.T) {
 		t.Errorf("NewDev over a catalog without revisions = %v, want refused with the way out", err)
 	}
 }
+
+// A simulator rate that cannot tick is refused when dev is made, before anything starts, not by a panic once it runs.
+func TestNewDevRefusesARateItCannotTick(t *testing.T) {
+	t.Parallel()
+	for _, rate := range []float64{-1, 1e300, 1e-300} {
+		d, err := NewDev(t.Context(), DevOptions{Dir: t.TempDir(), Rate: rate, API: "127.0.0.1:0", IDP: "127.0.0.1:0", Log: slog.New(slog.DiscardHandler)})
+		if err == nil {
+			_ = d.Close()
+			t.Errorf("NewDev at rate %v = nil, want the rate refused", rate)
+		} else if !strings.Contains(err.Error(), "rate") {
+			t.Errorf("NewDev at rate %v = %v, want an error naming the rate", rate, err)
+		}
+	}
+}
