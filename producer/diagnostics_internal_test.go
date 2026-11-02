@@ -322,6 +322,71 @@ func TestEmissionInFlightSettlesBeforeTheFinalReport(t *testing.T) {
 	}
 }
 
+// Close judges quiescence by the count after its mark, never by a zero an earlier emission saw:
+// emitter A leaves the count at zero and holds before acting on it, emitter B is admitted and holds before its enqueue,
+// Close sets its mark and waits; A resumes and must not settle Close, which waits for B, delivered or counted before Close returns.
+func TestStaleZeroDoesNotSettleClose(t *testing.T) {
+	t.Parallel()
+	lines := NewLineLog()
+	m := &gaugeMetrics{set: map[string]bool{}}
+	p := newSinkProducer(t, lines, m)
+	aLeft, aGo, bHeld, bGo, marked := make(chan struct{}), make(chan struct{}), make(chan struct{}), make(chan struct{}), make(chan struct{})
+	var holdLeft, holdAdmitted atomic.Bool
+	p.left = func() {
+		if holdLeft.CompareAndSwap(true, false) {
+			close(aLeft)
+			<-aGo
+		}
+	}
+	p.admitted = func() {
+		if holdAdmitted.CompareAndSwap(true, false) {
+			close(bHeld)
+			<-bGo
+		}
+	}
+	p.marked = func() { close(marked) }
+
+	holdLeft.Store(true)
+	aDone := make(chan struct{})
+	go func() {
+		defer close(aDone)
+		sinkLogger{p}.Warn("producer: line A")
+	}()
+	<-aLeft // A left the count at zero
+	holdAdmitted.Store(true)
+	bDone := make(chan struct{})
+	go func() {
+		defer close(bDone)
+		sinkLogger{p}.Warn("producer: line B")
+	}()
+	<-bHeld // B is admitted, its enqueue not made
+	closed := closeAsync(p)
+	<-marked // Close set its mark; B is in flight
+	close(aGo)
+	<-aDone
+	select {
+	case <-p.settled:
+		t.Fatal("Close settled on A's stale zero with B in flight")
+	default:
+	}
+	close(bGo)
+	<-bDone
+	<-closed
+
+	delivered := 0
+	for _, l := range lines.Lines() {
+		if strings.Contains(l, "line B") {
+			delivered++
+		}
+	}
+	if dropped := m.count("log_lines_dropped_total"); delivered+int(dropped) != 1 {
+		t.Errorf("B delivered %d times and counted dropped %v times, want once in all", delivered, dropped)
+	}
+	if n := len(p.events); n != 0 {
+		t.Errorf("%d lines left queued after Close", n)
+	}
+}
+
 // Close called twice and concurrently makes one final report, and both calls return only after it.
 func TestConcurrentCloseReportsOnce(t *testing.T) {
 	t.Parallel()

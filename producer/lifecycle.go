@@ -326,24 +326,33 @@ func (p *Producer) setCurrentMetric(c *core.Capture, d *CaptureDescriptor) {
 // An emission enters the in-flight count, checks Close's mark, enqueues or counts its drop, and leaves the count;
 // none of it blocks, and one that finds the mark is discarded uncounted (producer.md §4.3 *Diagnostics*).
 func (p *Producer) emit(f func()) {
-	p.emitting.Add(1)
-	if !p.closed.Load() {
-		if p.admitted != nil {
-			p.admitted()
+	// Admission and the mark share one word: the count rises only while the mark is clear, so once Close sets it the count only falls.
+	for {
+		s := p.emits.Load()
+		if s&emitClosed != 0 {
+			return
 		}
-		select {
-		case p.events <- f:
-		default:
-			p.linesDropped.Add(1)
+		if p.emits.CompareAndSwap(s, s+1) {
+			break
 		}
 	}
-	if p.emitting.Add(-1) == 0 && p.closed.Load() {
-		p.settle()
+	if p.admitted != nil {
+		p.admitted()
+	}
+	select {
+	case p.events <- f:
+	default:
+		p.linesDropped.Add(1)
+	}
+	s := p.emits.Add(^uint64(0)) // leaves the count
+	if p.left != nil {
+		p.left()
+	}
+	// The word as this emission left it: the mark set and nothing in flight, so this is the last emission Close waits for.
+	if s == emitClosed {
+		close(p.settled)
 	}
 }
-
-// settle tells Close that no emission is in flight past its mark.
-func (p *Producer) settle() { p.settleOnce.Do(func() { close(p.settled) }) }
 
 // sinkLoop runs the lines emitted and keeps current_capture as setCurrentMetric last set it, deleting the previous label set.
 // It stops as soon as Close asks, so a line still queued then is counted dropped, never run.
