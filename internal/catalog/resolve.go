@@ -73,9 +73,11 @@ const heldSeqQuery = `SELECT EXISTS (SELECT 1 FROM pack_ranges r WHERE r.capture
 
 // resolveIn is Resolve on q, a transaction's or the read pool; it also returns the action id of the order that covers the message.
 func resolveIn(ctx context.Context, q sqlx.QueryerContext, v *VersionKey, incarnation, streamSeq int64) (Resolution, string, error) {
+	// Each argument is boxed once, however many statements and placeholders bind it.
+	capture, seq := any(v.Capture[:]), any(int64(v.Seq))
 	var state string
 	err := sqlx.GetContext(ctx, q, &state, `SELECT state FROM parked WHERE capture_id = ? AND seq = ? AND header = ? AND payload_digest = ?`,
-		v.Capture[:], int64(v.Seq), v.Header[:], v.Digest[:])
+		capture, seq, v.Header[:], v.Digest[:])
 	switch {
 	case err == nil && state == "staged":
 		return ResolvedStaged, "", nil
@@ -85,7 +87,7 @@ func resolveIn(ctx context.Context, q sqlx.QueryerContext, v *VersionKey, incarn
 		return 0, "", fmt.Errorf("catalog: resolve %s.%d: %w", v.Capture, v.Seq, err)
 	}
 	var action string
-	err = sqlx.GetContext(ctx, q, &action, activeOrderQuery, v.Capture[:], incarnation, streamSeq)
+	err = sqlx.GetContext(ctx, q, &action, activeOrderQuery, capture, incarnation, streamSeq)
 	switch {
 	case err == nil:
 		// An order never undoes a registration: a seq a registered pack holds is staged, even with no parked row
@@ -94,8 +96,7 @@ func resolveIn(ctx context.Context, q sqlx.QueryerContext, v *VersionKey, incarn
 		// shortcut: pack_ranges records seqs, not versions, so another version of a held seq also reads staged;
 		// accepted since the operator ended the capture; upgrade to a per-version receipt if that loss ever matters.
 		var held bool
-		seq := int64(v.Seq)
-		err := sqlx.GetContext(ctx, q, &held, heldSeqQuery, v.Capture[:], seq, seq, seq, v.Capture[:])
+		err := sqlx.GetContext(ctx, q, &held, heldSeqQuery, capture, seq, seq, seq, capture)
 		switch {
 		case err != nil:
 			return 0, "", fmt.Errorf("catalog: resolve %s.%d: %w", v.Capture, v.Seq, err)

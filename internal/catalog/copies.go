@@ -34,10 +34,11 @@ const copiesQuery = `SELECT DISTINCT k.pack_id, k.object_key, k.hour, k.state
 // It first tells whether hour holds such a pack, inHour, and lists nothing when it does not.
 // A pack registered after the snapshot is not listed; a pack merged after it stays readable for D.
 func (c *Catalog) RecordCopies(ctx context.Context, capture tracepack.UUID, seq uint64, hour int64, limit int) (copies []Copy, inHour bool, err error) {
-	s := int64(seq) //nolint:gosec // stored seqs are below 2^63
+	// Each argument is boxed once, however many placeholders bind it.
+	id, s := any(capture[:]), any(int64(seq)) //nolint:gosec // stored seqs are below 2^63
 	err = c.snapshot(ctx, func(tx *sqlx.Tx) error {
 		var n int
-		err := tx.GetContext(ctx, &n, copiesInHourQuery, capture[:], s, s, hour, s, capture[:])
+		err := tx.GetContext(ctx, &n, copiesInHourQuery, id, s, s, hour, s, id)
 		if inHour = n > 0; err != nil || !inHour {
 			return err
 		}
@@ -47,7 +48,7 @@ func (c *Catalog) RecordCopies(ctx context.Context, capture tracepack.UUID, seq 
 			Hour  int64  `db:"hour"`
 			State string `db:"state"`
 		}
-		err = tx.SelectContext(ctx, &rows, copiesQuery, capture[:], s, s, s, capture[:], limit)
+		err = tx.SelectContext(ctx, &rows, copiesQuery, id, s, s, s, id, limit)
 		for _, r := range rows {
 			copies = append(copies, Copy{Pack: tracepack.UUID(r.Pack), Key: r.Key, Hour: r.Hour, State: r.State})
 		}
