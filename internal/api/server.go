@@ -60,6 +60,10 @@ type Server struct {
 	exportStall func(stage string)
 	// outer, set only by the package's tests, are interceptors run outside the observing one.
 	outer []connect.Interceptor
+	// restoreReader, set only by the package's tests, is the reader budget Restore opens its copies under; zero takes tracepack's defaults.
+	restoreReader tracepack.ReaderOptions
+	// createWork, set only by the package's tests, creates an export attempt's work files; nil creates them with os.Create.
+	createWork func(path string) (workFile, error)
 }
 
 func (s *Server) stalled(stage string) {
