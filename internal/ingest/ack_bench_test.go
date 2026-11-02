@@ -70,12 +70,12 @@ func drained(tb testing.TB, s jetstream.Stream) {
 	}
 }
 
-// waitingCopies counts the copy rows still waiting for their acknowledgement.
-func waitingCopies(tb testing.TB, c *catalog.Catalog) int {
+// copyRows counts the capture's copy rows in state.
+func copyRows(tb testing.TB, c *catalog.Catalog, capture tracepack.UUID, state string) int {
 	tb.Helper()
 	_, read := c.Pools()
 	var n int
-	if err := read.QueryRowContext(tb.Context(), `SELECT COUNT(*) FROM parked_copies WHERE state = ?`, "waiting").Scan(&n); err != nil {
+	if err := read.QueryRowContext(tb.Context(), `SELECT COUNT(*) FROM parked_copies WHERE capture_id = ? AND state = ?`, capture[:], state).Scan(&n); err != nil {
 		tb.Fatal(err)
 	}
 
@@ -178,6 +178,24 @@ func (a *ackBench) copies(tb testing.TB) []Entry {
 	return es
 }
 
+// restore asserts an iteration's parked rows, every copy row acked (an original's and its copy's for each of the n versions),
+// then deletes them and the versions, so the next iteration starts from the population the first did: none of the capture's.
+func (a *ackBench) restore(tb testing.TB) {
+	tb.Helper()
+	if w, acked := copyRows(tb, a.r.cat, a.capture, "waiting"), copyRows(tb, a.r.cat, a.capture, "acked"); w != 0 || acked != 2*a.n {
+		tb.Fatalf("copy rows: %d waiting and %d acked, want none waiting and %d acked", w, acked, 2*a.n)
+	}
+	write, _ := a.r.cat.Pools()
+	for _, q := range []string{`DELETE FROM parked_copies WHERE capture_id = ?`, `DELETE FROM parked WHERE capture_id = ?`} {
+		if _, err := write.ExecContext(tb.Context(), q, a.capture[:]); err != nil {
+			tb.Fatal(err)
+		}
+	}
+	if vs, err := a.r.cat.ParkedVersions(tb.Context(), &a.capture); err != nil || len(vs) != 0 {
+		tb.Fatalf("ParkedVersions = %d, %v after the restore, want none", len(vs), err)
+	}
+}
+
 // BenchmarkAcknowledge is the acknowledgements of a flush's messages on the embedded bus, Flusher.ack one at a time as a flush runs them (P8):
 // an inline record's Ack until it returns, a claim-check record's DoubleAck until the server confirms it,
 // and a parked copy's acknowledgement through the coordinator until it completes (its acknowledgement prepared, a DoubleAck, its copy row acked).
@@ -185,7 +203,9 @@ func (a *ackBench) copies(tb testing.TB) []Entry {
 //   - One iteration acknowledges n messages. Outside the timer, n fresh seqs are published (a parked copy's version begun and advanced to parked first)
 //     and fetched ackFetchBatch at a time, each fetch waiting at most ackMaxWait, a copy's row recorded; n is a multiple of ackFetchBatch.
 //   - Each iteration asserts every acknowledgement returned no error, then, outside the timer, the stream emptied
-//     and, for the parked copies, no copy row left waiting.
+//     and, for the parked copies, every copy row acked.
+//   - Population: the streams are emptied by the acknowledgements; the parked rows an iteration adds are deleted outside the timer
+//     once asserted, so every iteration starts from the same catalog.
 func BenchmarkAcknowledge(b *testing.B) {
 	for _, kind := range []string{"inline", "claim-check", "parked"} {
 		for _, n := range benchscale.Sizes(b, 100, 1000, 10000) {
@@ -213,9 +233,7 @@ func BenchmarkAcknowledge(b *testing.B) {
 					b.StopTimer()
 					drained(b, s)
 					if kind == "parked" {
-						if w := waitingCopies(b, a.r.cat); w != 0 {
-							b.Fatalf("%d copy rows waiting, want every one acked", w)
-						}
+						a.restore(b)
 					}
 					b.StartTimer()
 				}

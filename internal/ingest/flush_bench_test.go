@@ -1,8 +1,10 @@
 package ingest
 
 import (
+	"flag"
 	"fmt"
 	"log/slog"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -17,7 +19,7 @@ import (
 )
 
 // seededRanges is the ranges a flush benchmark registers in each of its captures before it starts, one segment of seedSeqs seqs each:
-// registration's bound lets a run add a tenth of them, so a run of at most seededRanges/10 iterations (-benchtime Nx) keeps it.
+// registration's bound lets a run add a tenth of them, so a flush benchmark runs only at -benchtime Nx with N at most seededRanges/10.
 const seededRanges = 1000
 
 // seedSeqs is the seqs of one seeded segment.
@@ -103,15 +105,38 @@ func counts(tb testing.TB, c *catalog.Catalog) (packs, ranges int) {
 	return packs, ranges
 }
 
-// logCounts records the catalog's packs and ranges before and after a run with its result, and whether the run kept registration's bound.
-func logCounts(b *testing.B, c *catalog.Catalog, captures int) func() {
+// fixedIterations returns the iterations -benchtime Nx fixes, and skips b, naming both numbers, unless the flag has that form
+// with N at most a tenth of seededRanges: each iteration adds one range a capture, so the probe's population grows by at most a tenth.
+func fixedIterations(b *testing.B) int {
+	b.Helper()
+	v := flag.Lookup("test.benchtime").Value.String()
+	s, ok := strings.CutSuffix(v, "x")
+	n, err := strconv.Atoi(s)
+	if !ok || err != nil || n < 1 {
+		b.Skipf("-benchtime %s: this benchmark runs at a fixed -benchtime Nx, N at most %d", v, seededRanges/10)
+	}
+	if n > seededRanges/10 {
+		b.Skipf("-benchtime %dx: %d ranges a capture exceed a tenth of the %d seeded", n, n, seededRanges)
+	}
+
+	return n
+}
+
+// logCounts records the catalog's packs and ranges before a run of n iterations;
+// the function it returns asserts the run's iterations and the ranges it added, one a capture an iteration, and logs both counts with the result.
+func logCounts(b *testing.B, c *catalog.Catalog, n, captures int) func() {
 	b.Helper()
 	packs, ranges := counts(b, c)
 
 	return func() {
+		if b.N != n {
+			b.Fatalf("ran %d iterations, -benchtime fixed %d", b.N, n)
+		}
 		p, r := counts(b, c)
-		b.Logf("catalog: packs %d -> %d, ranges %d -> %d; added %d ranges over %d seeded a capture, bound kept: %t",
-			packs, p, ranges, r, r-ranges, seededRanges, (r-ranges)/captures <= seededRanges/10)
+		if r-ranges != n*captures {
+			b.Fatalf("the run added %d ranges, want %d", r-ranges, n*captures)
+		}
+		b.Logf("catalog: packs %d -> %d, ranges %d -> %d; %d added over %d seeded a capture", packs, p, ranges, r, r-ranges, seededRanges)
 	}
 }
 
@@ -145,21 +170,22 @@ func benchStore(tb testing.TB, name string) (store.ObjectStore, bool) {
 //   - One iteration flushes n fresh records of the payload's size, disposed outside the timer with seqs after the last iteration's,
 //     so each registers one range above the history and meets no overlap; the batch is new each iteration, since the split sorts its entries in place.
 //   - Each iteration asserts one pack registered and n messages acknowledged, nothing beyond the horizon or terminated.
-//   - Registration's bound: a run adds one range an iteration, so -benchtime Nx with N at most seededRanges/10 keeps it;
-//     the catalog's packs and ranges before and after are logged with the result.
+//   - Registration's bound: a run adds one range an iteration, so it runs only at a fixed -benchtime Nx with N at most seededRanges/10 (100),
+//     and skips otherwise, naming both numbers; it asserts its iterations and the ranges it added, and logs the catalog's packs and ranges before and after.
 //   - The working file's sync is included: the Writer syncs it before the put.
 func BenchmarkFlush(b *testing.B) {
 	for _, stName := range []string{"mem", "fs"} {
 		for _, p := range payloads() {
 			for _, n := range benchscale.Sizes(b, 100, 1000, 10000) {
 				b.Run(fmt.Sprintf("store=%s/payload=%s/records=%d", stName, p.name, n), func(b *testing.B) {
+					iters := fixedIterations(b)
 					c := catalogtest.Open(b, catalog.EngineSQLite)
 					x := executor(b, c, newClaims())
 					st, local := benchStore(b, stName)
 					f := benchFlusher(b, x, st, local)
 					s := newBenchFlush(b, x, tracepack.UUID{0xf1}, p.frame)
 					h := &counting{}
-					done := logCounts(b, c, 1)
+					done := logCounts(b, c, iters, 1)
 					ctx := b.Context()
 					b.SetBytes(int64(n * len(p.frame)))
 					b.ReportAllocs()
@@ -189,12 +215,13 @@ func BenchmarkFlush(b *testing.B) {
 //   - One iteration flushes k batches of 100 fresh 14-byte records, one a capture, all due together:
 //     disposed, batched and taken from the batcher outside the timer, seqs after the last iteration's.
 //   - Each iteration asserts no error, every one of the k×100 messages acknowledged and nothing left held.
-//   - Registration's bound: a run adds one range a capture an iteration, so -benchtime Nx with N at most seededRanges/10 keeps it;
-//     the catalog's packs and ranges before and after are logged with the result.
+//   - Registration's bound: a run adds one range a capture an iteration, so it runs only at a fixed -benchtime Nx with N at most seededRanges/10 (100),
+//     and skips otherwise, naming both numbers; it asserts its iterations and the ranges it added, and logs the catalog's packs and ranges before and after.
 func BenchmarkFlushDue(b *testing.B) {
 	const records = 100
 	for _, k := range benchscale.Sizes(b, 2, 10, 50) {
 		b.Run(fmt.Sprintf("batches=%d", k), func(b *testing.B) {
+			iters := fixedIterations(b)
 			c := catalogtest.Open(b, catalog.EngineSQLite)
 			x := executor(b, c, newClaims())
 			st, _ := benchStore(b, "mem")
@@ -207,7 +234,7 @@ func BenchmarkFlushDue(b *testing.B) {
 				flushes[i] = newBenchFlush(b, x, tracepack.UUID{0xf2, byte(i)}, dataRecord(1, now).Payload)
 			}
 			h := &counting{}
-			done := logCounts(b, c, k)
+			done := logCounts(b, c, iters, k)
 			ctx := b.Context()
 			b.ReportAllocs()
 			for b.Loop() {
