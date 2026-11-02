@@ -9,6 +9,7 @@ import (
 
 	"github.com/arloliu/tracekeep/internal/benchscale"
 	"github.com/arloliu/tracekeep/internal/catalog"
+	"github.com/arloliu/tracekeep/internal/catalog/catalogtest"
 	"github.com/arloliu/tracekeep/internal/store"
 )
 
@@ -33,7 +34,8 @@ func (s *countingList) List(ctx context.Context, prefix string, fn func(store.Ob
 //     it asserts every object listed and the report empty.
 //   - adopting: before each iteration, outside the timer, a fresh catalog and store hold n new unknown segments,
 //     sighted once by an untimed pass that finds them all waiting;
-//     an iteration examines, verifies and adopts each, asserting every one adopted and nothing else reported.
+//     an iteration examines, verifies and adopts each, asserting every one adopted and nothing else reported;
+//     after it, outside the timer, the catalog is closed and deleted, and the run asserts no catalog left open.
 func BenchmarkOrphans(b *testing.B) {
 	for _, n := range benchscale.Sizes(b, 1000, 10000, 100000) {
 		b.Run(fmt.Sprintf("objects=%d/steady", n), func(b *testing.B) {
@@ -67,10 +69,11 @@ func BenchmarkOrphans(b *testing.B) {
 			}
 		})
 		b.Run(fmt.Sprintf("objects=%d/adopting", n), func(b *testing.B) {
+			open := catalogtest.Opened()
 			b.ReportAllocs()
 			for b.Loop() {
 				b.StopTimer()
-				f := newFixture(b, benchCatalog(b))
+				f, teardown := freshFixture(b)
 				capture := f.admit(b)
 				for seq := range uint64(n) { //nolint:gosec // a benchmark's small count
 					p := segmentOf(b, capture, hour, recordsAt(hour, seq), noAdjust)
@@ -86,7 +89,11 @@ func BenchmarkOrphans(b *testing.B) {
 				if err != nil || adopted != n || !emptyOrphans(&rep) {
 					b.Fatalf("Orphans = %d adopted of %d, %d others, %v", adopted, n, orphanCount(&rep), err)
 				}
+				b.StopTimer()
+				teardown()
+				b.StartTimer()
 			}
+			checkClosed(b, open)
 		})
 	}
 }

@@ -31,6 +31,29 @@ func benchCatalog(b *testing.B) *catalog.Catalog {
 	return catalogtest.Open(b, catalog.EngineSQLite)
 }
 
+// freshFixture is a fixture on a fresh SQLite catalog of its own, for one iteration, with its teardown,
+// which closes the catalog and deletes its database and the merges' working directory, so iterations leave nothing open behind them.
+func freshFixture(b *testing.B) (*fixture, func()) {
+	b.Helper()
+	c, closeCatalog := catalogtest.OpenClosable(b, catalog.EngineSQLite)
+	f := newFixture(b, c)
+
+	return f, func() {
+		closeCatalog()
+		if f.r.WorkDir != "" {
+			_ = os.RemoveAll(f.r.WorkDir)
+		}
+	}
+}
+
+// checkClosed fails b when more catalogs are open than before, the count catalogtest.Opened gave when its iterations began.
+func checkClosed(b *testing.B, before int) {
+	b.Helper()
+	if n := catalogtest.Opened(); n != before {
+		b.Fatalf("%d catalogs open after the iterations, %d before: an iteration's catalog was left open", n, before)
+	}
+}
+
 // seqRun is n consecutive seqs from first.
 func seqRun(first uint64, n int) []uint64 {
 	seqs := make([]uint64, n)
@@ -146,23 +169,29 @@ func (f *fixture) mergeCycle(b *testing.B, merged, failing int) {
 // BenchmarkMergePass is the scheduled merge pass, Compactor.Merges, with 0, 1 and 10 failing scopes, each with a damaged input (P17),
 // beside 10, 100 and 1,000 healthy scopes (TRACEKEEP_BENCH_SCALE), every scope of two inputs of mergeBenchRecords records.
 // Each row reports the scopes a cycle attempted, failed and merged, and the time of a cycle.
-//   - fresh: the starting state is a fresh catalog and store seeded with the scopes, reseeded outside the timer before each iteration;
-//     an iteration is one cycle, asserting every healthy scope merged and every failing one failed.
+//   - fresh: the starting state is a fresh catalog and store seeded with the scopes, reseeded outside the timer before each iteration
+//     and torn down outside it after, the catalog closed and deleted;
+//     an iteration is one cycle, asserting every healthy scope merged and every failing one failed, and the run no catalog left open.
 //   - cycles=10: the starting state is the same seed after one untimed cycle has merged the healthy scopes, so only the failures remain;
 //     an iteration is ten cycles over the same failures, nothing reset, each cycle asserting every failing scope failed again and nothing merged.
 func BenchmarkMergePass(b *testing.B) {
 	for _, healthy := range benchscale.Sizes(b, 10, 100, 1000) {
 		for _, failing := range []int{0, 1, 10} {
 			b.Run(fmt.Sprintf("healthy=%d/failing=%d/fresh", healthy, failing), func(b *testing.B) {
+				open := catalogtest.Opened()
 				b.ReportAllocs()
 				for b.Loop() {
 					b.StopTimer()
-					f := newFixture(b, benchCatalog(b))
+					f, teardown := freshFixture(b)
 					f.merging(b)
 					f.seedScopes(b, healthy, failing)
 					b.StartTimer()
 					f.mergeCycle(b, healthy, failing)
+					b.StopTimer()
+					teardown()
+					b.StartTimer()
 				}
+				checkClosed(b, open)
 				reportCycles(b, 1, healthy+failing, failing, healthy)
 			})
 			b.Run(fmt.Sprintf("healthy=%d/failing=%d/cycles=10", healthy, failing), func(b *testing.B) {

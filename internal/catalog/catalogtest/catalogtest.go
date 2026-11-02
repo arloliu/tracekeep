@@ -41,13 +41,26 @@ func Engines(t *testing.T, f func(t *testing.T, c *catalog.Catalog)) {
 // Open returns a fresh, migrated catalog on engine, closed when the test ends; MariaDB skips the test without a server.
 func Open(t testing.TB, engine string) *catalog.Catalog {
 	t.Helper()
+	c, _ := OpenClosable(t, engine)
+
+	return c
+}
+
+// OpenClosable is Open whose closer the caller also holds: it closes the catalog, forgets it and deletes its database at once,
+// as a benchmark does with each iteration's fresh catalog, which would otherwise stay open until the benchmark ends.
+// The closer acts once, called early or by the test's end, which calls it in any case.
+func OpenClosable(t testing.TB, engine string) (*catalog.Catalog, func()) {
+	t.Helper()
 	cfg := catalog.Config{Engine: engine}
+	var drop func()
 	switch engine {
 	case catalog.EngineSQLite:
-		cfg.DSN = filepath.Join(t.TempDir(), "catalog.db")
+		dir := t.TempDir()
+		cfg.DSN = filepath.Join(dir, "catalog.db")
 		apply(t, "sqlite", catalog.SQLiteURI(cfg.DSN), engine)
+		drop = func() { _ = os.RemoveAll(dir) }
 	case catalog.EngineMariaDB:
-		cfg.DSN = mariadbDatabase(t)
+		cfg.DSN, drop = mariadbDatabase(t)
 	default:
 		t.Fatalf("unknown engine %q", engine)
 	}
@@ -55,17 +68,33 @@ func Open(t testing.TB, engine string) *catalog.Catalog {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = c.Close() })
 	driver, dsn := "mysql", cfg.DSN
 	if engine == catalog.EngineSQLite {
 		driver, dsn = "sqlite", catalog.SQLiteURI(cfg.DSN)
 	}
 	opened.Store(c, [2]string{driver, dsn})
+	closeFn := sync.OnceFunc(func() {
+		_ = c.Close()
+		opened.Delete(c)
+		drop()
+	})
+	t.Cleanup(closeFn)
 
-	return c
+	return c, closeFn
 }
 
-// opened is each catalog Open returned, with its driver and DSN, for ExecSQL.
+// Opened counts the catalogs Open and OpenClosable returned that are not yet closed.
+func Opened() int {
+	n := 0
+	opened.Range(func(any, any) bool {
+		n++
+		return true
+	})
+
+	return n
+}
+
+// opened is each open catalog Open returned, with its driver and DSN, for ExecSQL.
 var opened sync.Map
 
 // ExecSQL runs stmt on c's database over a connection of its own, as a test breaks the schema under the catalog to make a real statement fail.
@@ -86,8 +115,9 @@ func ExecSQL(t testing.TB, c *catalog.Catalog, stmt string) {
 	}
 }
 
-// mariadbDatabase creates a database of the test's own on the configured server, migrates it and returns its DSN.
-func mariadbDatabase(t testing.TB) string {
+// mariadbDatabase creates a database of the test's own on the configured server, migrates it and returns its DSN
+// and its drop, which acts once, called early or at the test's end.
+func mariadbDatabase(t testing.TB) (string, func()) {
 	t.Helper()
 	dsn := os.Getenv(EnvMariaDB)
 	if dsn == "" && os.Getenv(EnvRequireMariaDB) == "1" {
@@ -102,13 +132,15 @@ func mariadbDatabase(t testing.TB) string {
 	}
 	name := "tk_" + strings.ToLower(rand.Text())
 	exec(t, mc.FormatDSN(), "CREATE DATABASE "+name)
-	t.Cleanup(func() { exec(t, mc.FormatDSN(), "DROP DATABASE "+name) })
+	server := mc.FormatDSN()
+	drop := sync.OnceFunc(func() { exec(t, server, "DROP DATABASE "+name) })
+	t.Cleanup(drop)
 	mc.DBName = name
 	m := mc.Clone()
 	m.MultiStatements = true
 	apply(t, "mysql", m.FormatDSN(), catalog.EngineMariaDB)
 
-	return mc.FormatDSN()
+	return mc.FormatDSN(), drop
 }
 
 func exec(t testing.TB, dsn, stmt string) {
