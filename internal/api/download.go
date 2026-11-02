@@ -88,7 +88,7 @@ func (s *Server) serveDownload(w *downloadWriter, r *http.Request) {
 	// A key is never reused (storage.md §5.2), so an opaque digest of it is a strong validator, which ServeContent answers If-None-Match and If-Range by.
 	sum := sha256.Sum256([]byte(key))
 	h.Set("ETag", `"`+hex.EncodeToString(sum[:16])+`"`)
-	rd := &ctxReaderAt{ctx: ctx, r: obj}
+	rd := &ctxReaderAt{ctx: ctx, r: obj, size: obj.Size()}
 	// ServeContent answers HEAD, Range (206) and its refusals (416); no modification time is sent.
 	// Its status is sent before its first read, so a failure it meets ends the body short of its length, which the client sees cut.
 	http.ServeContent(w, r.WithContext(ctx), "", time.Time{}, io.NewSectionReader(rd, 0, obj.Size()))
@@ -125,10 +125,12 @@ func (s *Server) downloadFailed(status int, err error) {
 }
 
 // ctxReaderAt is r whose reads fail once ctx is done; err is the first read's failure.
+// An end of file before size, the object's, is a failure too, never the transfer's end.
 type ctxReaderAt struct {
-	ctx context.Context //nolint:containedctx // the download's context, which bounds every read of its transfer
-	r   io.ReaderAt
-	err error
+	ctx  context.Context //nolint:containedctx // the download's context, which bounds every read of its transfer
+	r    io.ReaderAt
+	size int64
+	err  error
 }
 
 func (c *ctxReaderAt) ReadAt(p []byte, off int64) (int, error) {
@@ -136,7 +138,7 @@ func (c *ctxReaderAt) ReadAt(p []byte, off int64) (int, error) {
 	if err == nil {
 		n, err = c.r.ReadAt(p, off)
 	}
-	if err != nil && !errors.Is(err, io.EOF) && c.err == nil {
+	if err != nil && c.err == nil && (!errors.Is(err, io.EOF) || off+int64(n) < c.size) {
 		c.err = err
 	}
 
