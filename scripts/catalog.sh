@@ -4,7 +4,8 @@
 #   scripts/catalog.sh diff <name>   generate a migration for both engines from schema.hcl
 #   scripts/catalog.sh check         validate both migration directories and check schema.hcl for drift
 #   scripts/catalog.sh test          run the catalog's tests on MariaDB
-#   scripts/catalog.sh bench <file>  run the catalog's benchmarks on MariaDB, -count ${COUNT:-10} -benchtime ${BENCHTIME:-1s}, into file
+#   scripts/catalog.sh bench <file>  run the catalog's benchmarks on MariaDB, -count ${COUNT:-10} -benchtime ${BENCHTIME:-1s} -cpu ${CPU:-nproc},
+#                                    then registration at its fixed N, into file without Go's cpu: line
 #   scripts/catalog.sh bench-smoke   run them once each, failing rather than skipping without MariaDB
 set -euo pipefail
 
@@ -76,16 +77,31 @@ test)
 bench)
 	out=${2:?usage: catalog.sh bench <file>}
 	start_mariadb
-	# The engine's durability, which a baseline records; the container is gone once the script ends.
-	echo "innodb_flush_log_at_trx_commit: $(docker exec "$container" mariadb -uroot -p$PASSWORD -N -e 'SELECT @@innodb_flush_log_at_trx_commit')"
-	# No race detector: it would measure itself.
-	TRACEKEEP_MARIADB_DSN="root:$PASSWORD@tcp(127.0.0.1:$port)/catalog" TRACEKEEP_REQUIRE_MARIADB=1 GOWORK=off \
-		go test $PACKAGES -run '^$' -bench "${BENCH:-.}" -benchmem -count "${COUNT:-10}" -benchtime "${BENCHTIME:-1s}" -timeout 0 | tee "$out"
+	cpu=${CPU:-$(nproc)}
+	# The engines and the run as a baseline records them (650-perf-sec.md), read here since the container is gone once the script ends;
+	# SQLite's library is modernc's module, its journal mode and synchronous level the catalog's own pragmas.
+	sql() { docker exec "$container" mariadb -uroot -p$PASSWORD -N -e "$1"; }
+	echo "mariadb: $(sql 'SELECT VERSION()'), innodb_flush_log_at_trx_commit $(sql 'SELECT @@innodb_flush_log_at_trx_commit')"
+	echo "sqlite: $(GOWORK=off go list -m -f '{{.Path}} {{.Version}}' modernc.org/sqlite), $(grep -o 'journal_mode([A-Z]*)\|synchronous([A-Z]*)' internal/catalog/catalog.go | tr '\n' ' ')"
+	echo "-cpu $cpu -count ${COUNT:-10} -benchtime ${BENCHTIME:-1s}; BenchmarkRegisterPack at -benchtime 100x, its ranges cells at 1x"
+	# No race detector: it would measure itself. Go's cpu: line names the vendor's model, which a baseline never records.
+	run() {
+		TRACEKEEP_MARIADB_DSN="root:$PASSWORD@tcp(127.0.0.1:$port)/catalog" TRACEKEEP_REQUIRE_MARIADB=1 GOWORK=off \
+			go test $PACKAGES -run '^$' -benchmem -cpu "$cpu" -count "${COUNT:-10}" -timeout 0 "$@" | sed '/^cpu:/d'
+	}
+	# BenchmarkRegisterPack skips unless -benchtime is Nx with N times a pack's ranges at most a tenth of the seeded ranges (its godoc):
+	# its one-range cells (evidence, miss, hit) run at 100x, which every size's 1,000 or more seeded ranges allow,
+	# its ranges cells, 100 ranges a pack or more, at 1x, which the cells whose pack fits allow.
+	{
+		run -bench "${BENCH:-.}" -benchtime "${BENCHTIME:-1s}"
+		run -bench '^BenchmarkRegisterPack$/^(evidence|miss|hit)$' -benchtime 100x
+		run -bench '^BenchmarkRegisterPack$/^ranges$' -benchtime 1x
+	} | tee "$out"
 	;;
 bench-smoke)
 	start_mariadb
 	TRACEKEEP_MARIADB_DSN="root:$PASSWORD@tcp(127.0.0.1:$port)/catalog" TRACEKEEP_REQUIRE_MARIADB=1 TRACEKEEP_BENCH_SCALE=small GOWORK=off \
-		go test $PACKAGES -run '^$' -bench . -benchtime 1x
+		go test $PACKAGES -run '^$' -bench . -benchtime 1x | sed '/^cpu:/d'
 	;;
 *)
 	echo "usage: catalog.sh diff <name> | check | test | bench <file> | bench-smoke" >&2
