@@ -9,6 +9,7 @@ import (
 	"github.com/arloliu/go-secs/tracepack"
 	"github.com/arloliu/go-secs/tracepack/classify"
 
+	"github.com/arloliu/tracekeep/internal/benchscale"
 	"github.com/arloliu/tracekeep/internal/catalog"
 	"github.com/arloliu/tracekeep/internal/procconfig"
 )
@@ -23,10 +24,11 @@ const FleetSeqs = 1000
 func FleetTool(i int) string { return fmt.Sprintf("TOOL-%04d", i) }
 
 // BenchEngines runs f once per engine in a sub-benchmark named for it, each with a fresh catalog.
-// MariaDB is skipped without TRACEKEEP_MARIADB_DSN, and fails instead when TRACEKEEP_REQUIRE_MARIADB is 1.
+// MariaDB is skipped without TRACEKEEP_MARIADB_DSN, and fails instead when TRACEKEEP_REQUIRE_MARIADB is 1;
+// an engine TRACEKEEP_BENCH_ENGINES leaves out runs no sub-benchmark.
 func BenchEngines(b *testing.B, f func(b *testing.B, c *catalog.Catalog)) {
 	b.Helper()
-	for _, engine := range []string{catalog.EngineSQLite, catalog.EngineMariaDB} {
+	for _, engine := range benchscale.Engines(b, catalog.EngineSQLite, catalog.EngineMariaDB) {
 		b.Run(engine, func(b *testing.B) { f(b, Open(b, engine)) })
 	}
 }
