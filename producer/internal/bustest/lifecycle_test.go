@@ -104,6 +104,46 @@ func TestDefaultConnectionOutlivesRepeatedAuthErrors(t *testing.T) {
 	}
 }
 
+// A real loss and reconnection log their lines naming the server by scheme and host only:
+// neither a password, a username-only token nor a query in the server's URL reaches them.
+func TestReconnectLinesNameTheServerWithoutCredentials(t *testing.T) {
+	t.Parallel()
+	for name, userinfo := range map[string]string{
+		"password": "sentinel-user:sentinel-password@",
+		"token":    "sentinel-token@",
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			b := newBus(t)
+			host := strings.TrimPrefix(b.url, "nats://")
+			log := newLog()
+			p, err := producer.New(producer.Config{
+				Servers: []string{"nats://" + userinfo + host + "/?q=sentinel-query"}, SubjectPrefix: prefix, ClaimBucket: bucket,
+			}, producer.WithLogger(log))
+			if err != nil {
+				t.Fatalf("New: %v", err)
+			}
+			t.Cleanup(func() { _ = p.Close() })
+			log.wait(t, "producer: preflight") // connected, and the preflight ran
+
+			b.srv.Stop()
+			lost := log.wait(t, "producer: traffic connection lost")
+			b.srv.Restart()
+			restored := log.wait(t, "producer: traffic connection restored")
+			for _, l := range []string{lost, restored} {
+				for _, s := range []string{"sentinel-user", "sentinel-password", "sentinel-token", "sentinel-query"} {
+					if strings.Contains(l, s) {
+						t.Errorf("line %q holds %s", l, s)
+					}
+				}
+			}
+			if !strings.Contains(restored, "server nats://"+host+"]") {
+				t.Errorf("restored line %q, want the server named nats://%s", restored, host)
+			}
+		})
+	}
+}
+
 // Close on a connection WithConn brought stops the JetStream publisher's reply subscription,
 // so producers built in turn on one connection leave no subscription behind,
 // and the connection stays open and usable.

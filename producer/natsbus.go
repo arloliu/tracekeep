@@ -185,7 +185,7 @@ func dialOptions(cfg *Config, b *natsBus) ([]nats.Option, error) {
 			b.log.Warn("producer: traffic connection lost", errFields(err)...)
 		}),
 		nats.ReconnectHandler(func(nc *nats.Conn) {
-			b.log.Info("producer: traffic connection restored", "server", nc.ConnectedUrlRedacted())
+			b.log.Info("producer: traffic connection restored", "server", serverName(nc.ConnectedUrl()))
 		}),
 		nats.ErrorHandler(func(_ *nats.Conn, _ *nats.Subscription, err error) {
 			b.log.Warn("producer: traffic connection error", errFields(err)...)
@@ -306,6 +306,18 @@ func errFields(err error) []any {
 	default:
 		return []any{"class", "other"}
 	}
+}
+
+// serverName is the server URL raw's scheme and host, for a log line:
+// nats.go's redaction masks only a password, so a username-only token and a query would survive it.
+// It is empty when raw does not parse.
+func serverName(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return ""
+	}
+
+	return (&url.URL{Scheme: u.Scheme, Host: u.Host}).String()
 }
 
 // redact drops the URL from a url.Error, which spells it with any credentials it holds.
