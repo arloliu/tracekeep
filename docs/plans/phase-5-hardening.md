@@ -1,6 +1,6 @@
 # Phase 5 — correctness, error handling and performance
 
-Status: active (2026-11-02) — 5.3 in progress
+Status: active (2026-11-02) — 5.4 next
 
 The owner's next phase after the roadmap's milestones:
 no new feature, but the service and the producer SDK made correct under faults, their failures reported, and their hot paths measured and made faster.
@@ -205,7 +205,7 @@ Not in this phase: new features, go-secs' changes (point 4), the eqp-hub side of
 |---|---|---|
 | 5.1 — correctness and liveness | C1–C19, each with its failing case, the spec first | done (#64) |
 | 5.2 — error handling and signals | spec first (`api.md` §10.1–§10.2, `operations.md` §10.4, `650-perf-sec.md`, the configuration guide), then E1–E15, E17–E19: each error with its own code, the SDK's panics, drops and sink events counted from zero, the service's bus events logged, dropped errors logged with keyless causes, readiness without internal text, retries with jittered backoff and a bound on further runs, the warning for a link without TLS (point 3), configuration bounds, JWKS fetched ahead of its TTL, downloads' headers, the restore's store errors keyless; each error test injects sentinels and asserts their absence where point 11 forbids them | done (#67) |
-| 5.3 — measurement | benchmarks for the SDK's observe path, ingest's dispose, batch, flush and acknowledgement, the catalog's registration, listing and reads on both engines, `QueryRecords` over an hour of N records in K packs (binary and JSON measured apart), merge and the compactor's passes; P4's predicates explained on both engines; `pprof` on the metrics listener, opt-in; the baselines and the offered rate of the write-connection case recorded here | in-progress |
+| 5.3 — measurement | benchmarks for the SDK's observe path, ingest's dispose, batch, flush and acknowledgement, the catalog's registration, listing and reads on both engines, `QueryRecords` over an hour of N records in K packs (binary and JSON measured apart), merge and the compactor's passes; P4's predicates explained on both engines; `pprof` on the metrics listener, opt-in; the baselines and the offered rate of the write-connection case recorded here | done (#70) |
 | 5.4 — performance: the catalog and its writer | P1–P6, each measured before and after, each test on both engines: set-based registration, the overlap probe's index, the claim listing in bounded transactions that never forget a row from a chunk not yet listed, the confirmed indexes, listings bounded to their window with completeness unchanged (gaps beyond the window, a backward clock step, eviction, parked records), the API audit write's deadline and wait histogram (point 5) | pending |
 | 5.5 — performance: ingest, reads, compactor, API | P7–P18 that 5.3 shows worth their change, each measured before and after; concurrent acknowledgements only with completion tracked by identity, not as a prefix; any key-path change keeps the binding-check and cancellation tests | pending |
 | 5.6 — gate | audit every gate case against the test bodies, then one step per gap, as 4.6 did | pending |
@@ -221,17 +221,17 @@ A plan or a default this section states from reading the code, not from a run, i
 
 | Step | Scope | State |
 |---|---|---|
-| 1 | spec, with T-54 recording points 21 to 29: `operations.md` §10.4 (`/debug/pprof/` on the metrics listener when `metrics.pprof` is on), the configuration guide (`metrics.pprof`), `650-perf-sec.md` (pprof's exposure, point 28; the benchmarks' smoke run, scale knob and regression rule, points 21 and 23) | pending |
-| 2 | fixtures and tooling (point 29): the helpers widened to `testing.TB`; the catalog's in-package seeders and `catalogtest`'s fleet seeder and engine loop, each asserting what it seeded; the explained queries moved to constants; `internal/metrics/fleet_test.go` renamed `fleet_bench_test.go` and sized by `TRACEKEEP_BENCH_SCALE`; `make bench-smoke`, `scripts/catalog.sh bench` and `bench-smoke` (no race detector; MariaDB required); `bench.yaml`, started by hand with `base` and `head`, running base twice and head once, printing benchstat's tables and point 21's decisions and uploading the raw samples; the decision tool of point 21, checked first on base runs whose ratio is below, at and above one and on samples that pass, regress, are inconclusive across the allowance, increase from a zero base and lack a row; CI's smoke run in the `ci` and `catalog` jobs. Checked by the existing tests passing unchanged, the smoke run passing on both engines, and its time against the CI budget recorded | pending |
-| 3 | pprof (point 28) in `internal/config`, `internal/metrics`, `internal/service` (`Env.Observe`) and `cmd/tracekeep` (dev's `-pprof`). Failing cases first: `/debug/pprof/` not found when off and served when on, through the configuration and through dev's flag; `metrics.pprof` with an empty `metrics.listen` refused naming the key | pending |
-| 4 | the SDK (`producer/`): the observe path (`core.Recorder.Observe`, data and transport event, payload 14 B, 1 KiB and 64 KiB, the ordinary lane drained each iteration, asserting each record admitted and dequeued and no drop counted), a callback through `secsobs` with 1 and 4 concurrent callbacks under the same assertions, and records published a second through the publisher on the in-memory bus; the existing `BenchmarkAllocate` kept. Measures the callback's budget of `650-perf-sec.md` | pending |
-| 5 | ingest (`internal/ingest`): `Executor.Dispose` inline and claim-check, masking off and on (P7, P19, P21); a fresh `Batcher` filled and emptied over 1, 100 and 1,500 open batches (P10); the ingester's per-message bookkeeping and its heartbeat over 100, 1,000 and 10,000 held messages (P10); `Flusher.Flush` over 100, 1,000 and 10,000 records, 14 B and 1 KiB, on the memory and the `fs` store (P11's `fs` puts); the acknowledgements on the embedded bus over 100, 1,000 and 10,000 messages, inline until `Ack` returns, claim-check until `DoubleAck` is confirmed, a parked copy until the coordinator's acknowledgement completes (P8); the ingester's flush of several due batches (P9). The untracked scratch dispose and write-file benchmarks may seed these | pending |
-| 6 | the catalog (`internal/catalog`), both engines: registration with populated evidence (point 25), 100, 1,000 and 50,000 deliveries a pack over 1,000, 20,000 and 200,000 prior ranges, the probe and the evidence apart (P1, P2); `Resolve` under an active termination order (P2's second probe); the claim listing over 10,000, 100,000 and 1,000,000 objects, steady, all new and all gone (P3); `ListCaptures`, `ListDevices`, `ListPacks` and `Completeness` over 1, 100 and 1,500 captures of one tool on 1 and 100 devices, with and without gaps in a stated share of captures, a one-hour window held constant while 24, 720 and 8,760 hours of history grow outside it, and a whole-history window, every completeness input populated (P5); an audit write while registrations run (P6); `PruneEvents` over 10,000, 100,000 and 1,000,000 events, `DeleteCandidates` over 1,000, 100,000 and 1,000,000 merges, and `EvictHour` with 10, 1,000 and 100,000 conflicts in the capture (P4's time); `ReadSet`, `NextReadHour`, `RecordCopies` and `KeyStanding` (P16's lookups) | pending |
-| 7 | reads (`internal/records`, `internal/api`, `internal/store`, `internal/service`): the records reader over an hour of 1,000, 72,000 and 360,000 records in 1, 12 and 16 packs (16 is `max_readers`), disjoint and overlapping; `QueryRecords` over HTTP with a binary and a JSON client (P14), as a first page and as the whole window read by following its cursors to the end, asserting the records, the empty last cursor and no unexpected incompleteness; a 24-hour window with every hour populated, outside dev, each capture's configuration bound to a stored policy so its decoding runs (P12); a narrow seq range in a large hour (P13); `fs.Put` by key depth (P11); the TLS files read for a handshake with the files unchanged, with 1 and 8 concurrent handshakes, apart from a reload after a change (P18). P11's S3 half (a HEAD before the ranged reads) has no baseline here: 5.5 judges it by the requests counted against the conformance stores, and closes nothing from these rows | pending |
-| 8 | the compactor (`internal/compact`): the merge writer over 2, 12 and 64 inputs of 1,000 and 10,000 records, masked inputs at a fixed count below the merge's limit; the merge pass with 0, 1 and 10 failing scopes, recording the scopes attempted, failed and merged each cycle with its time, freshly seeded and over ten cycles that keep their failures (P17); the conflict check over two overlapping packs of 1,000, 10,000 and 100,000 records (P15); the orphan pass over 1,000, 10,000 and 100,000 objects, steady and adopting (P16); a retention cycle's claim listing (P3) | pending |
-| 9 | the EXPLAIN harness (point 26), in package `catalog`: P4's five predicates, P2's two probes, P5's completeness inputs and the eviction's `merges` scan, on both engines; a small seed always, logging plans, and a large seed under `TRACEKEEP_EXPLAIN` that records SQLite's plans with and without `ANALYZE` and MariaDB's rows read (`ANALYZE FORMAT=JSON`, inside a rolled-back transaction for a statement that writes); no assertion until 5.4 | pending |
-| 10 | the load harness (point 27) in `internal/service`: the sweep and the offered rate; and the `PackURL` measurement 5.4's gate runs, recording p50, p99, the calls made, succeeded, superseded and failed, the backlog's minima and the made and published rates. Its analysis is checked first on recorded series: a bounded sawtooth and a phase-shifted one (sustained); a rising one, one rising by 1% of a window's records a window, a publisher missing its offered rate, producers whose ordinary ring grows while reserved records publish, and two points whose producers' counters start from different origins (each judged on its own deltas); a sustained sweep followed by a `PackURL` measurement whose ingest is not sustained, a run reaching its calls with fewer than ten flushes, and 1,000 fast successes beside one deadline (each failing); two tools are checked admitted as two captures | pending |
-| 11 | baselines: every benchmark at its three sizes locally and the catalog's on MariaDB through `bench.yaml`, each sitting with its repeatability, step 9's plans and step 10's sweep, all recorded in *Baselines* below; a performance row 5.5 then shows not worth its change is closed there with its number (point 6). The local sitting is recorded; the MariaDB part (the catalog's benchmarks through `bench.yaml` and step 9's plans and rows read) follows the merge, since `bench.yaml` runs only from the default branch | pending |
+| 1 | spec, with T-54 recording points 21 to 29: `operations.md` §10.4 (`/debug/pprof/` on the metrics listener when `metrics.pprof` is on), the configuration guide (`metrics.pprof`), `650-perf-sec.md` (pprof's exposure, point 28; the benchmarks' smoke run, scale knob and regression rule, points 21 and 23) | done (#70) |
+| 2 | fixtures and tooling (point 29): the helpers widened to `testing.TB`; the catalog's in-package seeders and `catalogtest`'s fleet seeder and engine loop, each asserting what it seeded; the explained queries moved to constants; `internal/metrics/fleet_test.go` renamed `fleet_bench_test.go` and sized by `TRACEKEEP_BENCH_SCALE`; `make bench-smoke`, `scripts/catalog.sh bench` and `bench-smoke` (no race detector; MariaDB required); `bench.yaml`, started by hand with `base` and `head`, running base twice and head once, printing benchstat's tables and point 21's decisions and uploading the raw samples; the decision tool of point 21, checked first on base runs whose ratio is below, at and above one and on samples that pass, regress, are inconclusive across the allowance, increase from a zero base and lack a row; CI's smoke run in the `ci` and `catalog` jobs. Checked by the existing tests passing unchanged, the smoke run passing on both engines, and its time against the CI budget recorded | done (#70) |
+| 3 | pprof (point 28) in `internal/config`, `internal/metrics`, `internal/service` (`Env.Observe`) and `cmd/tracekeep` (dev's `-pprof`). Failing cases first: `/debug/pprof/` not found when off and served when on, through the configuration and through dev's flag; `metrics.pprof` with an empty `metrics.listen` refused naming the key | done (#70) |
+| 4 | the SDK (`producer/`): the observe path (`core.Recorder.Observe`, data and transport event, payload 14 B, 1 KiB and 64 KiB, the ordinary lane drained each iteration, asserting each record admitted and dequeued and no drop counted), a callback through `secsobs` with 1 and 4 concurrent callbacks under the same assertions, and records published a second through the publisher on the in-memory bus; the existing `BenchmarkAllocate` kept. Measures the callback's budget of `650-perf-sec.md` | done (#70) |
+| 5 | ingest (`internal/ingest`): `Executor.Dispose` inline and claim-check, masking off and on (P7, P19, P21); a fresh `Batcher` filled and emptied over 1, 100 and 1,500 open batches (P10); the ingester's per-message bookkeeping and its heartbeat over 100, 1,000 and 10,000 held messages (P10); `Flusher.Flush` over 100, 1,000 and 10,000 records, 14 B and 1 KiB, on the memory and the `fs` store (P11's `fs` puts); the acknowledgements on the embedded bus over 100, 1,000 and 10,000 messages, inline until `Ack` returns, claim-check until `DoubleAck` is confirmed, a parked copy until the coordinator's acknowledgement completes (P8); the ingester's flush of several due batches (P9). The untracked scratch dispose and write-file benchmarks may seed these | done (#70) |
+| 6 | the catalog (`internal/catalog`), both engines: registration with populated evidence (point 25), 100, 1,000 and 50,000 deliveries a pack over 1,000, 20,000 and 200,000 prior ranges, the probe and the evidence apart (P1, P2); `Resolve` under an active termination order (P2's second probe); the claim listing over 10,000, 100,000 and 1,000,000 objects, steady, all new and all gone (P3); `ListCaptures`, `ListDevices`, `ListPacks` and `Completeness` over 1, 100 and 1,500 captures of one tool on 1 and 100 devices, with and without gaps in a stated share of captures, a one-hour window held constant while 24, 720 and 8,760 hours of history grow outside it, and a whole-history window, every completeness input populated (P5); an audit write while registrations run (P6); `PruneEvents` over 10,000, 100,000 and 1,000,000 events, `DeleteCandidates` over 1,000, 100,000 and 1,000,000 merges, and `EvictHour` with 10, 1,000 and 100,000 conflicts in the capture (P4's time); `ReadSet`, `NextReadHour`, `RecordCopies` and `KeyStanding` (P16's lookups) | done (#70) |
+| 7 | reads (`internal/records`, `internal/api`, `internal/store`, `internal/service`): the records reader over an hour of 1,000, 72,000 and 360,000 records in 1, 12 and 16 packs (16 is `max_readers`), disjoint and overlapping; `QueryRecords` over HTTP with a binary and a JSON client (P14), as a first page and as the whole window read by following its cursors to the end, asserting the records, the empty last cursor and no unexpected incompleteness; a 24-hour window with every hour populated, outside dev, each capture's configuration bound to a stored policy so its decoding runs (P12); a narrow seq range in a large hour (P13); `fs.Put` by key depth (P11); the TLS files read for a handshake with the files unchanged, with 1 and 8 concurrent handshakes, apart from a reload after a change (P18). P11's S3 half (a HEAD before the ranged reads) has no baseline here: 5.5 judges it by the requests counted against the conformance stores, and closes nothing from these rows | done (#70) |
+| 8 | the compactor (`internal/compact`): the merge writer over 2, 12 and 64 inputs of 1,000 and 10,000 records, masked inputs at a fixed count below the merge's limit; the merge pass with 0, 1 and 10 failing scopes, recording the scopes attempted, failed and merged each cycle with its time, freshly seeded and over ten cycles that keep their failures (P17); the conflict check over two overlapping packs of 1,000, 10,000 and 100,000 records (P15); the orphan pass over 1,000, 10,000 and 100,000 objects, steady and adopting (P16); a retention cycle's claim listing (P3) | done (#70) |
+| 9 | the EXPLAIN harness (point 26), in package `catalog`: P4's five predicates, P2's two probes, P5's completeness inputs and the eviction's `merges` scan, on both engines; a small seed always, logging plans, and a large seed under `TRACEKEEP_EXPLAIN` that records SQLite's plans with and without `ANALYZE` and MariaDB's rows read (`ANALYZE FORMAT=JSON`, inside a rolled-back transaction for a statement that writes); no assertion until 5.4 | done (#70) |
+| 10 | the load harness (point 27) in `internal/service`: the sweep and the offered rate; and the `PackURL` measurement 5.4's gate runs, recording p50, p99, the calls made, succeeded, superseded and failed, the backlog's minima and the made and published rates. Its analysis is checked first on recorded series: a bounded sawtooth and a phase-shifted one (sustained); a rising one, one rising by 1% of a window's records a window, a publisher missing its offered rate, producers whose ordinary ring grows while reserved records publish, and two points whose producers' counters start from different origins (each judged on its own deltas); a sustained sweep followed by a `PackURL` measurement whose ingest is not sustained, a run reaching its calls with fewer than ten flushes, and 1,000 fast successes beside one deadline (each failing); two tools are checked admitted as two captures | done (#70) |
+| 11 | baselines: every benchmark at its three sizes locally and the catalog's on MariaDB through `bench.yaml`, each sitting with its repeatability, step 9's plans and step 10's sweep, all recorded in *Baselines* below; a performance row 5.5 then shows not worth its change is closed there with its number (point 6). The local sitting and MariaDB's plans and rows read are recorded; `bench.yaml` could not finish one pass within its job's 180 minutes, so MariaDB's benchmarks are one partial pass, and the workflow's fix is 5.4's | done (#70) |
 
 ## Baselines
 
@@ -595,6 +595,45 @@ benchstat gives no interval under six samples.
 |---|---|---|---|---|
 | Publish | 401 µs ±2% | 670 KiB | 5634 |  |
 
+### catalog on MariaDB (`bench.yaml`, one partial pass)
+
+Two runs of `bench.yaml` on `main` at 1c0e5f2 (base and head the same commit), at `small` and at `medium`:
+a hosted runner, a virtual machine of 4 logical cores (2 cores, two threads each), the work, the temporary directory and MariaDB's data on one ext-family filesystem (`stat -f`: ext2/ext3);
+MariaDB 11.8 in the image `scripts/catalog.sh` runs, its durability settings the image's defaults;
+`-cpu 4 -count 10 -benchtime 1s`.
+Neither run finished its first pass within the job's 180 minutes:
+at `small` the catalog's benchmarks took 21 minutes and the ingest package the rest, and at `medium` the catalog's alone took the whole job.
+So the job measured no repeatability, `RegisterPack` (its fixed-N pass, which runs last) has no MariaDB row, nor has any large size,
+and each row below is one run of ten samples from the `medium` run, its SQLite rows left out.
+These numbers judge nothing against the local sitting (another machine, another engine); 5.4 measures its before and after in its own sittings.
+
+| Benchmark (MariaDB) | time/op |
+|---|---|
+| RecordListing/objects=10000/attributed/steady, new | 2.37 s ±2%, 2.38 s ±4% |
+| RecordListing/objects=10000/unattributed/steady, new, gone | 4.87 s ±2%, 4.81 s ±1%, 2.53 s ±3% |
+| RecordListing/objects=100000/attributed/steady, new | 23.4 s ±1%, 23.8 s ±3% |
+| RecordListing/objects=100000/unattributed/steady, new, gone | 48.5 s ±1%, 48.1 s ±1%, 25.0 s ±1% |
+| RecordListing/objects=100000/attributed/gone | 672 µs ±2% |
+| Listings/captures=1 (ListCaptures, ListDevices, ListPacks, Completeness) | 1.40, 3.63, 5.57, 2.35 ms |
+| Listings/captures=100/devices=1/gaps=false (the same four) | 2.40, 226, 241, 249 ms |
+| Listings/captures=100/devices=1/gaps=true (the same four) | 2.41, 4.82, 238, 249 ms |
+| ListingHistory/hours=24/window=hour (ListPacks, Completeness) | 25.0, 24.2 ms |
+| ListingHistory/hours=720/window=hour (ListPacks, Completeness) | 40.6, 40.2 ms |
+| ListingHistory/hours=720/window=whole (ListPacks, Completeness) | 80.2, 41.7 ms |
+| Lookups/prior=1000 (ReadSet, NextReadHour, RecordCopies) | 3.23 ms, 337 µs, 1.39 ms |
+| Lookups/prior=20000 (ReadSet, NextReadHour, RecordCopies) | 3.24 ms, 338 µs, 5.90 ms |
+| Resolve/prior=1000, 20000 (held) | 1.06, 3.79 ms |
+| AuditWhileRegistering/registering=0, 1, 4 | 456 µs ±19%, 516 µs ±63%, 886 µs ±32% |
+| PruneEvents/events=10000, 100000 | 12.8 ms ±11%, 108 ms ±29% |
+| DeleteCandidates/merges=1000, 100000 | 2.77 ms ±2%, 1.45 s ±39% |
+| EvictHour/conflicts=10, 1000 | 10.1 ms ±25%, 11.7 ms ±27% |
+
+What they add to the local sitting:
+the claim listing costs about 240 µs an object attributed and 480 µs unattributed on MariaDB, linear from 10,000 to 100,000, so a million objects would take about 4 and 8 minutes, a statement a round trip (P3);
+a listing over 100 captures costs about 2.4 ms a capture, a few statements a capture, where `ListDevices` answers early for a device with a gap (P5);
+`RecordCopies` and `Resolve` grow with the prior ranges as on SQLite (P2);
+and the `bench.yaml` job as written cannot finish: 5.4 narrows it to MariaDB's rows and splits it so each job fits.
+
 ### Plans (step 9, the large seed)
 
 SQLite, before → after `ANALYZE`, one line a query; the large seed holds one capture, so after `ANALYZE` a capture's predicate selects every row and SQLite prefers a scan:
@@ -618,7 +657,31 @@ SQLite, before → after `ANALYZE`, one line a query; the large seed holds one c
 | `crashGapsQuery` | search `capture_closes` by key (capture) | the same |
 | `conflictsQuery` | search `conflicts` by key (capture) | the same |
 
-MariaDB: not yet run — `bench.yaml` runs only from the default branch; recorded after this branch merges.
+MariaDB 11.8 (local, in the image `scripts/catalog.sh` runs), after `ANALYZE TABLE`: the access path and the rows each table read (`ANALYZE FORMAT=JSON`'s `r_rows` times `r_loops`), a statement that writes inside a rolled-back transaction:
+
+| Query | Access path, rows read | Time |
+|---|---|---|
+| `auditByCaptureQuery` | `audit_log` full scan, 100,000 | 114 ms |
+| `auditByActorQuery` | `audit_log` full scan, 100,000 | 37 ms |
+| `pruneFloorQuery` | `scope_events` full scan, 100,000 | 16 ms |
+| `deleteCandidatesQuery` | `merge_inputs` by `merge_inputs_pack` (covering), 100,000; `packs`, `merges`, `packs` by key, 100,000 each | 882 ms |
+| `evictConflicts` select | `conflicts` full scan, 100,000; each `IN` list `packs` by `packs_capture_hour_state`, 0 and 100 | 185 ms |
+| `evictConflicts` delete | `conflicts` full scan, 100,000; each `IN` list `packs` by `packs_capture_hour_state`, 0 and 100 | 163 ms |
+| `evictMergeInputsQuery` | `merge_inputs` full scan, 100,000; `merges` by key, 100,000 | 249 ms |
+| `evictMergesQuery` | `merges` full scan, 100,000 | 167 ms |
+| `overlapQuery` | `pack_ranges` range of `pack_ranges_capture_seq`, 200,000; `packs` by key, 1 | 99 ms |
+| `heldSeqQuery` | `pack_ranges` range of `pack_ranges_capture_seq`, 200,000 | 17 ms |
+| `frontierQuery` | `captures`, a constant by key | 0 ms |
+| `retainedQuery` | `pack_ranges` full scan, 200,000; `packs` by key, 200,000 | 502 ms |
+| `evictedQuery` | `evicted_ranges` full scan, 1,000 | 0.1 ms |
+| `parkedQuery` | `parked` range of its key, 10,000 | 7 ms |
+| `lossesQuery` | `pack_losses` full scan, 1,000; `packs` by key, 1,000 | 0.9 ms |
+| `crashGapsQuery` | `capture_closes`, a constant by key | 0 ms |
+| `conflictsQuery` | `conflicts` range of its key, 100,000 | 23 ms |
+
+The seed holds one capture, so a range over a capture's prefix reads every row as a scan would;
+the audit, prune and eviction predicates read their whole table with no index to choose (P4),
+and the overlap probe reads all 200,000 prior ranges for one new range (P2).
 
 ### The write-connection case (step 10)
 
