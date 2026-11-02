@@ -104,7 +104,16 @@ func (c *Catalog) Completeness(ctx context.Context, capture tracepack.UUID) (Com
 func (in *completenessInputs) classify() Completeness {
 	var out Completeness
 	// The diagnostics stand on their own: a capture with no producer seq may still have a close or a declared loss.
-	out.Losses, out.CrashGaps, out.Conflicts = slices.Clone(in.losses), in.crashGaps, in.conflicts
+	// Each is put in one order of its own, so an answer never depends on the plan or the form of the read that found its rows.
+	out.Losses = slices.SortedFunc(slices.Values(in.losses), func(a, b DeclaredLoss) int {
+		return cmp.Or(cmpPtr(a.SeqFrom, b.SeqFrom), cmpPtr(a.SeqTo, b.SeqTo), cmpPtr(a.TSFrom, b.TSFrom), cmpPtr(a.TSTo, b.TSTo))
+	})
+	out.CrashGaps = slices.SortedFunc(slices.Values(in.crashGaps), func(a, b CrashGap) int {
+		return cmp.Or(cmpPtr(a.Start, b.Start), cmpPtr(a.End, b.End))
+	})
+	out.Conflicts = slices.SortedFunc(slices.Values(in.conflicts), func(a, b ConflictRange) int {
+		return cmp.Or(cmp.Compare(a.SeqFrom, b.SeqFrom), cmp.Compare(a.SeqTo, b.SeqTo), cmp.Compare(a.State, b.State))
+	})
 	out.Retained = coalesce(in.retained)
 	out.Evicted = subtract(asRuns(coalesce(in.evicted)), out.Retained)
 	frontier, ok := in.highest, in.hasHighest
@@ -186,7 +195,7 @@ func (c *Catalog) snapshot(ctx context.Context, f func(tx *sqlx.Tx) error) (err 
 const completenessChunk = 128
 
 // The queries of a completeness's inputs (completenessInputs), each over the captures its IN (?) names, selecting the key first.
-// Each orders what classify keeps in order; the losses keep the order the capture's packs are read in, as before chunking.
+// The parked rows come in seq order; classify orders the rest itself.
 var (
 	frontierQuery = keyed(`SELECT capture_id, highest_seq, origin_ns FROM captures WHERE capture_id IN (?)`)
 	retainedQuery = keyed(`SELECT r.capture_id, r.seq_from, r.seq_to, r.ts_from, r.ts_to FROM pack_ranges r JOIN packs k ON k.pack_id = r.pack_id
@@ -331,6 +340,20 @@ func (c *Catalog) completenessInputs(ctx context.Context, tx *sqlx.Tx, captures 
 	}
 
 	return ins, nil
+}
+
+// cmpPtr orders two optional values, an absent one first.
+func cmpPtr[T cmp.Ordered](a, b *T) int {
+	switch {
+	case a == nil && b == nil:
+		return 0
+	case a == nil:
+		return -1
+	case b == nil:
+		return 1
+	default:
+		return cmp.Compare(*a, *b)
+	}
 }
 
 // headerTS is the ts_utc_ns a carried 44-byte record header holds, signed little-endian at bytes 8–15.
