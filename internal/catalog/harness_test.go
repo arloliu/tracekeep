@@ -12,6 +12,8 @@ import (
 	"github.com/go-sql-driver/mysql"
 
 	"github.com/arloliu/go-secs/tracepack"
+
+	"github.com/arloliu/tracekeep/internal/benchscale"
 	"github.com/arloliu/tracekeep/migrations"
 )
 
@@ -33,10 +35,11 @@ func engines(t *testing.T, f func(t *testing.T, c *Catalog)) {
 }
 
 // benchEngines runs f once per engine in a sub-benchmark named for it, each on a fresh, migrated catalog, as catalogtest.BenchEngines does;
-// MariaDB is skipped without a server, and fails instead when envRequireMariaDB is 1.
+// MariaDB is skipped without a server, and fails instead when envRequireMariaDB is 1;
+// an engine benchscale.EnginesEnv leaves out runs no sub-benchmark.
 func benchEngines(b *testing.B, f func(b *testing.B, c *Catalog)) {
 	b.Helper()
-	for _, engine := range []string{EngineSQLite, EngineMariaDB} {
+	for _, engine := range benchscale.Engines(b, EngineSQLite, EngineMariaDB) {
 		b.Run(engine, func(b *testing.B) { f(b, newCatalog(b, engine)) })
 	}
 }
