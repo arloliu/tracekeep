@@ -2,17 +2,21 @@ package main
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
 	"testing"
 )
 
 // output writes go test -bench output: a package line, then one line a sample of each row, its metrics in the order given.
-func output(rows map[string][]string) string {
+func output(rows map[string][]string) string { return outputAt(1000, rows) }
+
+// outputAt is output with iters iterations in every sample.
+func outputAt(iters int, rows map[string][]string) string {
 	var b strings.Builder
 	b.WriteString("goos: linux\npkg: example.test/p\n")
 	for name, lines := range rows {
 		for _, l := range lines {
-			fmt.Fprintf(&b, "%s \t 1000\t%s\n", name, l)
+			fmt.Fprintf(&b, "%s \t %d\t%s\n", name, iters, l)
 		}
 	}
 	b.WriteString("PASS\nok  \texample.test/p\t1.0s\n")
@@ -33,15 +37,7 @@ func around(v float64) []string {
 // judged parses three outputs and returns the judgement of row name's metric.
 func judged(t *testing.T, base1, base2, head, name, metric string) judgement {
 	t.Helper()
-	sets := make([]rows, 3)
-	for i, s := range []string{base1, base2, head} {
-		r, err := parse(strings.NewReader(s))
-		if err != nil {
-			t.Fatal(err)
-		}
-		sets[i] = r
-	}
-	for _, j := range judge(sets[0], sets[1], sets[2]) {
+	for _, j := range judgedAll(t, options{}, base1, base2, head) {
 		if j.row == "example.test/p "+name && j.metric == metric {
 			return j
 		}
@@ -49,6 +45,68 @@ func judged(t *testing.T, base1, base2, head, name, metric string) judgement {
 	t.Fatalf("no judgement of %s %s", name, metric)
 
 	return judgement{}
+}
+
+// judgedAll parses three outputs and judges them under o.
+func judgedAll(t *testing.T, o options, base1, base2, head string) []judgement {
+	t.Helper()
+	var sides [3]rows
+	for i, s := range []string{base1, base2, head} {
+		r, err := parse(strings.NewReader(s))
+		if err != nil {
+			t.Fatal(err)
+		}
+		sides[i] = r
+	}
+
+	return judge(sides, o)
+}
+
+// worst returns each row's worst verdict, by its name without the package.
+func worst(js []judgement) map[string]verdict {
+	out := map[string]verdict{}
+	for _, j := range js {
+		name := strings.TrimPrefix(j.row, "example.test/p ")
+		out[name] = max(out[name], j.verdict)
+	}
+
+	return out
+}
+
+func TestFixedIterations(t *testing.T) {
+	t.Parallel()
+	o := options{fixed: patterns{regexp.MustCompile(`BenchmarkReg/`)}}
+	reg := map[string][]string{"BenchmarkReg/p=1-8": around(100), "BenchmarkTime-8": around(100)}
+	got := worst(judgedAll(t, o, outputAt(100, reg), outputAt(100, reg), outputAt(50, reg)))
+	if got["BenchmarkReg/p=1-8"] != fail {
+		t.Errorf("a fixed-N row at 100x against 50x = %v, want fail", got["BenchmarkReg/p=1-8"])
+	}
+	if got["BenchmarkTime-8"] != pass {
+		t.Errorf("a time-based row whose N varies = %v, want pass", got["BenchmarkTime-8"])
+	}
+	if got := worst(judgedAll(t, o, outputAt(100, reg), outputAt(100, reg), outputAt(100, reg))); got["BenchmarkReg/p=1-8"] != pass {
+		t.Errorf("a fixed-N row at 100x on every side = %v, want pass", got["BenchmarkReg/p=1-8"])
+	}
+	mixed := outputAt(100, reg) + outputAt(50, map[string][]string{"BenchmarkReg/p=1-8": around(100)})
+	if got := worst(judgedAll(t, o, mixed, mixed, mixed)); got["BenchmarkReg/p=1-8"] != fail {
+		t.Errorf("a fixed-N row whose samples differ within a file = %v, want fail", got["BenchmarkReg/p=1-8"])
+	}
+}
+
+func TestRequiredRows(t *testing.T) {
+	t.Parallel()
+	o := options{require: patterns{regexp.MustCompile(`BenchmarkReg/`)}}
+	without := output(map[string][]string{"BenchmarkTime-8": around(100)})
+	if js := judgedAll(t, o, without, without, without); exitCode(js) != exitRegressed {
+		t.Errorf("a required row missing from all three files: exit %d, want %d; %+v", exitCode(js), exitRegressed, js)
+	}
+	with := output(map[string][]string{"BenchmarkTime-8": around(100), "BenchmarkReg/p=1-8": around(100)})
+	if js := judgedAll(t, o, with, with, with); exitCode(js) != 0 {
+		t.Errorf("the required row on every side: exit %d, want 0; %+v", exitCode(js), js)
+	}
+	if js := judgedAll(t, o, with, with, without); exitCode(js) != exitRegressed {
+		t.Errorf("a required row missing in head: exit %d, want %d", exitCode(js), exitRegressed)
+	}
 }
 
 func TestRepeatability(t *testing.T) {
