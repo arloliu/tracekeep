@@ -67,7 +67,7 @@ func (s *Server) restoreRecord(ctx context.Context, m *tkv1.RestoreRequest) (*co
 	seq, h := m.GetSeq(), m.GetHour()
 	capture, err := tracepack.ParseUUID(m.GetCaptureId())
 	if err != nil {
-		return nil, restoreInvalidRequest, invalid("restore capture_id %q seq %d: %v", m.GetCaptureId(), seq, err)
+		return nil, restoreInvalidRequest, invalid("restore capture_id seq %d: the capture_id is not a UUID", seq)
 	}
 	at := fmt.Sprintf("%s seq %d", capture, seq)
 	if seq >= closeSentinel {

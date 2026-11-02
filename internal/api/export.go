@@ -37,7 +37,7 @@ func (s *Server) StartExport(ctx context.Context, req *connect.Request[tkv1.Star
 	case "filtered":
 		return nil, connect.NewError(connect.CodeUnimplemented, errors.New("kind=filtered waits for a filtered writer of go-secs (T-48)"))
 	default:
-		return nil, invalid("kind %q is not canonical", req.Msg.GetKind())
+		return nil, invalid("kind is not canonical")
 	}
 	sel, err := selector(req.Msg.GetSelector())
 	if err != nil {
@@ -174,7 +174,7 @@ func (s *Server) CancelExport(ctx context.Context, req *connect.Request[tkv1.Can
 	}
 	id, err := tracepack.ParseUUID(req.Msg.GetJobId())
 	if err != nil {
-		return nil, invalid("job_id %q: %v", req.Msg.GetJobId(), err)
+		return nil, invalid("job_id is not a UUID")
 	}
 	err = s.Catalog.CancelExport(ctx, id, owner, catalog.AuditEntry{Actor: owner, Action: "export-cancel", Detail: "job " + id.String()})
 	switch {
@@ -207,7 +207,7 @@ func (s *Server) ownJob(ctx context.Context, text string) (string, catalog.Expor
 	}
 	id, err := tracepack.ParseUUID(text)
 	if err != nil {
-		return "", catalog.ExportJob{}, invalid("job_id %q: %v", text, err)
+		return "", catalog.ExportJob{}, invalid("job_id is not a UUID")
 	}
 	j, err := s.Catalog.ExportJob(ctx, id, owner)
 	if errors.Is(err, catalog.ErrExportNotFound) {

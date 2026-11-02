@@ -198,7 +198,7 @@ func refusal(err error) error {
 }
 
 // observe decides each handled request's code as its handler returns (decide) and records its operation, code and duration, a stream's at its end;
-// it logs a failure and a refused restore, each with the cause its answer leaves out.
+// it makes every answer and cause safe (safeAnswer) and logs a failure and a refused restore, each with the cause its answer leaves out.
 func (s *Server) observe() connect.Interceptor { return observer{s} }
 
 type observer struct{ s *Server }
@@ -208,6 +208,7 @@ func (o observer) WrapUnary(next connect.UnaryFunc) connect.UnaryFunc {
 		start := time.Now()
 		resp, err := next(ctx, req)
 		gone, err := decide(ctx, err)
+		err = safeAnswer(err)
 		o.s.observed(req.Spec().Procedure, start, gone, err)
 
 		return resp, err
@@ -222,6 +223,7 @@ func (o observer) WrapStreamingHandler(next connect.StreamingHandlerFunc) connec
 	return func(ctx context.Context, conn connect.StreamingHandlerConn) error {
 		start := time.Now()
 		gone, err := decide(ctx, next(ctx, conn))
+		err = safeAnswer(err)
 		o.s.observed(conn.Spec().Procedure, start, gone, err)
 
 		return err

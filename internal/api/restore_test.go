@@ -512,8 +512,8 @@ func TestRestoreRefusals(t *testing.T) {
 	}
 }
 
-// restoreLocator is the request as an error names it: the capture, or the capture id given when it does not parse, and the seq.
-var restoreLocator = regexp.MustCompile(`restore ([0-9a-f-]{36}|capture_id \\?"[^"\\]*\\?") seq \d+`)
+// restoreLocator is the request as an error names it: the capture, or the field capture_id when it does not parse, never its text, and the seq.
+var restoreLocator = regexp.MustCompile(`restore ([0-9a-f-]{36}|capture_id) seq \d+`)
 
 // refusalLogged checks that a refused restore left line, one line naming the operation, the request and the reason;
 // a dependency's failure answers a fixed message, which names neither the request nor the cause, and the line logs both.
