@@ -30,6 +30,7 @@ a header or convention both sides need goes into the SDK, never into the service
 | Path | Scope |
 |---|---|
 | `cmd/tracekeep` | the one binary: `ingest`, `compact`, `api`, `migrate`, `all`, `dev` (embedded bus, fake S3, SQLite, simulated producer) |
+| `cmd/benchjudge` | the benchmarks' decision tool (T-54): base twice and head once in, each metric's verdict out; run by `bench.yaml` and by hand, never shipped |
 | `cmd/tracekeep-sim` | the reference producer's command line, over `internal/sim`; back in the service module since phase 1.6 (T-38) |
 | `internal/sim` | the reference producer on the SDK: a go-secs loopback pair with the observers, or replay of tracepack packs; run by `cmd/tracekeep-sim` and `tracekeep dev` |
 | `internal/testbus` | embedded nats-server with JetStream for tests and `dev`; service module only, never the SDK |
@@ -46,6 +47,7 @@ a header or convention both sides need goes into the SDK, never into the service
 | `migrations/`, `schema.hcl`, `atlas.hcl` | the catalog schema and its Atlas migrations, one directory per engine |
 | `producer/` | the SDK: `producer`, `secsobs`, `busconfig`, `producertest` |
 | `web/` | the frontend: Vite, React, TypeScript (`api.md` §10.3); its Go package embeds the build, or the fallback page without `-tags webdist` |
+| `internal/benchscale`, `internal/catalog/catalogtest` | test support: the benchmarks' sizes (`TRACEKEEP_BENCH_SCALE`); fresh catalogs on each engine, the fleet seeder and the benchmarks' engine loop |
 | `internal/devidp` | `tracekeep dev`'s test IdP; imported by `dev` and tests only |
 | `deploy/` | the image (`deploy/image/`), the Helm chart (`deploy/helm/tracekeep/`) and the systemd unit (`deploy/systemd/`), `architecture.md` §3.3 |
 | `scripts/packaging/` | the packaging tests' legs, one script each, run by their CI jobs; the cluster leg also by a developer where Docker is, the standalone leg only on a GitHub-hosted runner |
