@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"database/sql"
 	"encoding/base64"
@@ -118,6 +119,53 @@ func TestDevRefusesARateItCannotTick(t *testing.T) {
 		if code != 2 || !strings.Contains(stderr, "rate") {
 			t.Errorf("tracekeep dev --rate %s = %d, %q; want 2 naming the rate", rate, code, stderr)
 		}
+	}
+}
+
+// tracekeep dev serves Go's profiles on its metrics listener with -pprof, and not without it; -pprof without -metrics is refused.
+func TestDevPprof(t *testing.T) {
+	t.Parallel()
+	if code, _, stderr := tracekeep(t, "dev", "--data", t.TempDir(), "--port", "0", "--pprof"); code != 2 || !strings.Contains(stderr, "-metrics") {
+		t.Errorf("tracekeep dev --pprof without --metrics = %d, %q; want 2 naming -metrics", code, stderr)
+	}
+	for flag, want := range map[string]int{"": http.StatusNotFound, "--pprof": http.StatusOK} {
+		t.Run(cmp.Or(flag, "off"), func(t *testing.T) {
+			t.Parallel()
+			l, err := net.Listen("tcp", "127.0.0.1:0")
+			if err != nil {
+				t.Fatal(err)
+			}
+			addr := l.Addr().String()
+			_ = l.Close()
+			args := []string{"dev", "--data", t.TempDir(), "--port", "0", "--api", "127.0.0.1:0", "--idp", "127.0.0.1:0", "--rate", "0", "--metrics", addr}
+			if flag != "" {
+				args = append(args, flag)
+			}
+			ctx, stop := context.WithCancel(t.Context())
+			defer stop()
+			var stderr bytes.Buffer
+			done := make(chan int, 1)
+			go func() { done <- run(ctx, args, io.Discard, &stderr) }()
+			if code, ended := waitReady(t, addr, done); ended {
+				t.Fatalf("dev ended before it was ready: %d, %s", code, stderr.String())
+			}
+			req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, "http://"+addr+"/debug/pprof/", http.NoBody)
+			if err != nil {
+				t.Fatal(err)
+			}
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_ = resp.Body.Close()
+			if resp.StatusCode != want {
+				t.Errorf("dev %s: /debug/pprof/ = %d, want %d", flag, resp.StatusCode, want)
+			}
+			stop()
+			if code := <-done; code != 0 {
+				t.Errorf("dev on a stop signal = %d, %s", code, stderr.String())
+			}
+		})
 	}
 }
 

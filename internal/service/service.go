@@ -92,10 +92,12 @@ var (
 )
 
 // Observe registers the catalog's metrics and readiness on a new metrics server, each of roles not ready until it has started,
-// and serves it on metrics.listen until Close, failing when it cannot bind; with no listen address it serves nothing, the metrics still recorded.
+// and serves it on metrics.listen until Close, Go's profiles too when metrics.pprof is on, failing when it cannot bind;
+// with no listen address it serves nothing, the metrics still recorded.
 // The roles run under the context it returns, which serving that ends before Close cancels with its error (metrics.ErrServe).
 func (e *Env) Observe(ctx context.Context, roles ...string) (context.Context, error) {
 	e.Metrics = metrics.NewServer()
+	e.Metrics.Pprof = e.Config.Metrics.Pprof
 	if err := metrics.RegisterCatalog(e.Metrics, e.Catalog); err != nil {
 		return ctx, err
 	}

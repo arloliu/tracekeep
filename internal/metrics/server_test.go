@@ -61,6 +61,30 @@ func TestServer(t *testing.T) {
 	}
 }
 
+// Go's profiles are served under /debug/pprof/ only when Pprof is set, and never otherwise.
+func TestPprof(t *testing.T) {
+	t.Parallel()
+	// profile and trace each run for seconds, so the served ones are read; all five are checked absent when off.
+	for _, on := range []bool{false, true} {
+		s := NewServer()
+		s.Pprof = on
+		h := s.Handler()
+		paths := []string{"/debug/pprof/", "/debug/pprof/cmdline", "/debug/pprof/symbol", "/debug/pprof/heap"}
+		if !on {
+			paths = append(paths, "/debug/pprof/profile", "/debug/pprof/trace")
+		}
+		for _, path := range paths {
+			want := http.StatusNotFound
+			if on {
+				want = http.StatusOK
+			}
+			if code, _ := get(t, h, path); code != want {
+				t.Errorf("pprof %v: %s = %d, want %d", on, path, code, want)
+			}
+		}
+	}
+}
+
 // Start binds at once, failing on an address it cannot bind, and serves until Close.
 func TestStartAndClose(t *testing.T) {
 	t.Parallel()

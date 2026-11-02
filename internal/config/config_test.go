@@ -54,7 +54,7 @@ func TestDefaults(t *testing.T) {
 		}
 	}
 	if c.Catalog.Engine != "sqlite" || c.Store.Kind != "s3" || !c.Store.Presign || !c.Parking.Enabled || c.Ingest.BatchMaxBytes.Int64() != 64<<20 || c.Ingest.MaxRecordBytes.Int64() != 64<<20 ||
-		c.Metrics.Listen != ":9090" {
+		c.Metrics.Listen != ":9090" || c.Metrics.Pprof {
 		t.Errorf("config %+v, want the defaults", c)
 	}
 	if host, _ := os.Hostname(); c.Replica != host {
@@ -82,12 +82,13 @@ func TestSecretByReference(t *testing.T) {
 func TestEnvironmentOverrides(t *testing.T) {
 	t.Setenv("TRACEKEEP_INGEST_FLUSH_INTERVAL", "2m")
 	t.Setenv("TRACEKEEP_PARKING_ENABLED", "false")
+	t.Setenv("TRACEKEEP_METRICS_PPROF", "true")
 	c, err := Load(write(t, minimal+"ingest:\n  flush_interval: 4m\n"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if c.Ingest.FlushInterval != 2*time.Minute || c.Parking.Enabled {
-		t.Errorf("flush interval %s, parking %v; want the environment's", c.Ingest.FlushInterval, c.Parking.Enabled)
+	if c.Ingest.FlushInterval != 2*time.Minute || c.Parking.Enabled || !c.Metrics.Pprof {
+		t.Errorf("flush interval %s, parking %v, pprof %v; want the environment's", c.Ingest.FlushInterval, c.Parking.Enabled, c.Metrics.Pprof)
 	}
 }
 
@@ -105,6 +106,7 @@ func TestValidation(t *testing.T) {
 		"key, no cert":        {yaml("", "  url: nats://bus:4222\n  subject_prefix: tk\n  claim_bucket: claims\n  key_file: /k\n", "", ""), "bus.cert_file"},
 		"s3, no access key":   {yaml("", "", "  s3:\n    bucket: packs\n    secret_access_key: sk\n", ""), "store.s3.access_key_id"},
 		"s3, no secret":       {yaml("", "", "  s3:\n    bucket: packs\n    access_key_id: ak\n", ""), "store.s3.secret_access_key"},
+		"pprof, no listener":  {yaml("", "", "", "metrics:\n  listen: \"\"\n  pprof: true\n"), "metrics.pprof"},
 	} {
 		if _, err := Load(write(t, tc.yaml)); err == nil || !strings.Contains(err.Error(), tc.want) {
 			t.Errorf("%s: Load = %v, want an error naming %s", name, err, tc.want)

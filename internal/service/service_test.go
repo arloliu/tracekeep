@@ -354,6 +354,25 @@ func TestObserveBindsAtStart(t *testing.T) {
 	})
 }
 
+// The metrics server Observe builds serves Go's profiles exactly when metrics.pprof is on.
+func TestObservePprof(t *testing.T) {
+	t.Parallel()
+	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
+		for on, want := range map[bool]int{false: http.StatusNotFound, true: http.StatusOK} {
+			cfg := &config.Config{Metrics: config.Metrics{Pprof: on}} // nothing served: the handler is read directly
+			e := &Env{Config: cfg, Catalog: c, Log: slog.New(slog.DiscardHandler)}
+			if _, err := e.Observe(t.Context()); err != nil {
+				t.Fatal(err)
+			}
+			rec := httptest.NewRecorder()
+			e.Metrics.Handler().ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/debug/pprof/", nil))
+			if rec.Code != want {
+				t.Errorf("metrics.pprof %v: /debug/pprof/ = %d, want %d", on, rec.Code, want)
+			}
+		}
+	})
+}
+
 // Each role of each replica works in a directory of its own, so the files one removes at start are only the ones it left:
 // another replica's, and the other role's, stay.
 func TestOwnWorkDir(t *testing.T) {

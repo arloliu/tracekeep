@@ -11,6 +11,7 @@ import (
 	"maps"
 	"net"
 	"net/http"
+	"net/http/pprof" //nolint:gosec // G108: its handlers go on the metrics listener's own mux, only when metrics.pprof is on
 	"slices"
 	"strings"
 	"sync"
@@ -29,6 +30,9 @@ const idleTimeout = 2 * time.Minute
 
 // Server holds the registry and the readiness checks, and serves them.
 type Server struct {
+	// Pprof, set before Handler or Start, also serves Go's profiles under /debug/pprof/.
+	Pprof bool
+
 	reg    *prometheus.Registry
 	mu     sync.Mutex
 	checks map[string]func(context.Context) error
@@ -59,12 +63,20 @@ func (s *Server) Ready(name string, check func(context.Context) error) {
 	s.checks[name] = check
 }
 
-// Handler serves /metrics, /healthz (the process runs) and /readyz (every check passes).
+// Handler serves /metrics, /healthz (the process runs) and /readyz (every check passes), and /debug/pprof/ when Pprof is set.
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.Handle("/metrics", promhttp.HandlerFor(s.reg, promhttp.HandlerOpts{}))
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) { _, _ = fmt.Fprintln(w, "ok") })
 	mux.HandleFunc("/readyz", s.readyz)
+	if s.Pprof {
+		// The import also registers them on http.DefaultServeMux, which the service never serves.
+		mux.HandleFunc("/debug/pprof/", pprof.Index)
+		mux.HandleFunc("/debug/pprof/cmdline", pprof.Cmdline)
+		mux.HandleFunc("/debug/pprof/profile", pprof.Profile)
+		mux.HandleFunc("/debug/pprof/symbol", pprof.Symbol)
+		mux.HandleFunc("/debug/pprof/trace", pprof.Trace)
+	}
 
 	return mux
 }
