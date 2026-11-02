@@ -309,10 +309,18 @@ func judgeMetric(rng *rand.Rand, row, metric string, b1, b2, h []float64) judgem
 			return j
 		}
 	}
-	// Allocations whose base never varied, and anything from a zero base, are exact; varying allocations are judged as a time is.
-	deterministic := metric == "allocs/op" && !slices.ContainsFunc(append(slices.Clone(b1), b2...), func(v float64) bool { return v != b1[0] })
+	// Allocations whose base never varied, and anything from an all-zero base, are exact; varying allocations are judged as a time is.
+	base := append(slices.Clone(b1), b2...)
+	allZero := !slices.ContainsFunc(base, func(v float64) bool { return v != 0 })
+	deterministic := metric == "allocs/op" && !slices.ContainsFunc(base, func(v float64) bool { return v != b1[0] })
 	j.base1, j.base2, j.head = median(b1), median(b2), median(h)
-	if deterministic || j.base1 == 0 {
+	if j.base1 == 0 && !deterministic && !allZero {
+		// A varying base whose median is zero has no ratio to judge: measure it again, never pass it.
+		j.verdict, j.why = inconclusive, "a varying base with a zero median"
+
+		return j
+	}
+	if deterministic || allZero {
 		j.verdict, j.why = pass, "exact"
 		if j.head > j.base1 {
 			j.verdict = regress
@@ -346,12 +354,24 @@ func interval(rng *rand.Rand, base, head []float64) (low, high float64) {
 		for k := range hs {
 			hs[k] = head[rng.IntN(len(head))]
 		}
-		ratios[i] = median(hs) / median(bs)
+		ratios[i] = ratio(median(hs), median(bs))
 	}
 	slices.Sort(ratios)
 	tail := (1 - coverage) / 2
 
 	return ratios[int(tail*resamples)], ratios[int(math.Ceil((1-tail)*resamples))-1]
+}
+
+// ratio is head / base, with a zero base read as no change when head is zero too and as unbounded otherwise.
+func ratio(head, base float64) float64 {
+	switch {
+	case base != 0:
+		return head / base
+	case head == 0:
+		return 1
+	default:
+		return math.Inf(1)
+	}
 }
 
 // median is s's median; s is reordered.
