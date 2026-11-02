@@ -51,19 +51,32 @@ jobs:
     - name: Use the head's Go in both trees
       run: dirname "$(cd head && mise which go)" >> "$GITHUB_PATH"
 
-    # What a baseline records besides the engine's flush setting, which catalog.sh prints: never a host, a runner or a vendor's model.
+    # What a baseline records (650-perf-sec.md, T-54), in the log and the run's summary: never a host, a runner or a vendor's model.
+    # Each tree's engine versions and durability settings are printed by its catalog.sh run, which alone sees its MariaDB container.
     - name: Machine facts
       run: |
-        echo "base: $(git -C base rev-parse HEAD)"
-        echo "head: $(git -C head rev-parse HEAD)"
-        go version
-        echo "benchstat: $BENCHSTAT"
-        echo "cores: $(nproc)"
-        lscpu | grep -E '^(Architecture|CPU\(s\)|Thread\(s\) per core|Core\(s\) per socket|Socket\(s\)|L2 cache|L3 cache|Hypervisor vendor):' || true
-        echo "filesystem of the work: $(stat -f -c %T "$GITHUB_WORKSPACE")"
-        echo "filesystem of the tests' temporary directory: $(stat -f -c %T "${TMPDIR:-/tmp}")"
-        echo "filesystem of MariaDB's data: $(sudo stat -f -c %T "$(docker info -f '{{.DockerRootDir}}')")"
-        echo "-count 10 -benchtime $BENCHTIME, scale $TRACEKEEP_BENCH_SCALE"
+        echo "CPU=$(nproc)" >> "$GITHUB_ENV"
+        {
+          echo '```'
+          echo "base: $(git -C base rev-parse HEAD)"
+          echo "head: $(git -C head rev-parse HEAD)"
+          go version
+          echo "benchstat: $BENCHSTAT"
+          echo "cores: $(nproc)"
+          lscpu | grep -E '^(Architecture|CPU\(s\)|Thread\(s\) per core|Core\(s\) per socket|Socket\(s\)|L2 cache|L3 cache|Hypervisor vendor):' || true
+          echo "filesystem of the work: $(stat -f -c %T "$GITHUB_WORKSPACE")"
+          echo "filesystem of the tests' temporary directory: $(stat -f -c %T "${TMPDIR:-/tmp}")"
+          echo "filesystem of MariaDB's data: $(sudo stat -f -c %T "$(docker info -f '{{.DockerRootDir}}')")"
+          echo "-cpu $(nproc) -count 10 -benchtime $BENCHTIME, scale $TRACEKEEP_BENCH_SCALE; BenchmarkRegisterPack at 100x, its ranges cells at 1x"
+          echo '```'
+          echo
+          echo '| Benchmarks | A synchronization to disk in the timed work |'
+          echo '|---|---|'
+          echo '| catalog RegisterPack, RecordListing, AuditWhileRegistering, PruneEvents, EvictHour; ingest Flush, FlushDue, Acknowledge (its parked copies); compact MergePass, RetainClaimListing, Orphans adopting | yes: each catalog commit, SQLite at synchronous FULL, MariaDB as innodb_flush_log_at_trx_commit says |'
+          echo '| ingest Flush, FlushDue on the fs store; store FSPut | yes, besides: the fs store syncs each object and its directory |'
+          echo '| compact MergeWrite | no: its work file is not synced |'
+          echo '| catalog Listings, ListingHistory, Lookups, Resolve, DeleteCandidates; metrics ReadCatalog; compact Orphans steady, Compare; ingest Dispose, Batcher, Act, Heartbeat; api, records, service | no: reads, or memory only |'
+        } | tee -a "$GITHUB_STEP_SUMMARY"
 
     # The head between the base's two runs, so the base's repeatability spans the head's run.
     - name: Benchmarks
@@ -87,6 +100,11 @@ jobs:
         echo "## the change, base1 against head"
         go run "$BENCHSTAT" base=out/base1.txt head=out/head.txt
 
-    # Fails on a regression or a failed row, and on an inconclusive one (exit 3), which is measured again, never passed.
+    # Fails on a regression or a failed row, and on an inconclusive one (exit 3), which is measured again, never passed;
+    # registration's rows run at a fixed N, the same on every side, and each of its shapes must be measured on MariaDB.
     - name: Decisions
-      run: cd head && go run ./cmd/benchjudge ../out/base1.txt ../out/base2.txt ../out/head.txt
+      run: |
+        cd head && go run ./cmd/benchjudge -fixed 'BenchmarkRegisterPack/' \
+          -require 'BenchmarkRegisterPack/evidence/.*/mariadb' -require 'BenchmarkRegisterPack/ranges/.*/mariadb' \
+          -require 'BenchmarkRegisterPack/miss/.*/mariadb' -require 'BenchmarkRegisterPack/hit/.*/mariadb' \
+          ../out/base1.txt ../out/base2.txt ../out/head.txt
