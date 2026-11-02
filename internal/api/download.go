@@ -120,7 +120,7 @@ func fileName(key string) string {
 // downloadFailed logs a download's failure, its error keyless, as one line.
 func (s *Server) downloadFailed(status int, err error) {
 	if s.Log != nil {
-		s.Log.Error("api: download failed", "status", status, "error", err)
+		s.Log.Error("api: download failed", "status", status, "error", safeText(err.Error()))
 	}
 }
 
