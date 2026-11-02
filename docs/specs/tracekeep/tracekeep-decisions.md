@@ -726,3 +726,19 @@ offers half the highest sustained rate, and fails a `PackURL` run on any failure
 **pprof** is opt-in on the metrics listener (`operations.md` §10.4).
 Considered and not taken: passing a comparison only because no increase is significant; a single simulated tool for the write-connection case; asserting query plans before an index exists.
 
+
+### T-55 — what the phase 5 plan's catalog performance settled (2026-11-03)
+
+Nine points the phase 5 plan raised before its catalog performance sub-phase, read from the code against the measured baselines and settled on the plan's recommendations under the owner's standing instruction, amended by the plan's external review.
+**The range probes' bound**: `pack_ranges` gains `span`, a virtual column the engine computes, indexed with the capture;
+a probe for the ranges meeting `[first, last]` reads only `seq_from >= first - m`, `m` the capture's largest stored span, read in the probe's statement or snapshot (`catalog.md` §7.1).
+The engine maintains it, so an older writer during a rollout keeps it true, no backfill runs, and an eviction lowering it is correct.
+**Registration's evidence in sets**: one transaction a pack, with every outcome, its precedence and its tombstone reason unchanged; the parked rows and the termination orders read once a pack; multi-row inserts.
+**The claim listing in bounded transactions**: written in chunks under the lease, only what it adds, the unattributed sweep last (`compactor.md` §8.3).
+**Deletion and eviction**: the deletable merges' deadline sargable, and indexes for the deletable merges and an eviction's conflicts and merges; the audit listings and the prune take none, measured too small to pay for one.
+**Listings batched, not windowed**: completeness answers a whole capture, so the listings read their inputs for chunks of captures in one snapshot.
+**The standalone audit write**: under a deadline of 1 s within the request's own, its wait for a connection measured (`api.md`, `operations.md` §10.4); no priority over ingest.
+**Schema**: two generated migrations per engine, the column then the indexes, so each runs online on MariaDB.
+**Before and after**: the base is the branch once its benchmarks are corrected; the benchmark workflow runs only MariaDB's rows, one job per group.
+**The write-connection gate** runs after every production change.
+Considered and not taken: a span kept by the application (an older writer would not keep it); an index on the range's end (it bounds only probes near the end); windowing completeness; priority for the audit over ingest; indexes for the audit listings.

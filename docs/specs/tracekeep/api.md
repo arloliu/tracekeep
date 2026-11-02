@@ -61,6 +61,7 @@ It checks the `admin` role and audits the command as every admin command is audi
 the CLI's `--actor` names the actor of the direct path only.
 A usage error answers `invalid_argument` and any other failure of the command `failed_precondition`, each with its text,
 except a failed audit write, which answers `internal` wherever the catalog wrote it (alone or inside the command's transaction), and a client gone, which answers as *A client gone* below states.
+A command that only reads writes its audit row after it ran, alone, under a deadline of 1 s within the request's own, as every standalone audit of a request is (T-55): past it the command's result is not returned.
 The CLI authenticates with the configuration's static token that holds `admin` (`auth.static`, its flag on),
 reaching the service at `api.public_url` and trusting its certificate (`api.tls_cert_file`) beside the system's roots;
 without such a token it refuses and says so.
@@ -136,6 +137,8 @@ and an hour a refusal names is written in RFC 3339, never as an epoch hour.
 
 Every issued `PackURL` appends an `audit_log` row naming the principal's subject, the capture, the pack and the URL's expiry, never the URL:
 the VE service reads packs that hold ciphertext in place (T-5), one row per URL issued.
+The audit row a request writes alone (`PackURL`'s, `Digest`'s, `Restore`'s, an export URL's, an operator read's) is written under a deadline of 1 s within the request's own,
+so a writer held by ingest delays the answer by at most that; past it the request answers `internal` and returns no URL, digest, payload or result (T-55).
 
 **Record predicates of `QueryRecords`.**
 
