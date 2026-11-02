@@ -17,6 +17,18 @@ type Copy struct {
 	State string
 }
 
+// copiesInHourQuery tells whether a pack of an hour, neither excluded nor deleted, holds a capture's seq,
+// its arguments the capture, the seq twice, the hour, then spanBound's: the seq and the capture.
+const copiesInHourQuery = `SELECT COUNT(*) FROM (SELECT 1 FROM pack_ranges r JOIN packs k ON k.pack_id = r.pack_id
+			WHERE r.capture_id = ? AND r.seq_from <= ? AND r.seq_to >= ? AND k.hour = ? AND k.state NOT IN ('excluded', 'deleted')` + spanBound + ` LIMIT 1) AS named`
+
+// copiesQuery lists the packs, neither excluded nor deleted, holding a capture's seq, in hour and then pack order,
+// its arguments the capture, the seq twice, spanBound's (the seq and the capture), then the limit.
+const copiesQuery = `SELECT DISTINCT k.pack_id, k.object_key, k.hour, k.state
+			FROM pack_ranges r JOIN packs k ON k.pack_id = r.pack_id
+			WHERE r.capture_id = ? AND r.seq_from <= ? AND r.seq_to >= ? AND k.state NOT IN ('excluded', 'deleted')` + spanBound + `
+			ORDER BY k.hour, k.pack_id LIMIT ?`
+
 // RecordCopies lists, from one snapshot, the packs of capture whose range holds seq, in any hour and in any state but excluded and deleted,
 // a merged input beside its archive, in hour and then pack order, at most limit of them (masking-keys.md §9 *Restore*).
 // It first tells whether hour holds such a pack, inHour, and lists nothing when it does not.
@@ -25,9 +37,7 @@ func (c *Catalog) RecordCopies(ctx context.Context, capture tracepack.UUID, seq 
 	s := int64(seq) //nolint:gosec // stored seqs are below 2^63
 	err = c.snapshot(ctx, func(tx *sqlx.Tx) error {
 		var n int
-		err := tx.GetContext(ctx, &n, `SELECT COUNT(*) FROM (SELECT 1 FROM pack_ranges r JOIN packs k ON k.pack_id = r.pack_id
-			WHERE r.capture_id = ? AND r.seq_from <= ? AND r.seq_to >= ? AND k.hour = ? AND k.state NOT IN ('excluded', 'deleted') LIMIT 1) AS named`,
-			capture[:], s, s, hour)
+		err := tx.GetContext(ctx, &n, copiesInHourQuery, capture[:], s, s, hour, s, capture[:])
 		if inHour = n > 0; err != nil || !inHour {
 			return err
 		}
@@ -37,10 +47,7 @@ func (c *Catalog) RecordCopies(ctx context.Context, capture tracepack.UUID, seq 
 			Hour  int64  `db:"hour"`
 			State string `db:"state"`
 		}
-		err = tx.SelectContext(ctx, &rows, `SELECT DISTINCT k.pack_id, k.object_key, k.hour, k.state
-			FROM pack_ranges r JOIN packs k ON k.pack_id = r.pack_id
-			WHERE r.capture_id = ? AND r.seq_from <= ? AND r.seq_to >= ? AND k.state NOT IN ('excluded', 'deleted')
-			ORDER BY k.hour, k.pack_id LIMIT ?`, capture[:], s, s, limit)
+		err = tx.SelectContext(ctx, &rows, copiesQuery, capture[:], s, s, s, capture[:], limit)
 		for _, r := range rows {
 			copies = append(copies, Copy{Pack: tracepack.UUID(r.Pack), Key: r.Key, Hour: r.Hour, State: r.State})
 		}
