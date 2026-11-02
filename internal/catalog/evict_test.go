@@ -117,7 +117,7 @@ func TestEvictHour(t *testing.T) {
 		l := compactorLease(t, c, "w")
 		capture := admitted(t, c)
 		a, b := segment(t, capture, 1, 0, 9), segment(t, capture, 1, 10, 19)
-		a.Losses = []Loss{{SeqFrom: ptr(uint64(25)), SeqTo: ptr(uint64(26))}}
+		a.Losses = []Loss{{SeqFrom: new(uint64(25)), SeqTo: new(uint64(26))}}
 		ev := &Evidence{Receipts: []Receipt{{Seq: 3, Header: [44]byte{3}, PayloadSHA256: [32]byte{1}, ObjectKey: "claims/3", ObjectSize: 10}}}
 		register(t, c, a, Registration{Evidence: ev})
 		register(t, c, b, Registration{Evidence: &Evidence{}})
@@ -244,6 +244,109 @@ func TestEvictHourGuards(t *testing.T) {
 		compactorLease(t, c, "new")
 		if _, err := c.EvictHour(t.Context(), l, Scope{capture, 1}, hourEvictedNow); !errors.Is(err, ErrLeaseLost) {
 			t.Errorf("EvictHour under a lost lease = %v, want ErrLeaseLost", err)
+		}
+	})
+}
+
+// An eviction finds the hour's conflicts from either side, in batches of evictBatch packs:
+// one within the hour goes once, with no event; those naming a pack of hours 2 and 3, from either side and two of them the same pack,
+// advance each of those hours once with one conflict event; one between hours 2 and 3 stays.
+func TestEvictHourConflictsOnBothSides(t *testing.T) {
+	t.Parallel()
+	engines(t, func(t *testing.T, c *Catalog) {
+		l := compactorLease(t, c, "w")
+		recordRetention(t, c, l, month, 0)
+		capture := seedCaptures(t, c, 1, 1)[0]
+		hour, seq := seedPacks(t, c, capture, packsSeed{hour0: 1, hours: 1, packs: evictBatch + 1, ranges: 1, span: 10})
+		two, seq := seedPacks(t, c, capture, packsSeed{hour0: 2, hours: 1, packs: 2, ranges: 1, span: 10, seq0: seq})
+		three, _ := seedPacks(t, c, capture, packsSeed{hour0: 3, hours: 1, packs: 1, ranges: 1, span: 10, seq0: seq})
+		last := hour[evictBatch] // in the second batch
+		conflict := func(seq int64, a, b tracepack.UUID) []any { return []any{capture[:], seq, seq, a[:], b[:], "suspect"} }
+		seedRows(t, c, "conflicts", []string{"capture_id", "seq_from", "seq_to", "pack_id", "other_pack_id", "state"}, [][]any{
+			conflict(1, hour[0], hour[1]),
+			conflict(2, hour[0], two[0]),
+			conflict(3, two[0], last),
+			conflict(4, last, two[1]),
+			conflict(5, three[0], hour[2]),
+			conflict(6, two[1], three[0]),
+		})
+		rev2, rev3 := scopeOf(t, c, capture, 2).Revision, scopeOf(t, c, capture, 3).Revision
+		before := len(events(t, c))
+		if ev := evict(t, c, l, Scope{capture, 1}, hourEvictedNow); !ev.Evicted || len(ev.Packs) != evictBatch+1 {
+			t.Fatalf("EvictHour = evicted %v with %d packs, want the hour's %d", ev.Evicted, len(ev.Packs), evictBatch+1)
+		}
+		var kept []struct {
+			A []byte `db:"pack_id"`
+			B []byte `db:"other_pack_id"`
+		}
+		if err := c.read.SelectContext(t.Context(), &kept, `SELECT pack_id, other_pack_id FROM conflicts`); err != nil {
+			t.Fatal(err)
+		}
+		if len(kept) != 1 || tracepack.UUID(kept[0].A) != two[1] || tracepack.UUID(kept[0].B) != three[0] {
+			t.Errorf("conflicts after the eviction = %d, want only the one between hours 2 and 3", len(kept))
+		}
+		if got2, got3 := scopeOf(t, c, capture, 2).Revision, scopeOf(t, c, capture, 3).Revision; got2 != rev2+1 || got3 != rev3+1 {
+			t.Errorf("revisions of hours 2 and 3 = %d and %d, want %d and %d", got2, got3, rev2+1, rev3+1)
+		}
+		if evs := events(t, c)[before:]; !slices.Equal(evs, []string{"conflict@2", "conflict@3"}) {
+			t.Errorf("events of the eviction = %v, want one conflict event on hours 2 and 3", evs)
+		}
+		if n := count(t, c, `SELECT COUNT(*) FROM pack_ranges WHERE capture_id = ?`, capture[:]); n != 3 {
+			t.Errorf("ranges after the eviction = %d, want hours 2 and 3's 3", n)
+		}
+	})
+}
+
+// A chain of merges in the evicted hour goes whole, its first archive the output of one merge and an input of the next;
+// a merge input goes with its merge and with its pack, so a kept merge of another hour loses only its input of the hour.
+func TestEvictHourMergeChain(t *testing.T) {
+	t.Parallel()
+	engines(t, func(t *testing.T, c *Catalog) {
+		l := compactorLease(t, c, "w")
+		recordRetention(t, c, l, month, 0)
+		capture := seedCaptures(t, c, 1, 1)[0]
+		ch := newMergeChain(t, capture, 1)
+		ch.insert(t, c)
+		kept := seedMerges(t, c, capture, 2, 1, 1, 0, 0)[0]
+		exec(t, c, `INSERT INTO merge_inputs (merge_id, pack_id) VALUES (?, ?)`, kept[:], ch.packs[2][:])
+		ev := evict(t, c, l, Scope{capture, 1}, hourEvictedNow)
+		if keys := slices.Sorted(slices.Values(ev.Packs)); !ev.Evicted || !slices.Equal(keys, ch.keys) || ev.Tombstoned != len(ch.keys) {
+			t.Fatalf("EvictHour = %+v, want the chain's packs %v evicted and tombstoned", ev, ch.keys)
+		}
+		gone, args := inList(`SELECT COUNT(*) FROM merge_inputs WHERE merge_id IN`, ch.merges)
+		gone, args = inList(gone+` OR pack_id IN`, ch.packs, args...)
+		if n := count(t, c, gone, args...); n != 0 {
+			t.Errorf("%d merge inputs of the chain's merges or packs kept", n)
+		}
+		if n := count(t, c, `SELECT COUNT(*) FROM merges WHERE capture_id = ? AND hour = 1`, capture[:]); n != 0 {
+			t.Errorf("%d merges of the hour kept", n)
+		}
+		if n := count(t, c, `SELECT COUNT(*) FROM merges m JOIN merge_inputs i ON i.merge_id = m.merge_id WHERE m.merge_id = ?`, kept[:]); n != 1 {
+			t.Errorf("the kept merge has %d inputs, want its own one", n)
+		}
+	})
+}
+
+// An eviction under a lost lease writes nothing: the hour's merges, conflicts and every row it would touch stay.
+func TestEvictHourUnderALostLease(t *testing.T) {
+	t.Parallel()
+	engines(t, func(t *testing.T, c *Catalog) {
+		stale := compactorLease(t, c, "old")
+		recordRetention(t, c, stale, month, 0)
+		capture := seedCaptures(t, c, 1, 1)[0]
+		ch := newMergeChain(t, capture, 1)
+		ch.insert(t, c)
+		other, _ := seedPacks(t, c, capture, packsSeed{hour0: 2, hours: 1, packs: 1, ranges: 1, span: 10, seq0: 100})
+		seedConflicts(t, c, capture, ch.packs[4], other[0], 100, 3)
+		tables := append([]string{"merges", "merge_inputs"}, evictTables...)
+		start, rev := tableCounts(t, c, tables...), scopeOf(t, c, capture, 2).Revision
+		lapse(t, c, `UPDATE leases SET until_ns = 0 WHERE name = 'compactor/2'`)
+		compactorLease(t, c, "new")
+		if _, err := c.EvictHour(t.Context(), stale, Scope{capture, 1}, hourEvictedNow); !errors.Is(err, ErrLeaseLost) {
+			t.Fatalf("EvictHour = %v, want ErrLeaseLost", err)
+		}
+		if got := tableCounts(t, c, tables...); got != start || scopeOf(t, c, capture, 2).Revision != rev {
+			t.Errorf("after a refused eviction the tables hold %s, starting from %s, and hour 2's revision moved", got, start)
 		}
 	})
 }

@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"github.com/jmoiron/sqlx"
+
+	"github.com/arloliu/go-secs/tracepack"
 )
 
 // envExplain set to any value runs the plan harness's large seed.
@@ -81,7 +83,7 @@ func seedPlans(tb testing.TB, c *Catalog, s planSeed) []planned {
 	seedConflicts(tb, c, capture, packs[0], packs[1], 1<<20, s.n)
 	seedAudit(tb, c, s.n, captures, []string{"alice", "bob"}, 1)
 	seedEvents(tb, c, capture, 1, s.n, 1, 1)
-	seedMerges(tb, c, capture, 2, s.n, 1, 0, 0)
+	merges := seedMerges(tb, c, capture, 2, s.n, 1, 0, 0)
 	parked := make([]uint64, s.parked)
 	for i := range parked {
 		parked[i] = next + uint64(i) //nolint:gosec // i is not negative
@@ -104,16 +106,38 @@ func seedPlans(tb testing.TB, c *Catalog, s planSeed) []planned {
 	top := int64(next) - 1 //nolint:gosec // a seeded seq is small
 	id, d := capture[:], int64(time.Hour)
 	other := newID(tb)
+	// An eviction's deletes list at most evictBatch ids: here hour 1's packs, which every conflict names, and hour 2's merges,
+	// and, to show a selective lookup, the last hour's packs, which no conflict names.
+	k := min(s.packs, evictBatch)
+	hourPacks, lastPacks, hourMerges := packs[:k], packs[len(packs)-k:], merges[:min(len(merges), evictBatch)]
+	batch := func(name, query string, ids []tracepack.UUID) planned {
+		q, args := inList(query, ids)
+
+		return planned{name: name, query: q, args: args}
+	}
+	conflicts := func(name string, side [2]string, ids []tracepack.UUID) planned {
+		q, args := evictConflictsDelete(capture, side[0], side[1], ids)
+
+		return planned{name: name, query: q, args: args}
+	}
 
 	return []planned{
 		{name: "auditByCaptureQuery", query: auditByCaptureQuery, args: []any{id}},
 		{name: "auditByActorQuery", query: auditByActorQuery, args: []any{"alice"}},
 		{name: "pruneFloorQuery", query: pruneFloorQuery, args: []any{int64(s.n / 2)}},
-		{name: "deleteCandidatesQuery", query: deleteCandidatesQuery, args: []any{d, d + 1}},
-		{name: "evictConflicts select", query: `SELECT pack_id, other_pack_id` + evictConflictsWhere, args: []any{id, int64(1), id, int64(1)}},
-		{name: "evictConflicts delete", query: `DELETE` + evictConflictsWhere, args: []any{id, int64(1), id, int64(1)}},
-		{name: "evictMergeInputsQuery", query: evictMergeInputsQuery, args: []any{id, int64(2)}},
+		{name: "deleteCandidatesQuery", query: deleteCandidatesQuery, args: []any{d + 1, int64(1)}},
+		{name: "deleteCandidatesQuery, none due", query: deleteCandidatesQuery, args: []any{d - 1, int64(-1)}},
+		conflicts("evictConflictsDelete by pack", evictConflictsSides[0], hourPacks),
+		conflicts("evictConflictsDelete by other", evictConflictsSides[1], hourPacks),
+		conflicts("evictConflictsDelete by pack, last hour", evictConflictsSides[0], lastPacks),
+		conflicts("evictConflictsDelete by other, last hour", evictConflictsSides[1], lastPacks),
 		{name: "evictMergesQuery", query: evictMergesQuery, args: []any{id, int64(2)}},
+		{name: "evictMergesQuery, last hour", query: evictMergesQuery, args: []any{id, s.hours}},
+		batch("evictPackRangesDelete", evictPackRangesDelete, hourPacks),
+		batch("evictPackLossesDelete", evictPackLossesDelete, hourPacks),
+		batch("evictInputsByPackDelete", evictInputsByPackDelete, hourPacks),
+		batch("evictInputsByMergeDelete", evictInputsByMergeDelete, hourMerges),
+		batch("evictMergesDelete", evictMergesDelete, hourMerges),
 		{name: "overlapQuery", query: overlapQuery, args: []any{id, other[:], top, top - 9, top - 9, id}},
 		{name: "heldSeqQuery", query: heldSeqQuery, args: []any{id, top, top, top, id}},
 		{name: "copiesInHourQuery", query: copiesInHourQuery, args: []any{id, top, top, s.hours, top, id}},

@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"math"
 	"time"
 
 	"github.com/jmoiron/sqlx"
@@ -25,13 +26,32 @@ const deleteAtSQL = `CASE WHEN m.delete_at = 0 THEN m.at + ? ELSE m.delete_at EN
 
 // deletableWhere is the deletion relation: a merged input of a committed merge whose output is staged or merged,
 // or deleted, which only a merged pack becomes, its records living on in a later merge's output (compactor.md §8.3);
-// its arguments are D and now.
-const deletableWhere = `FROM packs p JOIN merge_inputs i ON i.pack_id = p.pack_id JOIN merges m ON m.merge_id = i.merge_id
+// its arguments are now and legacyCut's now - D.
+// The deadline is two ranges of merges_outcome_delete_at, deleteAtSQL's two cases: a recorded delete_at at or before now,
+// and a legacy zero whose time is at or before now - D; the two exclude each other, and one WHERE keeps DISTINCT across them.
+// A recorded delete_at is a commit's time plus a positive D, so "BETWEEN 1 AND now" is "<> 0 AND <= now", but a range that skips the legacy zeros;
+// "> 0" would be the same, but SQLite folds it with the other branch's "= 0" into one range ">= 0" over every merge.
+const deletableWhere = `FROM merges m JOIN merge_inputs i ON i.merge_id = m.merge_id JOIN packs p ON p.pack_id = i.pack_id
 	JOIN packs o ON o.pack_id = m.output_pack_id
-	WHERE p.state = 'merged' AND m.outcome = 'committed' AND o.state IN ('staged', 'merged', 'deleted') AND ` + deleteAtSQL + ` <= ?`
+	WHERE m.outcome = 'committed' AND (m.delete_at BETWEEN 1 AND ? OR (m.delete_at = 0 AND m.at <= ?))
+	AND p.state = 'merged' AND o.state IN ('staged', 'merged', 'deleted')`
 
-// deleteCandidatesQuery selects the deletion relation's packs, its arguments D and now.
+// deleteCandidatesQuery selects the deletion relation's packs, its arguments now and now - D.
 const deleteCandidatesQuery = `SELECT DISTINCT p.pack_id, p.capture_id, p.object_key ` + deletableWhere
+
+// legacyCut is now - delay, the latest time a merge without a recorded delete_at may have committed and be deletable at now,
+// clamped to int64's range so it never wraps: past the bottom no time qualifies but math.MinInt64, which no commit has.
+func legacyCut(now int64, delay time.Duration) int64 {
+	d := delay.Nanoseconds()
+	switch {
+	case d > 0 && now < math.MinInt64+d:
+		return math.MinInt64
+	case d < 0 && now > math.MaxInt64+d:
+		return math.MaxInt64
+	}
+
+	return now - d
+}
 
 // DeleteCandidates returns the merged inputs whose deletion time has passed at now, delay being this process's D.
 func (c *Catalog) DeleteCandidates(ctx context.Context, now int64, delay time.Duration) ([]Deletable, error) {
@@ -40,7 +60,7 @@ func (c *Catalog) DeleteCandidates(ctx context.Context, now int64, delay time.Du
 		Capture []byte `db:"capture_id"`
 		Key     string `db:"object_key"`
 	}
-	if err := c.read.SelectContext(ctx, &rows, deleteCandidatesQuery, delay.Nanoseconds(), now); err != nil {
+	if err := c.read.SelectContext(ctx, &rows, deleteCandidatesQuery, now, legacyCut(now, delay)); err != nil {
 		return nil, fmt.Errorf("catalog: delete candidates: %w", err)
 	}
 	out := make([]Deletable, 0, len(rows))
@@ -65,7 +85,7 @@ func (c *Catalog) DeletePack(ctx context.Context, l Lease, d Deletable, now int6
 			return err
 		}
 		var still, others int
-		if err := tx.GetContext(ctx, &still, `SELECT COUNT(*) `+deletableWhere+` AND p.pack_id = ?`, delay.Nanoseconds(), now, d.Pack[:]); err != nil {
+		if err := tx.GetContext(ctx, &still, `SELECT COUNT(*) `+deletableWhere+` AND p.pack_id = ?`, now, legacyCut(now, delay), d.Pack[:]); err != nil {
 			return err
 		}
 		if err := tx.GetContext(ctx, &others, `SELECT COUNT(*) FROM packs WHERE object_key = ? AND pack_id <> ?`, d.Key, d.Pack[:]); err != nil {
