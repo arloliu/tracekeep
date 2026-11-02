@@ -715,7 +715,7 @@ Nine points the phase 5 plan raised before its measurement sub-phase, read from 
 **Where a baseline comes from**: one local machine for every package and the catalog on SQLite; the catalog on MariaDB in CI, by a workflow started by hand that measures a base twice and a head once in one job.
 **When a change regresses**: each metric of a benchmark at `-count 10` is judged by the 95% bootstrap interval of the ratio of head's median to base's;
 the allowance is 5% plus the base's repeatability, `abs(median(base₂) / median(base₁) - 1)`; above it regresses, within it passes, across it is measured again;
-allocations, and bytes from a zero base, are exact; a missing row or other parameters fail (`650-perf-sec.md`).
+allocations are exact when the base's samples all agree, and judged as time is when the base's own samples vary; bytes from a zero base are exact; a missing row, other parameters or other sample counts fail (`650-perf-sec.md`).
 **What a baseline records**: the commit, the Go and benchstat versions, the engine and its durability settings, the core count and class, the filesystems of the work, never a host or a vendor's model.
 **Benchmarks stay alive**: each runs once at its small size in CI, the catalog's on both engines, its larger sizes only under `TRACEKEEP_BENCH_SCALE`.
 **Each benchmark does the same work in each iteration**, its starting state, reset and asserted work stated, a growing table bounded and recorded.

@@ -135,7 +135,8 @@ the owner may override any before 5.3's spec step lands, which records them as T
     - **repeatability** r is `abs(median(base₂) / median(base₁) - 1)` over two runs of the base, after a rate is turned into a time; the **allowance** T is 5% plus r;
     - time and bytes an operation **pass** when the interval's upper bound is at most 1 + T, **regress** when its lower bound exceeds 1 + T,
       and are **inconclusive** otherwise, measured again with a longer `-benchtime` or more runs, never passed;
-    - allocations an operation, and bytes from a zero base, are exact: any increase regresses;
+    - allocations an operation are exact when every sample of both base runs has the same count, so any increase regresses, a zero base included;
+      when the base's own samples differ (a driver's allocations vary from run to run), they are judged as time and bytes are; bytes from a zero base are exact;
     - a rate (records a second, step 4) is judged as its inverse, a time;
     - a row missing on either side, or run with other parameters or on another engine, **fails**.
     Each sitting measures its own repeatability (base against base), so a MariaDB job and a local sitting judge only their own before and after;
