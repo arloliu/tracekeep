@@ -30,6 +30,9 @@ const deletableWhere = `FROM packs p JOIN merge_inputs i ON i.pack_id = p.pack_i
 	JOIN packs o ON o.pack_id = m.output_pack_id
 	WHERE p.state = 'merged' AND m.outcome = 'committed' AND o.state IN ('staged', 'merged', 'deleted') AND ` + deleteAtSQL + ` <= ?`
 
+// deleteCandidatesQuery selects the deletion relation's packs, its arguments D and now.
+const deleteCandidatesQuery = `SELECT DISTINCT p.pack_id, p.capture_id, p.object_key ` + deletableWhere
+
 // DeleteCandidates returns the merged inputs whose deletion time has passed at now, delay being this process's D.
 func (c *Catalog) DeleteCandidates(ctx context.Context, now int64, delay time.Duration) ([]Deletable, error) {
 	var rows []struct {
@@ -37,7 +40,7 @@ func (c *Catalog) DeleteCandidates(ctx context.Context, now int64, delay time.Du
 		Capture []byte `db:"capture_id"`
 		Key     string `db:"object_key"`
 	}
-	if err := c.read.SelectContext(ctx, &rows, `SELECT DISTINCT p.pack_id, p.capture_id, p.object_key `+deletableWhere, delay.Nanoseconds(), now); err != nil {
+	if err := c.read.SelectContext(ctx, &rows, deleteCandidatesQuery, delay.Nanoseconds(), now); err != nil {
 		return nil, fmt.Errorf("catalog: delete candidates: %w", err)
 	}
 	out := make([]Deletable, 0, len(rows))

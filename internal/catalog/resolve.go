@@ -64,6 +64,13 @@ func (c *Catalog) Resolve(ctx context.Context, v *VersionKey, incarnation, strea
 	return r, err
 }
 
+// activeOrderQuery finds the active termination order of a capture's incarnation covering a stream seq, its three arguments.
+const activeOrderQuery = `SELECT action_id FROM termination_orders
+		WHERE capture_id = ? AND incarnation_id = ? AND state = 'active' AND cut_off >= ? ORDER BY action_id LIMIT 1`
+
+// heldSeqQuery counts the ranges of a capture holding a seq, its arguments the capture and the seq twice.
+const heldSeqQuery = `SELECT COUNT(*) FROM pack_ranges WHERE capture_id = ? AND seq_from <= ? AND seq_to >= ?`
+
 // resolveIn is Resolve on q, a transaction's or the read pool; it also returns the action id of the order that covers the message.
 func resolveIn(ctx context.Context, q sqlx.QueryerContext, v *VersionKey, incarnation, streamSeq int64) (Resolution, string, error) {
 	var state string
@@ -78,9 +85,7 @@ func resolveIn(ctx context.Context, q sqlx.QueryerContext, v *VersionKey, incarn
 		return 0, "", fmt.Errorf("catalog: resolve %s.%d: %w", v.Capture, v.Seq, err)
 	}
 	var action string
-	err = sqlx.GetContext(ctx, q, &action, `SELECT action_id FROM termination_orders
-		WHERE capture_id = ? AND incarnation_id = ? AND state = 'active' AND cut_off >= ? ORDER BY action_id LIMIT 1`,
-		v.Capture[:], incarnation, streamSeq)
+	err = sqlx.GetContext(ctx, q, &action, activeOrderQuery, v.Capture[:], incarnation, streamSeq)
 	switch {
 	case err == nil:
 		// An order never undoes a registration: a seq a registered pack holds is staged, even with no parked row
@@ -89,8 +94,7 @@ func resolveIn(ctx context.Context, q sqlx.QueryerContext, v *VersionKey, incarn
 		// shortcut: pack_ranges records seqs, not versions, so another version of a held seq also reads staged;
 		// accepted since the operator ended the capture; upgrade to a per-version receipt if that loss ever matters.
 		var held int
-		err := sqlx.GetContext(ctx, q, &held, `SELECT COUNT(*) FROM pack_ranges WHERE capture_id = ? AND seq_from <= ? AND seq_to >= ?`,
-			v.Capture[:], int64(v.Seq), int64(v.Seq))
+		err := sqlx.GetContext(ctx, q, &held, heldSeqQuery, v.Capture[:], int64(v.Seq), int64(v.Seq))
 		switch {
 		case err != nil:
 			return 0, "", fmt.Errorf("catalog: resolve %s.%d: %w", v.Capture, v.Seq, err)
@@ -160,6 +164,12 @@ func (c *Catalog) auditIn(ctx context.Context, q sqlx.ExecerContext, e AuditEntr
 	return nil
 }
 
+// auditByCaptureQuery reads a capture's audit rows, oldest first; auditByActorQuery an actor's.
+const (
+	auditByCaptureQuery = `SELECT actor, action, action_id, detail FROM audit_log WHERE capture_id = ? ORDER BY at, audit_id`
+	auditByActorQuery   = `SELECT actor, action, action_id, capture_id, detail FROM audit_log WHERE actor = ? ORDER BY at, audit_id`
+)
+
 // AuditEntries returns the audit rows of capture, oldest first.
 func (c *Catalog) AuditEntries(ctx context.Context, capture tracepack.UUID) ([]AuditEntry, error) {
 	var rows []struct {
@@ -168,7 +178,7 @@ func (c *Catalog) AuditEntries(ctx context.Context, capture tracepack.UUID) ([]A
 		ActionID sql.NullString `db:"action_id"`
 		Detail   sql.NullString `db:"detail"`
 	}
-	err := c.read.SelectContext(ctx, &rows, `SELECT actor, action, action_id, detail FROM audit_log WHERE capture_id = ? ORDER BY at, audit_id`, capture[:])
+	err := c.read.SelectContext(ctx, &rows, auditByCaptureQuery, capture[:])
 	if err != nil {
 		return nil, fmt.Errorf("catalog: audit of %s: %w", capture, err)
 	}
@@ -189,7 +199,7 @@ func (c *Catalog) AuditByActor(ctx context.Context, actor string) ([]AuditEntry,
 		Capture  []byte         `db:"capture_id"`
 		Detail   sql.NullString `db:"detail"`
 	}
-	err := c.read.SelectContext(ctx, &rows, `SELECT actor, action, action_id, capture_id, detail FROM audit_log WHERE actor = ? ORDER BY at, audit_id`, actor)
+	err := c.read.SelectContext(ctx, &rows, auditByActorQuery, actor)
 	if err != nil {
 		return nil, fmt.Errorf("catalog: audit by %s: %w", actor, err)
 	}

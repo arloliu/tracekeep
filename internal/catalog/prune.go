@@ -9,6 +9,9 @@ import (
 	"github.com/jmoiron/sqlx"
 )
 
+// pruneFloorQuery finds the lowest seq of an event younger than its argument, the time before which events are old.
+const pruneFloorQuery = `SELECT MIN(seq) FROM scope_events WHERE at > ?`
+
 // PruneEvents deletes the change cursor's seq prefix under the compactor lease l (catalog.md §7.3):
 // the events below the lowest seq of an event younger than period at now, never by time alone,
 // with counters.low_water raised to that seq, never lowered, in the same transaction, which allocates no seq.
@@ -22,7 +25,7 @@ func (c *Catalog) PruneEvents(ctx context.Context, l Lease, period time.Duration
 			return err
 		}
 		var low sql.NullInt64
-		if err := tx.GetContext(ctx, &low, `SELECT MIN(seq) FROM scope_events WHERE at > ?`, now-int64(period)); err != nil {
+		if err := tx.GetContext(ctx, &low, pruneFloorQuery, now-int64(period)); err != nil {
 			return err
 		}
 		if !low.Valid {
