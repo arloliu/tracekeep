@@ -50,6 +50,27 @@ var dropReasons = [core.NumDropReasons]string{
 	core.DropAbandoned:     "abandoned",
 }
 
+// claimOutcomes labels claim_puts_total.
+var claimOutcomes = [...]string{"put", "reused", "conflict", "error"}
+
+// observedSeries are the kinds and directions of records_observed_total the SDK's observers record (secsobs).
+var observedSeries = [...]struct {
+	kind tracepack.Kind
+	dir  tracepack.Dir
+}{
+	{tracepack.KindData, tracepack.DirEquipmentToHost},
+	{tracepack.KindData, tracepack.DirHostToEquipment},
+	{tracepack.KindControl, tracepack.DirEquipmentToHost},
+	{tracepack.KindControl, tracepack.DirHostToEquipment},
+	{tracepack.KindTransportEvent, tracepack.DirLocal},
+}
+
+// unlabelledCounters are the counters without labels, declared at zero with the rest.
+var unlabelledCounters = [...]string{
+	"records_published_total", "dropped_bytes_total", "clock_steps_total", "observer_panics_total",
+	"log_lines_dropped_total", "ambiguous_total", "thinned_total", "thinning_header_mismatches_total",
+}
+
 // errClaimConflict reports a claim object of the same name holding another record: a producer fault.
 var errClaimConflict = errors.New("producer: claim object holds another record")
 
@@ -152,6 +173,7 @@ func newPublisher(p *Producer, bus Bus) *publisher {
 }
 
 func (pb *publisher) run(quit <-chan struct{}) {
+	pb.declare()
 	rec := pb.p.rec
 	timer := time.NewTimer(pollInterval)
 	defer timer.Stop()
@@ -727,6 +749,29 @@ func (pb *publisher) busy() bool {
 	return false
 }
 
+// declare reports every counter and label value the SDK can emit at zero,
+// so a first event after a start is seen by its increase (producer.md §4.3 *Diagnostics*).
+func (pb *publisher) declare() {
+	m := pb.p.metrics
+	add := func(name, label string, values ...string) {
+		for _, v := range values {
+			m.Add(name, map[string]string{label: v}, 0)
+		}
+	}
+	for _, o := range observedSeries {
+		m.Add("records_observed_total", map[string]string{"kind": o.kind.String(), "dir": o.dir.String()}, 0)
+	}
+	add("records_dropped_total", "reason", dropReasons[:]...)
+	add("records_dropped_total", "reason", "after_stop")
+	add("capture_rotations_total", "reason", rotationReasons[:]...)
+	add("claim_puts_total", "outcome", claimOutcomes[:]...)
+	add("pending_reports_ignored_total", "reason", ignoredReasons[:]...)
+	add("pending_timeouts_dropped_total", "reason", timeoutDropReasons[:]...)
+	for _, name := range unlabelledCounters {
+		m.Add(name, nil, 0)
+	}
+}
+
 // report sends the counts gathered since the last report to Metrics, at most once per interval unless forced.
 func (pb *publisher) report(force bool) {
 	now := time.Now()
@@ -750,6 +795,11 @@ func (pb *publisher) report(force bool) {
 		if delta := total - last.core.Dropped[i] - last.dropped[i]; delta > 0 {
 			m.Add("records_dropped_total", map[string]string{"reason": dropReasons[i]}, float64(delta))
 		}
+	}
+	if delta := c.Panics - last.core.Panics; delta > 0 {
+		m.Add("observer_panics_total", nil, float64(delta))
+		// One line per report in which the count rose; the panic's value is never kept.
+		pb.p.log.Error("producer: observer panicked and recovered", "panics", delta)
 	}
 	if delta := c.AfterStop - last.core.AfterStop; delta > 0 {
 		m.Add("records_dropped_total", map[string]string{"reason": "after_stop"}, float64(delta))

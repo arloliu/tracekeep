@@ -63,6 +63,15 @@ func (m *metrics) get(key string) float64 {
 	return m.counts[key]
 }
 
+// has reports whether the series key was ever reported, at zero included.
+func (m *metrics) has(key string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	_, ok := m.counts[key]
+
+	return ok
+}
+
 type harness struct {
 	t   *testing.T
 	p   *producer.Producer

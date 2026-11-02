@@ -271,5 +271,11 @@ No error, reason, manifest or log line names an object key; a cleanup failure is
 1. `lane_full`: the producer's ring is full, the bus taking less than it publishes: the bus's latency (`tracepub_publish_ack_seconds`) or the ring's size.
 2. `bus_down`, `publish_failed`, `claim_failed`: the bus or its claim bucket refuse or do not answer; past the stream's limits, see `backlog`.
 3. `capture_fault`, `after_stop`: the capture ended while records were in flight; a fault's reason is in the gateway's log.
+4. `abandoned`: the device's stop passed its deadline, so the capture was given up without its stop, with every record of it still queued;
+   the gateway's log names the capture, which the consumer closes unclean.
+
+`tracepub_observer_panics_total` rising, which no alert reads: an observer callback panicked inside the SDK and was recovered;
+the gateway's log has one error line for each report in which it rose, never the panic's value.
+A panic before a record took its seq faults the capture (`capture_fault`); report it with the gateway's SDK and go-secs versions.
 
 **If ignored**: every dropped record is a gap in its capture (`gaps-and-losses`).
