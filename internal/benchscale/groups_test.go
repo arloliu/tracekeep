@@ -66,7 +66,7 @@ func TestBenchGroups(t *testing.T) {
 			t.Fatalf("group %s: %v", g.Group, err)
 		}
 		n := 0
-		for _, pkg := range strings.Fields(g.Packages) {
+		for pkg := range strings.FieldsSeq(g.Packages) {
 			names, ok := benchmarks[filepath.Clean(pkg)]
 			if !ok {
 				t.Errorf("group %s names %s, whose benchmarks reach no MariaDB", g.Group, pkg)
