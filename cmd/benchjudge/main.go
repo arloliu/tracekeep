@@ -8,6 +8,9 @@
 // Allocations, and bytes from a zero base, are exact: any increase of the median regresses.
 // A rate, a unit ending in /s, is judged as its inverse, a time.
 // A row or a metric missing on any side fails; a row run with other -cpu is another row, so it fails too.
+// A row fails when its run's parameters differ between the sides, or within one, or its samples number differently:
+// the parameters are the configuration lines in force when it appeared, key: value as go test writes goos: and pkg:,
+// such as the benchtime:, count:, cpus: and scale: lines scripts/catalog.sh bench writes before each of its passes.
 // A row a -fixed pattern matches runs at a fixed -benchtime Nx: every sample on every side must show the same iterations, or it fails.
 // Each -require pattern must match a row on every side, or the run fails, so a benchmark that skipped everywhere is not passed.
 //
@@ -62,11 +65,17 @@ func (v verdict) String() string { return [...]string{"pass", "inconclusive", "R
 // rows maps a row, its package and its name with the -cpu suffix, to its samples.
 type rows map[string]*row
 
-// row is a row's samples: the iterations of each, and each metric's values.
+// row is a row's samples: the iterations of each, and each metric's values,
+// and the configuration its first sample appeared under, changed true when a later one appeared under another.
 type row struct {
 	iters   []int64
 	metrics map[string][]float64
+	config  string
+	changed bool
 }
+
+// configLine is a configuration line of go test -bench output: a key starting with a lower-case letter, a colon and its value.
+var configLine = regexp.MustCompile(`^([a-z][^\s:]*):\s*(.*)$`)
 
 // patterns is a repeatable flag of regular expressions, matched against a row's package and name.
 type patterns []*regexp.Regexp
@@ -135,11 +144,16 @@ func main() {
 func parse(r io.Reader) (rows, error) {
 	out := rows{}
 	pkg := ""
+	cfg := map[string]string{}
 	sc := bufio.NewScanner(r)
 	for sc.Scan() {
 		line := sc.Text()
-		if p, ok := strings.CutPrefix(line, "pkg: "); ok {
-			pkg = strings.TrimSpace(p)
+		if m := configLine.FindStringSubmatch(line); m != nil {
+			if m[1] == "pkg" {
+				pkg = strings.TrimSpace(m[2])
+			} else {
+				cfg[m[1]] = strings.TrimSpace(m[2])
+			}
 
 			continue
 		}
@@ -152,10 +166,12 @@ func parse(r io.Reader) (rows, error) {
 			continue
 		}
 		name := pkg + " " + f[0]
+		config := render(cfg)
 		if out[name] == nil {
-			out[name] = &row{metrics: map[string][]float64{}}
+			out[name] = &row{metrics: map[string][]float64{}, config: config}
 		}
 		r := out[name]
+		r.changed = r.changed || r.config != config
 		r.iters = append(r.iters, iters)
 		for i := 2; i < len(f); i += 2 {
 			v, err := strconv.ParseFloat(f[i], 64)
@@ -170,6 +186,17 @@ func parse(r io.Reader) (rows, error) {
 	}
 
 	return out, sc.Err()
+}
+
+// render is a configuration as one string, its keys in order.
+func render(cfg map[string]string) string {
+	keys := slices.Sorted(maps.Keys(cfg))
+	parts := make([]string, len(keys))
+	for i, k := range keys {
+		parts[i] = k + ": " + cfg[k]
+	}
+
+	return "{" + strings.Join(parts, ", ") + "}"
 }
 
 // sideNames name the three sides, in the order judge takes them.
@@ -195,12 +222,14 @@ func judge(sides [3]rows, o options) []judgement {
 	rng := rand.New(rand.NewPCG(1, 2)) //nolint:gosec // a reproducible bootstrap, not a secret
 	for _, k := range keys {
 		name, metric, _ := strings.Cut(k, "\x00")
-		if o.fixed.match(name) {
-			if why := iterationsDiffer(sides, name); why != "" {
-				out = append(out, judgement{row: name, metric: metric, verdict: fail, why: why})
+		why := runsDiffer(sides, name)
+		if why == "" && o.fixed.match(name) {
+			why = iterationsDiffer(sides, name)
+		}
+		if why != "" {
+			out = append(out, judgement{row: name, metric: metric, verdict: fail, why: why})
 
-				continue
-			}
+			continue
 		}
 		var s [3][]float64
 		for i, set := range sides {
@@ -219,6 +248,31 @@ func judge(sides [3]rows, o options) []judgement {
 	}
 
 	return out
+}
+
+// runsDiffer explains why a row's runs are not the same run on every side it appears on, or returns "":
+// its parameters changing within a side, or differing between sides, or its samples numbering differently.
+func runsDiffer(sides [3]rows, name string) string {
+	var first *row
+	firstSide := ""
+	for i, set := range sides {
+		r := set[name]
+		switch {
+		case r == nil:
+			continue
+		case r.changed:
+			return "parameters change within " + sideNames[i]
+		case first == nil:
+			first, firstSide = r, sideNames[i]
+		case r.config != first.config:
+			return fmt.Sprintf("parameters differ: %s in %s, %s in %s", first.config, firstSide, r.config, sideNames[i])
+		case len(r.iters) != len(first.iters):
+			return fmt.Sprintf("samples differ: %d in %s, %d in %s", len(first.iters), firstSide, len(r.iters), sideNames[i])
+		default: // the same run as the first side's
+		}
+	}
+
+	return ""
 }
 
 // iterationsDiffer explains why a fixed-N row's samples ran different iterations, on one side or between sides, or returns "".
