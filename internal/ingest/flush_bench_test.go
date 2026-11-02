@@ -150,6 +150,24 @@ func benchFlusher(tb testing.TB, x *Executor, st store.ObjectStore, local bool) 
 	}
 }
 
+// emptyStore deletes the objects an iteration put, asserting they were want, and asserts the store then empty,
+// so no iteration's packs outlive it: neither the memory store's heap nor the fs store's files grow over a run.
+func emptyStore(tb testing.TB, st store.ObjectStore, want int) {
+	tb.Helper()
+	keys := storedKeys(tb, st)
+	if len(keys) != want {
+		tb.Fatalf("the store holds %d objects, want the iteration's %d", len(keys), want)
+	}
+	for _, k := range keys {
+		if err := st.Delete(tb.Context(), k); err != nil {
+			tb.Fatal(err)
+		}
+	}
+	if keys := storedKeys(tb, st); len(keys) != 0 {
+		tb.Fatalf("the store holds %d objects after its emptying", len(keys))
+	}
+}
+
 // benchStore is the store named name: the memory store, or the fs store under a fresh directory, whose puts are local file work.
 func benchStore(tb testing.TB, name string) (store.ObjectStore, bool) {
 	tb.Helper()
@@ -173,6 +191,7 @@ func benchStore(tb testing.TB, name string) (store.ObjectStore, bool) {
 //   - Registration's bound: a run adds one range an iteration, so it runs only at a fixed -benchtime Nx with N at most seededRanges/10 (100),
 //     and skips otherwise, naming both numbers; it asserts its iterations and the ranges it added, and logs the catalog's packs and ranges before and after.
 //   - The working file's sync is included: the Writer syncs it before the put.
+//   - Population: the iteration's pack is deleted from the store outside the timer once asserted, so the store holds nothing between iterations.
 func BenchmarkFlush(b *testing.B) {
 	for _, stName := range []string{"mem", "fs"} {
 		for _, p := range payloads() {
@@ -201,6 +220,9 @@ func BenchmarkFlush(b *testing.B) {
 						if got := h.acked.Load() - acked; got != int64(n) {
 							b.Fatalf("%d messages acknowledged, want %d", got, n)
 						}
+						b.StopTimer()
+						emptyStore(b, st, 1)
+						b.StartTimer()
 					}
 					done()
 				})
@@ -214,7 +236,8 @@ func BenchmarkFlush(b *testing.B) {
 //   - Starting state: k admitted captures, each seeded with seededRanges segments, the memory store and a counting Msg.
 //   - One iteration flushes k batches of 100 fresh 14-byte records, one a capture, all due together:
 //     disposed, batched and taken from the batcher outside the timer, seqs after the last iteration's.
-//   - Each iteration asserts no error, every one of the k×100 messages acknowledged and nothing left held.
+//   - Each iteration asserts no error, every one of the k×100 messages acknowledged and nothing left held;
+//     its k packs are then deleted from the store outside the timer, so the store holds nothing between iterations.
 //   - Registration's bound: a run adds one range a capture an iteration, so it runs only at a fixed -benchtime Nx with N at most seededRanges/10 (100),
 //     and skips otherwise, naming both numbers; it asserts its iterations and the ranges it added, and logs the catalog's packs and ranges before and after.
 func BenchmarkFlushDue(b *testing.B) {
@@ -259,6 +282,9 @@ func BenchmarkFlushDue(b *testing.B) {
 				if len(g.flushing) != 0 || g.batched() != 0 {
 					b.Fatalf("%d messages still flushing and %d batched, want none", len(g.flushing), g.batched())
 				}
+				b.StopTimer()
+				emptyStore(b, st, k)
+				b.StartTimer()
 			}
 			done()
 		})

@@ -92,7 +92,6 @@ type ackBench struct {
 	parkedInc  catalog.Incarnation
 	parkedCons jetstream.Consumer
 	capture    tracepack.UUID
-	cl         *claims
 	next       uint64
 }
 
@@ -118,21 +117,30 @@ func newAckBench(tb testing.TB, n int) *ackBench {
 		tb.Fatal(err)
 	}
 
-	return &ackBench{r: r, n: n, cons: cons, parked: parked, parkedInc: inc, parkedCons: parkedCons, capture: tracepack.UUID{0xa1}, cl: newClaims()}
+	return &ackBench{r: r, n: n, cons: cons, parked: parked, parkedInc: inc, parkedCons: parkedCons, capture: tracepack.UUID{0xa1}}
 }
 
-// traffic publishes n fresh data records on the traffic stream, inline or claim-check, and fetches them.
+// traffic publishes n fresh data records on the traffic stream, inline or claim-check, and fetches them;
+// a claim-check record's payload goes to a bucket of the call's own, dropped when it returns, so no iteration's objects outlive it.
 // shortcut: a claim-check record's object is not put in the bus's claim bucket, since no acknowledgement reads it; put it if one ever does.
 func (a *ackBench) traffic(tb testing.TB, claim bool) []Entry {
 	tb.Helper()
+	cl := newClaims()
 	for range a.n {
 		r := dataRecord(a.next, now)
 		m := inline(tb, a.capture, r, nil)
 		if claim {
-			m = claimCheck(tb, a.cl, a.capture, r, nil)
+			m = claimCheck(tb, cl, a.capture, r, nil)
 		}
 		a.r.publish(tb, m, nil)
 		a.next++
+	}
+	want := 0
+	if claim {
+		want = a.n
+	}
+	if len(cl.objs) != want {
+		tb.Fatalf("the iteration's claim bucket holds %d objects, want %d", len(cl.objs), want)
 	}
 
 	return fetchAll(tb, a.cons, a.n, a.r.g.Incarnation)
