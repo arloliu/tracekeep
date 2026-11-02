@@ -84,16 +84,17 @@ func seedConfig(tb testing.TB, c *Catalog) int64 {
 	return cfg
 }
 
-// seedCaptures writes n open captures of tool, the i-th on device eqp-(i mod devices) with its own recorder instance and origin origin+i,
+// seedCaptures writes n open captures of tool T1, the i-th on device eqp-(i mod devices) with its own recorder instance and origin 1+i,
 // each with a decodable start descriptor and bound to a decodable configuration, and returns them in order.
-func seedCaptures(tb testing.TB, c *Catalog, tool string, devices, n int, origin int64) []tracepack.UUID {
+func seedCaptures(tb testing.TB, c *Catalog, devices, n int) []tracepack.UUID {
 	tb.Helper()
+	const tool = "T1"
 	cfg := seedConfig(tb, c)
 	ids := make([]tracepack.UUID, n)
 	rows := make([][]any, n)
 	for i := range n {
 		ids[i] = newID(tb)
-		s := spec{instance: newID(tb), device: fmt.Sprintf("eqp-%d", i%devices), origin: origin + int64(i), toolID: tool}
+		s := spec{instance: newID(tb), device: fmt.Sprintf("eqp-%d", i%devices), origin: 1 + int64(i), toolID: tool}
 		rows[i] = []any{ids[i][:], "open", descriptorBytes(tb, s), tool, s.instance[:], s.device, s.origin, cfg, 1, 0}
 	}
 	seedRows(tb, c, "captures", []string{"capture_id", "state", "descriptor", "tool_id", "recorder_instance_id", "device", "origin_ns", "config_id", "data_revision", "created_at"}, rows)
@@ -117,12 +118,13 @@ type packsSeed struct {
 	deletedEvery int
 }
 
-// seedPacks writes s's segments of capture of tool, their ranges and their hours' open scopes,
+// seedPacks writes s's segments of capture, of its tool, their ranges and their hours' open scopes,
 // raises the capture's highest seq to the last one, and returns the packs in order with the seq after the last.
 // A range's records are at its hour's start plus the seq's offset in the hour, in nanoseconds.
 // An hour of a capture is seeded once: its scope row is inserted, not upserted.
-func seedPacks(tb testing.TB, c *Catalog, capture tracepack.UUID, tool string, s packsSeed) ([]tracepack.UUID, uint64) {
+func seedPacks(tb testing.TB, c *Catalog, capture tracepack.UUID, s packsSeed) ([]tracepack.UUID, uint64) {
 	tb.Helper()
+	tool := captureTool(tb, c, capture)
 	var ids []tracepack.UUID
 	var packs, ranges, scopes [][]any
 	seq, live, deleted := s.seq0, 0, 0
@@ -174,6 +176,17 @@ func seedPacks(tb testing.TB, c *Catalog, capture tracepack.UUID, tool string, s
 	return ids, seq
 }
 
+// captureTool reads capture's tool.
+func captureTool(tb testing.TB, c *Catalog, capture tracepack.UUID) string {
+	tb.Helper()
+	var tool string
+	if err := c.read.GetContext(tb.Context(), &tool, `SELECT tool_id FROM captures WHERE capture_id = ?`, capture[:]); err != nil {
+		tb.Fatal(err)
+	}
+
+	return tool
+}
+
 // seedAudit writes n audit rows, the i-th at at0+i by actors[i mod len] about captures[i mod len], restores as the API writes them.
 func seedAudit(tb testing.TB, c *Catalog, n int, captures []tracepack.UUID, actors []string, at0 int64) {
 	tb.Helper()
@@ -214,10 +227,7 @@ func seedEvents(tb testing.TB, c *Catalog, capture tracepack.UUID, hour int64, n
 // each with its staged archive and its inputs merged segments; it returns the merges.
 func seedMerges(tb testing.TB, c *Catalog, capture tracepack.UUID, hour int64, n, inputs int, at, deleteAt int64) []tracepack.UUID {
 	tb.Helper()
-	var tool string
-	if err := c.read.GetContext(tb.Context(), &tool, `SELECT tool_id FROM captures WHERE capture_id = ?`, capture[:]); err != nil {
-		tb.Fatal(err)
-	}
+	tool := captureTool(tb, c, capture)
 	ids := make([]tracepack.UUID, n)
 	packs, merges, links := make([][]any, 0, n*(1+inputs)), make([][]any, 0, n), make([][]any, 0, n*inputs)
 	pack := func(role, state string) tracepack.UUID {
@@ -275,15 +285,15 @@ func seedClaimObjects(tb testing.TB, c *Catalog, bucket string, capture tracepac
 	return listed
 }
 
-// seedUnattributed writes n unattributed objects keyed in bucket, first seen at seenAt, and returns them as a listing finds them.
-func seedUnattributed(tb testing.TB, c *Catalog, bucket string, n int, seenAt int64) []Listed {
+// seedUnattributed writes n unattributed objects keyed in bucket claims, first seen at time 1, and returns them as a listing finds them.
+func seedUnattributed(tb testing.TB, c *Catalog, n int) []Listed {
 	tb.Helper()
 	listed := make([]Listed, n)
 	rows := make([][]any, n)
 	for i := range n {
-		key := fmt.Sprintf("%s/foreign-%s", bucket, rand.Text())
+		key := "claims/foreign-" + rand.Text()
 		listed[i] = Listed{Key: key, Size: 1 << 10}
-		rows[i] = []any{key, 1 << 10, seenAt}
+		rows[i] = []any{key, 1 << 10, 1}
 	}
 	seedRows(tb, c, "unattributed_objects", []string{"object_key", "size", "seen_at"}, rows)
 
@@ -371,7 +381,7 @@ func TestSeeders(t *testing.T) {
 	t.Parallel()
 	engines(t, func(t *testing.T, c *Catalog) {
 		ctx := t.Context()
-		captures := seedCaptures(t, c, "T1", 2, 3, 1)
+		captures := seedCaptures(t, c, 2, 3)
 		capture := captures[0]
 		got, err := c.Capture(ctx, capture)
 		if err != nil || got.State != StateOpen || got.Device != "eqp-0" {
@@ -388,7 +398,7 @@ func TestSeeders(t *testing.T) {
 			t.Fatalf("seeded configuration: %v", err)
 		}
 
-		packs, next := seedPacks(t, c, capture, "T1", packsSeed{hour0: 1, hours: 2, packs: 2, ranges: 2, span: 10, deletedEvery: 4})
+		packs, next := seedPacks(t, c, capture, packsSeed{hour0: 1, hours: 2, packs: 2, ranges: 2, span: 10, deletedEvery: 4})
 		if next != 80 || len(packs) != 4 {
 			t.Fatalf("seedPacks = %d packs, next %d; want 4, 80", len(packs), next)
 		}
@@ -421,12 +431,12 @@ func TestSeedersOfCompleteness(t *testing.T) {
 	t.Parallel()
 	engines(t, func(t *testing.T, c *Catalog) {
 		ctx := t.Context()
-		captures := seedCaptures(t, c, "T1", 1, 2, 1)
+		captures := seedCaptures(t, c, 1, 2)
 		capture := captures[0]
-		packs, _ := seedPacks(t, c, capture, "T1", packsSeed{hour0: 1, hours: 1, packs: 2, ranges: 1, span: 10})
+		packs, _ := seedPacks(t, c, capture, packsSeed{hour0: 1, hours: 1, packs: 2, ranges: 1, span: 10})
 		seedConflicts(t, c, capture, packs[0], packs[1], 0, 3)
 		seedClaimObjects(t, c, "claims", capture, 1, 0, 3, "live")
-		seedUnattributed(t, c, "claims", 2, 1)
+		seedUnattributed(t, c, 2)
 		if got, err := c.ClaimObjects(ctx, "live"); err != nil || len(got) != 3 {
 			t.Fatalf("ClaimObjects = %d, %v; want 3", len(got), err)
 		}

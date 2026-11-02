@@ -32,6 +32,15 @@ func engines(t *testing.T, f func(t *testing.T, c *Catalog)) {
 	}
 }
 
+// benchEngines runs f once per engine in a sub-benchmark named for it, each on a fresh, migrated catalog, as catalogtest.BenchEngines does;
+// MariaDB is skipped without a server, and fails instead when envRequireMariaDB is 1.
+func benchEngines(b *testing.B, f func(b *testing.B, c *Catalog)) {
+	b.Helper()
+	for _, engine := range []string{EngineSQLite, EngineMariaDB} {
+		b.Run(engine, func(b *testing.B) { f(b, newCatalog(b, engine)) })
+	}
+}
+
 func newCatalog(t testing.TB, engine string) *Catalog {
 	t.Helper()
 	cfg := Config{Engine: engine}
