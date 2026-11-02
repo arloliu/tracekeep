@@ -39,7 +39,7 @@ type planned struct {
 }
 
 // TestExplainPlans logs the plans of the statements whose predicates may lack an index (P4's five, the eviction's merges deletes),
-// the registration's two probes and the completeness inputs, over a small seed on both engines:
+// the registration's two probes, the completeness inputs and the capture's largest span, over a small seed on both engines:
 // SQLite's EXPLAIN QUERY PLAN and MariaDB's EXPLAIN FORMAT=JSON, one block per statement. It asserts no plan.
 func TestExplainPlans(t *testing.T) {
 	t.Parallel()
@@ -123,25 +123,52 @@ func seedPlans(tb testing.TB, c *Catalog, s planSeed) []planned {
 		{name: "lossesQuery", query: lossesQuery, args: []any{id}},
 		{name: "crashGapsQuery", query: crashGapsQuery, args: []any{captures[1][:]}},
 		{name: "conflictsQuery", query: conflictsQuery, args: []any{id}},
+		{name: "maxSpanQuery", query: maxSpanQuery, args: []any{id}},
 	}
+}
+
+// maxSpanQuery is the capture's largest stored span, which bounds its range probes from below.
+const maxSpanQuery = `SELECT MAX(span) FROM pack_ranges WHERE capture_id = ?`
+
+// The capture's largest span is one seek of pack_ranges_capture_span on both engines:
+// SQLite searches that index, and MariaDB answers MAX from it while optimizing, reading no table.
+// Only the index's name or MariaDB's "optimized away" is asserted, the rest of a plan's text varying by version.
+func TestMaxSpanPlan(t *testing.T) {
+	t.Parallel()
+	engines(t, func(t *testing.T, c *Catalog) {
+		qs := seedPlans(t, c, smallPlans)
+		q := qs[len(qs)-1]
+		plan := explain(t, c, q)
+		t.Logf("=== plan %s %s\n%s", c.Engine(), q.name, plan)
+		if !strings.Contains(plan, "pack_ranges_capture_span") && !strings.Contains(plan, "optimized away") {
+			t.Errorf("%s's plan of %s uses neither pack_ranges_capture_span nor an optimized-away MAX", c.Engine(), q.query)
+		}
+	})
 }
 
 // explainAll logs each statement's plan on c's write pool, which on SQLite is the connection a write explains on and sees ANALYZE's statistics.
 func explainAll(t *testing.T, c *Catalog, tier string, qs []planned) {
 	t.Helper()
 	for _, q := range qs {
-		var plan string
-		var err error
-		if c.Engine() == EngineSQLite {
-			plan, err = sqlitePlan(t, c.write, q)
-		} else {
-			err = c.write.GetContext(t.Context(), &plan, `EXPLAIN FORMAT=JSON `+interpolate(t, q.query, q.args))
-		}
-		if err != nil {
-			t.Fatalf("explain %s: %v", q.name, err)
-		}
-		t.Logf("=== plan %s (%s) %s\n%s", c.Engine(), tier, q.name, plan)
+		t.Logf("=== plan %s (%s) %s\n%s", c.Engine(), tier, q.name, explain(t, c, q))
 	}
+}
+
+// explain is q's plan on c's write pool: SQLite's EXPLAIN QUERY PLAN or MariaDB's EXPLAIN FORMAT=JSON.
+func explain(t *testing.T, c *Catalog, q planned) string {
+	t.Helper()
+	var plan string
+	var err error
+	if c.Engine() == EngineSQLite {
+		plan, err = sqlitePlan(t, c.write, q)
+	} else {
+		err = c.write.GetContext(t.Context(), &plan, `EXPLAIN FORMAT=JSON `+interpolate(t, q.query, q.args))
+	}
+	if err != nil {
+		t.Fatalf("explain %s: %v", q.name, err)
+	}
+
+	return plan
 }
 
 // analyzeTables refreshes MariaDB's statistics of the tables the harness explains, which a bulk seed may leave behind.
