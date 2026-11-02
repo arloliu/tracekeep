@@ -7,6 +7,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"regexp"
 	"slices"
 	"strings"
 
@@ -184,134 +185,149 @@ func (c *Catalog) snapshot(ctx context.Context, f func(tx *sqlx.Tx) error) (err 
 // a listing reads its captures' inputs a chunk at a time, seven statements a chunk, not seven a capture.
 const completenessChunk = 128
 
-// The queries of a completeness's inputs (completenessInputs), each over the captures its IN (?) names:
-// one as written, a chunk once inCaptures widens it. Each orders what classify keeps in order.
-const (
-	frontierQuery = `SELECT capture_id, highest_seq, origin_ns FROM captures WHERE capture_id IN (?)`
-	retainedQuery = `SELECT r.capture_id, r.seq_from, r.seq_to, r.ts_from, r.ts_to FROM pack_ranges r JOIN packs k ON k.pack_id = r.pack_id
-		WHERE r.capture_id IN (?) AND k.state <> 'deleted'`
-	evictedQuery = `SELECT capture_id, seq_from, seq_to, ts_from, ts_to FROM evicted_ranges WHERE capture_id IN (?)`
-	parkedQuery  = `SELECT capture_id, seq, header, state, terminated_by FROM parked WHERE capture_id IN (?) ORDER BY capture_id, seq`
-	lossesQuery  = `SELECT k.capture_id, l.seq_from, l.seq_to, l.ts_from, l.ts_to FROM pack_losses l JOIN packs k ON k.pack_id = l.pack_id
-		WHERE k.capture_id IN (?) AND k.state <> 'deleted' ORDER BY l.pack_id, l.ord`
-	crashGapsQuery = `SELECT capture_id, gap_start, gap_end FROM capture_closes
-		WHERE capture_id IN (?) AND (gap_start IS NOT NULL OR gap_end IS NOT NULL)`
-	conflictsQuery = `SELECT capture_id, seq_from, seq_to, state FROM conflicts WHERE capture_id IN (?) ORDER BY capture_id, seq_from`
+// The queries of a completeness's inputs (completenessInputs), each over the captures its IN (?) names, selecting the key first.
+// Each orders what classify keeps in order; the losses keep the order the capture's packs are read in, as before chunking.
+var (
+	frontierQuery = keyed(`SELECT capture_id, highest_seq, origin_ns FROM captures WHERE capture_id IN (?)`)
+	retainedQuery = keyed(`SELECT r.capture_id, r.seq_from, r.seq_to, r.ts_from, r.ts_to FROM pack_ranges r JOIN packs k ON k.pack_id = r.pack_id
+		WHERE r.capture_id IN (?) AND k.state <> 'deleted'`)
+	evictedQuery = keyed(`SELECT capture_id, seq_from, seq_to, ts_from, ts_to FROM evicted_ranges WHERE capture_id IN (?)`)
+	parkedQuery  = keyed(`SELECT capture_id, seq, header, state, terminated_by FROM parked WHERE capture_id IN (?) ORDER BY capture_id, seq`)
+	lossesQuery  = keyed(`SELECT k.capture_id, l.seq_from, l.seq_to, l.ts_from, l.ts_to FROM pack_losses l JOIN packs k ON k.pack_id = l.pack_id
+		WHERE k.capture_id IN (?) AND k.state <> 'deleted'`)
+	crashGapsQuery = keyed(`SELECT capture_id, gap_start, gap_end FROM capture_closes
+		WHERE capture_id IN (?) AND (gap_start IS NOT NULL OR gap_end IS NOT NULL)`)
+	conflictsQuery = keyed(`SELECT capture_id, seq_from, seq_to, state FROM conflicts WHERE capture_id IN (?) ORDER BY capture_id, seq_from`)
 )
 
-// inCaptures widens query's IN (?) to n placeholders.
-func inCaptures(query string, n int) string {
-	return strings.Replace(query, "IN (?)", "IN (?"+strings.Repeat(", ?", n-1)+")", 1)
+// inputQuery is an input's query for a chunk of captures, and for one capture without the key column,
+// so Completeness, one capture, reads each row as it did before listings were chunked.
+type inputQuery struct{ many, one string }
+
+// keyed derives many's one-capture form: its key column dropped from the selection and the order, its IN (?) an equality.
+func keyed(many string) inputQuery {
+	one := regexp.MustCompile(`^SELECT (\w+\.)?capture_id, `).ReplaceAllString(many, "SELECT ")
+	one = strings.Replace(one, "ORDER BY capture_id, ", "ORDER BY ", 1)
+
+	return inputQuery{many: many, one: strings.Replace(one, "IN (?)", "= ?", 1)}
+}
+
+// sql is q for n captures: its one-capture form, or its IN (?) widened to n placeholders.
+func (q inputQuery) sql(n int) string {
+	if n == 1 {
+		return q.one
+	}
+
+	return strings.Replace(q.many, "IN (?)", "IN (?"+strings.Repeat(", ?", n-1)+")", 1)
+}
+
+// captureKey scans a capture_id column in place, copying the driver's bytes into the array.
+type captureKey tracepack.UUID
+
+// Scan copies the driver's bytes into k.
+func (k *captureKey) Scan(src any) error {
+	b, ok := src.([]byte)
+	if !ok || len(b) != len(k) {
+		return fmt.Errorf("catalog: capture_id is %T of %d bytes", src, len(b))
+	}
+	copy(k[:], b)
+
+	return nil
 }
 
 // completenessInputs reads the rows the completeness of each of captures classifies, at most completenessChunk, inside the snapshot tx,
 // in the order of captures; a capture the catalog does not hold fails the read with sql.ErrNoRows.
+// Each row is scanned straight into its capture's inputs, with no buffer of rows between.
 func (c *Catalog) completenessInputs(ctx context.Context, tx *sqlx.Tx, captures []tracepack.UUID) ([]completenessInputs, error) {
 	ins := make([]completenessInputs, len(captures))
-	of := make(map[tracepack.UUID]*completenessInputs, len(captures))
+	of := make(map[tracepack.UUID]int, len(captures))
 	args := make([]any, len(captures))
 	for i, id := range captures {
-		of[id], args[i] = &ins[i], id[:]
+		of[id], args[i] = i, id[:]
 	}
-	in := func(id []byte) *completenessInputs { return of[tracepack.UUID(id)] }
-	// read runs one input's query over the chunk into rows; the hook after it lets a test commit between any two reads, or two chunks.
-	read := func(rows any, query string) error {
-		if err := tx.SelectContext(ctx, rows, inCaptures(query, len(captures)), args...); err != nil {
-			return err
+	var key captureKey
+	// read runs query over the chunk, scans each row's columns into dest, after its key when the chunk is wider than one capture,
+	// and hands add the row's capture's inputs; the hook after it lets a test commit between any two reads, or two chunks.
+	query := func(q inputQuery, add func(*completenessInputs), dest []any) (n int, err error) {
+		rows, err := tx.QueryContext(ctx, q.sql(len(captures)), args...)
+		if err != nil {
+			return 0, err
 		}
-		c.hook(hookCompletenessRead)
+		defer rows.Close()
+		if len(captures) > 1 {
+			dest = append([]any{&key}, dest...)
+		}
+		for ; rows.Next(); n++ {
+			if err := rows.Scan(dest...); err != nil {
+				return n, err
+			}
+			i, ok := 0, true
+			if len(captures) > 1 {
+				i, ok = of[tracepack.UUID(key)]
+			}
+			if !ok {
+				return n, fmt.Errorf("row of capture %s, not one read", tracepack.UUID(key))
+			}
+			add(&ins[i])
+		}
 
-		return nil
+		return n, rows.Err()
 	}
-	var frontiers []struct {
-		ID      []byte        `db:"capture_id"`
-		Highest sql.NullInt64 `db:"highest_seq"`
-		Origin  sql.NullInt64 `db:"origin_ns"`
+	read := func(q inputQuery, add func(*completenessInputs), dest ...any) (int, error) {
+		n, err := query(q, add, dest)
+		if err == nil {
+			c.hook(hookCompletenessRead)
+		}
+
+		return n, err
 	}
-	if err := read(&frontiers, frontierQuery); err != nil {
+	var highest, origin, from, to, tsFrom, tsTo sql.NullInt64
+	n, err := read(frontierQuery, func(p *completenessInputs) {
+		p.highest, p.hasHighest, p.origin = uint64(highest.Int64), highest.Valid, nullable(origin) //nolint:gosec // a stored seq is below 2^63
+	}, &highest, &origin)
+	if err != nil {
 		return nil, err
 	}
-	if len(frontiers) != len(of) {
+	if n != len(of) {
 		return nil, sql.ErrNoRows
 	}
-	for _, r := range frontiers {
-		p := in(r.ID)
-		p.highest, p.hasHighest, p.origin = uint64(r.Highest.Int64), r.Highest.Valid, nullable(r.Origin) //nolint:gosec // a stored seq is below 2^63
+	var seqFrom, seqTo, ts, tsEnd, seq int64
+	addRange := func(rs *[]Range) {
+		*rs = append(*rs, Range{SeqFrom: uint64(seqFrom), SeqTo: uint64(seqTo), TSFrom: ts, TSTo: tsEnd}) //nolint:gosec // stored seqs are below 2^63
 	}
-	for _, q := range []struct {
-		query string
-		into  func(*completenessInputs) *[]Range
-	}{
-		{retainedQuery, func(p *completenessInputs) *[]Range { return &p.retained }},
-		{evictedQuery, func(p *completenessInputs) *[]Range { return &p.evicted }},
-	} {
-		var rows []struct {
-			ID     []byte `db:"capture_id"`
-			From   int64  `db:"seq_from"`
-			To     int64  `db:"seq_to"`
-			TSFrom int64  `db:"ts_from"`
-			TSTo   int64  `db:"ts_to"`
-		}
-		if err := read(&rows, q.query); err != nil {
-			return nil, err
-		}
-		for _, r := range rows {
-			rs := q.into(in(r.ID))
-			*rs = append(*rs, Range{SeqFrom: uint64(r.From), SeqTo: uint64(r.To), TSFrom: r.TSFrom, TSTo: r.TSTo}) //nolint:gosec // stored seqs are below 2^63
-		}
-	}
-	var parked []struct {
-		ID     []byte         `db:"capture_id"`
-		Seq    int64          `db:"seq"`
-		Header []byte         `db:"header"`
-		State  VersionState   `db:"state"`
-		By     sql.NullString `db:"terminated_by"`
-	}
-	if err := read(&parked, parkedQuery); err != nil {
+	if _, err := read(retainedQuery, func(p *completenessInputs) { addRange(&p.retained) }, &seqFrom, &seqTo, &ts, &tsEnd); err != nil {
 		return nil, err
 	}
-	for _, r := range parked {
-		p := in(r.ID)
-		p.parked = append(p.parked, parkedSeq{seq: uint64(r.Seq), ts: headerTS(r.Header), state: r.State, action: r.By.String}) //nolint:gosec // a stored seq is below 2^63
-	}
-	var losses []struct {
-		ID     []byte        `db:"capture_id"`
-		From   sql.NullInt64 `db:"seq_from"`
-		To     sql.NullInt64 `db:"seq_to"`
-		TSFrom sql.NullInt64 `db:"ts_from"`
-		TSTo   sql.NullInt64 `db:"ts_to"`
-	}
-	if err := read(&losses, lossesQuery); err != nil {
+	if _, err := read(evictedQuery, func(p *completenessInputs) { addRange(&p.evicted) }, &seqFrom, &seqTo, &ts, &tsEnd); err != nil {
 		return nil, err
 	}
-	for _, r := range losses {
-		p := in(r.ID)
-		p.losses = append(p.losses, DeclaredLoss{SeqFrom: unsigned(r.From), SeqTo: unsigned(r.To), TSFrom: nullable(r.TSFrom), TSTo: nullable(r.TSTo)})
+	var header sql.RawBytes
+	var state VersionState
+	var by sql.NullString
+	var conflictState string
+	addParked := func(p *completenessInputs) {
+		p.parked = append(p.parked, parkedSeq{seq: uint64(seq), ts: headerTS(header), state: state, action: by.String}) //nolint:gosec // a stored seq is below 2^63
 	}
-	var gapRows []struct {
-		ID    []byte        `db:"capture_id"`
-		Start sql.NullInt64 `db:"gap_start"`
-		End   sql.NullInt64 `db:"gap_end"`
+	addLoss := func(p *completenessInputs) {
+		p.losses = append(p.losses, DeclaredLoss{SeqFrom: unsigned(from), SeqTo: unsigned(to), TSFrom: nullable(tsFrom), TSTo: nullable(tsTo)})
 	}
-	if err := read(&gapRows, crashGapsQuery); err != nil {
+	addGap := func(p *completenessInputs) {
+		p.crashGaps = append(p.crashGaps, CrashGap{Start: nullable(from), End: nullable(to)})
+	}
+	addConflict := func(p *completenessInputs) {
+		p.conflicts = append(p.conflicts, ConflictRange{SeqFrom: uint64(seqFrom), SeqTo: uint64(seqTo), State: conflictState}) //nolint:gosec // stored seqs are below 2^63
+	}
+	if _, err := read(parkedQuery, addParked, &seq, &header, &state, &by); err != nil {
 		return nil, err
 	}
-	for _, r := range gapRows {
-		p := in(r.ID)
-		p.crashGaps = append(p.crashGaps, CrashGap{Start: nullable(r.Start), End: nullable(r.End)})
-	}
-	var conflicts []struct {
-		ID    []byte `db:"capture_id"`
-		From  int64  `db:"seq_from"`
-		To    int64  `db:"seq_to"`
-		State string `db:"state"`
-	}
-	if err := read(&conflicts, conflictsQuery); err != nil {
+	if _, err := read(lossesQuery, addLoss, &from, &to, &tsFrom, &tsTo); err != nil {
 		return nil, err
 	}
-	for _, r := range conflicts {
-		p := in(r.ID)
-		p.conflicts = append(p.conflicts, ConflictRange{SeqFrom: uint64(r.From), SeqTo: uint64(r.To), State: r.State}) //nolint:gosec // stored seqs are below 2^63
+	if _, err := read(crashGapsQuery, addGap, &from, &to); err != nil {
+		return nil, err
+	}
+	if _, err := read(conflictsQuery, addConflict, &seqFrom, &seqTo, &conflictState); err != nil {
+		return nil, err
 	}
 
 	return ins, nil
