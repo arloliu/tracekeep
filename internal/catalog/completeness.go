@@ -179,26 +179,39 @@ func (c *Catalog) snapshot(ctx context.Context, f func(tx *sqlx.Tx) error) (err 
 	return f(tx)
 }
 
+// The queries of a completeness's inputs (completenessInputs and packLosses), each of one capture, its argument.
+const (
+	frontierQuery = `SELECT highest_seq, origin_ns FROM captures WHERE capture_id = ?`
+	retainedQuery = `SELECT r.seq_from, r.seq_to, r.ts_from, r.ts_to FROM pack_ranges r JOIN packs k ON k.pack_id = r.pack_id
+		WHERE r.capture_id = ? AND k.state <> 'deleted'`
+	evictedQuery = `SELECT seq_from, seq_to, ts_from, ts_to FROM evicted_ranges WHERE capture_id = ?`
+	parkedQuery  = `SELECT seq, header, state, terminated_by FROM parked WHERE capture_id = ? ORDER BY seq`
+	lossesQuery  = `SELECT l.seq_from, l.seq_to, l.ts_from, l.ts_to FROM pack_losses l JOIN packs k ON k.pack_id = l.pack_id
+		WHERE k.capture_id = ? AND k.state <> 'deleted'`
+	crashGapsQuery = `SELECT gap_start, gap_end FROM capture_closes
+		WHERE capture_id = ? AND (gap_start IS NOT NULL OR gap_end IS NOT NULL)`
+	conflictsQuery = `SELECT seq_from, seq_to, state FROM conflicts WHERE capture_id = ? ORDER BY seq_from`
+)
+
 // completenessInputs reads the rows capture's completeness classifies, inside the snapshot tx.
 func (c *Catalog) completenessInputs(ctx context.Context, tx *sqlx.Tx, capture tracepack.UUID) (in completenessInputs, err error) {
 	var row struct {
 		Highest sql.NullInt64 `db:"highest_seq"`
 		Origin  sql.NullInt64 `db:"origin_ns"`
 	}
-	if err := tx.GetContext(ctx, &row, `SELECT highest_seq, origin_ns FROM captures WHERE capture_id = ?`, capture[:]); err != nil {
+	if err := tx.GetContext(ctx, &row, frontierQuery, capture[:]); err != nil {
 		return in, err
 	}
 	in.highest, in.hasHighest = uint64(row.Highest.Int64), row.Highest.Valid //nolint:gosec // a stored seq is below 2^63
 	if row.Origin.Valid {
 		in.origin = &row.Origin.Int64
 	}
-	in.retained, err = ranges(ctx, tx, `SELECT r.seq_from, r.seq_to, r.ts_from, r.ts_to FROM pack_ranges r JOIN packs k ON k.pack_id = r.pack_id
-		WHERE r.capture_id = ? AND k.state <> 'deleted'`, capture)
+	in.retained, err = ranges(ctx, tx, retainedQuery, capture)
 	if err != nil {
 		return in, err
 	}
 	c.hook(hookCompletenessRead)
-	if in.evicted, err = ranges(ctx, tx, `SELECT seq_from, seq_to, ts_from, ts_to FROM evicted_ranges WHERE capture_id = ?`, capture); err != nil {
+	if in.evicted, err = ranges(ctx, tx, evictedQuery, capture); err != nil {
 		return in, err
 	}
 	var parked []struct {
@@ -207,7 +220,7 @@ func (c *Catalog) completenessInputs(ctx context.Context, tx *sqlx.Tx, capture t
 		State  VersionState   `db:"state"`
 		By     sql.NullString `db:"terminated_by"`
 	}
-	if err := tx.SelectContext(ctx, &parked, `SELECT seq, header, state, terminated_by FROM parked WHERE capture_id = ? ORDER BY seq`, capture[:]); err != nil {
+	if err := tx.SelectContext(ctx, &parked, parkedQuery, capture[:]); err != nil {
 		return in, err
 	}
 	for _, p := range parked {
@@ -220,8 +233,7 @@ func (c *Catalog) completenessInputs(ctx context.Context, tx *sqlx.Tx, capture t
 		Start sql.NullInt64 `db:"gap_start"`
 		End   sql.NullInt64 `db:"gap_end"`
 	}
-	err = tx.SelectContext(ctx, &gapRows, `SELECT gap_start, gap_end FROM capture_closes
-		WHERE capture_id = ? AND (gap_start IS NOT NULL OR gap_end IS NOT NULL)`, capture[:])
+	err = tx.SelectContext(ctx, &gapRows, crashGapsQuery, capture[:])
 	if err != nil {
 		return in, err
 	}
@@ -233,7 +245,7 @@ func (c *Catalog) completenessInputs(ctx context.Context, tx *sqlx.Tx, capture t
 		To    int64  `db:"seq_to"`
 		State string `db:"state"`
 	}
-	if err := tx.SelectContext(ctx, &conflicts, `SELECT seq_from, seq_to, state FROM conflicts WHERE capture_id = ? ORDER BY seq_from`, capture[:]); err != nil {
+	if err := tx.SelectContext(ctx, &conflicts, conflictsQuery, capture[:]); err != nil {
 		return in, err
 	}
 	for _, k := range conflicts {
@@ -268,8 +280,7 @@ func packLosses(ctx context.Context, q sqlx.QueryerContext, capture tracepack.UU
 		TSFrom sql.NullInt64 `db:"ts_from"`
 		TSTo   sql.NullInt64 `db:"ts_to"`
 	}
-	err := sqlx.SelectContext(ctx, q, &rows, `SELECT l.seq_from, l.seq_to, l.ts_from, l.ts_to FROM pack_losses l JOIN packs k ON k.pack_id = l.pack_id
-		WHERE k.capture_id = ? AND k.state <> 'deleted'`, capture[:])
+	err := sqlx.SelectContext(ctx, q, &rows, lossesQuery, capture[:])
 	if err != nil {
 		return nil, err
 	}

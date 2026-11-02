@@ -496,6 +496,11 @@ func (c *Catalog) upsertScope(ctx context.Context, tx *sqlx.Tx, p *Pack) (scopeC
 	return ch, err
 }
 
+// overlapQuery finds the ranges of a capture's other live packs overlapping a range,
+// its arguments the capture, the pack, and the range's last and first seq.
+const overlapQuery = `SELECT r.pack_id, r.seq_from, r.seq_to, k.hour FROM pack_ranges r JOIN packs k ON k.pack_id = r.pack_id
+			WHERE r.capture_id = ? AND r.pack_id <> ? AND k.state <> 'deleted' AND r.seq_from <= ? AND r.seq_to >= ?`
+
 // recordConflicts writes the conflicts the batch split, confirmed, and a suspect for every range of another live pack of the capture,
 // in any hour, that overlaps one of the pack's (ingest.md §6.2);
 // each scope a conflict touches advances its revision and emits a conflict event, the pack's own scope at the revision upsertScope gave it.
@@ -515,9 +520,7 @@ func (c *Catalog) recordConflicts(ctx context.Context, tx *sqlx.Tx, p *Pack, own
 			To   int64  `db:"seq_to"`
 			Hour int64  `db:"hour"`
 		}
-		err := tx.SelectContext(ctx, &overlaps, `SELECT r.pack_id, r.seq_from, r.seq_to, k.hour FROM pack_ranges r JOIN packs k ON k.pack_id = r.pack_id
-			WHERE r.capture_id = ? AND r.pack_id <> ? AND k.state <> 'deleted' AND r.seq_from <= ? AND r.seq_to >= ?`,
-			p.Capture[:], p.ID[:], int64(rg.SeqTo), int64(rg.SeqFrom))
+		err := tx.SelectContext(ctx, &overlaps, overlapQuery, p.Capture[:], p.ID[:], int64(rg.SeqTo), int64(rg.SeqFrom))
 		if err != nil {
 			return nil, err
 		}

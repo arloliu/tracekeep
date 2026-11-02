@@ -197,8 +197,8 @@ func (c *Catalog) evictPacks(ctx context.Context, tx *sqlx.Tx, s Scope, now int6
 		`DELETE FROM pack_ranges WHERE pack_id IN ` + hourPacks,
 		`DELETE FROM pack_losses WHERE pack_id IN ` + hourPacks,
 		`DELETE FROM merge_inputs WHERE pack_id IN ` + hourPacks,
-		`DELETE FROM merge_inputs WHERE merge_id IN (SELECT merge_id FROM merges WHERE capture_id = ? AND hour = ?)`,
-		`DELETE FROM merges WHERE capture_id = ? AND hour = ?`,
+		evictMergeInputsQuery,
+		evictMergesQuery,
 		`DELETE FROM packs WHERE capture_id = ? AND hour = ?`,
 		`DELETE FROM claim_records WHERE capture_id = ? AND hour = ?`,
 		`DELETE FROM scopes WHERE capture_id = ? AND hour = ?`,
@@ -225,9 +225,18 @@ func (c *Catalog) evictPacks(ctx context.Context, tx *sqlx.Tx, s Scope, now int6
 // hourPacks selects the packs of one (capture, hour), its two arguments.
 const hourPacks = `(SELECT pack_id FROM packs WHERE capture_id = ? AND hour = ?)`
 
+// evictMergeInputsQuery and evictMergesQuery delete the merges of one (capture, hour), their two arguments, and the merges' inputs.
+const (
+	evictMergeInputsQuery = `DELETE FROM merge_inputs WHERE merge_id IN (SELECT merge_id FROM merges WHERE capture_id = ? AND hour = ?)`
+	evictMergesQuery      = `DELETE FROM merges WHERE capture_id = ? AND hour = ?`
+)
+
+// evictConflictsWhere is the conflicts naming a pack of one (capture, hour), its arguments the capture and the hour twice.
+const evictConflictsWhere = ` FROM conflicts WHERE pack_id IN ` + hourPacks + ` OR other_pack_id IN ` + hourPacks
+
 // evictConflicts deletes the conflicts naming a pack of the hour and returns the packs of other hours they named.
 func evictConflicts(ctx context.Context, tx *sqlx.Tx, s Scope) ([]tracepack.UUID, error) {
-	where := ` FROM conflicts WHERE pack_id IN ` + hourPacks + ` OR other_pack_id IN ` + hourPacks
+	where := evictConflictsWhere
 	args := []any{s.Capture[:], s.Hour, s.Capture[:], s.Hour}
 	var named []struct {
 		A []byte `db:"pack_id"`
