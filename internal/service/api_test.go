@@ -43,7 +43,7 @@ import (
 )
 
 // trusting is a client of HTTP/2 over TLS trusting only the certificate in certFile, as dev's own is.
-func trusting(t *testing.T, certFile string) *http.Client {
+func trusting(t testing.TB, certFile string) *http.Client {
 	t.Helper()
 	b, err := os.ReadFile(certFile)
 	if err != nil {
@@ -275,7 +275,7 @@ func devEnv(t *testing.T) *Env {
 }
 
 // selfSigned writes a self-signed certificate for 127.0.0.1 and its key, and returns their files.
-func selfSigned(t *testing.T) (string, string) {
+func selfSigned(t testing.TB) (string, string) {
 	t.Helper()
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
@@ -312,7 +312,7 @@ type clientCA struct {
 	file string
 }
 
-func newClientCA(t *testing.T) clientCA {
+func newClientCA(t testing.TB) clientCA {
 	t.Helper()
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
@@ -342,7 +342,7 @@ func newClientCA(t *testing.T) clientCA {
 const generator = "spiffe://cluster.example/ns/ve/sa/generator"
 
 // issue is a client certificate naming generator.
-func (c clientCA) issue(t *testing.T) tls.Certificate {
+func (c clientCA) issue(t testing.TB) tls.Certificate {
 	t.Helper()
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {

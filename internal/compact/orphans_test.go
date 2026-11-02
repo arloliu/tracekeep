@@ -34,7 +34,7 @@ type fixture struct {
 	horizon int64
 }
 
-func newFixture(t *testing.T, c *catalog.Catalog) *fixture {
+func newFixture(t testing.TB, c *catalog.Catalog) *fixture {
 	t.Helper()
 	f := &fixture{c: c, s: store.NewMem(), horizon: hour - 24}
 	f.r = &Compactor{Catalog: c, Store: f.s, HorizonHour: func() int64 { return f.horizon }, Log: slog.New(slog.DiscardHandler)}
@@ -47,7 +47,7 @@ func newFixture(t *testing.T, c *catalog.Catalog) *fixture {
 	return f
 }
 
-func newID(t *testing.T) tracepack.UUID {
+func newID(t testing.TB) tracepack.UUID {
 	t.Helper()
 	var id tracepack.UUID
 	if _, err := rand.Read(id[:]); err != nil {
@@ -58,7 +58,7 @@ func newID(t *testing.T) tracepack.UUID {
 }
 
 // admit admits a fresh capture, as ingest's admission of its start would.
-func (f *fixture) admit(t *testing.T) tracepack.UUID {
+func (f *fixture) admit(t testing.TB) tracepack.UUID {
 	t.Helper()
 	ctx := t.Context()
 	cfg, err := f.c.ActivateConfig(ctx, []byte(`{"classifier":"go-secs/v2.8.0","max_frame_len":0}`))
@@ -88,7 +88,7 @@ func (f *fixture) pass(t *testing.T) OrphanReport {
 	return rep
 }
 
-func (f *fixture) put(t *testing.T, key string, b []byte) {
+func (f *fixture) put(t testing.TB, key string, b []byte) {
 	t.Helper()
 	if err := f.s.Put(t.Context(), key, bytes.NewReader(b), int64(len(b))); err != nil {
 		t.Fatal(err)
@@ -125,14 +125,14 @@ func segment(t *testing.T, capture tracepack.UUID, seqs []uint64, stop bool) bui
 	return b
 }
 
-func write(t *testing.T, capture tracepack.UUID, role tracepack.PackRole, seqs []uint64, stop bool) built {
+func write(t testing.TB, capture tracepack.UUID, role tracepack.PackRole, seqs []uint64, stop bool) built {
 	t.Helper()
 
 	return writeWith(t, capture, role, seqs, stop, func(*tracepack.PackMeta) {})
 }
 
 // writeWith is write with the pack metadata adjusted by adjust before the Writer sees it.
-func writeWith(t *testing.T, capture tracepack.UUID, role tracepack.PackRole, seqs []uint64, stop bool, adjust func(*tracepack.PackMeta)) built {
+func writeWith(t testing.TB, capture tracepack.UUID, role tracepack.PackRole, seqs []uint64, stop bool, adjust func(*tracepack.PackMeta)) built {
 	t.Helper()
 	recs := make([]tracepack.Record, len(seqs))
 	for i, seq := range seqs {
@@ -146,7 +146,7 @@ func writeWith(t *testing.T, capture tracepack.UUID, role tracepack.PackRole, se
 }
 
 // writeRecords writes recs, in order, into a pack of capture's hour hr, its metadata adjusted by adjust.
-func writeRecords(t *testing.T, capture tracepack.UUID, role tracepack.PackRole, hr int64, recs []tracepack.Record, adjust func(*tracepack.PackMeta)) built {
+func writeRecords(t testing.TB, capture tracepack.UUID, role tracepack.PackRole, hr int64, recs []tracepack.Record, adjust func(*tracepack.PackMeta)) built {
 	t.Helper()
 	name := "eqp"
 	origin, mono, tolerance, interval := int64(1000), int64(0), uint64(time.Second), uint64(5*time.Minute)
@@ -198,7 +198,7 @@ func data(seq uint64) tracepack.Record {
 	}
 }
 
-func stopRecord(t *testing.T, seq uint64) tracepack.Record {
+func stopRecord(t testing.TB, seq uint64) tracepack.Record {
 	t.Helper()
 	ev := tracepack.TransportEvent{Event: tracepack.EventCaptureBoundary, BoundaryKind: new(tracepack.BoundaryKindStop)}
 	p, err := ev.MarshalBinary()

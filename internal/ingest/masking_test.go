@@ -26,14 +26,14 @@ import (
 )
 
 // maskingKeys declares d-1 and m-1 in files of synthetic material.
-func maskingKeys(t *testing.T, c *catalog.Catalog) *keys.Keys {
+func maskingKeys(t testing.TB, c *catalog.Catalog) *keys.Keys {
 	t.Helper()
 
 	return maskingKeysAt(t, c, t.TempDir(), nil)
 }
 
 // maskingKeysAt is maskingKeys with the key files under dir, d-1 at dir/d-1 and m-1 at dir/m-1, read through providers when given.
-func maskingKeysAt(t *testing.T, c *catalog.Catalog, dir string, providers map[string]keys.Provider) *keys.Keys {
+func maskingKeysAt(t testing.TB, c *catalog.Catalog, dir string, providers map[string]keys.Provider) *keys.Keys {
 	t.Helper()
 	declared := map[string]keys.Declaration{}
 	for id, kind := range map[string]string{"d-1": catalog.KindDigest, "m-1": catalog.KindMaster} {
@@ -56,7 +56,7 @@ func maskingKeysAt(t *testing.T, c *catalog.Catalog, dir string, providers map[s
 }
 
 // maskingConfig is the baseline's masking configuration of this binary's classifier, under d-1 and m-1.
-func maskingConfig(t *testing.T) Config {
+func maskingConfig(t testing.TB) Config {
 	t.Helper()
 	p := policy.Baseline()
 	cfg := Config{
@@ -72,7 +72,7 @@ func maskingConfig(t *testing.T) Config {
 }
 
 // maskingPipeline is newPipeline under a masking configuration.
-func maskingPipeline(t *testing.T, c *catalog.Catalog, k MaskKeys) *pipeline {
+func maskingPipeline(t testing.TB, c *catalog.Catalog, k MaskKeys) *pipeline {
 	t.Helper()
 	p := newPipeline(t, c)
 	for id := range p.x.Configs {

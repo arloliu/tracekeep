@@ -48,7 +48,7 @@ type pipeline struct {
 	cat *catalog.Catalog
 }
 
-func newPipeline(t *testing.T, c *catalog.Catalog) *pipeline {
+func newPipeline(t testing.TB, c *catalog.Catalog) *pipeline {
 	t.Helper()
 	cl := newClaims()
 	x := executor(t, c, cl)
@@ -62,7 +62,7 @@ func newPipeline(t *testing.T, c *catalog.Catalog) *pipeline {
 }
 
 // feed disposes m and batches it, failing unless it is batched.
-func (p *pipeline) feed(t *testing.T, m Message) *msg {
+func (p *pipeline) feed(t testing.TB, m Message) *msg {
 	t.Helper()
 	d, dec := dispose(t, p.x, m)
 	if dec.Action != ActBatch {
@@ -75,7 +75,7 @@ func (p *pipeline) feed(t *testing.T, m Message) *msg {
 }
 
 // flushAll flushes every open batch.
-func (p *pipeline) flushAll(t *testing.T) []Flushed {
+func (p *pipeline) flushAll(t testing.TB) []Flushed {
 	t.Helper()
 	batches := p.b.All()
 	out := make([]Flushed, 0, len(batches))

@@ -20,14 +20,14 @@ import (
 )
 
 // merging readies f's compactor for the merge pass, at a time when hour has ended and its quiet period passed.
-func (f *fixture) merging(t *testing.T) {
+func (f *fixture) merging(t testing.TB) {
 	t.Helper()
 	f.r.WorkDir, f.r.Writer, f.r.QuietPeriod = t.TempDir(), "tracekeep", 15*time.Minute
 	f.r.Now = func() time.Time { return time.Unix(0, (hour+2)*nsPerHour) }
 }
 
 // stage puts b and registers it as ingest would, with (empty) evidence.
-func (f *fixture) stage(t *testing.T, b built) *catalog.Pack {
+func (f *fixture) stage(t testing.TB, b built) *catalog.Pack {
 	t.Helper()
 	f.put(t, b.key, b.data)
 	p, reason, err := f.r.read(t.Context(), store.ObjectInfo{Key: b.key, Size: int64(len(b.data))})

@@ -19,14 +19,14 @@ import (
 )
 
 type harness struct {
-	t   *testing.T
+	t   testing.TB
 	p   *producer.Producer
 	obs *Observer
 	bus *producertest.Bus
 }
 
 // newHarness opens a capture on a producer over the in-memory bus; its start is the first message.
-func newHarness(t *testing.T) *harness {
+func newHarness(t testing.TB) *harness {
 	t.Helper()
 	bus := producertest.NewBus()
 	p, err := producer.New(producer.Config{SubjectPrefix: "tpk", ClaimBucket: "tpk-objects"}, producer.WithBus(bus))

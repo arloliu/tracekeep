@@ -11,7 +11,7 @@ import (
 )
 
 // admitted returns a capture admitted under a fresh gate.
-func admitted(t *testing.T, c *Catalog) tracepack.UUID {
+func admitted(t testing.TB, c *Catalog) tracepack.UUID {
 	t.Helper()
 	gate(t, c)
 	id := newID(t)
@@ -22,7 +22,7 @@ func admitted(t *testing.T, c *Catalog) tracepack.UUID {
 	return id
 }
 
-func segment(t *testing.T, capture tracepack.UUID, hour int64, from, to uint64) *Pack {
+func segment(t testing.TB, capture tracepack.UUID, hour int64, from, to uint64) *Pack {
 	t.Helper()
 	id := newID(t)
 
@@ -32,7 +32,7 @@ func segment(t *testing.T, capture tracepack.UUID, hour int64, from, to uint64) 
 	}
 }
 
-func register(t *testing.T, c *Catalog, p *Pack, r Registration) PackOutcome {
+func register(t testing.TB, c *Catalog, p *Pack, r Registration) PackOutcome {
 	t.Helper()
 	out, err := c.RegisterPack(t.Context(), p, r)
 	if err != nil {
@@ -59,7 +59,7 @@ func events(t *testing.T, c *Catalog) []string {
 	return out
 }
 
-func count(t *testing.T, c *Catalog, query string, args ...any) int {
+func count(t testing.TB, c *Catalog, query string, args ...any) int {
 	t.Helper()
 	var n int
 	if err := c.read.GetContext(t.Context(), &n, query, args...); err != nil {

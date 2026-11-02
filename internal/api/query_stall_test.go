@@ -262,7 +262,7 @@ func TestQueryRecordsSlowClientReadsToTheEnd(t *testing.T) {
 }
 
 // streamed is a stream's messages and its error, read through w's client.
-func (w *stallWorld) streamed(t *testing.T, req *connect.Request[tkv1.QueryRecordsRequest]) ([]*tkv1.QueryRecordsResponse, error) {
+func (w *stallWorld) streamed(t testing.TB, req *connect.Request[tkv1.QueryRecordsRequest]) ([]*tkv1.QueryRecordsResponse, error) {
 	t.Helper()
 	s, err := w.cl.QueryRecords(t.Context(), req)
 	if err != nil {

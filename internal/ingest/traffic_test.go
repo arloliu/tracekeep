@@ -52,7 +52,7 @@ func (c *claims) put(name string, b []byte) {
 }
 
 // descriptorOf is a start descriptor this service accepts.
-func descriptorOf(t *testing.T, name string) []byte {
+func descriptorOf(t testing.TB, name string) []byte {
 	t.Helper()
 	origin, mono, tolerance := int64(1000), int64(0), uint64(time.Second)
 	m := &tracepack.PackMeta{
@@ -71,7 +71,7 @@ func descriptorOf(t *testing.T, name string) []byte {
 }
 
 // startRecord is a capture's start: a capture-boundary transport event of kind start.
-func startRecord(t *testing.T, ts int64) tracepack.Record {
+func startRecord(t testing.TB, ts int64) tracepack.Record {
 	t.Helper()
 	ev := tracepack.TransportEvent{Event: tracepack.EventCaptureBoundary, BoundaryKind: new(tracepack.BoundaryKindStart)}
 	p, err := ev.MarshalBinary()
@@ -90,7 +90,7 @@ func dataRecord(seq uint64, ts int64) tracepack.Record {
 }
 
 // inline is the message of r, carrying descriptor when it is a start.
-func inline(t *testing.T, capture tracepack.UUID, r tracepack.Record, descriptor []byte) Message {
+func inline(t testing.TB, capture tracepack.UUID, r tracepack.Record, descriptor []byte) Message {
 	t.Helper()
 	br := tpbus.NewRecord(&r)
 	br.CaptureID = capture
@@ -103,7 +103,7 @@ func inline(t *testing.T, capture tracepack.UUID, r tracepack.Record, descriptor
 }
 
 // claimCheck is the message of r with its payload put in the claim bucket c.
-func claimCheck(t *testing.T, c *claims, capture tracepack.UUID, r tracepack.Record, descriptor []byte) Message {
+func claimCheck(t testing.TB, c *claims, capture tracepack.UUID, r tracepack.Record, descriptor []byte) Message {
 	t.Helper()
 	payload := r.Payload
 	br := tpbus.NewRecord(&r)
@@ -119,7 +119,7 @@ func claimCheck(t *testing.T, c *claims, capture tracepack.UUID, r tracepack.Rec
 	return Message{Env: env, Body: body, Incarnation: 1, StreamSeq: int64(r.Seq) + 1}
 }
 
-func envelope(t *testing.T, capture tracepack.UUID, seq uint64, descriptor []byte) tpbus.Envelope {
+func envelope(t testing.TB, capture tracepack.UUID, seq uint64, descriptor []byte) tpbus.Envelope {
 	t.Helper()
 	id, err := tpbus.MsgID(capture, seq)
 	if err != nil {
