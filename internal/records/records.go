@@ -549,9 +549,15 @@ func Open(ctx context.Context, st store.ObjectStore, key string) (store.Object, 
 
 type keyless struct{ store.Object }
 
+// ReadAt reads as the object does, an end of file only where the object ends:
+// one before it, as a short ranged read reports, is the store's failure, keyless as every other.
 func (o keyless) ReadAt(p []byte, off int64) (int, error) {
 	n, err := o.Object.ReadAt(p, off)
-	if err != nil && !errors.Is(err, io.EOF) {
+	switch {
+	case err == nil:
+	case errors.Is(err, io.EOF) && off+int64(n) >= o.Size():
+		err = io.EOF // its text may name the key
+	default:
 		err = Keyless(err)
 	}
 

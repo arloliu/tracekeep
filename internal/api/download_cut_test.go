@@ -32,7 +32,7 @@ func (timeoutError) Temporary() bool { return true }
 
 // cutStore fails as mode says, every error naming the key:
 // open-held waits at its open for the download's context to end, open-timeout times its open out;
-// read-held and read-timeout serve the first chunk, then hold every later read until the context ends, or time it out.
+// read-held, read-timeout and read-eof serve the first chunk, then hold every later read until the context ends, time it out, or end it short with an end of file.
 // arrived is signalled when a hold begins; opened and closed count the objects.
 type cutStore struct {
 	store.ObjectStore
@@ -80,6 +80,12 @@ func (o *cutObject) ReadAt(p []byte, off int64) (int, error) {
 
 		return 0, fmt.Errorf("read %s: %w", o.key, o.ctx.Err())
 	}
+	if o.c.mode == "read-eof" {
+		// A ranged GET whose body came short: part of the range, then an end of file inside the object.
+		n, _ := o.Object.ReadAt(p[:len(p)/2], off)
+
+		return n, fmt.Errorf("read %s: %w", o.key, io.EOF)
+	}
 
 	return 0, fmt.Errorf("read %s: %w", o.key, timeoutError{})
 }
@@ -114,6 +120,8 @@ func TestDownloadFailures(t *testing.T) {
 		{"the budget's end after the headers of a 206", "read-held", "bytes=10-200000", false, true, "206", true},
 		{"the store timed out after the headers of a 200", "read-timeout", "", false, false, "200", true},
 		{"the store timed out after the headers of a 206", "read-timeout", "bytes=10-200000", false, false, "206", true},
+		{"the store's read short of the object after the headers of a 200", "read-eof", "", false, false, "200", true},
+		{"the store's read short of the object after the headers of a 206", "read-eof", "bytes=10-200000", false, false, "206", true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()

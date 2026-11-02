@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"errors"
 	"fmt"
+	"io"
 	"math"
 	"slices"
 	"strings"
@@ -521,6 +522,44 @@ func TestReadFailsOnABrokenStore(t *testing.T) {
 	var o out
 	if err := w.reader(16).Read(t.Context(), window(), &o); err == nil || strings.Contains(err.Error(), a.Key) || len(o.lines) != 0 {
 		t.Errorf("Read over a broken store = %v, %v; want an error without the key and nothing streamed", err, o.lines)
+	}
+}
+
+// shortObject reads as its object up to cut, then ends its read short with an end of file naming the key, as a short ranged GET does.
+type shortObject struct {
+	store.Object
+	cut int64
+}
+
+func (o shortObject) ReadAt(p []byte, off int64) (int, error) {
+	if off+int64(len(p)) <= o.cut {
+		return o.Object.ReadAt(p, off)
+	}
+	n, _ := o.Object.ReadAt(p[:max(0, o.cut-off)], off)
+
+	return n, fmt.Errorf("get staging/k1 range %d: %w", off, io.EOF)
+}
+
+// An end of file is the object's end only where the object ends: one inside it is the store's failure, and neither names the key.
+func TestKeylessShortRead(t *testing.T) {
+	t.Parallel()
+	mem := store.NewMem()
+	body := bytes.Repeat([]byte("x"), 100)
+	if err := mem.Put(t.Context(), "staging/k1", bytes.NewReader(body), int64(len(body))); err != nil {
+		t.Fatal(err)
+	}
+	inner, err := mem.Open(t.Context(), "staging/k1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	obj := keyless{shortObject{inner, 50}}
+	buf := make([]byte, 40)
+	if n, err := obj.ReadAt(buf, 40); n != 10 || !errors.Is(err, ErrStore) || errors.Is(err, io.EOF) || strings.Contains(err.Error(), "staging") {
+		t.Errorf("a read cut short inside the object = %d, %v; want 10 bytes and the store's failure, keyless", n, err)
+	}
+	whole := keyless{shortObject{inner, 100}}
+	if n, err := whole.ReadAt(buf, 80); n != 20 || err != io.EOF { //nolint:errorlint // the bare sentinel, its text dropped
+		t.Errorf("a read past the object's end = %d, %v; want 20 bytes and io.EOF itself", n, err)
 	}
 }
 
