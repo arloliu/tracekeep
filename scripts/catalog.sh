@@ -78,24 +78,25 @@ bench)
 	out=${2:?usage: catalog.sh bench <file>}
 	start_mariadb
 	cpu=${CPU:-$(nproc)}
-	# The engines and the run as a baseline records them (650-perf-sec.md), read here since the container is gone once the script ends;
-	# SQLite's library is modernc's module, its journal mode and synchronous level the catalog's own pragmas.
-	sql() { docker exec "$container" mariadb -uroot -p$PASSWORD -N -e "$1"; }
-	echo "mariadb: $(sql 'SELECT VERSION()'), innodb_flush_log_at_trx_commit $(sql 'SELECT @@innodb_flush_log_at_trx_commit')"
-	echo "sqlite: $(GOWORK=off go list -m -f '{{.Path}} {{.Version}}' modernc.org/sqlite), $(grep -o 'journal_mode([A-Z]*)\|synchronous([A-Z]*)' internal/catalog/catalog.go | tr '\n' ' ')"
-	echo "-cpu $cpu -count ${COUNT:-10} -benchtime ${BENCHTIME:-1s}; BenchmarkRegisterPack at -benchtime 100x, its ranges cells at 1x"
+	export TRACEKEEP_MARIADB_DSN="root:$PASSWORD@tcp(127.0.0.1:$port)/catalog" TRACEKEEP_REQUIRE_MARIADB=1 GOWORK=off
+	# The engines as a baseline records them (650-perf-sec.md), asked of each engine through the catalog, since the container is gone once the script ends;
+	# a tree older than TestEngineFacts is answered by this script's own tree.
+	facts() { TRACEKEEP_ENGINE_FACTS=1 go test ./internal/catalog/ -run '^TestEngineFacts$' -count 1 -v | grep -o 'engine facts: .*'; }
+	facts || (cd "$(dirname "$0")/.." && echo "engine facts from the script's tree, the measured tree having no TestEngineFacts:" && facts)
+	# run writes its pass's parameters as configuration lines before the samples, so benchjudge compares only rows run alike.
 	# No race detector: it would measure itself. Go's cpu: line names the vendor's model, which a baseline never records.
 	run() {
-		TRACEKEEP_MARIADB_DSN="root:$PASSWORD@tcp(127.0.0.1:$port)/catalog" TRACEKEEP_REQUIRE_MARIADB=1 GOWORK=off \
-			go test $PACKAGES -run '^$' -benchmem -cpu "$cpu" -count "${COUNT:-10}" -timeout 0 "$@" | sed '/^cpu:/d'
+		local bench=$1 benchtime=$2
+		printf 'benchtime: %s\ncount: %s\ncpus: %s\nscale: %s\n' "$benchtime" "${COUNT:-10}" "$cpu" "${TRACEKEEP_BENCH_SCALE:-small}"
+		go test $PACKAGES -run '^$' -bench "$bench" -benchtime "$benchtime" -benchmem -cpu "$cpu" -count "${COUNT:-10}" -timeout 0 | sed '/^cpu:/d'
 	}
 	# BenchmarkRegisterPack skips unless -benchtime is Nx with N times a pack's ranges at most a tenth of the seeded ranges (its godoc):
 	# its one-range cells (evidence, miss, hit) run at 100x, which every size's 1,000 or more seeded ranges allow,
 	# its ranges cells, 100 ranges a pack or more, at 1x, which the cells whose pack fits allow.
 	{
-		run -bench "${BENCH:-.}" -benchtime "${BENCHTIME:-1s}"
-		run -bench '^BenchmarkRegisterPack$/^(evidence|miss|hit)$' -benchtime 100x
-		run -bench '^BenchmarkRegisterPack$/^ranges$' -benchtime 1x
+		run "${BENCH:-.}" "${BENCHTIME:-1s}"
+		run '^BenchmarkRegisterPack$/^(evidence|miss|hit)$' 100x
+		run '^BenchmarkRegisterPack$/^ranges$' 1x
 	} | tee "$out"
 	;;
 bench-smoke)

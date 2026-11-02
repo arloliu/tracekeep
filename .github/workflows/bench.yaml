@@ -72,9 +72,14 @@ jobs:
           echo
           echo '| Benchmarks | A synchronization to disk in the timed work |'
           echo '|---|---|'
-          echo '| catalog RegisterPack, RecordListing, AuditWhileRegistering, PruneEvents, EvictHour; ingest Flush, FlushDue, Acknowledge (its parked copies); compact MergePass, RetainClaimListing, Orphans adopting | yes: each catalog commit, SQLite at synchronous FULL, MariaDB as innodb_flush_log_at_trx_commit says |'
-          echo '| ingest Flush, FlushDue on the fs store; store FSPut | yes, besides: the fs store syncs each object and its directory |'
-          echo '| compact MergeWrite | yes: the archive syncs its working file |'
+          echo '| catalog RegisterPack, AuditWhileRegistering, PruneEvents, EvictHour; RecordListing attributed/new, unattributed/new, unattributed/gone; ingest Acknowledge parked; compact Orphans adopting | yes: catalog commits that write, SQLite at synchronous FULL, MariaDB as innodb_flush_log_at_trx_commit says |'
+          echo '| compact MergePass .../fresh | yes: each healthy scope its archive working file synced, its commit written |'
+          echo '| ingest Flush, FlushDue | yes: the segment working file synced, the registration committed, and on the fs store each object and its directory synced |'
+          echo '| store FSPut | yes: the object and its directory synced |'
+          echo '| compact MergeWrite | yes: the archive working file synced each block |'
+          echo '| compact MergePass .../cycles=10 | no: failing=0 lists candidates only; a failing scope fails in the merge plan before its output is touched and records nothing |'
+          echo '| catalog RecordListing attributed/steady, attributed/gone, unattributed/steady; compact RetainClaimListing (steady) | no: their transactions change no row, the lease check rewriting its row unchanged (SQLite checked: no WAL frame; MariaDB to confirm) |'
+          echo '| ingest Acknowledge inline, claim-check | no per acknowledgement: the embedded bus file store syncs on its own interval |'
           echo '| catalog Listings, ListingHistory, Lookups, Resolve, DeleteCandidates; metrics ReadCatalog; compact Orphans steady, Compare; ingest Dispose, Batcher, Act, Heartbeat; api, records, service | no: reads, or memory only |'
         } | tee -a "$GITHUB_STEP_SUMMARY"
 
