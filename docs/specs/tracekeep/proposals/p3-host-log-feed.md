@@ -1,6 +1,6 @@
 # P3 — host log feed
 
-Status: draft (2026-11-02) — a live feed of an equipment host's SML log as `log` captures that claim no coverage; awaiting the owner
+Status: active (2026-11-03) — a live feed of an equipment host's SML log as `log` captures that claim no coverage
 
 Covers a new tracekeep feature: a log pipeline parses the SECS traffic an equipment host prints to its text log as SML,
 and tracekeep pairs the entries, builds the frames and writes `capture_method = log` captures as they arrive.
@@ -36,7 +36,7 @@ host pod
 Vector forwarder
   route: traffic entries → parse each entry statelessly into fields → NATS sink → TRACEKEEP_LOGFEED, subject tklog.<source>
          every other entry → the deployment's log store
-tracekeep ingest, the log stage (logfeed.enabled; one converter per source under a catalog lease)
+tracekeep ingest, the log stage (logfeed.enabled; one converter per source under its group's catalog lease)
   reorder window → dedup by offset → pair header and body → sml.Parse → build frame → classify + mask
     → batch per (capture, UTC hour) → tracepack.Writer → ObjectStore.Put (staging/) → register → ack
 tracekeep compact, api: unchanged, except as stated under Storage and catalog
@@ -149,14 +149,16 @@ The log stage converts in real time, as `ingest` does for HSMS traffic.
 - **One capture per (source, connection, file).**
   A catalog row keyed uniquely by (source, connection, file) holds the capture's `capture_id` from its creation;
   the id is never derived again, so the file needs no inode or digest: file names are dated.
-- **One converter per source at a time**, under a catalog lease per source (*Sizing* recommends a lease per source group).
+- **One converter per source at a time**, under the catalog lease of the source's group (*Sizing*).
 - **Boundaries.** The converter writes the capture's start with its first record,
-  and its stop when the source's next dated file appears or when the source has been idle past `logfeed.idle_period`.
+  and its stop when the source's next dated file appears or when the source has been idle past `logfeed.idle_period`;
+  an entry of the file after its stop is late (*Dedup and late entries*), and never reopens it.
 - **Connection**: the header's device-number token where the host logs one, else the session ID of its logged header ([STO §7] item 4).
   The logged session ID is the host's, never a tool's, because the gateway rewrites it (V-8).
   Several connections in one log are normal: the tool, a load-port controller on its own session, a peer on stream 99.
 - **Tool**: the operator maps each connection of a source to its `tool_id` (`logfeed.sources[].connections`), as [STO §7] item 7 asks of a converter.
-  An entry of an unmapped connection goes to the host's own capture of its file, whose `tool_id` is the source's id, and raises `TracekeepLogConnectionUnmapped`.
+  An entry of an unmapped connection goes to the host's own capture of its file, whose `tool_id` is the source's id, and raises `TracekeepLogConnectionUnmapped`;
+  the host capture is created lazily, on its file's first such entry, so a file with none has none.
   So do the entries of no connection: a body without a header, an unclassified entry.
 - **recorder_instance_id**: derived from the source's id and stable, never the gateway's,
   so a source's captures form their own series for successor lookup (`catalog.md` §7.3);
@@ -241,7 +243,7 @@ The choice is the deployment's.
 
 ### Ingest scaling
 
-2000 sources mean 2000 converters' state, one lease each (below) and about 2000 segments every F, one transaction per source flush.
+2000 sources mean 2000 converters' state, one lease per source group (below) and about 2000 segments every F, one transaction per source flush.
 A pack holds one capture ([FMT §4]'s header names one `capture_id`; [STO §7] item 9; the segment key under `<capture_id>`, [STO §3]),
 so several sources cannot share a segment.
 Writer time on SQLite (single writer) from phase 5's *Baselines*:
@@ -263,9 +265,9 @@ A segment's deletion after its merge is one synchronized transaction, unmeasured
 - **Objects**: the segments above an hour, plus 2000 archives an hour; the compactor merges 2000 scopes an hour, each of the inputs above.
   The merge's baselines reach 64 inputs, so F = 10 s lies outside them; the orphan pass costs about 10 µs a `staging/` object.
 - **Leases**: one row per source renewed every 10 s is 200 commits/s, about 120 ms/s of the writer whatever F.
-  Recommended: **a lease per source group** (the source's id hashed into `logfeed.lease_groups`, e.g. 32): 3.2 commits/s,
+  Decided: **a lease per source group** (the source's id hashed into `logfeed.lease_groups`, default 32): 3.2 commits/s,
   one consumer per group filtering its sources' subjects, and still one converter per source, since a source is in one group.
-  The alternative, one transaction renewing all a holder's per-source leases, keeps 2000 rows and 2000 consumers.
+  The alternative, one transaction renewing all a holder's per-source leases, would keep 2000 rows and 2000 consumers.
 - **Memory**: pairing state, a few entries a source, about 2 KB, 4 MB in all;
   the reorder window, about 5 KB a source at 5 s, 10 MB in all;
   the batches up to the bytes above, an upper bound, since a built frame is smaller than its SML;
@@ -275,7 +277,7 @@ A segment's deletion after its merge is one synchronized transaction, unmeasured
 
 **Configuration** (`docs/guides/configuration.md`, one table):
 `logfeed.enabled` (default false), `logfeed.stream` (`TRACEKEEP_LOGFEED`), `logfeed.prefix` (`tklog`),
-`logfeed.pairing_window` (3 entries), `logfeed.reorder_window` (5 s), `logfeed.flush_interval` F (ingest's F), `logfeed.idle_period` (24 h),
+`logfeed.pairing_window` (3 entries), `logfeed.reorder_window` (5 s), `logfeed.flush_interval` F (ingest's F), `logfeed.idle_period` (24 h), `logfeed.lease_groups` (32),
 and per source, `logfeed.sources[]`: `id`, `tz` and `connections` (`device=N` or `session=N` → `tool_id`).
 A source without `tz` refuses the start.
 
@@ -292,7 +294,9 @@ A source without `tz` refuses the start.
 `logfeed_annotations_total{source,kind}`, `logfeed_schema_unknown_total{source}`,
 and the stream's backlog beside the traffic stream's (`stream_backlog_messages{stream}`).
 
-## Decided by the owner (2026-11-02)
+## Decided by the owner
+
+On 2026-11-02:
 
 1. The machine API's default selection leaves `log` captures out; a reader asks for them by method.
 2. An offset only needs to increase within a file.
@@ -301,16 +305,14 @@ and the stream's backlog beside the traffic stream's (`stream_backlog_messages{s
 5. A body without a header becomes an annotation.
 6. The stage runs in the `ingest` role, behind `logfeed.enabled`.
 
-## Open questions for the owner
+On 2026-11-03:
 
-1. **Lease per source group** instead of per source (*Sizing*): accept, and with how many groups?
-2. **An entry after an idle stop**: its file's capture is stopped and its key is taken, so the entry is counted and acked as late.
-   Accept, with `logfeed.idle_period` long enough (24 h) that only a source that stopped logging meets it?
-3. **The host capture**: created lazily, on a file's first entry of no mapped connection (recommended), or at the file's start for every source?
-4. **One registration transaction per source flush**, a new catalog operation beside `RegisterPack`, which registers per segment:
-   several captures of one file share its offset row, so a per-segment update could pass an entry not yet registered.
-   Accept, or keep per-segment registration and the offset per capture instead of per (source, file)?
-   *Sizing* counts registrations per source flush.
+7. A lease per source group, `logfeed.lease_groups` groups, default 32 (*Sizing*).
+8. An entry after an idle stop is counted and acked as late: its file's capture is stopped and its key taken, so it never reopens;
+   `logfeed.idle_period` (24 h) is long enough that only a source that stopped logging meets it.
+9. The host capture is created lazily, on its file's first entry of no mapped connection (*Captures*).
+10. One registration transaction per source flush, a new catalog operation beside `RegisterPack`, which registers per segment:
+    several captures of one file share its offset row, so a per-segment update could pass an entry not yet registered.
 
 ## Changes tracepack needs
 
