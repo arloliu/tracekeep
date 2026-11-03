@@ -234,6 +234,7 @@ the owner may override any before 5.4's spec step lands, which records them as T
     `ListPacks` and `ListDevices` read the seven inputs for chunks of 128 captures at a time (`capture_id IN`), in one snapshot, classifying outside it where the buffered input allows,
     `ListDevices` keeping its early answer for a device with a gap (on MariaDB a listing over 100 captures now costs about 2.4 ms a capture). Maintained coverage summaries wait until the batched listing still costs.
     The "windowed" `Completeness` benchmark passes no window (`reads_bench_test.go:136–147`): it is fixed or dropped, and the listing benchmarks assert the complete answer, not counts.
+    A chunk of one capture reads its inputs with `= ?` and without the key column; `classify` orders the losses, crash gaps and conflicts itself, so no input query sorts them for it.
 35. **The API's audit write (P6)**: `Catalog.Audit` takes its connection explicitly and records the wait for it in `catalog_audit_wait_seconds`, a histogram labelled `engine` and `outcome` (`acquired`, `deadline`, `canceled`, `error`), timed from the request for the connection to its acquisition or failure, not the insert; its failure wraps `ErrAudit`.
     Every standalone audit an API request makes runs under a 1 s deadline within the caller's own, through one catalog helper, `Catalog.AuditWithin`:
     the four handlers' (`PackURL`, `Digest`, `Restore`, and `GetExport`'s URL, `export.go:124`) and an operator read's, which `admin.Run` writes after its operation (`run.go:43`) for `AdminService` and the CLI alike;
@@ -280,14 +281,14 @@ steps 4 and 8 both edit `resolve.go` (`heldSeqQuery`, `Catalog.Audit`), so step 
 
 | Step | Scope | State |
 |---|---|---|
-| 1 | spec, with T-55 recording points 30 to 38: `catalog.md` §7.1 (`pack_ranges.span` and its index; the `merges` and `conflicts` indexes), §7.2 (`RecordListing` in bounded transactions, the lease verified when nothing is written, the sweep last), `compactor.md` §8.3 (the listing no longer one transaction), `operations.md` §10.4 (`catalog_audit_wait_seconds` and its outcomes), `api.md` (the audit write's deadline, `GetExport` and an operator read's audit included) | pending |
-| 2 | benchmarks (point 37): the evidence with a parked share; a held probe far from the end; few due merges among many; eviction with a merge chain among unaffected merges; the listings asserting complete answers and the "windowed" `Completeness` row fixed; `bench.yaml` and `scripts/catalog.sh bench` narrowed and split, its engine filter checked to skip SQLite's rows and to run every `mariadb` row, each group's rows listed and their union checked against every `mariadb` row, and a run of it on this step recorded with each job's time | pending |
-| 3 | schema (point 36): `schema.hcl`, two migrations per engine (the column, then the indexes), their generated SQL inspected for that shape, a failure between them resuming, `migrate` tests on both engines that a migrated catalog with stored ranges answers each range's `span`, that an insert naming the old columns gets it, and that the migration applies online on MariaDB; the fallback of point 30 taken here if the column is not supported | pending |
-| 4 | P2 (point 30): the three probes bounded by the stored span, held as `EXISTS`. Failing cases first: a range overlapping from far below found, nested, equal and singleton ranges, seq 0 and the largest seq, a merged hour's wide range and the bound after it is evicted, cross-hour conflicts, a held seq at the start of a long history, a wide range inserted by a barrier between `Resolve`'s span and its probe, rows inserted directly by the seeders | pending |
-| 5 | P1 (point 31): the evidence read in sets. Failing cases first: every outcome and tombstone reason against the per-delivery path, a parked version in each state, an order's cut-off at, above and below a stream seq, two incarnations, a refusal in the last delivery, statements at the 900-parameter boundary | pending |
-| 6 | P3 (point 32): the claim listing bounded. Failing cases first: a key only in the last chunk never forgotten, a key repeated across chunks, a failure between chunks skipping the sweep and its retry, a key attributed after the read and before its sweep page kept, a lease lost before, between chunks and between sweep pages, an expired lease with an empty and an unchanged listing refused, a steady listing writing nothing, survivors and deletable rows kept | pending |
-| 7 | P4 (point 33): deletion and eviction. Failing cases first: legacy and current deadlines at their boundary, both sides of a conflict, cross-hour conflicts' revisions and events, a merge chain, a lost lease rolling back | pending |
-| 8 | P5 and P6 (points 34, 35): listings batched at 127, 128 and 129 captures with complete answers equal to the unbatched ones and the registration barriers across chunk boundaries; the audit's deadline and wait histogram for the four handlers and an `AdminService` read (its operation done, then its audit expiring with no result returned), a held writer expiring an audit with no row written later, an earlier parent deadline, one observation an attempt with its outcome | pending |
+| 1 | spec, with T-55 recording points 30 to 38: `catalog.md` §7.1 (`pack_ranges.span` and its index; the `merges` and `conflicts` indexes), §7.2 (`RecordListing` in bounded transactions, the lease verified when nothing is written, the sweep last), `compactor.md` §8.3 (the listing no longer one transaction), `operations.md` §10.4 (`catalog_audit_wait_seconds` and its outcomes), `api.md` (the audit write's deadline, `GetExport` and an operator read's audit included) | done (#74) |
+| 2 | benchmarks (point 37): the evidence with a parked share; a held probe far from the end; few due merges among many; eviction with a merge chain among unaffected merges; the listings asserting complete answers and the "windowed" `Completeness` row fixed; `bench.yaml` and `scripts/catalog.sh bench` narrowed and split, its engine filter checked to skip SQLite's rows and to run every `mariadb` row, each group's rows listed and their union checked against every `mariadb` row, and a run of it on this step recorded with each job's time | done (#74) |
+| 3 | schema (point 36): `schema.hcl`, two migrations per engine (the column, then the indexes), their generated SQL inspected for that shape, a failure between them resuming, `migrate` tests on both engines that a migrated catalog with stored ranges answers each range's `span`, that an insert naming the old columns gets it, and that the migration applies online on MariaDB; the fallback of point 30 taken here if the column is not supported | done (#74) |
+| 4 | P2 (point 30): the three probes bounded by the stored span, held as `EXISTS`. Failing cases first: a range overlapping from far below found, nested, equal and singleton ranges, seq 0 and the largest seq, a merged hour's wide range and the bound after it is evicted, cross-hour conflicts, a held seq at the start of a long history, a wide range inserted by a barrier between `Resolve`'s span and its probe, rows inserted directly by the seeders | done (#74) |
+| 5 | P1 (point 31): the evidence read in sets. Failing cases first: every outcome and tombstone reason against the per-delivery path, a parked version in each state, an order's cut-off at, above and below a stream seq, two incarnations, a refusal in the last delivery, statements at the 900-parameter boundary | done (#74) |
+| 6 | P3 (point 32): the claim listing bounded. Failing cases first: a key only in the last chunk never forgotten, a key repeated across chunks, a failure between chunks skipping the sweep and its retry, a key attributed after the read and before its sweep page kept, a lease lost before, between chunks and between sweep pages, an expired lease with an empty and an unchanged listing refused, a steady listing writing nothing, survivors and deletable rows kept | done (#74) |
+| 7 | P4 (point 33): deletion and eviction. Failing cases first: legacy and current deadlines at their boundary, both sides of a conflict, cross-hour conflicts' revisions and events, a merge chain, a lost lease rolling back | done (#74) |
+| 8 | P5 and P6 (points 34, 35): listings batched at 127, 128 and 129 captures with complete answers equal to the unbatched ones and the registration barriers across chunk boundaries; the audit's deadline and wait histogram for the four handlers and an `AdminService` read (its operation done, then its audit expiring with no result returned), a held writer expiring an audit with no row written later, an earlier parent deadline, one observation an attempt with its outcome | done (#74) |
 | 9 | measurement (points 37, 38): the local sitting and `bench.yaml` on MariaDB, base against head, recorded in *Baselines* under a 5.4 heading; the write-connection gate run and recorded; a P row its numbers do not support is reverted and closed with them | pending |
 
 Carried to 5.5 (P10): the traffic consumer's heartbeat sends an in-progress acknowledgement for every held message each beat (`ingester.go:276`, `Heartbeat/held=10000` 3.01 ms),
@@ -823,6 +824,64 @@ Inconclusive under point 21 (an interval of ±5% or more), measured again before
 - compact: `MergeWrite/inputs=64/records=10000/masked=false` (±16%), `MergePass/healthy=10/failing=10/fresh` (±5%), `MergePass/healthy=100/failing=0/cycles=10` (±7%), `Orphans/objects=10000/steady` (±5%), `Orphans/objects=100000/steady` (no interval, under six samples), `Orphans/objects=100000/adopting` (no interval, under six samples);
 - producer/internal/core: `Observe/kind=data/payload=65536` (±20%);
 - producer/secsobs: `Callback/callbacks=4` (±6%).
+
+### 5.4: before and after (step 9)
+
+Base 9c8ca3c (the branch after step 2), head db2a5b1 (the branch with steps 3–8), each judged by `benchjudge` under point 21.
+
+**The local sitting** (2026-11-03), on the machine above, `-count 10 -benchtime 1s` at `medium`, `RegisterPack`'s fixed-N passes included (`-fixed 'BenchmarkRegisterPack/'`), base, head and base again:
+312 metrics, 286 pass, 26 regress, none inconclusive.
+**`bench.yaml` on MariaDB**, run 41545303322 at `medium`, each job base, head and base on its own runner:
+the metrics and listings jobs pass, the lookups, retention and claim-listing jobs regress only on the rows below, and the registration job only on the bytes of `RegisterPack/ranges`.
+Its one inconclusive row, `DeleteCandidates/merges=100000` (1.16 by the medians), was measured again locally on MariaDB 11.8 at `-benchtime 3s`: 0.95 [0.937, 0.974], a pass.
+Each job fits the hosted runner's 360 minutes: registration took 269 minutes, the claim listing 121, the others 8 to 27.
+
+Time an operation, head over base (the medians):
+
+| Row | SQLite | MariaDB |
+|---|---|---|
+| `RegisterPack/evidence/deliveries=1000/prior=20000` (P1) | 0.04 | 0.005 |
+| `RegisterPack/ranges/ranges=1000/prior=20000` (P2) | 0.02 | 0.08 |
+| `Resolve/prior=20000/held`, `unheld`, `wide-evicted` (P2) | 0.03 | 0.24 |
+| `Lookups/prior=20000/RecordCopies` (P2) | 0.02 | 0.19 |
+| `RecordListing/objects=100000/attributed/steady`, `new` (P3) | 0.18, 0.55 | 0.02, 0.05 |
+| `RecordListing/objects=100000/unattributed/steady`, `new` (P3) | 0.34, 0.84 | 0.02, 0.02 |
+| `DeleteCandidates/merges=100000/due=10` (P4) | 0.0001 | 0.001 |
+| `EvictMerges/merges=100000` (P4) | 0.07 | 0.05 |
+| `Listings/captures=100/devices=100/ListDevices`, `ListPacks` (P5) | 0.55, 0.79 | 0.05, 0.11 |
+| `Listings/captures=100/Completeness` (P5) | 0.90 | 0.98 to 1.01 |
+| `AuditWhileRegistering/registering=1`, `4` (P6) | 0.21, 0.22 | 1.03, 1.01 |
+
+The regressions, each a cost of the change named:
+
+| P row | Rows | SQLite | MariaDB |
+|---|---|---|---|
+| P2, the span bound | `Resolve/*/held-start` | time 1.21 to 1.25 | time 1.07 to 1.11 |
+| | `Resolve/*/wide-stored` at prior=1000 | time 1.07 | time 1.10 |
+| | `RegisterPack/ranges/*` | passes | bytes 1.08 to 1.12 (time 0.08 to 0.49) |
+| | `Resolve/*` (every case), `Lookups/*/RecordCopies` | bytes 1.06; RecordCopies 1.05 at prior=1000 | bytes 1.09; RecordCopies 1.11 |
+| P3, bounded transactions | `RecordListing/*/attributed/gone` | time 1.17 to 1.22, bytes 1.08, allocations 55 → 60 and 53 → 59 | bytes 1.30, allocations 47 → 58 (time 0.74) |
+| | `RecordListing/objects=100000/unattributed/gone` | time 1.26 (98 commits) | passes (0.03) |
+| | `RecordListing/*/attributed/new` | passes | bytes 1.38 (time 0.05, allocations 0.35) |
+| P4, the merges deleted with `RETURNING` | `EvictMerges/*` | bytes 1.06, allocations 765 → 786 at 1,000 | bytes 1.08, allocations 645 → 659 at 1,000 |
+| P6, the explicit connection | `AuditWhileRegistering/registering=0` | bytes 1.08, allocations 23 → 25 | bytes 1.06, allocations 23 → 25, and bytes 1.6 to 1.9 at `registering=1`, `4` |
+
+Why each costs what it does:
+P2 binds the capture and the seq twice more for the span (`heldSeqQuery`, the overlap probe), once a range in a registration, and on SQLite a held seq at a long history's start reads `MAX(span)` from the index of a virtual column, not a covering one;
+P3 verifies the lease before the first chunk and reads the sweep a page at a time, so a listing that writes little pays both, and a large unattributed sweep commits once a chunk;
+on MariaDB the bytes of `attributed/new` are the driver's packet buffer for the multi-row inserts;
+P4's `RETURNING` reads the deleted ids as rows;
+P6 takes a connection from the pool before the insert, and at `registering=1` and `4` the benchmark's bytes count the concurrent registrations' allocations.
+
+**The write-connection gate** (point 38) at db2a5b1, `TRACEKEEP_LOAD=gate TRACEKEEP_LOAD_OFFERED=800` (K = 100, dev's flush of 10 s):
+
+| p50 | p99 | made | succeeded | superseded | failed | flushes | made fwd/s | published rec/s | sustained |
+|---|---|---|---|---|---|---|---|---|---|
+| 1.17 ms | 1.98 ms | 1,199 | 1,199 | 0 | 0 | 12 | 800.1 | 1,600.1 | yes |
+
+The gate (1,000 audited successes, p99 within 2 s) passes, enforced.
+
+Point 37 fails the step on any regression: the rows above stay until the owner keeps or reverts each P row's cost.
 
 ## The audit
 

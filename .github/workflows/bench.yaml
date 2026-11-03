@@ -6,10 +6,10 @@ on:
   workflow_dispatch:
     inputs:
       base:
-        description: The base commit, branch or tag
+        description: The base commit (its full SHA), branch or tag
         required: true
       head:
-        description: The head commit, branch or tag
+        description: The head commit (its full SHA), branch or tag
         required: true
       benchtime:
         description: go test's -benchtime, longer to measure an inconclusive row again
