@@ -1,6 +1,6 @@
 # Phase 5 — correctness, error handling and performance
 
-Status: active (2026-11-03) — 5.4 in progress
+Status: active (2026-11-03) — 5.5 next
 
 The owner's next phase after the roadmap's milestones:
 no new feature, but the service and the producer SDK made correct under faults, their failures reported, and their hot paths measured and made faster.
