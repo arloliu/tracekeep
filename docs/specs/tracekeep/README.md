@@ -23,7 +23,7 @@ The review reports, the owner's decision brief and the seed's last text (v21) ar
 | `glossary.md` | living | draft | terms and tunables, with their defining sections |
 | `tracekeep-decisions.md` | living | draft | rulings relied on, the owner's decisions T-1 onward, service defaults |
 | `proposals/p1-parked-replay.md` | finite | deferred | an early retry of a capture's parked messages, withdrawn by T-40 |
-| `proposals/p3-host-log-feed.md` | finite | draft | a live feed of an equipment host's SML text log, parsed by the log pipeline, as `log` captures that claim no coverage |
+| `proposals/p3-host-log-feed.md` | finite | active | a live feed of an equipment host's SML text log, parsed by the log pipeline, as `log` captures that claim no coverage |
 
 The next free proposal ID is P4.
 
