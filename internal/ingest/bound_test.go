@@ -24,7 +24,7 @@ import (
 // guard ends a double's wait that no context ended, so a missing bound fails the test instead of hanging it.
 const guard = 5 * time.Second
 
-// bound is the ack wait or stop budget the tests give a flush; only its end matters, never its length.
+// bound is the ack wait, the stop budget or the wait after a put the tests give a flush; only its end matters, never its length.
 const bound = 100 * time.Millisecond
 
 var errNotEnded = errors.New("not ended by its context")
@@ -34,6 +34,8 @@ var errNotEnded = errors.New("not ended by its context")
 type stallingPut struct {
 	store.ObjectStore
 	durable bool
+	// entered, when set, is told the put is waiting.
+	entered func()
 
 	mu          sync.Mutex
 	puts, ended int
@@ -49,6 +51,9 @@ func (s *stallingPut) Put(ctx context.Context, key string, r io.ReadSeeker, size
 	s.mu.Lock()
 	s.puts++
 	s.mu.Unlock()
+	if s.entered != nil {
+		s.entered()
+	}
 	t := time.NewTimer(guard)
 	defer t.Stop()
 	select {
@@ -75,6 +80,21 @@ func (s *stallingPut) counts() (puts, ended, deletes int) {
 	defer s.mu.Unlock()
 
 	return s.puts, s.ended, s.deletes
+}
+
+// afterPut is a store that calls after once a put succeeded.
+type afterPut struct {
+	store.ObjectStore
+	after func()
+}
+
+func (s afterPut) Put(ctx context.Context, key string, r io.ReadSeeker, size int64) error {
+	err := s.ObjectStore.Put(ctx, key, r, size)
+	if err == nil {
+		s.after()
+	}
+
+	return err
 }
 
 // stallingAck is a message whose confirmed acknowledgement never answers, returning only once its context ends;
@@ -166,8 +186,9 @@ func TestFlushRemoteCallsEndWithTheirContext(t *testing.T) {
 		nak := []string{"nak " + firstNakDelay.String()}
 		for _, tc := range []struct {
 			name string
-			// stall sets the stall up once the batch is held, and returns the store the flush puts to when it is not p's.
-			stall func(t *testing.T, p *pipeline, capture tracepack.UUID) *stallingPut
+			// stall sets the stall up once the batch is held, passing exp's deadline once the stalled call waits,
+			// and returns the store the flush puts to when it is not p's.
+			stall func(t *testing.T, p *pipeline, capture tracepack.UUID, exp *expiring) *stallingPut
 			// claimCheck acknowledges by DoubleAck, and the second message's never answers.
 			claimCheck bool
 			objects    int
@@ -175,21 +196,25 @@ func TestFlushRemoteCallsEndWithTheirContext(t *testing.T) {
 			want       [][]string // each message's disposition, in seq order
 		}{
 			{
-				name:  "put",
-				stall: func(_ *testing.T, p *pipeline, _ tracepack.UUID) *stallingPut { return &stallingPut{ObjectStore: p.st} },
-				want:  [][]string{nak, nak, nak, nak},
+				name: "put",
+				stall: func(_ *testing.T, p *pipeline, _ tracepack.UUID, exp *expiring) *stallingPut {
+					return &stallingPut{ObjectStore: p.st, entered: exp.expire}
+				},
+				want: [][]string{nak, nak, nak, nak},
 			},
 			{
 				name: "durable put whose answer is lost",
-				stall: func(_ *testing.T, p *pipeline, _ tracepack.UUID) *stallingPut {
-					return &stallingPut{ObjectStore: p.st, durable: true}
+				stall: func(_ *testing.T, p *pipeline, _ tracepack.UUID, exp *expiring) *stallingPut {
+					return &stallingPut{ObjectStore: p.st, durable: true, entered: exp.expire}
 				},
 				objects: 1, want: [][]string{nak, nak, nak, nak},
 			},
 			{
 				name: "registration",
-				stall: func(t *testing.T, p *pipeline, capture tracepack.UUID) *stallingPut {
+				stall: func(t *testing.T, p *pipeline, capture tracepack.UUID, exp *expiring) *stallingPut {
 					lockCapture(t, p.cat, capture)
+					// The deadline passes a bound after the put, while the registration waits for the capture.
+					p.f.Store = afterPut{ObjectStore: p.st, after: func() { time.AfterFunc(bound, exp.expire) }}
 					return nil
 				},
 				objects: 1, want: [][]string{nak, nak, nak, nak},
@@ -203,18 +228,15 @@ func TestFlushRemoteCallsEndWithTheirContext(t *testing.T) {
 			t.Run(tc.name, func(t *testing.T) {
 				p := newPipeline(t, c)
 				g := p.ingester(slog.New(slog.DiscardHandler))
-				g.AckWait = bound
-				ctx := t.Context()
-				var exp *expiring
+				// The deadline passes once the stalled call waits, so the work before it,
+				// slower on some engines and runners than any fixed bound, is never what it ends.
+				g.AckWait = time.Hour
+				exp := newExpiring(t.Context())
+				var ctx context.Context = exp
 				capture := tracepack.UUID{0xc1, byte(len(tc.name))}
 				msgs := traffic(t, capture)
 				if tc.claimCheck {
 					msgs = confirmedTraffic(t, p.cl, capture)
-					// The deadline passes once the acknowledgement waits, so the registration before it,
-					// slower on some engines than any fixed bound, is never what it ends.
-					g.AckWait = time.Hour
-					exp = newExpiring(ctx)
-					ctx = exp
 				}
 				hs := make([]*msg, len(msgs))
 				for i, m := range msgs {
@@ -227,7 +249,7 @@ func TestFlushRemoteCallsEndWithTheirContext(t *testing.T) {
 				}
 				var st *stallingPut
 				if tc.stall != nil {
-					if st = tc.stall(t, p, capture); st != nil {
+					if st = tc.stall(t, p, capture, exp); st != nil {
 						p.f.Store = st
 					}
 				}
@@ -318,7 +340,8 @@ func TestFlushWaitsForStalledLocalWork(t *testing.T) {
 	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
 		p := newPipeline(t, c)
 		g := p.ingester(slog.New(slog.DiscardHandler))
-		g.AckWait = bound
+		g.AckWait = time.Hour
+		exp := newExpiring(t.Context()) // the ack wait's deadline, passed once the write waits
 		s := metrics.NewServer()
 		m, err := metrics.NewIngest(s, nil)
 		if err != nil {
@@ -329,6 +352,7 @@ func TestFlushWaitsForStalledLocalWork(t *testing.T) {
 		var returned bool
 		p.f.hooks[hookWrite] = func() error { // the write, blocked inside the working file's abstraction until its stall is reported
 			p.f.hooks[hookWrite] = nil
+			exp.expire()
 			timer := time.NewTimer(guard)
 			defer timer.Stop()
 			select {
@@ -341,7 +365,7 @@ func TestFlushWaitsForStalledLocalWork(t *testing.T) {
 		}
 		hs := p.deliver(t, traffic(t, tracepack.UUID{0xc1, 0x11}))
 
-		err = g.flush(t.Context(), p.b.All())
+		err = g.flush(exp, p.b.All())
 		if !returned || !errors.Is(err, context.DeadlineExceeded) {
 			t.Fatalf("flush = %v, the write returned %v; want the flush given up after the write returned", err, returned)
 		}
@@ -359,25 +383,28 @@ func TestFlushWaitsForStalledLocalWork(t *testing.T) {
 	})
 }
 
-// slowSource is a store whose puts read their source slowly: the first read waits until wait yields.
+// slowSource is a store whose puts read their source slowly: the first read tells entered, then waits until wait yields.
 type slowSource struct {
 	store.ObjectStore
-	wait <-chan struct{}
+	entered func()
+	wait    <-chan struct{}
 }
 
 func (s slowSource) Put(ctx context.Context, key string, r io.ReadSeeker, size int64) error {
-	return s.ObjectStore.Put(ctx, key, &waitingReader{ReadSeeker: r, wait: s.wait}, size)
+	return s.ObjectStore.Put(ctx, key, &waitingReader{ReadSeeker: r, entered: s.entered, wait: s.wait}, size)
 }
 
 type waitingReader struct {
 	io.ReadSeeker
-	wait   <-chan struct{}
-	waited bool
+	entered func()
+	wait    <-chan struct{}
+	waited  bool
 }
 
 func (r *waitingReader) Read(p []byte) (int, error) {
 	if !r.waited {
 		r.waited = true
+		r.entered()
 		timer := time.NewTimer(guard)
 		defer timer.Stop()
 		select {
@@ -396,7 +423,8 @@ func TestFlushWaitsForAStalledFilesystemPut(t *testing.T) {
 	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
 		p := newPipeline(t, c)
 		g := p.ingester(slog.New(slog.DiscardHandler))
-		g.AckWait = bound
+		g.AckWait = time.Hour
+		exp := newExpiring(t.Context()) // the ack wait's deadline, passed once the put reads its source
 		s := metrics.NewServer()
 		m, err := metrics.NewIngest(s, nil)
 		if err != nil {
@@ -409,10 +437,10 @@ func TestFlushWaitsForAStalledFilesystemPut(t *testing.T) {
 			t.Fatal(err)
 		}
 		t.Cleanup(func() { _ = fs.Close() })
-		p.f.Store, p.f.LocalStore = slowSource{ObjectStore: fs, wait: stalled}, true
+		p.f.Store, p.f.LocalStore = slowSource{ObjectStore: fs, entered: exp.expire, wait: stalled}, true
 		hs := p.deliver(t, traffic(t, tracepack.UUID{0xc1, 0x15}))
 
-		err = g.flush(t.Context(), p.b.All())
+		err = g.flush(exp, p.b.All())
 		if !errors.Is(err, context.DeadlineExceeded) {
 			t.Fatalf("flush = %v, want the batch given up at the ack wait", err)
 		}
