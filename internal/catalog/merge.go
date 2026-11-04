@@ -19,6 +19,12 @@ type Scope struct {
 	Hour    int64
 }
 
+// Candidate is a scope a merge may settle, with the revision MergeCandidates read.
+type Candidate struct {
+	Scope
+	Revision int64
+}
+
 // touchingConflict is true when a conflicts row touches the scope s: either of its packs is a pack of s, in any state,
 // and neither is excluded, since an excluded pack is never a merge input (compactor.md §8.1 step 2).
 const touchingConflict = `EXISTS (SELECT 1 FROM conflicts f JOIN packs k ON k.pack_id IN (f.pack_id, f.other_pack_id)
@@ -27,13 +33,15 @@ const touchingConflict = `EXISTS (SELECT 1 FROM conflicts f JOIN packs k ON k.pa
 
 // MergeCandidates lists the scopes a merge may settle (compactor.md §8.1 step 2):
 // open or reopened, of an hour before readyHour (its end plus the quiet period passed), holding staged packs, and touched by no conflict.
+// Each comes with the scope's current revision, which the compactor's backoff compares with a failed snapshot's (§8.1).
 // It is a read; the snapshot and the commit judge again.
-func (c *Catalog) MergeCandidates(ctx context.Context, readyHour int64) ([]Scope, error) {
+func (c *Catalog) MergeCandidates(ctx context.Context, readyHour int64) ([]Candidate, error) {
 	var rows []struct {
-		Capture []byte `db:"capture_id"`
-		Hour    int64  `db:"hour"`
+		Capture  []byte `db:"capture_id"`
+		Hour     int64  `db:"hour"`
+		Revision int64  `db:"revision"`
 	}
-	err := c.read.SelectContext(ctx, &rows, `SELECT s.capture_id, s.hour FROM scopes s
+	err := c.read.SelectContext(ctx, &rows, `SELECT s.capture_id, s.hour, s.revision FROM scopes s
 		WHERE s.state IN ('open', 'reopened') AND s.hour < ?
 		AND EXISTS (SELECT 1 FROM packs p WHERE p.capture_id = s.capture_id AND p.hour = s.hour AND p.state = 'staged')
 		AND NOT `+touchingConflict+`
@@ -41,9 +49,9 @@ func (c *Catalog) MergeCandidates(ctx context.Context, readyHour int64) ([]Scope
 	if err != nil {
 		return nil, fmt.Errorf("catalog: merge candidates: %w", err)
 	}
-	out := make([]Scope, len(rows))
+	out := make([]Candidate, len(rows))
 	for i, r := range rows {
-		out[i] = Scope{Capture: tracepack.UUID(r.Capture), Hour: r.Hour}
+		out[i] = Candidate{Scope: Scope{Capture: tracepack.UUID(r.Capture), Hour: r.Hour}, Revision: r.Revision}
 	}
 
 	return out, nil

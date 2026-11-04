@@ -116,12 +116,12 @@ func TestCompactRequests(t *testing.T) {
 		stale := compactorLease(t, c, "old")
 		lapse(t, c, `UPDATE leases SET until_ns = 0 WHERE name = 'compactor/2'`)
 		l := compactorLease(t, c, "new")
-		if _, err := c.DecideRequest(t.Context(), stale, q); !errors.Is(err, ErrLeaseLost) {
+		if _, _, err := c.DecideRequest(t.Context(), stale, q); !errors.Is(err, ErrLeaseLost) {
 			t.Errorf("DecideRequest under a lost lease = %v, want ErrLeaseLost", err)
 		}
 		// No scope yet: it ends failed, under the capture row, which its prologue advances.
 		before := captureRevision(t, c, capture)
-		if got, err := c.DecideRequest(t.Context(), l, q); err != nil || got != "the scope has no staged pack" {
+		if got, rev, err := c.DecideRequest(t.Context(), l, q); err != nil || got != "the scope has no staged pack" || rev != 0 {
 			t.Fatalf("DecideRequest = %q, %v", got, err)
 		}
 		if rev := captureRevision(t, c, capture); rev != before+1 {
@@ -155,9 +155,12 @@ func TestDecideRequest(t *testing.T) {
 		}
 		decide := func(q Request) string {
 			t.Helper()
-			got, err := c.DecideRequest(t.Context(), l, q)
+			got, rev, err := c.DecideRequest(t.Context(), l, q)
 			if err != nil {
 				t.Fatal(err)
+			}
+			if want := snapshot(t, c, q.Capture).Revision; rev != want {
+				t.Errorf("DecideRequest's revision = %d, want the scope's %d", rev, want)
 			}
 
 			return got

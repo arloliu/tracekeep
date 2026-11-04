@@ -137,6 +137,8 @@ type Compact struct {
 	LeaseTTL time.Duration `yaml:"lease_ttl" default:"1m" env:"TRACEKEEP_COMPACT_LEASE_TTL" validate:"gt=0"`
 	// Interval is the time between two reconciler cycles.
 	Interval time.Duration `yaml:"interval" default:"5m" env:"TRACEKEEP_COMPACT_INTERVAL" validate:"gt=0"`
+	// MergeAttempts is the merges one cycle attempts, the operators' requests first, then the scheduled scopes (compactor.md §8.1, T-56).
+	MergeAttempts int `yaml:"merge_attempts" default:"1024" env:"TRACEKEEP_COMPACT_MERGE_ATTEMPTS" validate:"gte=1"`
 	// QuietPeriod is Q: a scope becomes a merge candidate once its hour ended Q ago (catalog.md §7.3, T-12).
 	QuietPeriod time.Duration `yaml:"quiet_period" default:"15m" env:"TRACEKEEP_COMPACT_QUIET_PERIOD" validate:"gt=0"`
 	// RedeliverySlack is the time Q leaves after F and ack_wait for a redelivered message to be flushed (catalog.md §7.3, T-41).

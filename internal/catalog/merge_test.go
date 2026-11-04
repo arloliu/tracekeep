@@ -138,7 +138,7 @@ func TestMergeCandidates(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if want := []Scope{{Capture: ready, Hour: 1}}; !slices.Equal(got, want) {
+		if want := []Candidate{{Scope: Scope{Capture: ready, Hour: 1}, Revision: snapshot(t, c, ready).Revision}}; !slices.Equal(got, want) {
 			t.Errorf("MergeCandidates = %v, want %v", got, want)
 		}
 		// A settled scope is no candidate; a registration reopening it makes it one again.
@@ -151,8 +151,8 @@ func TestMergeCandidates(t *testing.T) {
 			t.Errorf("after the merge MergeCandidates = %v, %v; want none", got, err)
 		}
 		register(t, c, segment(t, ready, 1, 10, 19), Registration{Evidence: &Evidence{}})
-		if got, err := c.MergeCandidates(t.Context(), 5); err != nil || len(got) != 1 {
-			t.Errorf("after a reopening MergeCandidates = %v, %v; want the scope", got, err)
+		if got, err := c.MergeCandidates(t.Context(), 5); err != nil || len(got) != 1 || got[0].Revision != snapshot(t, c, ready).Revision || got[0].Revision <= snap.Revision {
+			t.Errorf("after a reopening MergeCandidates = %v, %v; want the scope at its current revision, past the merge's %d", got, err, snap.Revision)
 		}
 	})
 }

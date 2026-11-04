@@ -74,8 +74,12 @@ func (f *fixture) candidates(t *testing.T) []catalog.Scope {
 	if err != nil {
 		t.Fatal(err)
 	}
+	scopes := make([]catalog.Scope, len(got))
+	for i, c := range got {
+		scopes[i] = c.Scope
+	}
 
-	return got
+	return scopes
 }
 
 func TestMergeSettlesAScope(t *testing.T) {

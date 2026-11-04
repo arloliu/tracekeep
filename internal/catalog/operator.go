@@ -193,13 +193,16 @@ const Mergeable = ""
 // A merge request: a settled scope ends it done, a scope without a staged pack or touched by a conflict ends it failed.
 // A close request: a closed capture ends it done, a capture not open or with a stop ends it failed.
 // Each ending returns its reason; Mergeable, writing nothing, is returned for a request the compactor may execute, and for one already ended.
-func (c *Catalog) DecideRequest(ctx context.Context, l Lease, q Request) (string, error) {
+// With the verdict of a merge request comes its scope's current revision, read under the capture row, zero for a scope the catalog does not hold;
+// the compactor's backoff compares it with a failed snapshot's (compactor.md §8.1). A close request's is zero.
+func (c *Catalog) DecideRequest(ctx context.Context, l Lease, q Request) (string, int64, error) {
 	if q.Kind == RequestMerge && q.Hour == nil || q.Kind != RequestMerge && q.Kind != RequestClose {
-		return "", fmt.Errorf("catalog: decide request %s: a %s request without its scope", q.ID, q.Kind)
+		return "", 0, fmt.Errorf("catalog: decide request %s: a %s request without its scope", q.ID, q.Kind)
 	}
 	var result string
+	var revision int64
 	err := outcome(c.inTx(ctx, func(tx *sqlx.Tx) error {
-		result = ""
+		result, revision = "", 0
 		row, err := c.lockCapture(ctx, tx, q.Capture)
 		if err != nil {
 			return err
@@ -209,7 +212,7 @@ func (c *Catalog) DecideRequest(ctx context.Context, l Lease, q Request) (string
 		}
 		if q.Kind == RequestClose {
 			result = closeVerdict(row)
-		} else if result, err = c.requestVerdict(ctx, tx, Scope{Capture: q.Capture, Hour: *q.Hour}); err != nil {
+		} else if result, revision, err = c.requestVerdict(ctx, tx, Scope{Capture: q.Capture, Hour: *q.Hour}); err != nil {
 			return err
 		}
 		if result == Mergeable {
@@ -230,10 +233,10 @@ func (c *Catalog) DecideRequest(ctx context.Context, l Lease, q Request) (string
 		return nil
 	}))
 	if err != nil {
-		return "", fmt.Errorf("catalog: decide request %s: %w", q.ID, err)
+		return "", 0, fmt.Errorf("catalog: decide request %s: %w", q.ID, err)
 	}
 
-	return result, nil
+	return result, revision, nil
 }
 
 // closeVerdict judges, from the capture row as read under its lock, whether a close request can be executed now, or why not.
@@ -250,29 +253,30 @@ func closeVerdict(row captureRow) string {
 	}
 }
 
-// requestVerdict judges, under the capture row, whether the scope s can be merged now, or why not.
-func (c *Catalog) requestVerdict(ctx context.Context, tx *sqlx.Tx, s Scope) (string, error) {
+// requestVerdict judges, under the capture row, whether the scope s can be merged now, or why not, and reads its revision.
+func (c *Catalog) requestVerdict(ctx context.Context, tx *sqlx.Tx, s Scope) (string, int64, error) {
 	var head struct {
-		State   string `db:"state"`
-		Touched bool   `db:"touched"`
-		Staged  int    `db:"staged"`
+		State    string `db:"state"`
+		Revision int64  `db:"revision"`
+		Touched  bool   `db:"touched"`
+		Staged   int    `db:"staged"`
 	}
-	err := tx.GetContext(ctx, &head, `SELECT s.state, `+touchingConflict+` AS touched,
+	err := tx.GetContext(ctx, &head, `SELECT s.state, s.revision, `+touchingConflict+` AS touched,
 		(SELECT COUNT(*) FROM packs p WHERE p.capture_id = s.capture_id AND p.hour = s.hour AND p.state = 'staged') AS staged
 		FROM scopes s WHERE s.capture_id = ? AND s.hour = ?`, s.Capture[:], s.Hour)
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
-		return "the scope has no staged pack", nil
+		return "the scope has no staged pack", 0, nil
 	case err != nil:
-		return "", err
+		return "", 0, err
 	case head.State == "settled":
-		return "settled", nil
+		return "settled", head.Revision, nil
 	case head.Staged == 0:
-		return "the scope has no staged pack", nil
+		return "the scope has no staged pack", head.Revision, nil
 	case head.Touched:
-		return "a conflict touches the scope", nil
+		return "a conflict touches the scope", head.Revision, nil
 	default:
-		return Mergeable, nil
+		return Mergeable, head.Revision, nil
 	}
 }
 

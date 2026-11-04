@@ -112,6 +112,14 @@ func keyStandings(b *testing.B, c *Catalog, keys []string) ([]KeyStanding, error
 // mergeCandidates lists the candidates before ready as scopes alone, so the row asserts the same answer whatever else MergeCandidates returns with them.
 func mergeCandidates(b *testing.B, c *Catalog, ready int64) ([]Scope, error) {
 	b.Helper()
+	cands, err := c.MergeCandidates(b.Context(), ready)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]Scope, len(cands))
+	for i, cand := range cands {
+		out[i] = cand.Scope
+	}
 
-	return c.MergeCandidates(b.Context(), ready)
+	return out, nil
 }

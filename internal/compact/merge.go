@@ -1,12 +1,15 @@
 package compact
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"path/filepath"
+	"slices"
 	"time"
 
 	"github.com/arloliu/go-secs/tracepack"
@@ -49,6 +52,9 @@ type MergeReport struct {
 	Failed []catalog.Scope
 	// Refused scopes were refused over the reader's metadata budget and are unmergeable until an operator's request (T-45).
 	Refused []catalog.Scope
+	// Cooling scopes wait out a failure's backoff: attempted by no merge and counted as none,
+	// they withhold the merge task's success as their failure did (compactor.md §8.1).
+	Cooling []catalog.Scope
 }
 
 // overBudgetReason ends a merge request refused over the reader's metadata budget.
@@ -65,15 +71,44 @@ func overBudget(err error) bool {
 // a snapshot of the scope's revision and staged inputs, tracepack.Merge into a working file, the archive put under its key,
 // then one transaction guarded by the revision and the lease. A rolled-back merge never deletes its archive: the reconciler owns it.
 // A failure of one scope is logged and leaves it as it was; a lost lease ends the pass with ErrLeaseLost.
+// The call is one cycle of merges, capped at MergeAttempts; mergePass shares a cycle with the operators' requests.
 func (r *Compactor) Merges(ctx context.Context, lease catalog.Lease) (MergeReport, error) {
+	return r.mergesIn(ctx, lease, r.newCycle())
+}
+
+// mergesIn is Merges in cyc: the scopes the last cycle's cap left first, then the rest oldest hour first, ties by capture id,
+// each attempted at most once a cycle and none while it waits out a failure's backoff; the scopes past the cap are carried to the next cycle.
+func (r *Compactor) mergesIn(ctx context.Context, lease catalog.Lease, cyc *mergeCycle) (MergeReport, error) {
 	var rep MergeReport
 	ready := floorHour(r.now().Add(-r.QuietPeriod).UnixNano())
-	scopes, err := r.Catalog.MergeCandidates(ctx, ready)
+	cands, err := r.Catalog.MergeCandidates(ctx, ready)
 	if err != nil {
 		return rep, err
 	}
-	for _, s := range scopes {
-		_, err := r.attempt(ctx, lease, s, nil, &rep)
+	first := make(map[catalog.Scope]int, len(r.sched.carried))
+	for i, s := range r.sched.carried {
+		first[s] = i + 1
+	}
+	slices.SortStableFunc(cands, func(a, b catalog.Candidate) int {
+		// A scope carried keeps its place among the carried, before every scope not carried.
+		return cmp.Compare(cmp.Or(first[a.Scope], math.MaxInt), cmp.Or(first[b.Scope], math.MaxInt))
+	})
+	var carried []catalog.Scope
+	for _, c := range cands {
+		if cyc.attempted[c.Scope] {
+			continue
+		}
+		if r.waiting(c.Scope, c.Revision) != nil {
+			rep.Cooling = append(rep.Cooling, c.Scope)
+			continue
+		}
+		if cyc.left == 0 {
+			carried = append(carried, c.Scope)
+			continue
+		}
+		cyc.left--
+		cyc.attempted[c.Scope] = true
+		_, err := r.attempt(ctx, lease, c.Scope, nil, &rep)
 		if ctx.Err() != nil {
 			return rep, ctx.Err()
 		}
@@ -81,15 +116,22 @@ func (r *Compactor) Merges(ctx context.Context, lease catalog.Lease) (MergeRepor
 			return rep, err
 		}
 	}
+	r.sched.carried = carried
 
 	return rep, nil
 }
 
-// attempt merges s, for request when it is not nil, and adds the attempt to rep by its outcome; a failure is logged and added as failed.
+// attempt merges s, for request when it is not nil, and adds the attempt to rep by its outcome; a failure is logged and added as failed,
+// and backs the scope off at the revision its snapshot read. A cancellation and a lost lease change no backoff; any other outcome ends it.
 func (r *Compactor) attempt(ctx context.Context, lease catalog.Lease, s catalog.Scope, request *tracepack.UUID, rep *MergeReport) (mergeOutcome, error) {
-	out, err := r.merge(ctx, lease, s, request)
+	out, revision, err := r.merge(ctx, lease, s, request)
 	if errors.Is(err, catalog.ErrLeaseLost) || ctx.Err() != nil {
 		return out, err
+	}
+	if err != nil {
+		r.failed(s, revision, request)
+	} else {
+		delete(r.sched.cooling, s)
 	}
 	switch {
 	case err != nil:
@@ -119,6 +161,7 @@ func (rep *MergeReport) add(other MergeReport) {
 	rep.Conflicted = append(rep.Conflicted, other.Conflicted...)
 	rep.Failed = append(rep.Failed, other.Failed...)
 	rep.Refused = append(rep.Refused, other.Refused...)
+	rep.Cooling = append(rep.Cooling, other.Cooling...)
 }
 
 // mergeOutcome is what the merge of one scope did.
@@ -132,12 +175,21 @@ const (
 	refused
 )
 
-// merge merges one scope, for request when it is not nil, whose commit then ends the request.
-func (r *Compactor) merge(ctx context.Context, lease catalog.Lease, s catalog.Scope, request *tracepack.UUID) (mergeOutcome, error) {
+// merge merges one scope, for request when it is not nil, whose commit then ends the request,
+// and returns with its outcome the revision its snapshot read, zero when the snapshot failed.
+func (r *Compactor) merge(ctx context.Context, lease catalog.Lease, s catalog.Scope, request *tracepack.UUID) (mergeOutcome, int64, error) {
 	snap, err := r.Catalog.MergeSnapshot(ctx, s)
 	if err != nil || !snap.Eligible {
-		return ineligible, err
+		return ineligible, snap.Revision, err
 	}
+	out, err := r.mergeSnapshot(ctx, lease, &snap, request)
+
+	return out, snap.Revision, err
+}
+
+// mergeSnapshot merges the scope snap read.
+func (r *Compactor) mergeSnapshot(ctx context.Context, lease catalog.Lease, snapshot *catalog.Snapshot, request *tracepack.UUID) (mergeOutcome, error) {
+	snap, s := *snapshot, snapshot.Scope
 	r.hook(hookMergeSnapshot)
 	tmp, err := os.CreateTemp(r.WorkDir, workFilePattern)
 	if err != nil {
