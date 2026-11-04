@@ -175,6 +175,9 @@ so a writer held by ingest delays the answer by at most that; past it the reques
 never a pack's clear original, which `Restore` alone returns.
 Outside `tracekeep dev`, a capture the read set names withheld streams no record and a `FindTransaction` of it is refused; under `tracekeep dev` nothing is withheld.
 Every read set a read reads is checked, so a resumed stream, whatever its cursor says, reads no withheld capture's pack.
+A read decodes each processing configuration it meets once (T-56): its read sets' configuration ids are still checked every time, and a missing one still withholds,
+but the content of an id already decoded in the same RPC is not decoded again, since a configuration is immutable (`rollouts.md` §6.4) and its decode resolves no key;
+a decode that failed or was cancelled is never remembered, and nothing is remembered past the RPC.
 
 - **Order**: the selected captures in the order of their origin, then capture id;
   each capture's hours of the window in order, read when the stream reaches them;
@@ -268,7 +271,7 @@ only the owner reads, lists or cancels a job, and another's answers `not_found`.
   The worker renews every third of the lease; a renewal refused, or not made before the lease passes, ends the attempt, its put cancelled.
   Each `api` replica runs at most `exports.max_running` attempts at once (default 1).
 - **The bundle** is built under `exports.work_dir`, one directory an attempt, removed when the attempt ends however it ends, and any left by a crash removed when the replica's workers start:
-  for each selected capture, by origin then id, and each hour of the window, the hour's read set (`catalog.md` §7.3), withheld captures checked at every read set as `QueryRecords` checks them;
+  for each selected capture, by origin then id, and each hour of the window, the hour's read set (`catalog.md` §7.3), withheld captures checked at every read set as `QueryRecords` checks them, each configuration decoded once an attempt and never shared between attempts;
   the **hour is the unit of retry**: its packs are exported one at a time, each whole by tracepack's canonical exporter into a file of its own, `tracepack-jsonl/1`, `/2` or `/3` by its `format_minor`,
   and only once every pack of the hour is exported are the hour's files added to the tar, as `packs/<capture>/<hour>/<pack_id>.jsonl`;
   an object found gone discards the hour's files and exports the hour again from its read set read again, once, as a merge in between may have replaced its packs;
