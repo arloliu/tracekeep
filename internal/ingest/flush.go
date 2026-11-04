@@ -45,6 +45,9 @@ type Flusher struct {
 	Now func() time.Time
 	// Metrics records the put and registration of each segment; nil records none.
 	Metrics *metrics.Ingest
+	// Timed, a test seam for the load harness, is told the wall time of each segment's write, put and registration
+	// and of each batch's acknowledgements; nil in production, where no clock is read for it.
+	Timed func(stage string, took time.Duration)
 	// Log reports local file work that outlasts its flush's bound; nil logs nothing.
 	Log *slog.Logger
 	// LocalStore reports a Store whose calls are local file work, the fs store's, which a context does not interrupt.
@@ -140,7 +143,9 @@ func (f *Flusher) Flush(ctx context.Context, b *Batch) (Flushed, error) {
 	}()
 	for i := range segs {
 		err := f.local(ctx, "write", func() error {
+			written := timing(f.Timed, "write")
 			w, err := f.writeFile(b, &capture, &cfg, &segs[i])
+			written()
 			if err == nil {
 				files = append(files, w)
 			}
@@ -171,6 +176,7 @@ func (f *Flusher) Flush(ctx context.Context, b *Batch) (Flushed, error) {
 	if err := f.hook(hookAfterRegister); err != nil {
 		return out, err
 	}
+	acked := timing(f.Timed, "acknowledge")
 	for _, e := range b.Entries {
 		if err := f.ack(ctx, e); err != nil {
 			return out, err // the rest are redelivered, written again and deduplicated by the merge
@@ -180,6 +186,7 @@ func (f *Flusher) Flush(ctx context.Context, b *Batch) (Flushed, error) {
 			return out, err
 		}
 	}
+	acked()
 
 	return out, nil
 }
@@ -287,6 +294,9 @@ func (f *Flusher) register(ctx context.Context, b *Batch, capture *catalog.Captu
 		return 0, err
 	}
 	f.Metrics.Put(time.Since(started))
+	if f.Timed != nil {
+		f.Timed("put", time.Since(started))
+	}
 	if err := f.hook(hookAfterPut); err != nil {
 		return 0, err
 	}
@@ -306,6 +316,9 @@ func (f *Flusher) register(ctx context.Context, b *Batch, capture *catalog.Captu
 	switch outcome {
 	case catalog.Registered:
 		f.Metrics.Registered(time.Since(started), capture.ToolID, w.size, seg.role == catalog.RoleConflict)
+		if f.Timed != nil {
+			f.Timed("register", time.Since(started))
+		}
 		f.Metrics.GapsObserved(capture.ToolID, gaps)
 
 		return outcome, nil
