@@ -26,6 +26,9 @@ type loadSample struct {
 	// backlog is the traffic stream's messages; ring and reserved, the producers' ordinary rings' and reserved lanes' depths summed.
 	backlog        uint64
 	ring, reserved float64
+	// ackPending and redelivered are the traffic consumer's messages delivered and unacknowledged, and of those the redelivered ones,
+	// read only when the harness is probed.
+	ackPending, redelivered uint64
 }
 
 // loadVerdict is a sweep point judged.

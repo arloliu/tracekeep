@@ -13,9 +13,24 @@ package service
 //   - baseline records the numbers: the sweep, the offered rate, and a PackURL measurement of at least 1,000 audited successes,
 //     which must be a valid record; its gate verdict is reported and need not pass;
 //   - gate is the write-connection gate: the same measurement must also pass the gate (1,000 audited successes, p99 within 2 s);
-//   - smoke checks the harness itself in a few minutes: two tools at a low rate over short windows, no call count required.
+//   - smoke checks the harness itself in a few minutes: two tools at a low rate over short windows, no call count required;
+//   - ceiling profiles where ingest stops keeping up: K = 10 and 100 at 1,600 and 3,200 fwd/s under dev's 50,000 pending slots,
+//     then 3,200 fwd/s with max_ack_pending raised to 200,000, past the records a 10 s flush holds, each point with its CPU,
+//     allocation, block and mutex profiles, each stage's wall time, the catalog's SQL statements a message, the consumer's
+//     pending and redelivered counts and the process's CPU (about 30 minutes);
+//   - claimcheck runs K = 10 with 10% of its records, then all of them, above the inline limit (max_payload − 4096),
+//     so they travel by claim-check, for acknowledgement's share of a flush (about 10 minutes,
+//     writing some 20 GB of claim objects and packs under the test's temporary directory, which must be on a disk, not memory);
+//   - production runs ingest's defaults, flush 5 m and ack_wait 7 m (the heartbeat every ack_wait/3), at 1,600 records a second over K = 100,
+//     with max_ack_pending 600,000 and then the default 50,000 as its control, each after a warm-up of a flush plus ack_wait,
+//     judged over at least six completed drain cycles spanning at least three heartbeat periods (about 1.5 hours both);
+//   - ceiling-smoke, claimcheck-smoke and production-smoke check those three in a few minutes, at a low rate over short spans.
 //
 // TRACEKEEP_LOAD_OFFERED, forwards a second, skips the sweep and offers that rate at the largest K, as the gate does with the rate a baseline recorded.
+// TRACEKEEP_LOAD_PROFILES is the directory the ceiling's and production's profiles are written to, a new temporary one when unset.
+// The harness profiles in-process (runtime/pprof), so it runs without -cpuprofile, and every profile is the whole process's,
+// the embedded bus server, the producers and the loopbacks included: ingest's share is go tool pprof -top -focus 'tracekeep/internal/(ingest|catalog)',
+// the bus server's -focus 'nats-server/v2/server'.
 // The results print (-v) as markdown tables for the plan's Baselines.
 
 import (
@@ -57,6 +72,11 @@ type loadSpec struct {
 	// tools are the sweep's K, each swept from start forwards a second, doubling, to at most top.
 	tools      []int
 	start, top float64
+	// ackWait and maxAckPending, when not zero, replace dev's consumer configuration, which the harness asserts took effect.
+	ackWait       time.Duration
+	maxAckPending int
+	// probed installs the ingester's test seams and reads the consumer every sample, for the ceiling's, claim-check and production modes.
+	probed bool
 }
 
 var (
@@ -83,19 +103,23 @@ const (
 	packURLRetries  = 3
 )
 
-// toolMetrics is a producer's Metrics: the gauges and the drops the harness reads.
+// toolMetrics is a producer's Metrics: the gauges, the drops and the claim objects put that the harness reads.
 type toolMetrics struct {
-	mu                      sync.Mutex
-	ring, reserved, dropped float64
+	mu                              sync.Mutex
+	ring, reserved, dropped, claims float64
 }
 
 var _ producer.Metrics = (*toolMetrics)(nil)
 
-func (m *toolMetrics) Add(name string, _ map[string]string, delta float64) {
-	if name == "records_dropped_total" {
-		m.mu.Lock()
+func (m *toolMetrics) Add(name string, labels map[string]string, delta float64) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	switch {
+	case name == "records_dropped_total":
 		m.dropped += delta
-		m.mu.Unlock()
+	case name == "claim_puts_total" && labels["outcome"] == "put":
+		m.claims += delta
+	default:
 	}
 }
 
@@ -128,6 +152,8 @@ type loadTool struct {
 	l    *sim.Loopback
 	m    *toolMetrics
 	made atomic.Uint64
+	// forwards counts the forwards attempted, which choose the claim-check ones; claims, the claim-check forwards' system bytes.
+	forwards, claims atomic.Uint32
 }
 
 // loadHarness is tracekeep dev without its simulator, with what the harness reads of it.
@@ -139,6 +165,15 @@ type loadHarness struct {
 	stream jetstream.Stream
 	token  string
 	report []string
+	// cons is the traffic consumer, read every sample when the spec is probed; probe gathers the ingester's seams.
+	cons  jetstream.Consumer
+	probe *loadProbe
+	// claimEvery makes every n-th forward a claim-check one of claimItem bytes, 0 none.
+	claimEvery uint32
+	claimItem  []byte
+	// begin and end, when set, run at a measurement's first and last sample; samples are its samples.
+	begin, end func()
+	samples    []loadSample
 }
 
 // newLoadHarness starts dev with no simulator, observed so its ingest metrics are recorded, its retention recorded so a pack has a deadline.
@@ -153,8 +188,19 @@ func newLoadHarness(t *testing.T, spec loadSpec) *loadHarness {
 	t.Cleanup(func() { _ = d.Close() })
 	h := &loadHarness{t: t, d: d, spec: spec, put: &putting{ObjectStore: d.Env.Store, put: make(chan string, 64)}}
 	d.Env.Store = h.put
-	bound := make(chan struct{})
+	if spec.ackWait > 0 {
+		d.Env.Config.Ingest.AckWait = spec.ackWait
+	}
+	if spec.maxAckPending > 0 {
+		d.Env.Config.Ingest.MaxAckPending = spec.maxAckPending
+	}
+	if spec.probed {
+		h.probe = &loadProbe{stages: map[string]*stageTotal{}}
+		d.Env.timed, d.Env.passSettled = h.probe.timed, h.probe.settled
+	}
+	bound, joined := make(chan struct{}), make(chan struct{})
 	d.Env.apiBound = func() { close(bound) }
+	d.Env.joined = func() { close(joined) }
 	octx, err := d.Env.Observe(ctx, "ingest", "compact", "api")
 	if err != nil {
 		t.Fatal(err)
@@ -167,13 +213,18 @@ func newLoadHarness(t *testing.T, spec loadSpec) *loadHarness {
 		stop()
 		<-done //nolint:errcheck // the run's end, its result not checked here
 	})
-	select {
-	case <-bound:
-	case err := <-done:
-		t.Fatalf("dev ended before its API was bound: %v", err)
+	for _, ready := range []chan struct{}{bound, joined} {
+		select {
+		case <-ready:
+		case err := <-done:
+			t.Fatalf("dev ended before its API was bound and its ingest joined: %v", err)
+		}
 	}
 	if h.stream, err = d.Env.JS.Stream(ctx, bus.StreamName(d.Env.Bus(), catalog.RoleTraffic)); err != nil {
 		t.Fatal(err)
+	}
+	if spec.probed {
+		h.consumer()
 	}
 	b, err := os.ReadFile(filepath.Join(dir, DevTokenFile))
 	if err != nil {
@@ -226,8 +277,12 @@ func TestLoad(t *testing.T) {
 	if mode == "" {
 		t.Skip("TRACEKEEP_LOAD is not set: the load harness runs alone, without -race; see load_test.go")
 	}
+	if run, ok := loadModes[strings.TrimSuffix(mode, "-smoke")]; ok {
+		run(t, strings.HasSuffix(mode, "-smoke"))
+		return
+	}
 	if mode != "baseline" && mode != "gate" && mode != "smoke" {
-		t.Fatalf("TRACEKEEP_LOAD=%q: want baseline, gate or smoke", mode)
+		t.Fatalf("TRACEKEEP_LOAD=%q: want baseline, gate, smoke, ceiling, claimcheck or production, the last three with -smoke or without", mode)
 	}
 	spec := fullLoad
 	if mode == "smoke" {
@@ -367,7 +422,7 @@ func (h *loadHarness) stopTools(tools []*loadTool) {
 }
 
 // drive forwards through each tool at its share of rate until the returned stop, which waits for the forwards in flight.
-func drive(ctx context.Context, tools []*loadTool, rate float64) (stop func()) {
+func (h *loadHarness) drive(ctx context.Context, tools []*loadTool, rate float64) (stop func()) {
 	ctx, cancel := context.WithCancel(ctx)
 	every := time.Duration(float64(len(tools)) / rate * float64(time.Second))
 	var wg sync.WaitGroup
@@ -380,7 +435,7 @@ func drive(ctx context.Context, tools []*loadTool, rate float64) (stop func()) {
 				case <-ctx.Done():
 					return
 				case <-tick.C:
-					if lt.l.Forward(ctx) == nil {
+					if h.forward(ctx, lt) == nil {
 						lt.made.Add(1)
 					}
 				}
@@ -401,6 +456,13 @@ func (h *loadHarness) sample(tools []*loadTool) loadSample {
 		h.t.Fatal(err)
 	}
 	s := loadSample{at: time.Now(), published: info.State.LastSeq, backlog: info.State.Msgs}
+	if h.cons != nil {
+		ci, err := h.cons.Info(h.t.Context())
+		if err != nil {
+			h.t.Fatal(err)
+		}
+		s.ackPending, s.redelivered = uint64(ci.NumAckPending), uint64(ci.NumRedelivered) //nolint:gosec // counts
+	}
 	for _, lt := range tools {
 		ring, reserved, dropped := lt.m.read()
 		s.made += lt.made.Load()
@@ -417,7 +479,7 @@ func (h *loadHarness) sample(tools []*loadTool) loadSample {
 func (h *loadHarness) measure(tools []*loadTool, rate float64, windows int, during func(context.Context)) loadVerdict {
 	ctx := h.t.Context()
 	origin := h.sample(tools)
-	stop := drive(ctx, tools, rate)
+	stop := h.drive(ctx, tools, rate)
 	select {
 	case <-ctx.Done():
 		h.t.Fatal(ctx.Err())
@@ -426,6 +488,9 @@ func (h *loadHarness) measure(tools []*loadTool, rate float64, windows int, duri
 	tick := time.NewTicker(loadTick)
 	defer tick.Stop()
 	samples := []loadSample{h.sample(tools)}
+	if h.begin != nil {
+		h.begin()
+	}
 	t0 := samples[0].at
 	wctx, end := context.WithCancel(ctx)
 	defer end()
@@ -455,6 +520,10 @@ func (h *loadHarness) measure(tools []*loadTool, rate float64, windows int, duri
 		default:
 		}
 	}
+	if h.end != nil {
+		h.end()
+	}
+	h.samples = samples
 	stop()
 	h.quiesce(tools)
 

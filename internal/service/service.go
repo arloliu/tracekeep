@@ -64,6 +64,10 @@ type Env struct {
 
 	// joined, when not nil, runs once Ingest's consumers joined and its readiness is registered; a test's barrier.
 	joined func()
+	// timed and passSettled, when not nil, are the load harness's seams on the traffic ingester (ingest.Ingester's Timed and PassSettled),
+	// timed on its flusher too, which the parked ingester shares.
+	timed       func(stage string, took time.Duration)
+	passSettled func(at time.Time, batches []*ingest.Batch, err error)
 	// apiAddr is the api role's bound address; apiBound, when not nil, runs once it is bound, a test's barrier;
 	// apiShutdown and apiIdle, when not zero, replace the api role's shutdown bound and its server's idle timeout.
 	apiAddr atomic.Value
@@ -533,7 +537,7 @@ func ingesters(ctx context.Context, e *Env) (_ []*ingest.Ingester, err error) {
 	f := &ingest.Flusher{
 		Catalog: e.Catalog, Store: e.Store, WorkDir: c.Ingest.WorkDir, KeyPrefix: c.Store.KeyPrefix, Configs: configs,
 		Interval: c.Ingest.FlushInterval, HorizonHour: func() int64 { return ingest.HourOf(e.horizon()) }, Writer: writerName, Now: e.now,
-		Log: e.Log.With("role", "ingest"), LocalStore: c.Store.Kind == "fs",
+		Log: e.Log.With("role", "ingest"), LocalStore: c.Store.Kind == "fs", Timed: e.timed,
 	}
 	dir, err := ownWorkDir(f.WorkDir, "ingest", c.Replica)
 	if err != nil {
@@ -565,6 +569,8 @@ func ingesters(ctx context.Context, e *Env) (_ []*ingest.Ingester, err error) {
 		}
 		if role == catalog.RoleParking {
 			g.Replica, g.RedeliveryDelay = c.Replica+"/parked", c.Parking.RedeliveryDelay
+		} else {
+			g.Timed, g.PassSettled = e.timed, e.passSettled
 		}
 		if err := g.Join(ctx); err != nil {
 			return nil, err
