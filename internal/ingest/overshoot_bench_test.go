@@ -62,16 +62,25 @@ type fetchBatch <-chan jetstream.Msg
 func (b fetchBatch) Messages() <-chan jetstream.Msg { return b }
 func (b fetchBatch) Error() error                   { return nil }
 
-// heldPayload sums the payload bytes of every delivery g holds, the set its heartbeat walks:
+// heldPayload sums the payload bytes of every delivery g holds:
 // open and closed batches, and those a flush took and has not finished; ok is false while another holds g's lock.
+// Only the stepping goroutine calls it, so it may read the entries of the batch in flight.
 func heldPayload(g *Ingester) (bytes int, ok bool) {
 	if !g.mu.TryLock() {
 		return 0, false
 	}
 	defer g.mu.Unlock()
-	g.Batcher.Held(func(e Entry) { bytes += len(e.D.Record.Record.Payload) })
-	for _, e := range g.flushing {
-		bytes += len(e.D.Record.Record.Payload)
+	add := func(b *Batch) {
+		for _, e := range b.Entries {
+			bytes += len(e.D.Record.Record.Payload)
+		}
+	}
+	g.Batcher.Held(add)
+	for _, b := range g.flushing {
+		add(b)
+	}
+	if g.inFlight != nil {
+		add(g.inFlight)
 	}
 
 	return bytes, true

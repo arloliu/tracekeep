@@ -43,6 +43,9 @@ type Batch struct {
 	// MetaBytes estimates the encoded size of the redaction entries held, which the segment's metadata carries.
 	MetaBytes int
 	opened    time.Time
+	// kept is no later than the fetch or the last in-progress ack of every delivery the batch holds:
+	// none of their ack waits ends before kept plus the consumer's ack wait.
+	kept time.Time
 }
 
 // DefaultBatchMetaBytes is half the reader's metadata budget, which every reader of a pack opens with:
@@ -95,14 +98,21 @@ func (b *Batcher) Add(e Entry, now time.Time) {
 	for i := range e.D.Redaction {
 		meta += redactionEntryBytes(&e.D.Redaction[i])
 	}
+	since := e.D.Msg.Fetched
+	if since.IsZero() {
+		since = now
+	}
 	bt := b.batches[k]
 	if bt != nil && bt.MetaBytes+meta > b.MaxMetaBytes {
 		b.closed = append(b.closed, bt)
 		bt = nil
 	}
 	if bt == nil {
-		bt = &Batch{Key: k, ConfigID: e.D.ConfigID, opened: now}
+		bt = &Batch{Key: k, ConfigID: e.D.ConfigID, opened: now, kept: since}
 		b.batches[k] = bt
+	}
+	if since.Before(bt.kept) {
+		bt.kept = since
 	}
 	bt.Entries = append(bt.Entries, e)
 	bt.Bytes += len(e.D.Record.Record.Payload)
@@ -151,17 +161,12 @@ func (b *Batcher) All() []*Batch {
 	return all
 }
 
-// Held calls f for every record a batch holds: in-progress acks keep their messages from redelivery
-// while the batch waits (architecture.md §3.1).
-func (b *Batcher) Held(f func(Entry)) {
+// Held calls f for every batch held, closed or open: one that waits too long is kept in progress (architecture.md §3.1).
+func (b *Batcher) Held(f func(*Batch)) {
 	for _, bt := range b.closed {
-		for _, e := range bt.Entries {
-			f(e)
-		}
+		f(bt)
 	}
 	for _, bt := range b.batches {
-		for _, e := range bt.Entries {
-			f(e)
-		}
+		f(bt)
 	}
 }

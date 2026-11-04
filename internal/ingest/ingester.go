@@ -42,7 +42,7 @@ const ReasonIncarnationChanged = "bus-incarnation-changed"
 // Ingester is one ingest replica: it holds a membership in the activation gate,
 // pulls the traffic stream, decides each delivery, batches and flushes (rollouts.md §6.4, ingest.md §6).
 // It is driven by Step, which Run calls in a loop; Step starts no goroutine of its own,
-// and Run runs one more, which keeps the held messages in progress.
+// and Run runs one more, which keeps in progress the held messages that wait past a routine delivery's life.
 type Ingester struct {
 	Executor *Executor
 	Batcher  *Batcher
@@ -68,12 +68,15 @@ type Ingester struct {
 	FetchBatch int
 	// MaxWait bounds how long a fetch waits for FetchBatch messages; it never waits past what remains of the lease.
 	MaxWait time.Duration
-	// Heartbeat is the consumer's ack wait over three: while Run runs, every held message,
-	// those of a flush in progress included, is kept in progress this often (architecture.md §3.1).
+	// Heartbeat is the keep's tick: while Run runs, every tick keeps in progress each batch not yet flushing
+	// whose deliveries have gone AckWait less FlushTimeout and two ticks since their fetch or their last in-progress ack (ingest.md §6.2),
+	// so each has a flush's budget and a tick of its ack wait left when its flush starts.
 	Heartbeat time.Duration
-	// AckWait is the consumer's ack wait: a batch's flush not done within it is given up, its messages nak'd (ingest.md §6.2).
-	// Zero gives no bound.
+	// AckWait is the consumer's ack wait, which the keep holds a waiting batch's deliveries within; zero keeps every waiting batch at every tick.
 	AckWait time.Duration
+	// FlushTimeout is a batch's flush budget (ingest.flush_timeout): a flush not done within it is given up, its messages nak'd (ingest.md §6.2).
+	// Zero gives no bound.
+	FlushTimeout time.Duration
 	// StopTimeout is the budget the batches still due share once Run's context ends (ingest.stop_timeout); zero gives none.
 	StopTimeout time.Duration
 	// Now is the clock the batches and the lease are judged by.
@@ -90,11 +93,15 @@ type Ingester struct {
 	// writeFailures counts, by record version, the flushes the Writer refused holding it: a record refused three times is deterministic,
 	// whichever batch held it, since a live capture's redelivered records join fresh ones and the metadata budget splits a key's batches.
 	writeFailures map[Version]int
-	// mu guards the batcher and flushing against the heartbeat.
+	// mu guards the batcher, flushing and inFlight against the heartbeat.
 	mu sync.Mutex
-	// flushing are the messages of the batches a flush took from the batcher and has not finished,
-	// copied out, since a flush sorts its batch's entries.
-	flushing []Entry
+	// flushing are the batches a flush took from the batcher and has not started, which the heartbeat keeps like the batcher's.
+	flushing []*Batch
+	// inFlight is the batch a flush is writing, held but never kept: its budget ends before its deliveries' ack wait does.
+	// The heartbeat reads none of its entries, which the flush sorts.
+	inFlight *Batch
+	// fetched is when the fetch being disposed of started; only the stepping goroutine reads or writes it.
+	fetched time.Time
 
 	membership catalog.Membership
 	// leaseEnd is when this replica stops trusting its lease: the renewal's start plus the lease,
@@ -196,7 +203,7 @@ func stopBudget(ctx context.Context, budget time.Duration) (context.Context, con
 }
 
 // Step renews the membership, fetches one batch of messages within the lease, disposes of each,
-// keeps the held ones in progress and flushes the batches that are due, one its byte bound closes before the fetch's next delivery.
+// and flushes the batches that are due, one its byte bound closes before the fetch's next delivery.
 // It returns the renewal's and the fetch's errors, a pull the server ended with an error included,
 // after disposing of what it delivered; a failed flush's batch is nak'd and logged,
 // and its error is returned too once ctx has ended, the flush then being part of a stop.
@@ -224,7 +231,8 @@ func (g *Ingester) stepFlushing(ctx, flushing context.Context) error {
 			flushErr = errors.Join(flushErr, err)
 		}
 	}
-	if wait := min(g.MaxWait, g.leaseEnd.Sub(g.Now())/2); wait >= time.Millisecond { // otherwise no lease is left to fetch within
+	g.fetched = g.Now()
+	if wait := min(g.MaxWait, g.leaseEnd.Sub(g.fetched)/2); wait >= time.Millisecond { // otherwise no lease is left to fetch within
 		batch, err := g.Consumer.Fetch(g.FetchBatch, jetstream.FetchMaxWait(wait))
 		if err != nil {
 			return fmt.Errorf("ingest: fetch: %w", err)
@@ -249,28 +257,18 @@ func (g *Ingester) stepFlushing(ctx, flushing context.Context) error {
 	return fetchErr
 }
 
-// take removes batches from the batcher with remove and hands their messages to the heartbeat in one step,
+// take removes batches from the batcher with remove and hands them to the heartbeat in one step,
 // so no tick finds them in neither place.
 func (g *Ingester) take(remove func() []*Batch) []*Batch {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	batches := remove()
-	g.flushing = entries(batches)
+	g.flushing = batches
 
 	return batches
 }
 
-// entries are batches' entries.
-func entries(batches []*Batch) []Entry {
-	var es []Entry
-	for _, b := range batches {
-		es = append(es, b.Entries...)
-	}
-
-	return es
-}
-
-// heartbeats keeps the held messages in progress at every tick until ctx ends.
+// heartbeats keeps the waiting messages in progress at every tick until ctx ends.
 func (g *Ingester) heartbeats(ctx context.Context, tick <-chan time.Time) {
 	for {
 		select {
@@ -282,21 +280,36 @@ func (g *Ingester) heartbeats(ctx context.Context, tick <-chan time.Time) {
 	}
 }
 
-// beat keeps every held message in progress: those the batcher holds and those of the batches a flush has not finished.
+// beat keeps in progress the messages of each batch not yet flushing, the batcher's and those a flush took and has not started,
+// once they have gone AckWait less FlushTimeout and two ticks since their fetch or their last in-progress ack:
+// a routine delivery is acknowledged before then and is never kept, and a batch whose flush started is never kept.
 // One racing its message's acknowledgement is harmless: the server ignores progress on a message no longer pending.
-// The deferrals of the held messages, write failures redelivered into a batch, are kept while they are held.
+// The deferrals of the waiting messages, write failures redelivered into a batch, are kept while they are held.
 func (g *Ingester) beat() {
+	now := g.Now()
+	after := g.AckWait - g.FlushTimeout - 2*g.Heartbeat
+	var held, kept []Entry
+	visit := func(b *Batch) {
+		held = append(held, b.Entries...)
+		if now.Sub(b.kept) >= after {
+			kept = append(kept, b.Entries...)
+			b.kept = now
+		}
+	}
 	g.mu.Lock()
-	var held []Entry
-	g.Batcher.Held(func(e Entry) { held = append(held, e) })
-	held = append(held, g.flushing...)
+	g.Batcher.Held(visit)
+	for _, b := range g.flushing {
+		visit(b)
+	}
 	g.mu.Unlock()
+	for _, e := range kept {
+		_ = e.Msg.InProgress()
+	}
 	ids := make([]string, len(held))
 	for i, e := range held {
-		_ = e.Msg.InProgress()
 		ids[i] = e.D.deferralID()
 	}
-	g.Metrics.InProgress(len(held))
+	g.Metrics.InProgress(len(kept))
 	g.Metrics.Held(ids)
 }
 
@@ -352,7 +365,7 @@ func (g *Ingester) handle(ctx context.Context, m jetstream.Msg, generation int64
 		_ = m.NakWithDelay(firstNakDelay)
 		return
 	}
-	msg.Incarnation, msg.Parked = g.Incarnation.ID, g.Incarnation.Role == catalog.RoleParking
+	msg.Incarnation, msg.Parked, msg.Fetched = g.Incarnation.ID, g.Incarnation.Role == catalog.RoleParking, g.fetched
 	if msg.Parked {
 		if err := g.recordCopy(ctx, msg); err != nil {
 			g.Log.Warn("ingest: copy row failed", "msg_id", msg.Env.MsgID, "error", err)
@@ -528,16 +541,16 @@ func publishCause(err error) slog.Attr {
 	}
 }
 
-// flush flushes each batch, the heartbeat keeping those it has not finished in progress
-// (batches taken from the batcher by take, whose messages the heartbeat already holds);
-// a batch that fails, or is not done within the ack wait, is nak'd, but for the messages it acknowledged, and written again at its redelivery.
+// flush flushes each batch, the heartbeat keeping those it has not started as it keeps the batcher's
+// (batches taken from the batcher by take, which the heartbeat already holds);
+// a batch that fails, or is not done within its budget, is nak'd, but for the messages it acknowledged, and written again at its redelivery.
 func (g *Ingester) flush(ctx context.Context, batches []*Batch) error {
-	defer g.hold(nil)
+	defer g.hold(nil, nil)
 	var errs []error
 	for i, b := range batches {
-		g.hold(entries(batches[i:]))
+		g.hold(b, batches[i+1:]) // b is never kept: its budget ends before its ack wait
 		out, err := g.flushBatch(ctx, b)
-		g.hold(entries(batches[i+1:])) // b's messages are settled below: progress would hold a nak'd one for another ack wait
+		g.hold(nil, batches[i+1:])
 		var refused *refusalError
 		switch {
 		case err != nil:
@@ -580,23 +593,23 @@ func (g *Ingester) flush(ctx context.Context, batches []*Batch) error {
 	return err
 }
 
-// flushBatch flushes b within the ack wait: a flush that has not registered and acknowledged by then is given up (ingest.md §6.2).
+// flushBatch flushes b within its budget: a flush that has not registered and acknowledged by then is given up (ingest.md §6.2).
 func (g *Ingester) flushBatch(ctx context.Context, b *Batch) (Flushed, error) {
 	flushed := timing(g.Timed, "flush")
 	defer flushed()
-	if g.AckWait > 0 {
+	if g.FlushTimeout > 0 {
 		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, g.AckWait)
+		ctx, cancel = context.WithTimeout(ctx, g.FlushTimeout)
 		defer cancel()
 	}
 
 	return g.Flusher.Flush(ctx, b)
 }
 
-// hold hands the messages of the batches being flushed to the heartbeat.
-func (g *Ingester) hold(flushing []Entry) {
+// hold records the batch a flush is writing and hands the batches it has not started to the heartbeat.
+func (g *Ingester) hold(inFlight *Batch, flushing []*Batch) {
 	g.mu.Lock()
-	g.flushing = flushing
+	g.inFlight, g.flushing = inFlight, flushing
 	g.mu.Unlock()
 }
 
