@@ -369,7 +369,7 @@ func (b *bundle) packs(ctx context.Context, rs *catalog.ReadSet, hourDir string,
 // pack exports p whole into path; an error leaves no file, and an error of the pack's own bytes leaves the pack out with its text, which names no key.
 func (b *bundle) pack(ctx context.Context, rs *catalog.ReadSet, p *catalog.ReadPack, path string) (manifestPack, bool, error) {
 	mp := manifestPack{PackID: p.ID.String(), Role: p.Role, State: p.State, FormatMinor: p.FormatMinor, Schema: jsonlSchema(p.FormatMinor)}
-	obj, err := records.Open(ctx, b.s.Store, p.Key)
+	obj, err := records.OpenSized(ctx, b.s.Store, p.Key, p.Size)
 	if errors.Is(err, store.ErrNotFound) {
 		return mp, true, nil
 	} else if err != nil {
