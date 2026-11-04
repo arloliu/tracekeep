@@ -22,9 +22,13 @@ A second module, the producer SDK, is published for producers (§4.7).
 | `migrate` | applies the catalog's versioned migrations; ensures the traffic stream and claim bucket, the bucket's stream with `AllowDirect` off (T-28) | once per release |
 
 JetStream consumer settings `ingest` depends on:
-`ack_wait` longer than the flush interval F plus the upload, and in-progress acks every `ack_wait/3`
-while a batch is held ([STO §4] *Stream settings*);
-`max_deliver` unlimited; `max_ack_pending` above the peak rate × (F + upload);
+`ack_wait` longer than a routine delivery's life, the flush interval F, a fetch's wait `ingest.max_wait` and a flush's budget `ingest.flush_timeout`
+(7 minutes against 6 m 5 s at the defaults, `ingest.md` §6.2), so a routine delivery is acknowledged with no in-progress ack;
+an in-progress ack only for a delivery that waits past that life in a batch not yet flushing, never for one whose flush started,
+where [STO §4] *Stream settings* keeps every held delivery in progress every `ack_wait/3`;
+`max_deliver` unlimited; `max_ack_pending` above the peak rate × (F + `max_wait` + `flush_timeout`):
+its default, 50,000, fills in about 31 s at 1,600 records a second, so an installation sizes it to its rate
+(600,000 kept up with 1,600 records a second at the default timing);
 **per-message acks only** (`AckExplicit`, never `AckAll`, since a cumulative ack would cover unrelated unstaged deliveries),
 and a confirmed ack (`DoubleAck`) for a claim-check message, because the object's deletion depends on it (§8.4).
 

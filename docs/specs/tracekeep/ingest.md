@@ -191,12 +191,29 @@ the cases prove the decision, the schedules prove the re-reads under the capture
 - Ack ownership: each message is acked individually after the transaction that registered a segment holding its record commits;
   a claim-check message with `DoubleAck`.
 - **A flush is bounded** (T-52): its remote calls, the store's put and the catalog's transactions, run under its context,
-  and a flush that has not registered within `ingest.ack_wait` is given up, its unacknowledged messages naked and their in-progress acks stopped;
+  and a batch's flush that has not registered and acknowledged within its budget, `ingest.flush_timeout`, is given up, its unacknowledged messages naked;
+  the budget is the flush's own, never the consumer's `ack_wait`, so raising `ack_wait` does not raise the budget it must exceed;
   on a stop, the batches still due share one budget, `ingest.stop_timeout`, and one not flushed within it is left to redelivery.
   Any error of a remote call, its deadline included, is an unknown outcome:
   an object the flush may have put is left to reconciliation and the orphan pass (`storage.md` §5.4), never deleted by the flush, and acknowledgement still follows registration.
   The local file work (the working file's writes, sync and reopen, and the `fs` store) is not interrupted:
   a flush waits for it, so nothing outlives the flush that owns its batch's memory and files, and work that outlasts its bound is logged and counted in `flush_stalls_total`.
+- **In-progress acks** (`architecture.md` §3.1): `ingest.ack_wait` exceeds F + `ingest.max_wait` + `ingest.flush_timeout`, a routine delivery's longest life:
+  its batch is due F after the fetch of its first record, seen at the step after the next fetch's wait, and flushed within its budget,
+  so a routine delivery is acknowledged with no in-progress ack.
+  A delivery waits longer only in a batch not yet flushing: an open one while a long flush holds the step, or a due one queued behind other batches' flushes.
+  A tick every (`ack_wait` − F − `max_wait` − `flush_timeout`) / 2, at least a second (27.5 s at the defaults),
+  keeps in progress every delivery of each such batch once the batch has gone `ack_wait` − `flush_timeout` − two ticks (F + `max_wait` at the defaults)
+  since the fetch of its oldest delivery or its last in-progress ack,
+  so every delivery has at least a flush's budget and a tick of its ack wait left when its flush starts.
+  Once a batch's flush starts its deliveries are never kept in progress: its budget ends before their ack wait does.
+  A fetch's deliveries not yet batched wait at most the membership lease and a flush, then are naked untouched (`rollouts.md` §6.4).
+- **Local work that outlasts the flush's budget and `ack_wait`** is still waited for, and the flush owns its working files until the work returns;
+  it registers nothing past its budget, since its remote calls end with the budget.
+  Its deliveries, kept no more, are redelivered once their ack wait ends, to this replica or another, and disposed of afresh:
+  batched and written again, each acknowledged only after a segment holding its record is registered,
+  an overlap with a segment the first flush registered within its budget being a `suspect` the compactor clears.
+  The first flush's naks, once its work returns, can return a redelivered message once more: at worst another redelivery, never a loss.
 
 ### 6.3 Crash points and the registration transaction
 
