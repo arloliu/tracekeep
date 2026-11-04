@@ -60,3 +60,11 @@ type Presigner interface {
 	// and expires, the time the URL surely reads until: the expiry its holder is told.
 	PresignGet(ctx context.Context, key string, until time.Time) (url string, expires time.Time, err error)
 }
+
+// SizedOpener is the optional capability of a store that opens an object of a known size without asking for it (storage.md §5.2).
+type SizedOpener interface {
+	// OpenSized opens the object under key expecting size bytes, asking the store nothing;
+	// a read that finds the object absent fails with an error wrapping ErrNotFound,
+	// and one that finds it of another length fails as the store's failure.
+	OpenSized(ctx context.Context, key string, size int64) (Object, error)
+}

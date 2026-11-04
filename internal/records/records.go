@@ -24,6 +24,9 @@ const Sentinel = uint64(math.MaxInt64)
 
 const nsPerHour = int64(3600e9)
 
+// packHeaderLen is a pack's file header, below which tracepack refuses a size before reading.
+const packHeaderLen = 80
+
 // The reasons of an Incomplete (operations.md §10.4, record_reads_incomplete_total).
 const (
 	ReasonGone         = "gone"
@@ -264,7 +267,7 @@ func (hr *hourRead) merge(ctx context.Context, rs *catalog.ReadSet, c cluster) (
 		}
 	}()
 	for _, p := range c.packs {
-		obj, err := Open(ctx, hr.r.Store, p.Key)
+		obj, err := OpenSized(ctx, hr.r.Store, p.Key, p.Size)
 		if errors.Is(err, store.ErrNotFound) {
 			return err, nil
 		} else if err != nil {
@@ -541,6 +544,22 @@ func floorHour(ns int64) int64 {
 // and what a read reports reaches a person's answer and the logs.
 func Open(ctx context.Context, st store.ObjectStore, key string) (store.Object, error) {
 	obj, err := st.Open(ctx, key)
+	if err != nil {
+		return nil, Keyless(err)
+	}
+
+	return keyless{obj}, nil
+}
+
+// OpenSized is Open for a pack of the catalog's size: on a store that opens by a known size (store.SizedOpener) it asks the store nothing,
+// and a read finding the object of another length fails as the store's (storage.md §5.2, §5.3).
+// A size below a pack's file header, zero included, opens by Open, so tracepack never refuses a size the store has not confirmed.
+func OpenSized(ctx context.Context, st store.ObjectStore, key string, size int64) (store.Object, error) {
+	so, ok := st.(store.SizedOpener)
+	if !ok || size < packHeaderLen {
+		return Open(ctx, st, key)
+	}
+	obj, err := so.OpenSized(ctx, key, size)
 	if err != nil {
 		return nil, Keyless(err)
 	}

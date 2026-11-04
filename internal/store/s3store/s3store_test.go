@@ -303,3 +303,43 @@ func TestPutEndsWhenTheServiceNeverAnswers(t *testing.T) {
 		t.Errorf("Put under a deadline = %v, want the deadline", err)
 	}
 }
+
+// An object opened by a known size asks the store nothing, and its reads check that size against the store's:
+// the right size reads, another is a store error, never store.ErrNotFound nor an end of file;
+// a missing key is store.ErrNotFound at the first read, and a missing bucket a store error (storage.md §5.3).
+func TestOpenSized(t *testing.T) {
+	t.Parallel()
+	ctx := t.Context()
+	s := newStore(t) // skips without a store to test against
+	data := bytes.Repeat([]byte("pack bytes"), 100)
+	n := int64(len(data))
+	if err := s.Put(ctx, "archive/c1/p1", bytes.NewReader(data), n); err != nil {
+		t.Fatal(err)
+	}
+	read := func(st *s3store.Store, key string, size int64) ([]byte, error) {
+		o, err := st.OpenSized(ctx, key, size)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer o.Close()
+		buf := make([]byte, min(size, 64))
+		_, err = o.ReadAt(buf, size-int64(len(buf)))
+
+		return buf, err
+	}
+	if got, err := read(s, "archive/c1/p1", n); err != nil || !bytes.Equal(got, data[n-64:]) {
+		t.Errorf("a read of the right size = %q, %v; want the object's last bytes", got, err)
+	}
+	for _, size := range []int64{n - 1, n + 1, 4 * n} {
+		if _, err := read(s, "archive/c1/p1", size); err == nil || errors.Is(err, store.ErrNotFound) || errors.Is(err, io.EOF) {
+			t.Errorf("a read of %d bytes expected, %d stored = %v; want a store error", size, n, err)
+		}
+	}
+	if _, err := read(s, "archive/c1/none", n); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("a read of a missing key = %v, want store.ErrNotFound", err)
+	}
+	missing := storeOn(t, "tk-missing-"+strings.ToLower(rand.Text()), os.Getenv(envSecret))
+	if _, err := read(missing, "archive/c1/p1", n); err == nil || errors.Is(err, store.ErrNotFound) {
+		t.Errorf("a read in a missing bucket = %v, want a store error", err)
+	}
+}

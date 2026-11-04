@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -65,6 +66,7 @@ type Store struct {
 var (
 	_ store.ObjectStore = (*Store)(nil)
 	_ store.Presigner   = (*Store)(nil)
+	_ store.SizedOpener = (*Store)(nil)
 )
 
 // New returns a store on cfg's bucket; it does not contact the service.
@@ -135,6 +137,11 @@ func (s *Store) Open(ctx context.Context, key string) (store.Object, error) {
 	}
 
 	return &object{ctx: ctx, s: s, key: key, size: info.Size}, nil
+}
+
+// OpenSized implements store.SizedOpener with no request: every read checks that the object holds size bytes (storage.md §5.3).
+func (s *Store) OpenSized(ctx context.Context, key string, size int64) (store.Object, error) {
+	return &object{ctx: ctx, s: s, key: key, size: size}, nil
 }
 
 // Stat implements store.ObjectStore.
@@ -230,8 +237,8 @@ func SignedEnd(u string) (time.Time, error) {
 	return signed.Add(time.Duration(secs) * time.Second), nil
 }
 
-// get fills buf from key's bytes at from with one ranged GET.
-func (s *Store) get(ctx context.Context, key string, from int64, buf []byte) error {
+// get fills buf from key's bytes at from with one ranged GET, the object expected to hold size bytes.
+func (s *Store) get(ctx context.Context, key string, size, from int64, buf []byte) error {
 	rng := fmt.Sprintf("bytes=%d-%d", from, from+int64(len(buf))-1)
 	out, err := s.client.GetObject(ctx, &s3.GetObjectInput{Bucket: &s.bucket, Key: &key, Range: &rng})
 	if err != nil {
@@ -242,11 +249,26 @@ func (s *Store) get(ctx context.Context, key string, from int64, buf []byte) err
 	if out.ContentRange == nil {
 		return fmt.Errorf("s3store: read %s: the store ignored the range", key)
 	}
+	// The size may be the catalog's, unconfirmed by a HEAD: an object of another length is the store's failure, not a pack's.
+	if n := total(*out.ContentRange); n != size {
+		return fmt.Errorf("s3store: read %s: the object is %q, not of the %d bytes expected", key, *out.ContentRange, size)
+	}
 	if _, err := io.ReadFull(out.Body, buf); err != nil {
 		return fmt.Errorf("s3store: read %s: %w", key, err)
 	}
 
 	return nil
+}
+
+// total is a Content-Range's complete length, -1 when it states none.
+func total(contentRange string) int64 {
+	_, n, ok := strings.Cut(contentRange, "/")
+	length, err := strconv.ParseInt(n, 10, 64)
+	if !ok || err != nil {
+		return -1
+	}
+
+	return length
 }
 
 // remaining returns the bytes r holds from its current offset, leaving the offset where it was.
@@ -314,12 +336,12 @@ func (o *object) ReadAt(p []byte, off int64) (int, error) {
 	switch {
 	case o.cached(p[:want], off):
 	case want >= readAhead || off+want == o.size: // nothing to read ahead
-		if err := o.s.get(o.ctx, o.key, off, p[:want]); err != nil {
+		if err := o.s.get(o.ctx, o.key, o.size, off, p[:want]); err != nil {
 			return 0, err
 		}
 	default:
 		buf := make([]byte, min(readAhead, o.size-off))
-		if err := o.s.get(o.ctx, o.key, off, buf); err != nil {
+		if err := o.s.get(o.ctx, o.key, o.size, off, buf); err != nil {
 			return 0, err
 		}
 		copy(p, buf)
