@@ -556,9 +556,13 @@ const envelope = 1 << 10
 func (w *recordWriter) budget() int { return batchBytes - envelope }
 
 // itemSize is it's encoding as an element of a message's items in the stream's codec:
-// in binary its tag, length and bytes; in JSON its text and a separating comma, payloads in base64.
+// in binary its tag, length and bytes; in JSON its text and a separating comma, payloads in base64,
+// a record's text counted without encoding it and any other item's encoded.
 func (w *recordWriter) itemSize(it *tkv1.RecordItem) int {
 	if w.json {
+		if n, ok := jsonRecordSize(it); ok {
+			return n + 1
+		}
 		b, err := protojson.Marshal(it)
 		if err != nil {
 			return batchBytes // an item that does not encode travels alone, and fails there
