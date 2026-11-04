@@ -78,17 +78,18 @@ func heldPayload(g *Ingester) (bytes int, ok bool) {
 }
 
 // BenchmarkFetchOvershoot is one step's fetch of near-limit inline payloads into one capture, Ingester.Step (P10):
-// a batch is due on its bytes only once the whole fetch is batched, so a fetch past the batch's byte bound is held in full first.
+// how far past the batch's byte bound a fetch larger than the bound takes the payload held.
 // It reports the peak payload bytes held against the bound (held-B, bound-B, x-bound); its time is incidental.
 //   - Starting state: a replica on the embedded bus and the SQLite catalog, its capture admitted by its start once, outside the timer;
 //     n messages of one capture and hour built once, each an S6F11 whose body is the inline limit, the server's max_payload less 4096
 //     (the producer's rule); a consumer that delivers all n at every fetch.
 //     The batch's byte bound is ingest.batch_max_bytes' default scaled by n against ingest.fetch_batch's default (64 MiB at 500),
-//     so every size has production's fetch-to-bound ratio.
+//     so every size has production's fetch-to-bound ratio; the flush interval is zero, so every batch is due once the fetch is done.
 //   - The Flusher executes no configuration, so the due batch's flush fails on its first line and its messages are nak'd:
 //     nothing is written, and every iteration disposes of the same unresolved deliveries again.
 //   - The held set is read at every reading of the ingester's clock outside its lock: before each delivery's disposition,
 //     and once the fetch is done, before the due batches are taken; the reading under the lock, a batch's Add, is skipped.
+//     It is read too at the end of each timed stage: a delivery's disposition, its batching and a batch's flush, the flushing batch still held.
 //   - Each iteration asserts n deliveries read and disposed of, some payload held, n nak'd by the failed flush, and nothing held after the step.
 func BenchmarkFetchOvershoot(b *testing.B) {
 	for _, n := range benchscale.Sizes(b, 20, 100, 500) {
@@ -114,7 +115,7 @@ func BenchmarkFetchOvershoot(b *testing.B) {
 			}
 			bound := 64 << 20 * n / fetchDeliveries
 			g.Consumer = benchConsumer{msgs: msgs}
-			g.Batcher = NewBatcher(time.Second, bound)
+			g.Batcher = NewBatcher(0, bound) // every batch is due at the step's end, so the step leaves nothing held
 			g.Flusher = &Flusher{Configs: map[int64]Config{}}
 			peak, stepPeak := 0, 0
 			clk := g.Now
@@ -124,6 +125,11 @@ func BenchmarkFetchOvershoot(b *testing.B) {
 				}
 
 				return clk()
+			}
+			g.Timed = func(string, time.Duration) {
+				if held, ok := heldPayload(g); ok {
+					stepPeak = max(stepPeak, held)
+				}
 			}
 			ctx := b.Context()
 			for b.Loop() {

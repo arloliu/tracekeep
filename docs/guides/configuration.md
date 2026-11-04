@@ -50,7 +50,7 @@ The static token for services stays in `<data>/api-token`.
 | `ingest.max_ack_pending` | `50000` | `TRACEKEEP_INGEST_MAX_ACK_PENDING` | above the peak message rate times F plus an upload, or delivery stalls |
 | `ingest.fetch_batch`, `ingest.max_wait` | `500`, `5s` | `TRACEKEEP_INGEST_…` | one fetch's size and wait |
 | `ingest.lease` | `1m` | `TRACEKEEP_INGEST_LEASE` | the membership lease (`rollouts.md` §6.4): a replica that stops renewing leaves the activation gate after it |
-| `ingest.batch_max_bytes` | `64MiB` | `TRACEKEEP_INGEST_BATCH_MAX_BYTES` | a batch flushes before F once it holds this many payload bytes |
+| `ingest.batch_max_bytes` | `64MiB` | `TRACEKEEP_INGEST_BATCH_MAX_BYTES` | a batch flushes before F once it holds this many payload bytes, at once, before the fetch's next record joins a batch |
 | `ingest.max_record_bytes` | `64MiB` | `TRACEKEEP_INGEST_MAX_RECORD_BYTES` | the largest claim-check payload ingest fetches; a larger one is deferred unfetched and parked with alert `too-large` until the bound is raised or the version terminated, never treated as malformed (`ingest.md` §6.1); at most 4 GiB, HSMS's largest message |
 | `ingest.stop_timeout` | `20s` | `TRACEKEEP_INGEST_STOP_TIMEOUT` | the budget the batches still due share when ingest stops; keep it below the platform's grace period (Kubernetes' default 30 s); a batch not flushed within it is redelivered (`ingest.md` §6.2); at most 10 min |
 | `ingest.work_dir` | the system's temporary directory | `TRACEKEEP_INGEST_WORK_DIR` | holds a segment's working file until its put returns, and a merge's archive likewise, each role of each replica in a directory `tracekeep-<role>-<replica>-<digest of the replica>` of its own, cleaned at start; masked bytes only |
