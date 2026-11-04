@@ -53,7 +53,7 @@ jobs:
           bench: ^Benchmark(Listings|ListingHistory)$
         - group: lookups
           packages: ./internal/catalog/
-          bench: ^Benchmark(Lookups|Resolve)$
+          bench: ^Benchmark(Lookups|Resolve|KeyStandings|MergeCandidates)$
         - group: retention
           packages: ./internal/catalog/
           bench: ^Benchmark(AuditWhileRegistering|PruneEvents|DeleteCandidates|EvictHour|EvictMerges)$
@@ -110,7 +110,7 @@ jobs:
           echo '|---|---|'
           echo '| catalog RegisterPack, AuditWhileRegistering, PruneEvents, EvictHour, EvictMerges; RecordListing attributed/new, unattributed/new, unattributed/gone | yes: catalog commits that write, MariaDB as innodb_flush_log_at_trx_commit says |'
           echo '| catalog RecordListing attributed/steady, attributed/gone, attributed/tiny, unattributed/steady | no: their transactions change no row, the lease check rewriting its row unchanged (SQLite checked: no WAL frame; MariaDB to confirm) |'
-          echo '| catalog Listings, ListingHistory, Lookups, Resolve, DeleteCandidates; metrics ReadCatalog | no: reads |'
+          echo '| catalog Listings, ListingHistory, Lookups, Resolve, KeyStandings, MergeCandidates, DeleteCandidates; metrics ReadCatalog | no: reads |'
         } | tee -a "$GITHUB_STEP_SUMMARY"
 
     # The group's benchmarks in each tree, as go test lists them, so the groups' union can be checked against every MariaDB row.
