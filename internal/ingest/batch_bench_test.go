@@ -137,3 +137,47 @@ func BenchmarkHeartbeat(b *testing.B) {
 		})
 	}
 }
+
+// BenchmarkTakeDue is the ingester's flush of n batches due at once, Ingester.flush, for its bookkeeping alone (P10):
+// before and after each batch's flush the messages of the batches not yet finished are copied out for the heartbeat, a suffix of the due batches each time.
+//   - Starting state: an ingester with metrics whose Flusher executes no configuration, so each batch's flush fails on its first line,
+//     before any catalog read, write or put; n deliveries built once outside the timer, one record each of n captures in one hour.
+//   - One iteration flushes the n batches: added to the batcher and taken due outside the timer, as a step takes them;
+//     each flush fails and its message is nak'd, the same work on every iteration, so the time left is the copies, the naks and the joined error.
+//   - Each iteration asserts the joined error, n messages nak'd and none left held.
+func BenchmarkTakeDue(b *testing.B) {
+	for _, n := range benchscale.Sizes(b, 10, 100, 1500) {
+		b.Run(fmt.Sprintf("batches=%d", n), func(b *testing.B) {
+			h := &counting{}
+			es := make([]Entry, n)
+			for i := range es {
+				es[i] = heldEntries(b, tracepack.UUID{0x7d, byte(i >> 8), byte(i)}, 1, h)[0]
+			}
+			g := benchIngester(b)
+			g.Flusher = &Flusher{Configs: map[int64]Config{}}
+			ctx := b.Context()
+			b.ReportAllocs()
+			for b.Loop() {
+				b.StopTimer()
+				for _, e := range es {
+					g.Batcher.Add(e, g.Now())
+				}
+				due := g.take(func() []*Batch { return g.Batcher.Due(g.Now().Add(time.Second)) })
+				if len(due) != n {
+					b.Fatalf("%d batches due, want %d", len(due), n)
+				}
+				naks := h.other.Load()
+				b.StartTimer()
+				if err := g.flush(ctx, due); err == nil {
+					b.Fatal("flush succeeded, want every batch refused its configuration")
+				}
+				if got := h.other.Load() - naks; got != int64(n) {
+					b.Fatalf("%d messages nak'd, want %d", got, n)
+				}
+				if len(g.flushing) != 0 || g.batched() != 0 {
+					b.Fatalf("%d messages still flushing and %d batched, want none", len(g.flushing), g.batched())
+				}
+			}
+		})
+	}
+}
