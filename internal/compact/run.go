@@ -298,6 +298,9 @@ func (r *Compactor) mergePass(ctx context.Context, lease catalog.Lease) error {
 		scheduled, err = r.mergesIn(ctx, lease, cyc)
 		rep.add(scheduled)
 	}
+	if err == nil {
+		r.forget(cyc)
+	}
 	// A merge that fails on conflicting records failed too, and a scope waiting out a failure's backoff withholds success as its failure did (compactor.md §8.1).
 	r.Metrics.Cycle("merge", time.Since(started), err == nil && len(rep.Failed)+len(rep.Conflicted)+len(rep.Cooling) == 0)
 	r.Metrics.Merges(len(rep.Merged), len(rep.Stale), len(rep.Conflicted), len(rep.Failed), len(rep.Refused))

@@ -77,10 +77,15 @@ func (r *Compactor) requestsIn(ctx context.Context, lease catalog.Lease, cyc *me
 // and when the scope waits out a failure at that revision for which q was attempted already.
 func (r *Compactor) mergeRequested(ctx context.Context, lease catalog.Lease, q catalog.Request, cyc *mergeCycle, merges *MergeReport) (string, error) {
 	ended, revision, err := r.Catalog.DecideRequest(ctx, lease, q)
+	if err != nil && q.Hour != nil {
+		// Nothing is acted on, nor forgotten, on a verdict that could not be read.
+		cyc.met[catalog.Scope{Capture: q.Capture, Hour: *q.Hour}] = true
+	}
 	if err != nil || ended != catalog.Mergeable {
 		return ended, err
 	}
 	s := catalog.Scope{Capture: q.Capture, Hour: *q.Hour}
+	cyc.met[s] = true
 	if c := r.waiting(s, revision); c != nil && c.requests[q.ID] {
 		merges.Cooling = append(merges.Cooling, s)
 		return "", nil

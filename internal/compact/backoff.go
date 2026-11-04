@@ -19,8 +19,7 @@ const DefaultMergeAttempts = 1024
 type schedule struct {
 	// cycle counts the merge passes; a backoff is measured in them.
 	cycle int64
-	// cooling holds the scopes whose last attempt failed.
-	// shortcut: a cooling scope that leaves the candidates without another attempt (a conflict, retention) stays until the state is dropped; prune it if failures become common.
+	// cooling holds the scopes whose last attempt failed, at most those a cycle met: forget drops the rest.
 	cooling map[catalog.Scope]*cooling
 	// carried are the scheduled scopes the last cycle's cap left, in their order.
 	carried []catalog.Scope
@@ -38,17 +37,30 @@ type cooling struct {
 	requests map[tracepack.UUID]bool
 }
 
-// mergeCycle is one cycle's merges: the attempts it has left and the scopes it attempted, each at most once.
+// mergeCycle is one cycle's merges: the attempts it has left, the scopes it attempted, each at most once,
+// and the scopes it met, a candidate or the scope of a pending merge request, whose backoffs it keeps.
 type mergeCycle struct {
 	left      int
 	attempted map[catalog.Scope]bool
+	met       map[catalog.Scope]bool
 }
 
 // newCycle starts a cycle of merges, the operators' requests and the scheduled scopes together.
 func (r *Compactor) newCycle() *mergeCycle {
 	r.sched.cycle++
 
-	return &mergeCycle{left: cmp.Or(r.MergeAttempts, DefaultMergeAttempts), attempted: map[catalog.Scope]bool{}}
+	return &mergeCycle{left: cmp.Or(r.MergeAttempts, DefaultMergeAttempts), attempted: map[catalog.Scope]bool{}, met: map[catalog.Scope]bool{}}
+}
+
+// forget drops the backoffs of the scopes cyc did not meet, after both its passes completed:
+// a scope neither a candidate nor requested, evicted by retention, touched by a conflict or with its request ended,
+// would otherwise stay for the process's life. A scope met again later starts over at one cycle.
+func (r *Compactor) forget(cyc *mergeCycle) {
+	for s := range r.sched.cooling {
+		if !cyc.met[s] {
+			delete(r.sched.cooling, s)
+		}
+	}
 }
 
 // took records a take of the lease, dropping the schedule when another process held the lease since this process's last take.
