@@ -251,7 +251,7 @@ func BenchmarkFlushDue(b *testing.B) {
 			g := &Ingester{
 				Executor: x, Batcher: NewBatcher(time.Second, 1<<30), Flusher: benchFlusher(b, x, st, false),
 				Log: slog.New(slog.DiscardHandler), Now: func() time.Time { return time.Unix(0, now) },
-				AckWait: 7 * time.Minute, FlushTimeout: time.Minute, Heartbeat: 27500 * time.Millisecond, // the defaults: no batch is kept
+				AckWait: 7 * time.Minute, FlushTimeout: time.Minute, Heartbeat: 55 * time.Second / 3, // the defaults: no batch is kept
 			}
 			flushes := make([]*benchFlush, k)
 			for i := range flushes {

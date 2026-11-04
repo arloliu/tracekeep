@@ -45,7 +45,7 @@ func TestDefaults(t *testing.T) {
 	} {
 		want := map[string]time.Duration{
 			"retention": 30 * 24 * time.Hour, "ingest.flush_interval": 5 * time.Minute, "ingest.ack_wait": 7 * time.Minute,
-			"ingest.flush_timeout": time.Minute, "the heartbeat": 27*time.Second + 500*time.Millisecond,
+			"ingest.flush_timeout": time.Minute, "the heartbeat": 55 * time.Second / 3,
 			"parking.redelivery_delay": time.Minute, "ingest.lease": time.Minute, "ingest.stop_timeout": 20 * time.Second,
 			"compact.quiet_period": 15 * time.Minute, "compact.redelivery_slack": 2 * time.Minute,
 			"compact.inactivity": 2 * time.Hour, "compact.delete_delay": time.Hour,
@@ -118,13 +118,13 @@ func TestValidation(t *testing.T) {
 }
 
 // ack_wait must exceed a routine delivery's life, F + max_wait + flush_timeout, strictly (ingest.md §6.2),
-// and the heartbeat's tick is half of what it leaves over that life, at least a second.
+// and the heartbeat's tick is a third of what it leaves over that life, at least a second.
 func TestAckWaitBound(t *testing.T) {
 	t.Parallel()
 	timing := func(ackWait string) string {
 		return yaml("", "", "", "ingest:\n  flush_interval: 5m\n  max_wait: 5s\n  flush_timeout: 1m\n  ack_wait: "+ackWait+"\n")
 	}
-	for ackWait, tick := range map[string]time.Duration{"6m4s": 0, "6m5s": 0, "6m6s": time.Second, "6m9s": 2 * time.Second, "7m": 27500 * time.Millisecond} {
+	for ackWait, tick := range map[string]time.Duration{"6m4s": 0, "6m5s": 0, "6m6s": time.Second, "6m11s": 2 * time.Second, "7m": 55 * time.Second / 3} {
 		c, err := Load(write(t, timing(ackWait)))
 		if tick == 0 {
 			if err == nil || !strings.Contains(err.Error(), "ingest.ack_wait") {
@@ -145,16 +145,16 @@ func TestAckWaitBound(t *testing.T) {
 }
 
 // ack_wait must also exceed the longest a fetched delivery waits unbatched and unkept, lease + flush_timeout + the tick, strictly (ingest.md §6.2):
-// with a 3-minute lease, 5m55s equals it (a tick of 1m55s) and 5m56s passes; the defaults pass with minutes to spare.
+// with a lease of 2m55s, 4m50s equals it (a tick of 55s) and 4m51s passes; the defaults pass with minutes to spare.
 func TestAckWaitCoversAnUnbatchedDelivery(t *testing.T) {
 	t.Parallel()
 	timing := func(ackWait string) string {
-		return yaml("", "", "", "ingest:\n  flush_interval: 1m\n  max_wait: 5s\n  flush_timeout: 1m\n  lease: 3m\n  ack_wait: "+ackWait+"\n")
+		return yaml("", "", "", "ingest:\n  flush_interval: 1m\n  max_wait: 5s\n  flush_timeout: 1m\n  lease: 2m55s\n  ack_wait: "+ackWait+"\n")
 	}
-	if _, err := Load(write(t, timing("5m55s"))); err == nil || !strings.Contains(err.Error(), "ingest.lease") {
+	if _, err := Load(write(t, timing("4m50s"))); err == nil || !strings.Contains(err.Error(), "ingest.lease") {
 		t.Errorf("ack_wait equal to lease + flush_timeout + the tick: Load = %v, want an error naming ingest.lease", err)
 	}
-	if _, err := Load(write(t, timing("5m56s"))); err != nil {
+	if _, err := Load(write(t, timing("4m51s"))); err != nil {
 		t.Errorf("ack_wait one second past lease + flush_timeout + the tick: Load = %v, want it accepted", err)
 	}
 	c, err := Load(write(t, minimal))
