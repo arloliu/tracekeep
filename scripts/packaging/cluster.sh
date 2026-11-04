@@ -269,7 +269,7 @@ config:
     kind: s3
     presign: false
     s3: {endpoint: "http://minio:9000", region: us-east-1, bucket: tracekeep, access_key_id: tracekeep, secret_access_key_ref: "file:///run/secrets/tracekeep-s3/secret"}
-  ingest: {flush_interval: 15s, ack_wait: 2m}
+  ingest: {flush_interval: 15s, ack_wait: 3m}
   compact: {interval: 1m}
   api:
     tls_cert_file: /run/secrets/tracekeep-tls/tls.crt
