@@ -90,7 +90,7 @@ func BenchmarkQueryRecords(b *testing.B) {
 }
 
 // BenchmarkQueryRecordsDay streams a 24-hour window, every hour holding n records in one segment, through QueryRecords over HTTP
-// by a binary client, on SQLite, outside tracekeep dev, so every hour's read decodes the capture's configuration (P12).
+// by a binary client, on SQLite, outside tracekeep dev, so every hour's read checks the capture's configuration, decoded once an RPC (P12).
 // Its starting state is one capture bound to a configuration with a stored policy, its 24 segments registered and stored once outside the timer.
 // An iteration reads the whole window, following its cursors to the end, and asserts 24·n records, the empty last cursor,
 // no incompleteness and the configuration read at least once; config-reads/op reports how many reads it took.
