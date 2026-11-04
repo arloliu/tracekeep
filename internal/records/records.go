@@ -368,8 +368,8 @@ func (g *group) add(it *tracepack.Item) error {
 			return err
 		}
 	}
-	rec := Record{Hour: g.hr.hour, Record: it.Record, Extra: slices.Clone(it.HeaderExtra), Conflict: it.Conflict}
-	rec.Payload = slices.Clone(it.Record.Payload)
+	// The filter reads the item's borrowed bytes, which the read reuses once add returns; only a kept record's are copied.
+	rec := Record{Hour: g.hr.hour, Record: it.Record, Conflict: it.Conflict}
 	rec.Unobserved = g.readers[it.Input].Unobserved(&it.Record)
 	if rec.Kind == tracepack.KindData || rec.Kind == tracepack.KindControl {
 		rec.Header = it.Record.HSMSHeader()
@@ -378,6 +378,7 @@ func (g *group) add(it *tracepack.Item) error {
 	if !g.hr.q.admits(&rec) {
 		return nil
 	}
+	rec.Payload, rec.Extra = slices.Clone(it.Record.Payload), slices.Clone(it.HeaderExtra)
 	rec.Excluded = Excluded(g.rs, seq)
 	if rec.Conflict {
 		rec.Holders = Holders(g.rs, seq)
