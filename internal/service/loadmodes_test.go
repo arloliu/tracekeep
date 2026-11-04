@@ -121,7 +121,7 @@ func loadProduction(t *testing.T, smoke bool) {
 	k, rate, budgets := 100, 800.0, []int{600_000, 50_000}
 	if smoke {
 		// dev's fetch waits a second: F + max_wait + flush_timeout is 8 s, so a routine delivery needs no in-progress ack here either;
-		// a lease of 5 s keeps an unbatched delivery's wait, the lease, a flush's budget and a tick, 9 s, within the ack wait.
+		// a lease of 5 s keeps an unbatched delivery's wait, the lease, a flush's budget and a tick, about 8.3 s, within the ack wait.
 		spec.flush, spec.ackWait, spec.flushTimeout, spec.lease = 5*time.Second, 12*time.Second, 2*time.Second, 5*time.Second
 		k, rate, budgets = 2, 20, []int{2_000, 50}
 	}

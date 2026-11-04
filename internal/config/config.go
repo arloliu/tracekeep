@@ -243,9 +243,10 @@ func Load(path string) (*Config, error) {
 const clockSkew = 2 * time.Minute
 
 // Heartbeat is the tick that keeps in progress a delivery waiting past a routine delivery's life (ingest.md §6.2):
-// half of what AckWait leaves over F, MaxWait and FlushTimeout, at least a second.
+// a third of what AckWait leaves over F, MaxWait and FlushTimeout, at least a second,
+// so a batch is kept a tick past F and MaxWait, where a routine flush starts, and every flush still starts with its budget and two ticks left.
 func (i *Ingest) Heartbeat() time.Duration {
-	return max((i.AckWait-i.FlushInterval-i.MaxWait-i.FlushTimeout)/2, time.Second)
+	return max((i.AckWait-i.FlushInterval-i.MaxWait-i.FlushTimeout)/3, time.Second)
 }
 
 // Check holds the rules ingest's timing must keep (ingest.md §6.2), which a configuration's load checks too:
