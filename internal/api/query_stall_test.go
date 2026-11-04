@@ -90,7 +90,7 @@ type stallWorld struct {
 	st    *counted
 }
 
-func newStallWorld(t *testing.T, c *catalog.Catalog, h2, slow bool) *stallWorld {
+func newStallWorld(t *testing.T, c *catalog.Catalog, h2, slow bool, opts ...connect.ClientOption) *stallWorld {
 	t.Helper()
 	w := &stallWorld{masked: newMasked(t, c), ended: make(chan struct{}, 8), sm: metrics.NewServer()}
 	am, err := metrics.NewAPI(w.sm)
@@ -131,7 +131,7 @@ func newStallWorld(t *testing.T, c *catalog.Catalog, h2, slow bool) *stallWorld 
 		return throttled{c}, nil
 	}
 	t.Cleanup(tr.CloseIdleConnections)
-	w.cl = tracekeepv1connect.NewMachineServiceClient(&http.Client{Transport: tr}, hs.URL)
+	w.cl = tracekeepv1connect.NewMachineServiceClient(&http.Client{Transport: tr}, hs.URL, opts...)
 
 	return w
 }
@@ -166,74 +166,82 @@ func (w *stallWorld) awaitEnds(t *testing.T, n int) {
 
 // A stream whose client stops reading ends once its send makes no progress for the send timeout, with deadline_exceeded,
 // its read slot freed and every object it opened closed; over HTTP/2 a stream beside it on the same connection reads to its end.
-// The client resumes from the last cursor it received and reads the rest, nothing twice.
+// The client resumes from the last cursor it received and reads the rest, nothing twice. A binary and a JSON client each.
 func TestQueryRecordsStalledStreamEnds(t *testing.T) {
 	t.Parallel()
 	for _, h2 := range []bool{false, true} {
-		name := map[bool]string{false: "http1", true: "http2"}[h2]
-		t.Run(name, func(t *testing.T) {
-			t.Parallel()
-			catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
-				const n = 500
-				w := newStallWorld(t, c, h2, false)
-				w.srv.Records.MaxReads, w.srv.Records.SendTimeout = 2, 500*time.Millisecond
-				capture := w.bigCapture(t, n, 4000)
-				stalled, err := w.cl.QueryRecords(t.Context(), query(capture, nil))
-				if err != nil {
-					t.Fatal(err)
-				}
-				defer stalled.Close()
-				if !stalled.Receive() {
-					t.Fatalf("the first message: %v", stalled.Err())
-				}
-				first := seqsOf(stalled.Msg().GetItems())
-				cursor := stalled.Msg().GetCursor()
-				ends := 1
-				if h2 {
-					// The stalled stream's window is full: an active stream on the same connection reads to its end.
-					msgs, err := w.streamed(t, query(capture, nil))
-					if err != nil {
-						t.Fatalf("the active stream: %v", err)
-					}
-					if its, _ := items(t, msgs); len(seqsOf(its)) != n {
-						t.Errorf("the active stream read %d records, want %d", len(seqsOf(its)), n)
-					}
-					if a := w.ln.accepted.Load(); a != 1 {
-						t.Errorf("%d connections, want both streams on one", a)
-					}
-					ends++
-				}
-				w.awaitEnds(t, ends)
-				if got := scrape(t, w.sm); !strings.Contains(got, `tracekeep_api_requests_total{code="deadline_exceeded",operation="QueryRecords"} 1`) {
-					t.Errorf("no stalled stream counted with deadline_exceeded:\n%s", grep(got, "QueryRecords"))
-				}
-				if o, cl := w.st.opened.Load(), w.st.closed.Load(); o == 0 || o != cl {
-					t.Errorf("%d objects opened, %d closed", o, cl)
-				}
-				releases := make([]func(), 0, 2)
-				for range 2 {
-					release, err := w.srv.acquire()
-					if err != nil {
-						t.Fatalf("a read slot after the stalled stream ended: %v", err)
-					}
-					releases = append(releases, release)
-				}
-				for _, release := range releases {
-					release()
-				}
-				_ = stalled.Close()
-				rest, err := w.masked.streamed(t, query(capture, func(q *tkv1.QueryRecordsRequest) { q.Cursor = cursor }))
-				if err != nil {
-					t.Fatalf("resumed: %v", err)
-				}
-				its, _ := items(t, rest)
-				all := slices.Concat(first, seqsOf(its))
-				if len(all) != n || all[0] != 1 || all[n-1] != n {
-					t.Errorf("read %d records, from %d to %d, before and after the resumption; want each of %d once", len(all), all[0], all[len(all)-1], n)
-				}
+		for _, codec := range clientCodecs {
+			name := map[bool]string{false: "http1", true: "http2"}[h2] + "/" + codec.name
+			t.Run(name, func(t *testing.T) {
+				t.Parallel()
+				stalledStreamEnds(t, h2, codec.opts)
 			})
-		})
+		}
 	}
+}
+
+// stalledStreamEnds is TestQueryRecordsStalledStreamEnds' case over HTTP/2 when h2, by a client of opts.
+func stalledStreamEnds(t *testing.T, h2 bool, opts []connect.ClientOption) {
+	t.Helper()
+	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
+		const n = 500
+		w := newStallWorld(t, c, h2, false, opts...)
+		w.srv.Records.MaxReads, w.srv.Records.SendTimeout = 2, 500*time.Millisecond
+		capture := w.bigCapture(t, n, 4000)
+		stalled, err := w.cl.QueryRecords(t.Context(), query(capture, nil))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer stalled.Close()
+		if !stalled.Receive() {
+			t.Fatalf("the first message: %v", stalled.Err())
+		}
+		first := seqsOf(stalled.Msg().GetItems())
+		cursor := stalled.Msg().GetCursor()
+		ends := 1
+		if h2 {
+			// The stalled stream's window is full: an active stream on the same connection reads to its end.
+			msgs, err := w.streamed(t, query(capture, nil))
+			if err != nil {
+				t.Fatalf("the active stream: %v", err)
+			}
+			if its, _ := items(t, msgs); len(seqsOf(its)) != n {
+				t.Errorf("the active stream read %d records, want %d", len(seqsOf(its)), n)
+			}
+			if a := w.ln.accepted.Load(); a != 1 {
+				t.Errorf("%d connections, want both streams on one", a)
+			}
+			ends++
+		}
+		w.awaitEnds(t, ends)
+		if got := scrape(t, w.sm); !strings.Contains(got, `tracekeep_api_requests_total{code="deadline_exceeded",operation="QueryRecords"} 1`) {
+			t.Errorf("no stalled stream counted with deadline_exceeded:\n%s", grep(got, "QueryRecords"))
+		}
+		if o, cl := w.st.opened.Load(), w.st.closed.Load(); o == 0 || o != cl {
+			t.Errorf("%d objects opened, %d closed", o, cl)
+		}
+		releases := make([]func(), 0, 2)
+		for range 2 {
+			release, err := w.srv.acquire()
+			if err != nil {
+				t.Fatalf("a read slot after the stalled stream ended: %v", err)
+			}
+			releases = append(releases, release)
+		}
+		for _, release := range releases {
+			release()
+		}
+		_ = stalled.Close()
+		rest, err := w.masked.streamed(t, query(capture, func(q *tkv1.QueryRecordsRequest) { q.Cursor = cursor }))
+		if err != nil {
+			t.Fatalf("resumed: %v", err)
+		}
+		its, _ := items(t, rest)
+		all := slices.Concat(first, seqsOf(its))
+		if len(all) != n || all[0] != 1 || all[n-1] != n {
+			t.Errorf("read %d records, from %d to %d, before and after the resumption; want each of %d once", len(all), all[0], all[len(all)-1], n)
+		}
+	})
 }
 
 // A client that keeps reading, too slowly for one message to arrive within the send timeout, is never ended by it.
