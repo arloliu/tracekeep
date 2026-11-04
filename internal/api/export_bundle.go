@@ -163,6 +163,8 @@ type bundle struct {
 	bytes    int64
 	written  int64
 	manifest manifest
+	// configs decides the attempt's configurations, each once, never shared with another attempt.
+	configs configs
 }
 
 // buildBundle writes job's bundle for req into dir/bundle.tar and returns its path and size.
@@ -183,7 +185,7 @@ func (s *Server) buildBundle(ctx context.Context, job tracepack.UUID, req *expor
 		}
 	}()
 	b := &bundle{
-		s: s, bounds: s.Exports.Bounds.withDefaults(), dir: dir,
+		s: s, bounds: s.Exports.Bounds.withDefaults(), dir: dir, configs: configs{s: s},
 		manifest: manifest{
 			Kind: "canonical", Job: job.String(), Selector: req.Selector,
 			Note: "each pack is exported whole, so a pack's file holds the records of its hour outside the window too",
@@ -244,7 +246,7 @@ func (b *bundle) capture(ctx context.Context, c *catalog.CaptureInfo, from, to i
 	if mc.Completeness, err = protojson.Marshal(completenessOf(inWindow(&comp, meeting{from: from, to: to}))); err != nil {
 		return err
 	}
-	withheld, err := b.s.withholds(ctx, c.ConfigID)
+	withheld, err := b.configs.withholds(ctx, c.ConfigID)
 	if err != nil {
 		return err
 	}
@@ -325,7 +327,7 @@ func (b *bundle) readSet(ctx context.Context, capture tracepack.UUID, h int64) (
 	if err != nil {
 		return rs, err
 	}
-	if withheld, err := b.s.withholds(ctx, rs.ConfigID); err != nil {
+	if withheld, err := b.configs.withholds(ctx, rs.ConfigID); err != nil {
 		return rs, err
 	} else if withheld {
 		return rs, records.ErrWithheld

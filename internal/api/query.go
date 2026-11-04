@@ -69,11 +69,12 @@ func (s *Server) acquire() (release func(), err error) {
 	}
 }
 
-func (s *Server) reader() *records.Reader {
+// reader is a records reader checking every read set against withholds.
+func (s *Server) reader(withholds func(context.Context, *int64) (bool, error)) *records.Reader {
 	return &records.Reader{
 		Catalog: s.Catalog, Store: s.Store,
 		MaxReaders: cmp.Or(s.Records.MaxReaders, 16), HeldBytes: cmp.Or(s.Records.HeldBytes, 64<<20),
-		Withholds: s.withholds,
+		Withholds: withholds,
 	}
 }
 
@@ -101,7 +102,7 @@ func (s *Server) QueryRecords(ctx context.Context, req *connect.Request[tkv1.Que
 	slices.SortFunc(caps, func(a, b catalog.CaptureInfo) int {
 		return cmp.Or(cmp.Compare(a.OriginNS, b.OriginNS), bytes.Compare(a.ID[:], b.ID[:]))
 	})
-	w := &recordWriter{s: s, stream: stream, q: q, json: strings.Contains(req.Header().Get("Content-Type"), "json")}
+	w := &recordWriter{s: s, stream: stream, q: q, json: strings.Contains(req.Header().Get("Content-Type"), "json"), configs: configs{s: s}}
 	for i := range caps {
 		c := &caps[i]
 		if q.after != nil && before(c, q.after) {
@@ -279,8 +280,17 @@ type recordWriter struct {
 	limited bool
 	// json is set when the stream's codec is JSON, whose encoding sizes the batches.
 	json bool
-	// configs caches whether a configuration withholds its captures.
-	configs map[int64]bool
+	// configs decides the stream's configurations, each once.
+	configs configs
+}
+
+// configs decides whether each configuration withholds its captures once a QueryRecords RPC or an export attempt (api.md §10.1 *Records*, *Exports*):
+// every id is still checked, a missing one withholding, but content decided once is not read or decoded again, since it is immutable;
+// an error or a cancellation is never remembered, and a remembered answer is never given to a cancelled read.
+// It lives as long as its RPC or attempt, used by one goroutine.
+type configs struct {
+	s       *Server
+	decided map[int64]bool
 }
 
 // capture streams one capture: its start, its records hour by hour, and its unknown tail.
@@ -298,7 +308,7 @@ func (w *recordWriter) capture(ctx context.Context, c *catalog.CaptureInfo) erro
 	if err != nil {
 		return failed(err)
 	}
-	withheld, err := w.withheld(ctx, c)
+	withheld, err := w.configs.withholds(ctx, c.ConfigID)
 	if err != nil {
 		return err
 	}
@@ -311,7 +321,7 @@ func (w *recordWriter) capture(ctx context.Context, c *catalog.CaptureInfo) erro
 		if err := w.add(&tkv1.RecordItem{Item: &tkv1.RecordItem_Withheld{Withheld: &tkv1.Withheld{}}}); err != nil {
 			return err
 		}
-	} else if err := w.s.reader().Read(ctx, &rq, w); err != nil {
+	} else if err := w.s.reader(w.configs.withholds).Read(ctx, &rq, w); err != nil {
 		return readFailed(err)
 	}
 	tail := &tkv1.UnknownTail{Open: c.State == catalog.StateOpen}
@@ -380,24 +390,6 @@ func cut(comp *tkv1.Completeness) bool {
 	return true
 }
 
-// withheld tells whether c is withheld (T-48), each configuration decided once a stream.
-func (w *recordWriter) withheld(ctx context.Context, c *catalog.CaptureInfo) (bool, error) {
-	if c.ConfigID != nil {
-		if v, ok := w.configs[*c.ConfigID]; ok {
-			return v, nil
-		}
-	}
-	v, err := w.s.withholds(ctx, c.ConfigID)
-	if err == nil && c.ConfigID != nil {
-		if w.configs == nil {
-			w.configs = map[int64]bool{}
-		}
-		w.configs[*c.ConfigID] = v
-	}
-
-	return v, err
-}
-
 // withholds tells whether a capture bound to config is withheld: outside tracekeep dev, its configuration has no policy (T-48).
 func (s *Server) withholds(ctx context.Context, config *int64) (bool, error) {
 	if s.Dev {
@@ -416,6 +408,26 @@ func (s *Server) withholds(ctx context.Context, config *int64) (bool, error) {
 	}
 
 	return content.Policy == nil, nil
+}
+
+// withholds is Server.withholds, each configuration's content read and decoded once.
+func (c *configs) withholds(ctx context.Context, config *int64) (bool, error) {
+	if config == nil || *config == 0 {
+		return c.s.withholds(ctx, config)
+	}
+	if v, ok := c.decided[*config]; ok {
+		return v, ctx.Err()
+	}
+	v, err := c.s.withholds(ctx, config)
+	if err != nil {
+		return false, err
+	}
+	if c.decided == nil {
+		c.decided = map[int64]bool{}
+	}
+	c.decided[*config] = v
+
+	return v, nil
 }
 
 // window is comp as far as it meets the query: its gaps, evicted runs, deferred seqs, declared losses, crash gaps and conflicts,
