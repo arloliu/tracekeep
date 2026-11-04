@@ -248,13 +248,29 @@ func (i *Ingest) Heartbeat() time.Duration {
 	return max((i.AckWait-i.FlushInterval-i.MaxWait-i.FlushTimeout)/2, time.Second)
 }
 
+// Check holds the rules ingest's timing must keep (ingest.md §6.2), which a configuration's load checks too:
+// ack_wait exceeds a routine delivery's life, F, max_wait and flush_timeout,
+// and the longest a delivery of a fetch waits unbatched and unkept, the lease and a flush's budget, with a tick to spare.
+func (i *Ingest) Check() error {
+	var errs []error
+	if life := i.FlushInterval + i.MaxWait + i.FlushTimeout; i.AckWait <= life {
+		errs = append(errs, fmt.Errorf("ingest.ack_wait %s must exceed ingest.flush_interval + ingest.max_wait + ingest.flush_timeout, %s (T-25, ingest.md §6.2)",
+			i.AckWait, life))
+	}
+	if unbatched := i.Lease + i.FlushTimeout + i.Heartbeat(); i.AckWait <= unbatched {
+		errs = append(errs, fmt.Errorf("ingest.ack_wait %s must exceed ingest.lease + ingest.flush_timeout + the heartbeat's tick %s, %s: "+
+			"a fetched delivery waits that long unbatched before it is nak'd (ingest.md §6.2)", i.AckWait, i.Heartbeat(), unbatched))
+	}
+
+	return errors.Join(errs...)
+}
+
 // check holds the rules that span fields; dev admits what only tracekeep dev may use.
 func (c *Config) check(dev bool) error {
 	errs := c.Auth.check()
 	errs = append(errs, c.Keys.check(dev)...)
-	if life := c.Ingest.FlushInterval + c.Ingest.MaxWait + c.Ingest.FlushTimeout; c.Ingest.AckWait <= life {
-		errs = append(errs, fmt.Errorf("ingest.ack_wait %s must exceed ingest.flush_interval + ingest.max_wait + ingest.flush_timeout, %s (T-25, ingest.md §6.2)",
-			c.Ingest.AckWait, life))
+	if err := c.Ingest.Check(); err != nil {
+		errs = append(errs, err)
 	}
 	if bound := c.Ingest.FlushInterval + c.Ingest.AckWait + c.Compact.RedeliverySlack; c.Compact.QuietPeriod <= bound {
 		errs = append(errs, fmt.Errorf("compact.quiet_period %s must exceed ingest.flush_interval + ingest.ack_wait + compact.redelivery_slack, %s (T-25, T-41)",
@@ -308,7 +324,7 @@ func Dev(dir, url string, flush time.Duration) (*Config, error) {
 	c.Bus.URL, c.Bus.SubjectPrefix, c.Bus.ClaimBucket = url, "tk", "tk-claims"
 	c.Store.Kind, c.Store.Dir, c.Store.Presign = "fs", filepath.Join(dir, "packs"), false
 	c.Ingest.FlushInterval, c.Ingest.MaxWait = flush, time.Second
-	c.Ingest.AckWait = max(time.Minute, 2*flush) + c.Ingest.FlushTimeout
+	c.Ingest.AckWait = max(time.Minute, 2*flush) + c.Ingest.FlushTimeout + c.Ingest.Lease
 	c.Compact.Interval = 30 * time.Second
 	c.Compact.QuietPeriod = c.Ingest.FlushInterval + c.Ingest.AckWait + c.Compact.RedeliverySlack + time.Minute
 	c.Replica, c.Metrics.Listen = "dev", "" // dev serves metrics only where asked

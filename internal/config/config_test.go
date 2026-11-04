@@ -144,6 +144,28 @@ func TestAckWaitBound(t *testing.T) {
 	}
 }
 
+// ack_wait must also exceed the longest a fetched delivery waits unbatched and unkept, lease + flush_timeout + the tick, strictly (ingest.md §6.2):
+// with a 3-minute lease, 5m55s equals it (a tick of 1m55s) and 5m56s passes; the defaults pass with minutes to spare.
+func TestAckWaitCoversAnUnbatchedDelivery(t *testing.T) {
+	t.Parallel()
+	timing := func(ackWait string) string {
+		return yaml("", "", "", "ingest:\n  flush_interval: 1m\n  max_wait: 5s\n  flush_timeout: 1m\n  lease: 3m\n  ack_wait: "+ackWait+"\n")
+	}
+	if _, err := Load(write(t, timing("5m55s"))); err == nil || !strings.Contains(err.Error(), "ingest.lease") {
+		t.Errorf("ack_wait equal to lease + flush_timeout + the tick: Load = %v, want an error naming ingest.lease", err)
+	}
+	if _, err := Load(write(t, timing("5m56s"))); err != nil {
+		t.Errorf("ack_wait one second past lease + flush_timeout + the tick: Load = %v, want it accepted", err)
+	}
+	c, err := Load(write(t, minimal))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if i := c.Ingest; i.Lease+i.FlushTimeout+i.Heartbeat() >= i.AckWait || i.Check() != nil {
+		t.Errorf("the defaults: lease %s + flush_timeout %s + tick %s against ack_wait %s, Check %v; want within it", i.Lease, i.FlushTimeout, i.Heartbeat(), i.AckWait, i.Check())
+	}
+}
+
 // Q must exceed F + ack_wait + the redelivery slack strictly (catalog.md §7.3, T-25, T-41).
 func TestQuietPeriodBound(t *testing.T) {
 	t.Parallel()

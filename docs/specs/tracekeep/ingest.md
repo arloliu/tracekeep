@@ -210,7 +210,8 @@ the cases prove the decision, the schedules prove the re-reads under the capture
   so every delivery has at least a flush's budget and two ticks of its ack wait left when its flush starts, whatever the tick's floor or a late tick.
   Once a batch's flush has started its deliveries are never kept in progress: its budget ends before their ack wait does.
   Their deferrals are still held while the flush runs (`operations.md` §10.4 `deferred_messages`), from a copy of the batch's deliveries taken as it starts.
-  A fetch's deliveries not yet batched wait at most the membership lease and a flush, then are naked untouched (`rollouts.md` §6.4).
+  A fetch's deliveries not yet batched wait at most the membership lease and a flush, then are naked untouched (`rollouts.md` §6.4),
+  so `ingest.ack_wait` also exceeds `ingest.lease` + `ingest.flush_timeout` + a tick, which a configuration's load checks.
 - **Local work that outlasts the flush's budget and `ack_wait`** is still waited for, and the flush owns its working files until the work returns;
   it registers nothing past its budget, since its remote calls end with the budget.
   Its deliveries, kept no more, are redelivered once their ack wait ends, to this replica or another, and disposed of afresh:

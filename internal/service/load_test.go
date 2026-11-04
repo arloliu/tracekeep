@@ -74,9 +74,10 @@ type loadSpec struct {
 	tools      []int
 	start, top float64
 	// ackWait and maxAckPending, when not zero, replace dev's consumer configuration, which the harness asserts took effect;
-	// flushTimeout, when not zero, replaces dev's flush budget.
-	ackWait, flushTimeout time.Duration
-	maxAckPending         int
+	// flushTimeout and lease, when not zero, replace dev's flush budget and membership lease;
+	// the harness checks the timing it runs still keeps ingest's rules.
+	ackWait, flushTimeout, lease time.Duration
+	maxAckPending                int
 	// probed installs the ingester's test seams and reads the consumer every sample, for the ceiling's, claim-check and production modes.
 	probed bool
 }
@@ -195,6 +196,12 @@ func newLoadHarness(t *testing.T, spec loadSpec) *loadHarness {
 	}
 	if spec.flushTimeout > 0 {
 		d.Env.Config.Ingest.FlushTimeout = spec.flushTimeout
+	}
+	if spec.lease > 0 {
+		d.Env.Config.Ingest.Lease = spec.lease
+	}
+	if err := d.Env.Config.Ingest.Check(); err != nil {
+		t.Fatal(err)
 	}
 	if spec.maxAckPending > 0 {
 		d.Env.Config.Ingest.MaxAckPending = spec.maxAckPending
