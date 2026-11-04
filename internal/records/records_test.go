@@ -66,9 +66,11 @@ func newID(t testing.TB) tracepack.UUID {
 type world struct {
 	// block is the writer's block threshold, 0 for tracepack's default.
 	block int
-	st    store.ObjectStore
-	mu    sync.Mutex
-	sets  map[int64][]catalog.ReadSet
+	// mutate, when set, changes a pack's bytes before they are put.
+	mutate func([]byte)
+	st     store.ObjectStore
+	mu     sync.Mutex
+	sets   map[int64][]catalog.ReadSet
 	// reads and nexts count the read sets and the next-hour lookups served.
 	reads, nexts int
 }
@@ -185,6 +187,9 @@ func (w *world) packAt(t testing.TB, h int64, role string, state string, absent 
 	}
 	if lo <= hi {
 		p.Ranges = []catalog.Range{{SeqFrom: lo, SeqTo: hi}}
+	}
+	if w.mutate != nil {
+		w.mutate(buf.Bytes())
 	}
 	if !absent {
 		if err := w.st.Put(t.Context(), p.Key, bytes.NewReader(buf.Bytes()), int64(buf.Len())); err != nil {
