@@ -162,13 +162,13 @@ func (r *replica) pending(t *testing.T) uint64 {
 	return info.State.Msgs
 }
 
-// settled is pending once it reaches want, or after 10s: an inline record's acknowledgement is not confirmed,
+// settled is pending once it reaches none, or after 10s: an inline record's acknowledgement is not confirmed,
 // so the server may remove its message a moment after the flush returned.
-func (r *replica) settled(t *testing.T, want uint64) uint64 {
+func (r *replica) settled(t *testing.T) uint64 {
 	t.Helper()
 	deadline := time.Now().Add(10 * time.Second)
 	for {
-		if n := r.pending(t); n == want || time.Now().After(deadline) {
+		if n := r.pending(t); n == 0 || time.Now().After(deadline) {
 			return n
 		}
 		time.Sleep(10 * time.Millisecond)

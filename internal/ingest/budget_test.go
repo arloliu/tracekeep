@@ -42,7 +42,7 @@ func TestMetadataBudgetClosesABatch(t *testing.T) {
 		feedCarriers(t, p, tracepack.UUID{0x61}, carriers)
 		n := len(carriers) + 1
 		held := 0
-		p.b.Held(func(Entry) { held++ })
+		p.b.Held(func(b *Batch) { held += len(b.Entries) })
 		if held != n {
 			t.Fatalf("the batcher holds %d records, want %d: a closed batch's records are held too", held, n)
 		}

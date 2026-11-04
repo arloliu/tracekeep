@@ -54,6 +54,8 @@ type Message struct {
 	// Subject and Header are the message's as the bus delivered them, which its parked copy carries on.
 	Subject string
 	Header  nats.Header
+	// Fetched is when the fetch that delivered the message started, no later than its ack wait did; zero when unknown.
+	Fetched time.Time
 }
 
 // Delivery is one delivery being decided: the message, the facts gathered and what the steps found.

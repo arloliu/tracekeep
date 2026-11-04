@@ -21,7 +21,8 @@ package service
 //   - claimcheck runs K = 10 with 10% of its records, then all of them, above the inline limit (max_payload − 4096),
 //     so they travel by claim-check, for acknowledgement's share of a flush (about 10 minutes,
 //     writing some 20 GB of claim objects and packs under the test's temporary directory, which must be on a disk, not memory);
-//   - production runs ingest's defaults, flush 5 m and ack_wait 7 m (the heartbeat every ack_wait/3), at 1,600 records a second over K = 100,
+//   - production runs ingest's defaults, flush 5 m, ack_wait 7 m and flush_timeout 1 m (in-progress acks only for a delivery waiting past F + max_wait + flush_timeout),
+//     at 1,600 records a second over K = 100,
 //     with max_ack_pending 600,000 and then the default 50,000 as its control, each after a warm-up of a flush plus ack_wait,
 //     judged over at least six completed drain cycles spanning at least three heartbeat periods (about 1.5 hours both);
 //   - ceiling-smoke, claimcheck-smoke and production-smoke check those three in a few minutes, at a low rate over short spans.
@@ -72,9 +73,10 @@ type loadSpec struct {
 	// tools are the sweep's K, each swept from start forwards a second, doubling, to at most top.
 	tools      []int
 	start, top float64
-	// ackWait and maxAckPending, when not zero, replace dev's consumer configuration, which the harness asserts took effect.
-	ackWait       time.Duration
-	maxAckPending int
+	// ackWait and maxAckPending, when not zero, replace dev's consumer configuration, which the harness asserts took effect;
+	// flushTimeout, when not zero, replaces dev's flush budget.
+	ackWait, flushTimeout time.Duration
+	maxAckPending         int
 	// probed installs the ingester's test seams and reads the consumer every sample, for the ceiling's, claim-check and production modes.
 	probed bool
 }
@@ -190,6 +192,9 @@ func newLoadHarness(t *testing.T, spec loadSpec) *loadHarness {
 	d.Env.Store = h.put
 	if spec.ackWait > 0 {
 		d.Env.Config.Ingest.AckWait = spec.ackWait
+	}
+	if spec.flushTimeout > 0 {
+		d.Env.Config.Ingest.FlushTimeout = spec.flushTimeout
 	}
 	if spec.maxAckPending > 0 {
 		d.Env.Config.Ingest.MaxAckPending = spec.maxAckPending
