@@ -94,16 +94,16 @@ func BenchmarkMergeCandidates(b *testing.B) {
 	}
 }
 
-// keyStandings reads keys' standings in their order, one KeyStanding a key.
+// keyStandings reads keys' standings in their order, in asks of at most MaxKeyStandings keys.
 func keyStandings(b *testing.B, c *Catalog, keys []string) ([]KeyStanding, error) {
 	b.Helper()
-	out := make([]KeyStanding, len(keys))
-	for i, key := range keys {
-		s, err := c.KeyStanding(b.Context(), key)
+	out := make([]KeyStanding, 0, len(keys))
+	for chunk := range slices.Chunk(keys, MaxKeyStandings) {
+		s, err := c.KeyStandings(b.Context(), chunk)
 		if err != nil {
 			return nil, err
 		}
-		out[i] = s
+		out = append(out, s...)
 	}
 
 	return out, nil
