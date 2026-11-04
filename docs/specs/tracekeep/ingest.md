@@ -202,8 +202,9 @@ the cases prove the decision, the schedules prove the re-reads under the capture
   its batch is due F after the fetch of its first record, seen at the step after the next fetch's wait, and flushed within its budget,
   so a routine delivery is acknowledged with no in-progress ack.
   A delivery waits longer only in a batch not yet flushing: an open one while a long flush holds the step, or a due one queued behind other batches' flushes.
-  A tick every (`ack_wait` − F − `max_wait` − `flush_timeout`) / 2, at least a second (27.5 s at the defaults),
-  keeps in progress every delivery of each such batch once the batch has gone `ack_wait` − `flush_timeout` − two ticks (F + `max_wait` at the defaults)
+  A tick every (`ack_wait` − F − `max_wait` − `flush_timeout`) / 3, at least a second (18.3 s at the defaults),
+  keeps in progress every delivery of each such batch once the batch has gone `ack_wait` − `flush_timeout` − two ticks
+  (F + `max_wait` + a tick: 5 m 23.3 s at the defaults, a tick past a routine flush's start, which a step's own work can delay past F + `max_wait`)
   since the fetch of its oldest delivery or its last in-progress ack,
   so a batch reaching its flush has kept its deliveries within their ack wait.
   As a batch's flush starts, the same rule is applied to it once more: a batch that has gone that long is kept then,
