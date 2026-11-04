@@ -18,6 +18,8 @@ Contract changes go through proposals, which the subject [README.md](README.md) 
   and is disposable: a role removes what it left behind at start (§5.1).
 - **Read seam**: `io.ReaderAt` plus size, for `tracepack.Open`, `Verify` and `MergeInput`,
   which may issue parallel `ReadAt` calls (§5.1, §5.3).
+- **Opening by a known size**: an optional capability, `SizedOpener`, that `s3` implements:
+  a catalog-read pack opens by its stored size without a HEAD, and a store whose object has another length fails the read as the store's failure (§5.2, §5.3).
 - **`ObjectStore`**: `Put`, `Open`, `Stat`, `List`, `Delete`; backends `s3`, `fs`, `mem`;
   one shared conformance suite (§5.2).
 - **`Put` postconditions**: the object is visible only when complete; nil means durable;
@@ -112,10 +114,32 @@ type Presigner interface {
   not-found means the store accepts the signature, and a refused signature is reported with the advice to turn presigning off.
 - A presigned URL, like an API download token, expires before its object can be deleted (`api.md` §10.1 *Downloads*, §8.3).
 
+**Opening by a known size.**
+A pack the catalog names has its size there (`packs.size`, a read set's pack), so asking the store for it again costs a request a read need not make;
+opening by that size is an optional capability of a store:
+
+```go
+type SizedOpener interface {
+    OpenSized(ctx context.Context, key string, size int64) (Object, error)
+}
+```
+
+- `s3` implements it without a request, the object's reads checking the size (§5.3);
+  `fs` and `mem` do not, since their `Open` asks no service.
+- A catalog-read pack opens by its stored size on a store with the capability, and by `Open`, which reads the size from the store, on one without it;
+  also by `Open` when the size is unknown or below a pack's 80-byte file header, zero included, which tracepack refuses before reading a byte:
+  such a size never reaches tracepack, so it never turns a missing or a valid object into a corrupt pack.
+
 ### 5.3 ReaderAt
 
 Ranged GETs with a small read-ahead;
 tracepack's reader keeps its bootstrap bytes and reads packs below a few MiB in one request (G5-211).
+An object's size is its expected length, the store's own from `Open` or the catalog's from `OpenSized`,
+and every ranged GET's `Content-Range` total, the first included, must equal it:
+a mismatch, or a range past the object's end, is the store's failure, never the pack's defect,
+so a read fails and is retried, and an export attempt fails and the next exports the pack, never leaving it out as corrupt (`api.md` §10.1 *Exports*).
+A missing object found at an object's first GET answers what `Open` answers for it, not found, so the hour's re-read is unchanged (`api.md` §10.1 *Records*);
+a missing bucket is the store's failure there too.
 Presigned URLs (§10.1) give the VE service the same objects without tracekeep in the data path;
 on a store without presigning the API is in that path, serving ranged reads through `Open` (§10.1 *Downloads*).
 
