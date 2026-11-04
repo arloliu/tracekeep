@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"slices"
 	"sync"
 	"time"
 
@@ -97,9 +98,9 @@ type Ingester struct {
 	mu sync.Mutex
 	// flushing are the batches a flush took from the batcher and has not started, which the heartbeat keeps like the batcher's.
 	flushing []*Batch
-	// inFlight is the batch a flush is writing, held but never kept: its budget ends before its deliveries' ack wait does.
-	// The heartbeat reads none of its entries, which the flush sorts.
-	inFlight *Batch
+	// inFlight are the entries of the batch a flush is writing, copied as it starts, before the flush sorts them:
+	// their deferrals are held, but they are never kept in progress, since their budget ends before their ack wait does.
+	inFlight []Entry
 	// fetched is when the fetch being disposed of started; only the stepping goroutine reads or writes it.
 	fetched time.Time
 
@@ -281,19 +282,16 @@ func (g *Ingester) heartbeats(ctx context.Context, tick <-chan time.Time) {
 }
 
 // beat keeps in progress the messages of each batch not yet flushing, the batcher's and those a flush took and has not started,
-// once they have gone AckWait less FlushTimeout and two ticks since their fetch or their last in-progress ack:
-// a routine delivery is acknowledged before then and is never kept, and a batch whose flush started is never kept.
+// once they are due to be kept (keepDue); a batch whose flush started is never kept.
 // One racing its message's acknowledgement is harmless: the server ignores progress on a message no longer pending.
-// The deferrals of the waiting messages, write failures redelivered into a batch, are kept while they are held.
+// The deferrals of the held messages, write failures redelivered into a batch, are kept while they are held, those of a flush in progress included.
 func (g *Ingester) beat() {
 	now := g.Now()
-	after := g.AckWait - g.FlushTimeout - 2*g.Heartbeat
 	var held, kept []Entry
 	visit := func(b *Batch) {
 		held = append(held, b.Entries...)
-		if now.Sub(b.kept) >= after {
+		if g.keepDue(b, now) {
 			kept = append(kept, b.Entries...)
-			b.kept = now
 		}
 	}
 	g.mu.Lock()
@@ -301,16 +299,34 @@ func (g *Ingester) beat() {
 	for _, b := range g.flushing {
 		visit(b)
 	}
+	held = append(held, g.inFlight...)
 	g.mu.Unlock()
-	for _, e := range kept {
-		_ = e.Msg.InProgress()
-	}
+	g.keep(kept)
 	ids := make([]string, len(held))
 	for i, e := range held {
 		ids[i] = e.D.deferralID()
 	}
-	g.Metrics.InProgress(len(kept))
 	g.Metrics.Held(ids)
+}
+
+// keepDue reports, and records as kept at now, a batch whose deliveries have gone AckWait less FlushTimeout and two ticks
+// since their fetch or their last in-progress ack: a routine delivery is acknowledged before then and is never kept.
+// g.mu is held.
+func (g *Ingester) keepDue(b *Batch, now time.Time) bool {
+	if now.Sub(b.kept) < g.AckWait-g.FlushTimeout-2*g.Heartbeat {
+		return false
+	}
+	b.kept = now
+
+	return true
+}
+
+// keep sends an in-progress ack for each of entries.
+func (g *Ingester) keep(entries []Entry) {
+	for _, e := range entries {
+		_ = e.Msg.InProgress()
+	}
+	g.Metrics.InProgress(len(entries))
 }
 
 // renew checks the stream against its incarnation, then renews the membership, or registers again once it lapsed.
@@ -545,12 +561,12 @@ func publishCause(err error) slog.Attr {
 // (batches taken from the batcher by take, which the heartbeat already holds);
 // a batch that fails, or is not done within its budget, is nak'd, but for the messages it acknowledged, and written again at its redelivery.
 func (g *Ingester) flush(ctx context.Context, batches []*Batch) error {
-	defer g.hold(nil, nil)
+	defer g.hold(nil)
 	var errs []error
 	for i, b := range batches {
-		g.hold(b, batches[i+1:]) // b is never kept: its budget ends before its ack wait
+		g.start(b, batches[i+1:])
 		out, err := g.flushBatch(ctx, b)
-		g.hold(nil, batches[i+1:])
+		g.hold(batches[i+1:])
 		var refused *refusalError
 		switch {
 		case err != nil:
@@ -606,10 +622,23 @@ func (g *Ingester) flushBatch(ctx context.Context, b *Batch) (Flushed, error) {
 	return g.Flusher.Flush(ctx, b)
 }
 
-// hold records the batch a flush is writing and hands the batches it has not started to the heartbeat.
-func (g *Ingester) hold(inFlight *Batch, flushing []*Batch) {
+// start hands b to its flush and the batches not yet started to the heartbeat, keeping b first if it is due to be kept,
+// so whatever the tick, every flush starts with at least its budget and two ticks of its deliveries' ack wait left (ingest.md §6.2).
+func (g *Ingester) start(b *Batch, flushing []*Batch) {
+	now := g.Now()
 	g.mu.Lock()
-	g.inFlight, g.flushing = inFlight, flushing
+	due := g.keepDue(b, now)
+	g.inFlight, g.flushing = slices.Clone(b.Entries), flushing
+	g.mu.Unlock()
+	if due {
+		g.keep(b.Entries)
+	}
+}
+
+// hold hands the batches a flush has not started to the heartbeat, no batch being written.
+func (g *Ingester) hold(flushing []*Batch) {
+	g.mu.Lock()
+	g.inFlight, g.flushing = nil, flushing
 	g.mu.Unlock()
 }
 
