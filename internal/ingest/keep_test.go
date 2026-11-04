@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"maps"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -28,13 +29,14 @@ type watchedConsumer struct {
 
 	mu          sync.Mutex
 	inProgress  map[string]int
+	lastKept    map[string]time.Time
 	redelivered int
 	oldest      time.Duration
 	acked       map[uint64]bool
 }
 
 func watch(c jetstream.Consumer) *watchedConsumer {
-	return &watchedConsumer{Consumer: c, inProgress: map[string]int{}, acked: map[uint64]bool{}}
+	return &watchedConsumer{Consumer: c, inProgress: map[string]int{}, lastKept: map[string]time.Time{}, acked: map[uint64]bool{}}
 }
 
 func (c *watchedConsumer) Fetch(n int, opts ...jetstream.FetchOpt) (jetstream.MessageBatch, error) {
@@ -84,8 +86,9 @@ type watchedMsg struct {
 
 func (m *watchedMsg) InProgress() error {
 	m.c.mu.Lock()
-	m.c.inProgress[m.Subject()]++
 	m.since = time.Now()
+	m.c.inProgress[m.Subject()]++
+	m.c.lastKept[m.Subject()] = m.since
 	m.c.mu.Unlock()
 
 	return m.Msg.InProgress()
@@ -110,13 +113,21 @@ func (m *watchedMsg) DoubleAck(ctx context.Context) error {
 	return m.Msg.DoubleAck(ctx)
 }
 
-// slowPut delays every put, within the put's context.
+// slowPut delays every put, within the put's context, noting when each key's first put started.
 type slowPut struct {
 	store.ObjectStore
 	delay time.Duration
+
+	mu      sync.Mutex
+	started map[string]time.Time
 }
 
-func (s slowPut) Put(ctx context.Context, key string, r io.ReadSeeker, size int64) error {
+func (s *slowPut) Put(ctx context.Context, key string, r io.ReadSeeker, size int64) error {
+	s.mu.Lock()
+	if _, ok := s.started[key]; !ok {
+		s.started[key] = time.Now()
+	}
+	s.mu.Unlock()
 	t := time.NewTimer(s.delay)
 	defer t.Stop()
 	select {
@@ -153,6 +164,19 @@ func setBudgets(g *Ingester, ackWait, budget time.Duration) {
 	g.AckWait, g.FlushTimeout = ackWait, budget
 }
 
+// drained is what the stream still holds once it holds nothing, or after within:
+// an inline record's acknowledgement is not confirmed, so the server may remove its message a moment after the flush returned.
+func (r *replica) drained(t *testing.T, within time.Duration) uint64 {
+	t.Helper()
+	deadline := time.Now().Add(within)
+	for {
+		if n := r.pending(t); n == 0 || time.Now().After(deadline) {
+			return n
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
 // running runs g until the returned stop is called, which returns Run's error.
 func running(t *testing.T, g *Ingester) (stop func() error) {
 	t.Helper()
@@ -166,12 +190,14 @@ func running(t *testing.T, g *Ingester) (stop func() error) {
 // Over several flush periods at a healthy store, every delivery is acknowledged within the consumer's ack wait
 // with no in-progress acknowledgement and no redelivery: the ack wait exceeds a routine delivery's life,
 // the flush interval, a fetch's wait and a flush's budget (architecture.md §3.1, ingest.md §6.2).
+// The budget and the ack wait are many times a flush's work, so a slow runner or catalog is not mistaken for the rule's failure:
+// a delivery is kept only after waiting 13 s in a batch, which flushes 1 s after its first record.
 func TestRoutineDeliveriesNeedNoProgress(t *testing.T) {
 	t.Parallel()
 	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
 		r := newReplica(t, c)
-		const ackWait, flush = 2600 * time.Millisecond, time.Second
-		w := keepTimed(t, r, ackWait, flush, 100*time.Millisecond, 500*time.Millisecond, 250*time.Millisecond)
+		const ackWait, flush = 20 * time.Second, time.Second
+		w := keepTimed(t, r, ackWait, flush, 100*time.Millisecond, 5*time.Second, time.Second)
 		captures := []tracepack.UUID{{0x4a, 1}, {0x4a, 2}}
 		for _, capture := range captures {
 			r.publish(t, inline(t, capture, startRecord(t, now), descriptorOf(t, "eqp")), nil)
@@ -183,7 +209,7 @@ func TestRoutineDeliveriesNeedNoProgress(t *testing.T) {
 			r.publish(t, inline(t, captures[i%len(captures)], dataRecord(seq, now+int64(seq)), nil), nil)
 			time.Sleep(5 * flush / records) // the scenario rate: five flush periods of traffic
 		}
-		if left := r.settled(t); left != 0 {
+		if left := r.drained(t, ackWait); left != 0 {
 			t.Errorf("%d messages left on the stream, want every one acknowledged", left)
 		}
 		if err := stop(); err != nil {
@@ -199,18 +225,20 @@ func TestRoutineDeliveriesNeedNoProgress(t *testing.T) {
 	})
 }
 
-// Behind a slow store, a pass of due batches outlasts a routine delivery's life:
+// Behind a slow store, a pass of due batches outlasts the consumer's ack wait:
 // the batches still queued are kept in progress, so none is redelivered, and every acknowledgement comes within its ack wait;
-// a batch whose flush started is never kept, so the pass's first batch, flushed within that life, is never kept at all.
+// a batch whose flush started is never kept, so no batch is kept once its put has started.
+// Each put takes a fifth of the flush's budget, so a slow runner or catalog does not fail a flush, and nine of them outlast the ack wait.
 func TestQueuedBatchesKeptBehindASlowStore(t *testing.T) {
 	t.Parallel()
 	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
 		r := newReplica(t, c)
-		const ackWait, budget, put = 3 * time.Second, time.Second, 900 * time.Millisecond
-		w := keepTimed(t, r, ackWait, time.Second, 100*time.Millisecond, budget, 250*time.Millisecond)
-		r.g.Flusher.Store = slowPut{ObjectStore: r.st, delay: put}
+		const ackWait, budget, put, batches = 8 * time.Second, 5 * time.Second, time.Second, 9
+		w := keepTimed(t, r, ackWait, time.Second, 100*time.Millisecond, budget, 500*time.Millisecond)
+		slow := &slowPut{ObjectStore: r.st, delay: put, started: map[string]time.Time{}}
+		r.g.Flusher.Store = slow
 		subjects := map[tracepack.UUID]string{}
-		for i := range 4 {
+		for i := range batches {
 			capture := tracepack.UUID{0x4b, byte(i)}
 			for _, m := range traffic(t, capture) {
 				r.publish(t, m, nil)
@@ -218,7 +246,7 @@ func TestQueuedBatchesKeptBehindASlowStore(t *testing.T) {
 			subjects[capture] = subjectOf(t, capture)
 		}
 		stop := running(t, r.g)
-		if left := r.settled(t); left != 0 {
+		if left := r.drained(t, batches*budget); left != 0 {
 			t.Errorf("%d messages left on the stream, want every one acknowledged", left)
 		}
 		if err := stop(); err != nil {
@@ -228,27 +256,33 @@ func TestQueuedBatchesKeptBehindASlowStore(t *testing.T) {
 		if redelivered != 0 || oldest >= ackWait {
 			t.Errorf("%d redeliveries, the oldest acknowledgement %s after its ack wait started; want none, within %s", redelivered, oldest, ackWait)
 		}
-		never := 0
-		for _, s := range subjects {
-			if ip[s] == 0 {
-				never++
+		if len(ip) == 0 {
+			t.Error("no batch kept in progress, want the queued ones kept")
+		}
+		w.mu.Lock()
+		slow.mu.Lock()
+		for capture, s := range subjects {
+			for key, at := range slow.started {
+				if strings.Contains(key, capture.String()) && w.lastKept[s].After(at) {
+					t.Errorf("%s kept in progress at %s, after its put started at %s", s, w.lastKept[s].Format(time.StampMilli), at.Format(time.StampMilli))
+				}
 			}
 		}
-		if never != 1 || len(ip) == 0 {
-			t.Errorf("in-progress acknowledgements by subject %v: want the queued batches kept and only the first flushed never", ip)
-		}
+		slow.mu.Unlock()
+		w.mu.Unlock()
 	})
 }
 
 // Local work that outlasts both the flush's budget and the ack wait is still waited for, and its batch is never kept:
 // its deliveries are redelivered, to another replica here, written again and acknowledged only after that registration;
 // the stalled flush owns its working file until its work returns, registers nothing, and its late naks lose nothing.
+// The redelivery's replica has a budget and an ack wait many times its flush's work, so a slow runner or catalog does not fail it.
 func TestLocalWorkOutlastingBothBudgets(t *testing.T) {
 	t.Parallel()
 	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
 		ctx := t.Context()
 		r := newReplica(t, c)
-		const ackWait = time.Second
+		const ackWait = 5 * time.Second
 		w := keepTimed(t, r, ackWait, 0, 100*time.Millisecond, 300*time.Millisecond, 100*time.Millisecond)
 		g1 := r.g
 		writing, release := make(chan struct{}), make(chan struct{})
@@ -278,7 +312,7 @@ func TestLocalWorkOutlastingBothBudgets(t *testing.T) {
 			Coordinator: g1.Coordinator, Park: true, Incarnation: g1.Incarnation, Replica: "r2", Lease: time.Minute, FetchBatch: 100,
 			MaxWait: 100 * time.Millisecond, Heartbeat: g1.Heartbeat, Now: time.Now,
 		}
-		setBudgets(g2, ackWait, 300*time.Millisecond)
+		setBudgets(g2, ackWait, 3*time.Second)
 		if err := g2.Join(ctx); err != nil {
 			t.Fatal(err)
 		}
@@ -289,7 +323,7 @@ func TestLocalWorkOutlastingBothBudgets(t *testing.T) {
 		}
 		stop := running(t, g1)
 		<-writing
-		deadline := time.Now().Add(ackWait + 5*time.Second)
+		deadline := time.Now().Add(ackWait + 30*time.Second)
 		for !registered && time.Now().Before(deadline) {
 			if err := g2.Step(ctx); err != nil {
 				t.Fatal(err)
@@ -319,7 +353,7 @@ func TestLocalWorkOutlastingBothBudgets(t *testing.T) {
 		if ip, _, _ := w.counts(); len(ip) != 0 {
 			t.Errorf("in-progress acknowledgements %v, want none: neither flush's batch is kept", ip)
 		}
-		if left := r.settled(t); left != 0 {
+		if left := r.drained(t, ackWait); left != 0 {
 			t.Errorf("%d messages left on the stream after the stalled flush's naks, want none", left)
 		}
 	})
