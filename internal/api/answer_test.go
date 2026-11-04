@@ -281,7 +281,7 @@ func TestFindTransactionPacksThatDoNotOpen(t *testing.T) {
 }
 
 // objectBytes is key's object in st.
-func objectBytes(t *testing.T, st *store.Mem, key string) []byte {
+func objectBytes(t *testing.T, st store.ObjectStore, key string) []byte {
 	t.Helper()
 	obj, err := st.Open(t.Context(), key)
 	if err != nil {
