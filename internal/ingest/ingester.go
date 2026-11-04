@@ -196,7 +196,7 @@ func stopBudget(ctx context.Context, budget time.Duration) (context.Context, con
 }
 
 // Step renews the membership, fetches one batch of messages within the lease, disposes of each,
-// keeps the held ones in progress and flushes the batches that are due.
+// keeps the held ones in progress and flushes the batches that are due, one its byte bound closes before the fetch's next delivery.
 // It returns the renewal's and the fetch's errors, a pull the server ended with an error included,
 // after disposing of what it delivered; a failed flush's batch is nak'd and logged,
 // and its error is returned too once ctx has ended, the flush then being part of a stop.
@@ -217,7 +217,13 @@ func (g *Ingester) stepFlushing(ctx, flushing context.Context) error {
 
 		return err
 	}
-	var fetchErr error
+	var fetchErr, flushErr error
+	flushDue := func(remove func() []*Batch) {
+		if err := g.flush(flushing, g.take(remove)); err != nil {
+			g.Log.Warn("ingest: flush failed", "error", err)
+			flushErr = errors.Join(flushErr, err)
+		}
+	}
 	if wait := min(g.MaxWait, g.leaseEnd.Sub(g.Now())/2); wait >= time.Millisecond { // otherwise no lease is left to fetch within
 		batch, err := g.Consumer.Fetch(g.FetchBatch, jetstream.FetchMaxWait(wait))
 		if err != nil {
@@ -226,18 +232,18 @@ func (g *Ingester) stepFlushing(ctx, flushing context.Context) error {
 		generation := g.membership.Generation
 		for m := range batch.Messages() {
 			g.handle(ctx, m, generation)
+			if len(g.Batcher.closed) > 0 { // only this goroutine changes the batcher, so its read needs no lock
+				flushDue(g.Batcher.Closed) // before the next delivery is batched, so no fetch is held whole
+			}
 		}
 		if err := batch.Error(); err != nil && !errors.Is(err, jetstream.ErrNoMessages) && !errors.Is(err, context.DeadlineExceeded) {
 			fetchErr = fmt.Errorf("ingest: fetch ended: %w", err)
 		}
 	}
 	now := g.Now()
-	due := g.take(func() []*Batch { return g.Batcher.Due(now) })
-	if err := g.flush(flushing, due); err != nil {
-		g.Log.Warn("ingest: flush failed", "error", err)
-		if ctx.Err() != nil {
-			return errors.Join(fetchErr, fmt.Errorf("%w: %w", errStopFlush, err))
-		}
+	flushDue(func() []*Batch { return g.Batcher.Due(now) })
+	if flushErr != nil && ctx.Err() != nil {
+		return errors.Join(fetchErr, fmt.Errorf("%w: %w", errStopFlush, flushErr))
 	}
 
 	return fetchErr

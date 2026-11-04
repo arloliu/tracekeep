@@ -145,6 +145,9 @@ the cases prove the decision, the schedules prove the re-reads under the capture
   the hour is the record's, never the delivery's ([STO §4] *Scope and order*).
 - At flush (interval F, size threshold, or hour change) the batch is **sorted by seq**;
   equal seq with equal bytes keeps one.
+- **The size threshold** (`ingest.batch_max_bytes`) is checked as each record joins its batch:
+  a batch that reaches it is flushed before the fetch's next delivery is batched,
+  so a scope holds at most the threshold and one record, never a whole fetch.
 - **The metadata budget**: a segment's redaction entries are its metadata, which every reader opens within a budget (tracepack's default, 64 MiB),
   so a batch closes, due at once, before the record whose entries would take their estimated encoded size past half of it,
   and that record opens the next batch of its key;

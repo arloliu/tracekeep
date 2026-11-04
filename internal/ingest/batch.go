@@ -65,13 +65,14 @@ func redactionEntryBytes(e *tracepack.RedactionEntry) int {
 type Batcher struct {
 	// Interval is F: a batch is due this long after its first record arrived.
 	Interval time.Duration
-	// MaxBytes makes a batch due once it holds this many payload bytes.
+	// MaxBytes closes a batch, due at once, when a record takes it to this many payload bytes:
+	// its caller flushes it before batching another (ingest.md §6.2), so no fetch is held whole.
 	MaxBytes int
 	// MaxMetaBytes closes a batch before the record whose redaction entries would take its MetaBytes past it,
 	// so a segment's metadata stays within the reader's budget (ingest.md §6.2).
 	MaxMetaBytes int
 	batches      map[Key]*Batch
-	// closed holds the batches MaxMetaBytes closed, due at once.
+	// closed holds the batches MaxMetaBytes and MaxBytes closed, due at once.
 	closed []*Batch
 }
 
@@ -86,7 +87,8 @@ func HourOf(ts int64) int64 {
 }
 
 // Add puts e in its batch, opened at now if it is the first
-// or if e's redaction entries would take the open one past MaxMetaBytes, which closes that one.
+// or if e's redaction entries would take the open one past MaxMetaBytes, which closes that one;
+// a batch e takes to MaxBytes is closed too.
 func (b *Batcher) Add(e Entry, now time.Time) {
 	k := Key{Capture: e.D.Raw.Version.Capture, Hour: HourOf(e.D.Raw.TS)}
 	meta := 0
@@ -105,19 +107,30 @@ func (b *Batcher) Add(e Entry, now time.Time) {
 	bt.Entries = append(bt.Entries, e)
 	bt.Bytes += len(e.D.Record.Record.Payload)
 	bt.MetaBytes += meta
+	if bt.Bytes >= b.MaxBytes {
+		b.closed = append(b.closed, bt)
+		delete(b.batches, k)
+	}
+}
+
+// Closed removes and returns the batches MaxMetaBytes and MaxBytes closed.
+func (b *Batcher) Closed() []*Batch {
+	closed := b.closed
+	b.closed = nil
+
+	return closed
 }
 
 // Due removes and returns the batches to flush at now:
-// those MaxMetaBytes closed, those open for the interval, those holding MaxBytes, and those of a capture that has records of a later hour.
+// those closed, those open for the interval, and those of a capture that has records of a later hour.
 func (b *Batcher) Due(now time.Time) []*Batch {
 	latest := map[tracepack.UUID]int64{}
 	for k := range b.batches {
 		latest[k.Capture] = max(latest[k.Capture], k.Hour)
 	}
-	due := b.closed
-	b.closed = nil
+	due := b.Closed()
 	for k, bt := range b.batches {
-		if now.Sub(bt.opened) >= b.Interval || bt.Bytes >= b.MaxBytes || k.Hour < latest[k.Capture] {
+		if now.Sub(bt.opened) >= b.Interval || k.Hour < latest[k.Capture] {
 			due = append(due, bt)
 			delete(b.batches, k)
 		}
