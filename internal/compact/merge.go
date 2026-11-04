@@ -85,6 +85,9 @@ func (r *Compactor) mergesIn(ctx context.Context, lease catalog.Lease, cyc *merg
 	if err != nil {
 		return rep, err
 	}
+	for _, c := range cands {
+		cyc.met[c.Scope] = true
+	}
 	first := make(map[catalog.Scope]int, len(r.sched.carried))
 	for i, s := range r.sched.carried {
 		first[s] = i + 1

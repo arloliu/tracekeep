@@ -196,3 +196,43 @@ func TestRetentionEvictsAFailingScope(t *testing.T) {
 		}
 	})
 }
+
+// Failing scopes that retention evicts leave no backoff behind: round after round of new failing scopes, scheduled and requested,
+// the process keeps only the backoffs of the scopes its last cycle met, while a requested scope that is no candidate keeps its own.
+func TestCoolingStateStaysBounded(t *testing.T) {
+	t.Parallel()
+	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
+		ctx := t.Context()
+		f := newFixture(t, c)
+		s := f.refusing(t)
+		f.retaining(t)
+		f.r.Retention = 24 * time.Hour
+		const failing = 3
+		for round := range int64(4) {
+			hr := hour + 30*round
+			// Half an hour into hr+2: the scopes of hr are candidates, the requested one of hr+2 is not yet quiet.
+			f.r.Now = func() time.Time { return time.Unix(0, (hr+2)*nsPerHour).Add(30 * time.Minute) }
+			f.horizon = hr - 10
+			if err := f.r.retentionPass(ctx, f.lease); err != nil {
+				t.Fatal(err)
+			}
+			for range failing {
+				f.scope(t, f.admit(t), hr, 1)
+			}
+			requested := f.admit(t)
+			f.scope(t, requested, hr+2, 1)
+			f.requestAt(t, requested, hr+2)
+			for cycle := range 3 {
+				if err := f.r.mergePass(ctx, f.lease); err != nil {
+					t.Fatal(err)
+				}
+				if got := len(f.r.sched.cooling); got != failing+1 {
+					t.Fatalf("round %d, cycle %d: %d backoffs kept, want the %d scopes of this round", round, cycle, got, failing+1)
+				}
+			}
+		}
+		if s.n.Load() == 0 {
+			t.Fatal("no merge was attempted")
+		}
+	})
+}
