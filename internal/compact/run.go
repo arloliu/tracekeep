@@ -285,26 +285,27 @@ func (r *Compactor) closePass(ctx context.Context, lease catalog.Lease) error {
 	return err
 }
 
-// mergePass runs the operators' requests and the scheduled merges, one merge task, and records their metrics, then reads the scope gauges;
-// the task succeeds when neither ended in an error and no merge failed or found conflicting records, a merge refused over the metadata budget withholding nothing,
-// and a failed read of the gauges keeps their previous values.
+// mergePass runs the operators' requests and the scheduled merges, one merge task and one cycle of merges under its cap, and records their metrics, then reads the scope gauges;
+// the task succeeds when neither ended in an error, no merge failed or found conflicting records and no scope waits out a failure's backoff,
+// a merge refused over the metadata budget withholding nothing, and a failed read of the gauges keeps their previous values.
 func (r *Compactor) mergePass(ctx context.Context, lease catalog.Lease) error {
 	started := time.Now()
-	reqs, err := r.Requests(ctx, lease)
+	cyc := r.newCycle()
+	reqs, err := r.requestsIn(ctx, lease, cyc)
 	rep := reqs.Merges
 	if err == nil {
 		var scheduled MergeReport
-		scheduled, err = r.Merges(ctx, lease)
+		scheduled, err = r.mergesIn(ctx, lease, cyc)
 		rep.add(scheduled)
 	}
-	// A merge that fails on conflicting records failed too (compactor.md §8.1).
-	r.Metrics.Cycle("merge", time.Since(started), err == nil && len(rep.Failed)+len(rep.Conflicted) == 0)
+	// A merge that fails on conflicting records failed too, and a scope waiting out a failure's backoff withholds success as its failure did (compactor.md §8.1).
+	r.Metrics.Cycle("merge", time.Since(started), err == nil && len(rep.Failed)+len(rep.Conflicted)+len(rep.Cooling) == 0)
 	r.Metrics.Merges(len(rep.Merged), len(rep.Stale), len(rep.Conflicted), len(rep.Failed), len(rep.Refused))
 	if err != nil {
 		return err
 	}
-	if len(rep.Conflicted)+len(rep.Failed) > 0 {
-		r.Log.Warn("compact: scopes left unmerged", "conflicted", len(rep.Conflicted), "failed", len(rep.Failed))
+	if len(rep.Conflicted)+len(rep.Failed)+len(rep.Cooling) > 0 {
+		r.Log.Warn("compact: scopes left unmerged", "conflicted", len(rep.Conflicted), "failed", len(rep.Failed), "cooling", len(rep.Cooling))
 	}
 	if r.Metrics == nil {
 		return nil
@@ -350,6 +351,7 @@ func (r *Compactor) hold(ctx context.Context) bool {
 		return false
 	}
 	r.lease = &l
+	r.took(l)
 
 	return true
 }

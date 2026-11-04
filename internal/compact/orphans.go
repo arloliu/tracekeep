@@ -61,6 +61,8 @@ type Compactor struct {
 	// ExportRetention is an export bundle's retention, after which a failed or cancelled job is deleted (api.md §10.1 *Exports*);
 	// zero is 24 h.
 	ExportRetention time.Duration
+	// MergeAttempts is compact.merge_attempts, the merges a cycle attempts, the operators' requests first; zero is DefaultMergeAttempts.
+	MergeAttempts int
 	// Retention is the configured retention period the compactor records before every retention pass, and DeleteDelay is D:
 	// a merged input is deleted D after its merge, and a shortened period evicts nothing early for D (compactor.md §8.3).
 	// Claims is the claim bucket retention lists and deletes from.
@@ -80,6 +82,8 @@ type Compactor struct {
 	holdKnown bool
 	// unknown holds the keys the last orphan pass found unknown, which this pass may adopt.
 	unknown map[string]bool
+	// sched is the merge pass's backoffs and carried scopes.
+	sched schedule
 }
 
 // Quarantine is an orphan the reconciler will never register or delete: an operator decides.

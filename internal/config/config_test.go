@@ -56,7 +56,7 @@ func TestDefaults(t *testing.T) {
 		}
 	}
 	if c.Catalog.Engine != "sqlite" || c.Store.Kind != "s3" || !c.Store.Presign || !c.Parking.Enabled || c.Ingest.BatchMaxBytes.Int64() != 64<<20 || c.Ingest.MaxRecordBytes.Int64() != 64<<20 ||
-		c.Metrics.Listen != ":9090" || c.Metrics.Pprof {
+		c.Metrics.Listen != ":9090" || c.Metrics.Pprof || c.Compact.MergeAttempts != 1024 {
 		t.Errorf("config %+v, want the defaults", c)
 	}
 	if host, _ := os.Hostname(); c.Replica != host {
@@ -109,6 +109,7 @@ func TestValidation(t *testing.T) {
 		"s3, no access key":   {yaml("", "", "  s3:\n    bucket: packs\n    secret_access_key: sk\n", ""), "store.s3.access_key_id"},
 		"s3, no secret":       {yaml("", "", "  s3:\n    bucket: packs\n    access_key_id: ak\n", ""), "store.s3.secret_access_key"},
 		"pprof, no listener":  {yaml("", "", "", "metrics:\n  listen: \"\"\n  pprof: true\n"), "metrics.pprof"},
+		"no merge attempts":   {yaml("", "", "", "compact:\n  merge_attempts: 0\n"), "MergeAttempts"},
 	} {
 		if _, err := Load(write(t, tc.yaml)); err == nil || !strings.Contains(err.Error(), tc.want) {
 			t.Errorf("%s: Load = %v, want an error naming %s", name, err, tc.want)

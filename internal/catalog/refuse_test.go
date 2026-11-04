@@ -111,7 +111,7 @@ func TestRefuseMergeEndsItsRequest(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if v, err := c.DecideRequest(t.Context(), l, Request{ID: again, Kind: RequestMerge, Capture: capture, Hour: &hour}); err != nil || v != Mergeable {
+		if v, _, err := c.DecideRequest(t.Context(), l, Request{ID: again, Kind: RequestMerge, Capture: capture, Hour: &hour}); err != nil || v != Mergeable {
 			t.Fatalf("DecideRequest of an unmergeable scope = %q, %v; want mergeable", v, err)
 		}
 		snap = snapshot(t, c, capture)

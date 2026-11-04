@@ -25,7 +25,14 @@ type RequestReport struct {
 // Otherwise its scope is merged now, its quiet period aside, and the merge's commit ends it done;
 // a stale or failed merge leaves it for the next cycle, and a merge that fails on conflicting records leaves it to be ended
 // by the conflict that merge recorded. A lost lease ends the pass with ErrLeaseLost.
+// The call is one cycle of merges, capped at MergeAttempts, whose cap leaves the requests past it pending;
+// a request for a scope waiting out a failure's backoff at its current revision bypasses the wait once (compactor.md §8.1).
 func (r *Compactor) Requests(ctx context.Context, lease catalog.Lease) (RequestReport, error) {
+	return r.requestsIn(ctx, lease, r.newCycle())
+}
+
+// requestsIn is Requests in cyc.
+func (r *Compactor) requestsIn(ctx context.Context, lease catalog.Lease, cyc *mergeCycle) (RequestReport, error) {
 	var rep RequestReport
 	reqs, err := r.Catalog.PendingRequests(ctx)
 	if err != nil {
@@ -37,7 +44,7 @@ func (r *Compactor) Requests(ctx context.Context, lease catalog.Lease) (RequestR
 		if q.Kind == catalog.RequestClose {
 			ended, err = r.closeRequested(ctx, lease, q)
 		} else {
-			ended, err = r.mergeRequested(ctx, lease, q, &rep.Merges)
+			ended, err = r.mergeRequested(ctx, lease, q, cyc, &rep.Merges)
 		}
 		if ctx.Err() != nil {
 			return rep, ctx.Err()
@@ -64,13 +71,26 @@ func (r *Compactor) Requests(ctx context.Context, lease catalog.Lease) (RequestR
 	return rep, nil
 }
 
-// mergeRequested executes q and returns how it ended, empty when it stays pending; the merge it attempts is added to merges.
-func (r *Compactor) mergeRequested(ctx context.Context, lease catalog.Lease, q catalog.Request, merges *MergeReport) (string, error) {
-	ended, err := r.Catalog.DecideRequest(ctx, lease, q)
+// mergeRequested executes q in cyc and returns how it ended, empty when it stays pending; the merge it attempts is added to merges.
+// The verdict's revision is read before anything remembered is acted on, and a failure to read it attempts nothing.
+// q stays pending without an attempt when cyc spent its attempts or already attempted the scope,
+// and when the scope waits out a failure at that revision for which q was attempted already.
+func (r *Compactor) mergeRequested(ctx context.Context, lease catalog.Lease, q catalog.Request, cyc *mergeCycle, merges *MergeReport) (string, error) {
+	ended, revision, err := r.Catalog.DecideRequest(ctx, lease, q)
 	if err != nil || ended != catalog.Mergeable {
 		return ended, err
 	}
-	out, err := r.attempt(ctx, lease, catalog.Scope{Capture: q.Capture, Hour: *q.Hour}, &q.ID, merges)
+	s := catalog.Scope{Capture: q.Capture, Hour: *q.Hour}
+	if c := r.waiting(s, revision); c != nil && c.requests[q.ID] {
+		merges.Cooling = append(merges.Cooling, s)
+		return "", nil
+	}
+	if cyc.left == 0 || cyc.attempted[s] {
+		return "", nil
+	}
+	cyc.left--
+	cyc.attempted[s] = true
+	out, err := r.attempt(ctx, lease, s, &q.ID, merges)
 	switch {
 	case err != nil:
 		return "", err
@@ -85,7 +105,7 @@ func (r *Compactor) mergeRequested(ctx context.Context, lease catalog.Lease, q c
 
 // closeRequested closes the capture q names by an intent with the operator's trigger and returns how q ended, empty when it stays pending.
 func (r *Compactor) closeRequested(ctx context.Context, lease catalog.Lease, q catalog.Request) (string, error) {
-	ended, err := r.Catalog.DecideRequest(ctx, lease, q)
+	ended, _, err := r.Catalog.DecideRequest(ctx, lease, q)
 	if err != nil || ended != catalog.Mergeable {
 		return ended, err
 	}
