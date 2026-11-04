@@ -16,6 +16,7 @@ Contract changes go through proposals, which the subject [README.md](README.md) 
   every commit that changes domain state checks the lease, with no exception, and a worker that lost it does nothing further (§8.1, T-32).
 - **Merge**: snapshot a scope's revision r and its `staged` inputs, merge, put the archive, then commit in one transaction guarded by r and the lease;
   zero affected rows rolls back the whole transaction, and a rolled-back merge never deletes its archive directly (§8.1).
+  A failing merge backs off until its scope changes, and a cycle attempts a bounded number of merges, the operators' requests first (§8.1, T-56).
 - **Close**: an intent transaction fixes every byte-affecting input, then `tracepack.WriteClose` writes the same bytes on every retry;
   pending intents are retried each cycle;
   a capture is closed by a later capture of its device only once it has itself been silent for Q,
@@ -65,6 +66,33 @@ a segment registered between the snapshot and the commit, in any scope state, fa
 and the next cycle merges it with the registered archive.
 A merge failure (conflict, damaged input) leaves the scope as it was and raises an alert;
 the operator acts ([STO §4] *Merge*).
+
+**A failing merge backs off** (T-56).
+A failure is keyed by its scope and the revision its snapshot read,
+so the scope is skipped only while its current revision is that one, and a registration after the snapshot makes it due at once.
+The wait doubles with each failure of the same revision, from one cycle to at most one hour;
+a cancellation, a lost lease and a stale commit are not failures, and a refusal over the reader's budget makes the scope `unmergeable` (below), never a backoff.
+A scope waiting out its backoff takes no attempt and counts as no merge,
+but it withholds the merge task's success as its failure did, so a merge that keeps failing still shows (`operations.md` §10.4).
+An operator's merge request makes its scope due once:
+the compactor remembers the requests it attempted for a scope waiting out its backoff,
+so a pending request it has not attempted bypasses the wait once, and the same request does not again.
+A requested scope may be one the candidates of step 2 leave out (`unmergeable`, or not yet quiet),
+so the request's verdict (`catalog.md` §7.2) carries the scope's current revision, read before a remembered request is suppressed;
+a revision that cannot be read attempts nothing that cycle, never acting on remembered facts.
+The backoff is the compactor process's memory, no catalog row:
+kept across its own lease renewals and reacquisitions, since the lease lapses between cycles at the defaults,
+and forgotten when the process restarts or another process held the lease meanwhile,
+which a take shows whose fence token is not this process's last plus one, since each take advances it by one;
+it then starts over at one cycle.
+It is best effort: forgetting it allows extra attempts and nothing else, and the merge's own guards, the capture row, the lease and the revision, are unchanged.
+
+**A cycle's merges are capped** (T-56) at `compact.merge_attempts` (default 1,024), the operators' requests and the scheduled scopes together:
+the pending requests first, in their order, then the scheduled candidates,
+those the last cycle's cap left first, then the oldest hour first, ties by capture id;
+a scope is attempted at most once a cycle, and what the cap leaves is attempted the next cycle in the same order.
+A steady stream of requests can therefore delay scheduled scopes,
+but a failing scope waiting out its backoff takes no attempt, and scheduled scopes are never starved by each other.
 
 **A merge over the reader's budget** (T-45):
 tracepack refuses, before it writes anything, a merge whose archive's metadata would exceed the reader's metadata budget (`ErrMergeLimit`)
@@ -171,6 +199,7 @@ Each is first made `deleting` by compare-and-set, so a completion can no longer 
 a job goes only once no row of it is left, so an attempt whose deletion keeps failing keeps its job and is retried;
 a crash between them leaves a `deleting` row the next cycle finishes.
 A deletion that fails is counted (`export_cleanup_failures_total`), logged by job and fence, never by key, and retried the next cycle.
+The cap on a cycle's merges (§8.1) bounds merges alone: close requests, a close's publication, deletion and retention run every cycle, whatever the merges spent (T-56).
 Retention deletes whole hours older than the eviction horizon:
 in one transaction per hour of one admitted capture it copies the hour's `pack_ranges` union into `evicted_ranges`, deletes the packs, ranges, receipts, the hour's `claim_objects` rows **except survivors** (§8.4) and the scope row, and writes the tombstones;
 then it deletes the hour's claim objects, survivors excepted, from the bucket.

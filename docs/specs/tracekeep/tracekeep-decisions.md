@@ -742,3 +742,19 @@ The engine maintains it, so an older writer during a rollout keeps it true, no b
 **Before and after**: the base is the branch once its benchmarks are corrected; the benchmark workflow runs only MariaDB's rows, one job per group.
 **The write-connection gate** runs after every production change.
 Considered and not taken: a span kept by the application (an older writer would not keep it); an index on the range's end (it bounds only probes near the end); windowing completeness; priority for the audit over ingest; indexes for the audit listings.
+
+### T-56 — what the phase 5 plan's remaining performance work settled (2026-11-04)
+
+Nine points the phase 5 plan raised before its sub-phase on ingest, reads, the compactor and the API, read from the code against the measured baselines and settled on the plan's recommendations under the owner's standing instruction, amended by the plan's external review.
+**Measure first**: why ingest stops keeping up is found before any ingest change, by profiles at its ceiling, the same run with the consumer's pending budget raised past the held records, a claim-check load and a run at the production flush and `ack_wait`, judged by its completed drain cycles; a ceiling that moves with the budget alone is a configuration's.
+**Closed with their numbers**: the filesystem store's put concurrency, a merge's peak memory, the key provider's contention, the per-message masking keys and the inline acknowledgement; a parked copy's batched acknowledgement is deferred to the gate's recovery measurement, a scope decision, not a measured one.
+**A read's configurations**: decoded once an RPC or an export attempt, every read set's id still checked (`api.md` §10.1).
+**A narrow read filters before it copies**: the records reader clones only the records it keeps, its cursors, resume position and reported defects unchanged.
+**The orphan pass's look in sets**: one read of up to 128 keys' standings, advisory as before, registration and deletion keeping their own guards.
+**A failing merge backs off and a cycle's merges are capped** (`compactor.md` §8.1, §8.3): keyed by the snapshot's revision, so new work makes a scope due at once; an operator's request bypasses the wait once; the state is the compactor process's memory, forgotten on a restart or another holder's take; a cooling scope withholds the merge task's success as its failure did;
+the cap, `compact.merge_attempts`, counts requests and scheduled scopes, requests first, and never closes, deletion or retention, so a `scope merge` waits past its next cycle only behind more than a cycle's worth of earlier requests.
+**Admitted only if measurement shows it**: each remaining ingest, store and API change is written only past an admission threshold taken from measurement, at the base or at a checkpoint after the change it depends on, and merged only past a benefit threshold against the commit before it;
+concurrent acknowledgement tracks completion by delivery, never as a prefix; a store read opened by its catalog size checks that size against the first ranged read, falling back to the store's size for one below a pack's header.
+**Before and after**: the base is the branch once its benchmarks are added, judged as the catalog's sub-phase was; the benchmark workflow runs only if the catalog changes.
+**The write-connection gate** runs again on the final head.
+Considered and not taken: a backoff kept in the catalog (a schema for a best-effort schedule); a derived-key cache; batching a parked copy's acknowledgements now; a flush budget that grows with `ack_wait`.
