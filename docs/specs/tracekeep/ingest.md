@@ -205,8 +205,11 @@ the cases prove the decision, the schedules prove the re-reads under the capture
   A tick every (`ack_wait` − F − `max_wait` − `flush_timeout`) / 2, at least a second (27.5 s at the defaults),
   keeps in progress every delivery of each such batch once the batch has gone `ack_wait` − `flush_timeout` − two ticks (F + `max_wait` at the defaults)
   since the fetch of its oldest delivery or its last in-progress ack,
-  so every delivery has at least a flush's budget and a tick of its ack wait left when its flush starts.
-  Once a batch's flush starts its deliveries are never kept in progress: its budget ends before their ack wait does.
+  so a batch reaching its flush has kept its deliveries within their ack wait.
+  As a batch's flush starts, the same rule is applied to it once more: a batch that has gone that long is kept then,
+  so every delivery has at least a flush's budget and two ticks of its ack wait left when its flush starts, whatever the tick's floor or a late tick.
+  Once a batch's flush has started its deliveries are never kept in progress: its budget ends before their ack wait does.
+  Their deferrals are still held while the flush runs (`operations.md` §10.4 `deferred_messages`), from a copy of the batch's deliveries taken as it starts.
   A fetch's deliveries not yet batched wait at most the membership lease and a flush, then are naked untouched (`rollouts.md` §6.4).
 - **Local work that outlasts the flush's budget and `ack_wait`** is still waited for, and the flush owns its working files until the work returns;
   it registers nothing past its budget, since its remote calls end with the budget.
