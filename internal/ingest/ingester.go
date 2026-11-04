@@ -80,6 +80,12 @@ type Ingester struct {
 	Now func() time.Time
 	// Metrics records the role's metrics; nil records none.
 	Metrics *metrics.Ingest
+	// Timed, a test seam for the load harness, is told the wall time of each delivery's disposition and batching
+	// and of each batch's flush; nil in production, where no clock is read for it.
+	Timed func(stage string, took time.Duration)
+	// PassSettled, a test seam for the load harness, is called once every batch a flush pass took is settled,
+	// acknowledged or nak'd, with the pass's batches and its failure; an empty pass calls nothing. Nil in production.
+	PassSettled func(at time.Time, batches []*Batch, err error)
 
 	// writeFailures counts, by record version, the flushes the Writer refused holding it: a record refused three times is deterministic,
 	// whichever batch held it, since a live capture's redelivered records join fresh ones and the metadata budget splits a key's batches.
@@ -349,7 +355,9 @@ func (g *Ingester) handle(ctx context.Context, m jetstream.Msg, generation int64
 			return
 		}
 	}
+	disposed := timing(g.Timed, "dispose")
 	d, dec, err := g.Executor.Dispose(ctx, msg)
+	disposed()
 	if err != nil {
 		g.Log.Warn("ingest: disposition failed", "msg_id", msg.Env.MsgID, "error", err)
 		_ = m.NakWithDelay(g.delay(msg.Delivered))
@@ -406,9 +414,11 @@ func (g *Ingester) act(ctx context.Context, e Entry, dec Decision, delivered uin
 	switch dec.Action {
 	case ActBatch: // settled once its batch is registered: a batch the Writer refuses keeps it deferred
 		g.Metrics.Held([]string{e.D.deferralID()}) // kept from now, the heartbeat keeping it while held
+		batched := timing(g.Timed, "batch")
 		g.mu.Lock()
 		g.Batcher.Add(e, g.Now())
 		g.mu.Unlock()
+		batched()
 	case ActAck:
 		g.resolved(e)
 		g.acknowledge(ctx, e)
@@ -556,12 +566,18 @@ func (g *Ingester) flush(ctx context.Context, batches []*Batch) error {
 			g.settled(b.Entries)
 		}
 	}
+	err := errors.Join(errs...)
+	if g.PassSettled != nil && len(batches) > 0 {
+		g.PassSettled(g.Now(), batches, err)
+	}
 
-	return errors.Join(errs...)
+	return err
 }
 
 // flushBatch flushes b within the ack wait: a flush that has not registered and acknowledged by then is given up (ingest.md §6.2).
 func (g *Ingester) flushBatch(ctx context.Context, b *Batch) (Flushed, error) {
+	flushed := timing(g.Timed, "flush")
+	defer flushed()
 	if g.AckWait > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, g.AckWait)
@@ -609,6 +625,17 @@ func (g *Ingester) refused(entries []Entry) int {
 	}
 
 	return most
+}
+
+// timing starts timing stage for seam, a test seam told each stage's wall time, and returns what reports it;
+// with no seam it reads no clock.
+func timing(seam func(stage string, took time.Duration), stage string) (done func()) {
+	if seam == nil {
+		return func() {}
+	}
+	start := time.Now()
+
+	return func() { seam(stage, time.Since(start)) }
 }
 
 // readMessage reads a delivery's headers, body, stream sequence and delivery count.
