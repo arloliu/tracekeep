@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/jmoiron/sqlx"
@@ -405,6 +406,49 @@ func (c *Catalog) KeyStanding(ctx context.Context, key string) (KeyStanding, err
 	}
 
 	return KeyUnknown, nil
+}
+
+// MaxKeyStandings is the most keys one KeyStandings asks.
+const MaxKeyStandings = 128
+
+// KeyStandings reads the standings of keys, in their order, in one statement on the read pool:
+// the reconciler's look at a chunk of listed keys, each standing what KeyStanding reads, a tombstone before a pack.
+// It asks at most MaxKeyStandings keys; it is a read, and the registration's own guards decide under the capture row.
+func (c *Catalog) KeyStandings(ctx context.Context, keys []string) ([]KeyStanding, error) {
+	if len(keys) > MaxKeyStandings {
+		return nil, fmt.Errorf("catalog: standings of %d keys, above %d", len(keys), MaxKeyStandings)
+	}
+	out := make([]KeyStanding, len(keys))
+	if len(keys) == 0 {
+		return out, nil
+	}
+	in := " IN (?" + strings.Repeat(", ?", len(keys)-1) + ")"
+	args := make([]any, 0, 2*len(keys))
+	for range 2 {
+		for _, k := range keys {
+			args = append(args, k)
+		}
+	}
+	var rows []struct {
+		Key      string      `db:"object_key"`
+		Standing KeyStanding `db:"standing"`
+	}
+	err := c.read.SelectContext(ctx, &rows, `SELECT object_key, `+strconv.Itoa(int(KeyTombstoned))+` AS standing FROM tombstones WHERE object_key`+in+`
+		UNION ALL SELECT object_key, `+strconv.Itoa(int(KeyRegistered))+` AS standing FROM packs WHERE object_key`+in, args...)
+	if err != nil {
+		return nil, fmt.Errorf("catalog: standings of %d keys: %w", len(keys), err)
+	}
+	found := make(map[string]KeyStanding, len(rows))
+	for _, r := range rows {
+		if found[r.Key] != KeyTombstoned {
+			found[r.Key] = r.Standing
+		}
+	}
+	for i, k := range keys {
+		out[i] = cmp.Or(found[k], KeyUnknown)
+	}
+
+	return out, nil
 }
 
 // activeOrder is an active termination order of a capture: its incarnation and cut-off.

@@ -110,45 +110,88 @@ type OrphanReport struct {
 }
 
 // Orphans lists the pack keys under staging/ and archive/ and settles each the catalog does not register (storage.md §5.4).
+// It looks at the listed keys in chunks of at most catalog.MaxKeyStandings, their standings read together,
+// and judges a key listed again once.
 // A tombstoned key is deleted again. An unknown key is examined only when the previous pass also found it unknown,
 // since a healthy flush's key is unknown between its put and its registration.
 // An examined key is verified in full and read for its exact seq set, its name checked against the pack,
 // and registered as adopted under lease; the registration's own guards decide, not this listing.
-// A lost lease ends the pass with ErrLeaseLost; an error on one key is logged and leaves the key for the next pass.
+// A lost lease ends the pass with ErrLeaseLost; an error on one key, or on a chunk's look, is logged and leaves it for the next pass.
+// A failed listing ends the pass with its error, the keys of its unfinished chunk left for the next pass;
+// only a pass whose listings both succeed replaces the unknown keys the next pass may examine.
 func (r *Compactor) Orphans(ctx context.Context, lease catalog.Lease) (OrphanReport, error) {
 	var rep OrphanReport
-	seen := map[string]bool{}
+	// listed is every key this pass judged; seen, the unknown ones among them, the next pass's history.
+	listed, seen := map[string]bool{}, map[string]bool{}
+	chunk := make([]store.ObjectInfo, 0, catalog.MaxKeyStandings)
+	settle := func() error {
+		err := r.settleChunk(ctx, lease, chunk, seen, &rep)
+		chunk = chunk[:0]
+
+		return err
+	}
 	for _, area := range []string{"staging/", "archive/"} {
 		prefix := area
 		if r.KeyPrefix != "" {
 			prefix = r.KeyPrefix + "/" + area
 		}
 		err := r.Store.List(ctx, prefix, func(info store.ObjectInfo) error {
-			err := r.settle(ctx, lease, info, seen, &rep)
-			if errors.Is(err, catalog.ErrLeaseLost) || ctx.Err() != nil {
-				return err
+			if listed[info.Key] {
+				return nil
 			}
-			if err != nil {
-				r.Log.Warn("compact: orphan", "key", info.Key, "error", err)
+			listed[info.Key] = true
+			if chunk = append(chunk, info); len(chunk) < catalog.MaxKeyStandings {
+				return nil
 			}
 
-			return nil
+			return settle()
 		})
 		if err != nil {
 			return rep, err
 		}
+	}
+	if err := settle(); err != nil {
+		return rep, err
 	}
 	r.unknown = seen
 
 	return rep, nil
 }
 
-// settle handles one listed key.
-func (r *Compactor) settle(ctx context.Context, lease catalog.Lease, info store.ObjectInfo, seen map[string]bool, rep *OrphanReport) error {
-	standing, err := r.Catalog.KeyStanding(ctx, info.Key)
-	if err != nil {
-		return err
+// settleChunk reads the standings of chunk's keys in one look, then settles each.
+func (r *Compactor) settleChunk(ctx context.Context, lease catalog.Lease, chunk []store.ObjectInfo, seen map[string]bool, rep *OrphanReport) error {
+	if len(chunk) == 0 {
+		return nil
 	}
+	keys := make([]string, len(chunk))
+	for i, info := range chunk {
+		keys[i] = info.Key
+	}
+	standings, err := r.Catalog.KeyStandings(ctx, keys)
+	if err != nil {
+		if ctx.Err() != nil {
+			return err
+		}
+		r.Log.Warn("compact: orphan standings", "keys", len(keys), "first", keys[0], "error", err)
+
+		return nil
+	}
+	r.hook(hookStandings)
+	for i, info := range chunk {
+		err := r.settle(ctx, lease, info, standings[i], seen, rep)
+		if errors.Is(err, catalog.ErrLeaseLost) || ctx.Err() != nil {
+			return err
+		}
+		if err != nil {
+			r.Log.Warn("compact: orphan", "key", info.Key, "error", err)
+		}
+	}
+
+	return nil
+}
+
+// settle handles one listed key of the given standing.
+func (r *Compactor) settle(ctx context.Context, lease catalog.Lease, info store.ObjectInfo, standing catalog.KeyStanding, seen map[string]bool, rep *OrphanReport) error {
 	switch standing {
 	case catalog.KeyRegistered:
 		return nil

@@ -16,6 +16,8 @@ const leaseName = "compactor/2"
 const (
 	// hookRenewed runs after the keeper renewed the lease during a cycle.
 	hookRenewed = iota
+	// hookStandings runs after the orphan pass read a chunk's standings, before it acts on any of its keys.
+	hookStandings
 	// hookMergeSnapshot runs after a merge read its snapshot, before it reads its inputs.
 	hookMergeSnapshot
 	// hookMergePut runs after a merge put its archive, before its commit.

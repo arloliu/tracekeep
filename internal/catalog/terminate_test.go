@@ -315,6 +315,44 @@ func TestKeyStanding(t *testing.T) {
 	})
 }
 
+// KeyStandings answers each key what KeyStanding does, in the keys' order, registered, tombstoned and unknown mixed:
+// a key both tombstoned and named by a pack is tombstoned, a key asked twice is answered twice,
+// 127 and 128 keys are one ask and 129 are refused.
+func TestKeyStandings(t *testing.T) {
+	t.Parallel()
+	engines(t, func(t *testing.T, c *Catalog) {
+		ctx := t.Context()
+		capture := seedCaptures(t, c, 1, 1)[0]
+		packs, _ := seedPacks(t, c, capture, packsSeed{hour0: 1, hours: 1, packs: 50, ranges: 1, span: 1})
+		tombstoned := seedTombstones(t, c, 50, "terminated", 2)
+		// A deleted pack's key keeps its pack row beside its tombstone.
+		both := "staging/" + packs[0].String()
+		seedRows(t, c, "tombstones", []string{"object_key", "reason", "at"}, [][]any{{both, "deleted", 1}})
+		keys := make([]string, 0, 152)
+		want := make([]KeyStanding, 0, 152)
+		for i := range 50 {
+			keys = append(keys, "staging/"+packs[i].String(), tombstoned[i], fmt.Sprintf("staging/unknown-%d", i))
+			want = append(want, KeyRegistered, KeyTombstoned, KeyUnknown)
+		}
+		want[0] = KeyTombstoned
+		keys, want = append(keys, keys[1], keys[2]), append(want, want[1], want[2])
+		for _, n := range []int{0, 1, 127, MaxKeyStandings} {
+			got, err := c.KeyStandings(ctx, keys[:n])
+			if err != nil || !slices.Equal(got, want[:n]) {
+				t.Errorf("KeyStandings of %d keys = %v, %v; want %v", n, got, err, want[:n])
+			}
+			for i, k := range keys[:n] {
+				if one, err := c.KeyStanding(ctx, k); err != nil || one != want[i] {
+					t.Errorf("KeyStanding(%s) = %v, %v; want %v, as KeyStandings answers", k, one, err, want[i])
+				}
+			}
+		}
+		if got, err := c.KeyStandings(ctx, keys[:MaxKeyStandings+1]); err == nil {
+			t.Errorf("KeyStandings of %d keys = %v, want refused", MaxKeyStandings+1, got)
+		}
+	})
+}
+
 // A registration with evidence aborts and tombstones its key when a version of the batch is terminated
 // or a message of it is covered by an order (T-32), and stages the batch's parked versions.
 func TestRegisterPackRechecksTermination(t *testing.T) {
