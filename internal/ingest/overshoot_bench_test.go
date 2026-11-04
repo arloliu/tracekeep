@@ -64,7 +64,6 @@ func (b fetchBatch) Error() error                   { return nil }
 
 // heldPayload sums the payload bytes of every delivery g holds:
 // open and closed batches, and those a flush took and has not finished; ok is false while another holds g's lock.
-// Only the stepping goroutine calls it, so it may read the entries of the batch in flight.
 func heldPayload(g *Ingester) (bytes int, ok bool) {
 	if !g.mu.TryLock() {
 		return 0, false
@@ -79,8 +78,8 @@ func heldPayload(g *Ingester) (bytes int, ok bool) {
 	for _, b := range g.flushing {
 		add(b)
 	}
-	if g.inFlight != nil {
-		add(g.inFlight)
+	for _, e := range g.inFlight {
+		bytes += len(e.D.Record.Record.Payload)
 	}
 
 	return bytes, true

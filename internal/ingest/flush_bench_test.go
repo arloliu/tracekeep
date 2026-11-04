@@ -65,7 +65,7 @@ func newBenchFlush(tb testing.TB, x *Executor, capture tracepack.UUID, payload [
 // batch disposes n fresh records of the capture, the seqs after the last batch's, all in now's hour, into a new batch on h.
 func (s *benchFlush) batch(tb testing.TB, n int, h Msg) *Batch {
 	tb.Helper()
-	b := &Batch{Key: Key{Capture: s.capture, Hour: HourOf(now)}, Entries: make([]Entry, 0, n)}
+	b := &Batch{Key: Key{Capture: s.capture, Hour: HourOf(now)}, Entries: make([]Entry, 0, n), kept: time.Unix(0, now)}
 	for range n {
 		r := tracepack.Record{
 			Seq: s.next, TSUTCNs: now + int64(s.next), Kind: tracepack.KindData, //nolint:gosec // a small seq
@@ -251,6 +251,7 @@ func BenchmarkFlushDue(b *testing.B) {
 			g := &Ingester{
 				Executor: x, Batcher: NewBatcher(time.Second, 1<<30), Flusher: benchFlusher(b, x, st, false),
 				Log: slog.New(slog.DiscardHandler), Now: func() time.Time { return time.Unix(0, now) },
+				AckWait: 7 * time.Minute, FlushTimeout: time.Minute, Heartbeat: 27500 * time.Millisecond, // the defaults: no batch is kept
 			}
 			flushes := make([]*benchFlush, k)
 			for i := range flushes {

@@ -288,7 +288,19 @@ func TestWriteFailureThreeTimes(t *testing.T) {
 		if age := fmt.Sprintf(`tracekeep_ingest_deferred_oldest_age_seconds{reason="%s"} 2490`, ReasonWriteFailure); !strings.Contains(b, age) {
 			t.Errorf("/metrics lacks %s: the age from the refusal", age)
 		}
-		p.f.hooks[hookWrite] = nil
+		// Its write, local work that runs long, is held too: ticks during it keep the deferrals, read from what the flush started with.
+		p.f.hooks[hookWrite] = func() error {
+			p.f.hooks[hookWrite] = nil
+			for range 6 {
+				clock = clock.Add(5 * time.Minute)
+				g.beat() // on the flush's own goroutine, so it reads nothing the flush is sorting
+			}
+			if b := scrape(t, s); !strings.Contains(b, deferred) {
+				t.Errorf("held in a flush, the deferrals expired: /metrics lacks %s", deferred)
+			}
+
+			return nil
+		}
 		if err := g.flush(t.Context(), p.b.All()); err != nil {
 			t.Fatal(err)
 		}
@@ -415,12 +427,13 @@ func TestFlushBeyondTheHorizon(t *testing.T) {
 	})
 }
 
-// ingester runs p's flushes on a clock that stands still.
+// ingester runs p's flushes on a clock that stands still, its ack wait four ticks of an hour:
+// a batch is kept once it has waited an hour or more, under a flush budget of up to an hour, which on that clock none does.
 func (p *pipeline) ingester(log *slog.Logger) *Ingester {
 	at := time.Unix(0, now)
 
 	return &Ingester{
-		Executor: p.x, Flusher: p.f, Batcher: p.b, Coordinator: &Coordinator{Catalog: p.cat}, Log: log, Heartbeat: time.Hour,
+		Executor: p.x, Flusher: p.f, Batcher: p.b, Coordinator: &Coordinator{Catalog: p.cat}, Log: log, Heartbeat: time.Hour, AckWait: 4 * time.Hour,
 		Now: func() time.Time { return at },
 	}
 }

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -305,11 +306,12 @@ func TestIngesterStopsOnAnotherIncarnation(t *testing.T) {
 	})
 }
 
-// stuck is a held message whose first in-progress blocks until released; nakked closes at its first nak.
+// stuck is a held message whose first in-progress blocks until released, any later one returning at once; nakked closes at its first nak.
 type stuck struct {
 	msg
 	entered, release, nakked chan struct{}
-	once, nakOnce            sync.Once
+	first                    atomic.Bool
+	nakOnce                  sync.Once
 }
 
 func (m *stuck) NakWithDelay(d time.Duration) error {
@@ -336,10 +338,10 @@ func (a *alerted) Handle(ctx context.Context, r slog.Record) error {
 }
 
 func (m *stuck) InProgress() error {
-	m.once.Do(func() {
+	if m.first.CompareAndSwap(false, true) {
 		close(m.entered)
 		<-m.release
-	})
+	}
 
 	return m.msg.InProgress()
 }
