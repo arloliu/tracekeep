@@ -39,6 +39,7 @@ func (f *fetched) NakWithDelay(time.Duration) error {
 	f.naks.Add(1)
 	return nil
 }
+func (f *fetched) InProgress() error { return nil }
 
 // benchConsumer is a consumer whose every fetch delivers the same messages at once, then ends.
 type benchConsumer struct {
