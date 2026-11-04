@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # Runs the s3 store's tests against each S3-compatible store deployments use (T-34), one container at a time.
 # Usage: scripts/test-s3.sh [minio|ceph]...   (default: both)
+# With S3_BENCH set, it runs instead the records reader's benchmarks matching S3_BENCH, their s3 rows reading from each store,
+# without the race detector, so their times are a read's (TRACEKEEP_BENCH_SCALE and GOTESTFLAGS apply).
 set -euo pipefail
 
 # MinIO's own images are no longer published; this is the last open-source server release, as Bitnami built it.
@@ -47,8 +49,12 @@ for store in "${@:-minio ceph}"; do
 	for s in $store; do
 		echo "== $s"
 		"start_$s"
-		TRACEKEEP_S3_ENDPOINT="http://127.0.0.1:$port" TRACEKEEP_S3_ACCESS_KEY=$KEY TRACEKEEP_S3_SECRET_KEY=$SECRET \
-			GOWORK=off CGO_ENABLED=1 go test ./internal/store/s3store/ -race -count=1 ${GOTESTFLAGS:-}
+		export TRACEKEEP_S3_ENDPOINT="http://127.0.0.1:$port" TRACEKEEP_S3_ACCESS_KEY=$KEY TRACEKEEP_S3_SECRET_KEY=$SECRET GOWORK=off
+		if [ -n "${S3_BENCH:-}" ]; then
+			go test ./internal/records/ -run '^$' -bench "$S3_BENCH" -benchmem ${GOTESTFLAGS:-}
+		else
+			CGO_ENABLED=1 go test ./internal/store/s3store/ -race -count=1 ${GOTESTFLAGS:-}
+		fi
 		cleanup
 		container=
 	done
