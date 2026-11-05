@@ -772,3 +772,12 @@ admitted, its protocol goes into `parking.md` and is reviewed before its code.
 **A test's budget starts on cue**, once the stalled call waits, never covering the test's own setup.
 **Evidence on `main`**: the measurements of the catalog's and the paths' sub-phases stand on `main`, whose code outside tests matches their final commit; the clustered runs, the packaging run and the write-connection gate run again on the gate's merge, and the gate closes once they are recorded.
 Considered and not taken: cleaning every error with `Keyless` (it would make a catalog failure the store's and lose a lease lost); judging a short drain over windows shorter than a flush; pooling windows across episodes.
+
+### T-58 — a parked copy's acknowledgement stays one at a time (2026-11-06)
+
+The phase 5 gate's recovery drain, read at 100,000 parked records under T-57's thresholds, closed batching a parked copy's `PrepareAck` and `AckCopy`.
+**Measured**: one episode beside 800 fwd/s over 100 tools, dev's flush of 10 s, `max_ack_pending` 600,000; the drain took 1 m 53 s from the release to every copy `acked`, the acknowledgement 58% of it at 0.65 ms a copy;
+the traffic sustained over 50 flush cycles, `PackURL`'s p99 4.75 ms over 1,121 calls, nothing dropped.
+**Why closed**: every condition T-57 set is false: the traffic kept up, the p99 stayed below 2 s, and the acknowledgement's share counts only in a drain longer than a compactor cycle (5 min), which this one was not.
+**What reopens it**: a drain at a larger backlog or on a slower bus that passes a compactor cycle with the acknowledgement a fifth of it, or traffic falling behind during one; the measurement is `TRACEKEEP_LOAD=recovery`.
+Considered and not taken: batching for the acknowledgement's share alone (a new protocol for confirmations stopped halfway and lost bookkeeping, which the thresholds admit only when a condition is true).
