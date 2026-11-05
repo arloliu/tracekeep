@@ -37,6 +37,7 @@ import (
 	"github.com/arloliu/tracekeep/internal/config"
 	"github.com/arloliu/tracekeep/internal/keys"
 	"github.com/arloliu/tracekeep/internal/metrics"
+	"github.com/arloliu/tracekeep/internal/records"
 	"github.com/arloliu/tracekeep/internal/store"
 	tkv1 "github.com/arloliu/tracekeep/proto/tracekeep/v1"
 	"github.com/arloliu/tracekeep/proto/tracekeep/v1/tracekeepv1connect"
@@ -246,6 +247,25 @@ func TestPresignCheck(t *testing.T) {
 	}()
 	if err := checkPresign(t.Context(), presigning{"http://" + ln2.Addr().String()}); err == nil || strings.Contains(err.Error(), "Signature") {
 		t.Errorf("a store reflecting the signed target in its reason: check = %v, want the start failed without the signed URL", err)
+	}
+}
+
+// presignFails is a store whose presigning fails with an error naming the key and the backend's text.
+type presignFails struct{}
+
+func (presignFails) PresignGet(_ context.Context, key string, _ time.Time) (string, time.Time, error) {
+	return "", time.Time{}, errors.New("presign " + key + ": backend-sentinel")
+}
+
+// A presigning that fails fails the start as the store's failure, its error naming neither the key nor the store's text.
+func TestPresignCheckFailureKeyless(t *testing.T) {
+	t.Parallel()
+	err := checkPresign(t.Context(), presignFails{})
+	if !errors.Is(err, records.ErrStore) {
+		t.Fatalf("check = %v, want the store's failure", err)
+	}
+	if strings.Contains(err.Error(), "tracekeep-presign-check/") || strings.Contains(err.Error(), "backend-sentinel") {
+		t.Errorf("check = %v, naming the key or the store's text", err)
 	}
 }
 
