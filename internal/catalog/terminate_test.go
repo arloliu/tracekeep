@@ -328,14 +328,15 @@ func TestKeyStandings(t *testing.T) {
 		// A deleted pack's key keeps its pack row beside its tombstone.
 		both := "staging/" + packs[0].String()
 		seedRows(t, c, "tombstones", []string{"object_key", "reason", "at"}, [][]any{{both, "deleted", 1}})
-		keys := make([]string, 0, 152)
-		want := make([]KeyStanding, 0, 152)
+		keys := make([]string, 0, 150)
+		want := make([]KeyStanding, 0, 150)
 		for i := range 50 {
 			keys = append(keys, "staging/"+packs[i].String(), tombstoned[i], fmt.Sprintf("staging/unknown-%d", i))
 			want = append(want, KeyRegistered, KeyTombstoned, KeyUnknown)
 		}
 		want[0] = KeyTombstoned
-		keys, want = append(keys, keys[1], keys[2]), append(want, want[1], want[2])
+		// Within the asks of 127 and 128 keys, a tombstoned and an unknown key asked again.
+		keys[125], keys[126], want[125], want[126] = keys[1], keys[2], want[1], want[2]
 		for _, n := range []int{0, 1, 127, MaxKeyStandings} {
 			got, err := c.KeyStandings(ctx, keys[:n])
 			if err != nil || !slices.Equal(got, want[:n]) {
