@@ -534,7 +534,7 @@ func (e *Env) leave(replica string) {
 	ctx, cancel := context.WithTimeout(context.Background(), leaveTimeout)
 	defer cancel()
 	if err := e.Catalog.Leave(ctx, replica); err != nil {
-		e.Log.Warn("ingest: leave", "replica", replica, "error", err)
+		e.Log.Warn("ingest: leave", "replica", replica, "error", safetext.Text(err.Error()))
 	}
 }
 

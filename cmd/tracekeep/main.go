@@ -27,6 +27,7 @@ import (
 	"github.com/arloliu/tracekeep/internal/auth"
 	"github.com/arloliu/tracekeep/internal/catalog"
 	"github.com/arloliu/tracekeep/internal/config"
+	"github.com/arloliu/tracekeep/internal/safetext"
 	"github.com/arloliu/tracekeep/internal/service"
 	"github.com/arloliu/tracekeep/internal/sim"
 	tkv1 "github.com/arloliu/tracekeep/proto/tracekeep/v1"
@@ -78,9 +79,15 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "tracekeep: %v\n%s\n", err, usage)
 		return 2
 	default:
-		fmt.Fprintf(stderr, "tracekeep: %v\n", err)
+		report(stderr, err)
 		return 1
 	}
+}
+
+// report prints a command's failure as the operator's log carries an error (operations.md §10.4):
+// a role's error may hold a catalog's or the bus's text, so every URL in it is cut to its scheme and host.
+func report(stderr io.Writer, err error) {
+	fmt.Fprintf(stderr, "tracekeep: %s\n", safetext.Text(err.Error()))
 }
 
 func dispatch(ctx context.Context, args []string, stdout, stderr io.Writer) error {
