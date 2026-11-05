@@ -393,7 +393,7 @@ func TestRejectedCaptureOpensFromItsParkedCopy(t *testing.T) {
 		}
 
 		pg := r.parkedConsumer(t)
-		r.g.Executor.accepts = func([]byte) bool { return true } // the fixed release
+		r.g.Executor.Accepts = func([]byte) bool { return true } // the fixed release
 		if err := pg.Step(ctx); err != nil {
 			t.Fatal(err)
 		}

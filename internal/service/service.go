@@ -68,10 +68,13 @@ type Env struct {
 
 	// joined, when not nil, runs once Ingest's consumers joined and its readiness is registered; a test's barrier.
 	joined func()
-	// timed and passSettled, when not nil, are the load harness's seams on the traffic ingester (ingest.Ingester's Timed and PassSettled),
-	// timed on its flusher too, which the parked ingester shares.
+	// timed, passSettled, accepts and stepping, when not nil, are the load harness's seams on ingest:
+	// timed on both ingesters, their executor, flusher and coordinator (each one's Timed), the parked consumer's stages named apart;
+	// passSettled the traffic ingester's PassSettled; accepts the executor's Accepts; stepping the parked ingester's Stepping.
 	timed       func(stage string, took time.Duration)
 	passSettled func(at time.Time, batches []*ingest.Batch, err error)
+	accepts     func(descriptor []byte) bool
+	stepping    func(ctx context.Context)
 	// apiAddr is the api role's bound address; apiBound, when not nil, runs once it is bound, a test's barrier;
 	// apiShutdown and apiIdle, when not zero, replace the api role's shutdown bound and its server's idle timeout.
 	apiAddr atomic.Value
@@ -577,6 +580,7 @@ func ingesters(ctx context.Context, e *Env) (_ []*ingest.Ingester, err error) {
 	}
 	x := &ingest.Executor{
 		Catalog: e.Catalog, Claims: ingest.ObjectClaims{Store: claims}, MaxRecordBytes: c.Ingest.MaxRecordBytes.Int64(), Horizon: e.horizon, Configs: configs, Keys: ks,
+		Accepts: e.accepts, Timed: e.timed,
 	}
 	if !e.Dev {
 		// Outside dev a capture binds only a masking configuration, one whose policy holds the whole baseline,
@@ -604,7 +608,7 @@ func ingesters(ctx context.Context, e *Env) (_ []*ingest.Ingester, err error) {
 		}
 	}
 	f.Metrics, x.Metrics = m, m
-	k := &ingest.Coordinator{Catalog: e.Catalog, Bus: e.JS, ParkPrefix: cmp.Or(c.Bus.ParkPrefix, busconfig.DefaultParkPrefix)}
+	k := &ingest.Coordinator{Catalog: e.Catalog, Bus: e.JS, ParkPrefix: cmp.Or(c.Bus.ParkPrefix, busconfig.DefaultParkPrefix), Timed: e.timed}
 	for _, role := range []string{catalog.RoleTraffic, catalog.RoleParking} {
 		cons, err := bus.Consumer(ctx, ss[role], incs[role], bus.ConsumerConfig{AckWait: c.Ingest.AckWait, MaxAckPending: c.Ingest.MaxAckPending})
 		if err != nil {
@@ -614,12 +618,12 @@ func ingesters(ctx context.Context, e *Env) (_ []*ingest.Ingester, err error) {
 			Executor: x, Flusher: f, Coordinator: k, Batcher: ingest.NewBatcher(c.Ingest.FlushInterval, int(c.Ingest.BatchMaxBytes.Int64())),
 			Park: c.Parking.Enabled, Consumer: cons, Stream: ss[role], Incarnation: incs[role], Log: e.Log.With("role", role),
 			Replica: c.Replica, Lease: c.Ingest.Lease, FetchBatch: c.Ingest.FetchBatch, MaxWait: c.Ingest.MaxWait,
-			Heartbeat: c.Ingest.AckWait / 3, AckWait: c.Ingest.AckWait, StopTimeout: c.Ingest.StopTimeout, Now: e.now, Metrics: m,
+			Heartbeat: c.Ingest.AckWait / 3, AckWait: c.Ingest.AckWait, StopTimeout: c.Ingest.StopTimeout, Now: e.now, Metrics: m, Timed: e.timed,
 		}
 		if role == catalog.RoleParking {
-			g.Replica, g.RedeliveryDelay = c.Replica+"/parked", c.Parking.RedeliveryDelay
+			g.Replica, g.RedeliveryDelay, g.Stepping = c.Replica+"/parked", c.Parking.RedeliveryDelay, e.stepping
 		} else {
-			g.Timed, g.PassSettled = e.timed, e.passSettled
+			g.PassSettled = e.passSettled
 		}
 		if err := g.Join(ctx); err != nil {
 			return nil, err

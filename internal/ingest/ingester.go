@@ -82,9 +82,13 @@ type Ingester struct {
 	Now func() time.Time
 	// Metrics records the role's metrics; nil records none.
 	Metrics *metrics.Ingest
-	// Timed, a test seam for the load harness, is told the wall time of each delivery's disposition and batching
-	// and of each batch's flush; nil in production, where no clock is read for it.
+	// Timed, a test seam for the load harness, is told the wall time of each delivery's disposition and batching,
+	// of each parked copy's row and of each batch's flush, the parked consumer's named apart (timing);
+	// nil in production, where no clock is read for it.
 	Timed func(stage string, took time.Duration)
+	// Stepping, a test seam for the load harness, is called as each step begins, with nothing of the step before in hand:
+	// no delivery being disposed of and no flush under way. It may hold the consumer there until ctx ends; nil in production.
+	Stepping func(ctx context.Context)
 	// PassSettled, a test seam for the load harness, is called once every batch a flush pass took is settled,
 	// acknowledged or nak'd, with the pass's batches and its failure; an empty pass calls nothing. Nil in production.
 	PassSettled func(at time.Time, batches []*Batch, err error)
@@ -211,6 +215,9 @@ func (g *Ingester) Step(ctx context.Context) error {
 // stepFlushing is Step flushing the due batches under flushing, which a stop does not end before its budget:
 // a batch due when the stop comes is flushed within the budget, never given up at once and written again.
 func (g *Ingester) stepFlushing(ctx, flushing context.Context) error {
+	if g.Stepping != nil {
+		g.Stepping(ctx)
+	}
 	if err := g.renew(ctx); err != nil {
 		if errors.Is(err, catalog.ErrIncarnationChanged) {
 			g.Log.Error("ingest: alert", "reason", ReasonIncarnationChanged, "error", err)
@@ -358,16 +365,19 @@ func (g *Ingester) handle(ctx context.Context, m jetstream.Msg, generation int64
 	}
 	msg.Incarnation, msg.Parked = g.Incarnation.ID, g.Incarnation.Role == catalog.RoleParking
 	if msg.Parked {
-		if err := g.recordCopy(ctx, msg); err != nil {
+		copied := timing(g.Timed, true, "copy")
+		err := g.recordCopy(ctx, msg)
+		copied(err)
+		if err != nil {
 			g.Log.Warn("ingest: copy row failed", delivery(&msg), "error", safetext.Text(err.Error()))
 			_ = m.NakWithDelay(g.delay(msg.Delivered))
 
 			return
 		}
 	}
-	disposed := timing(g.Timed, "dispose")
+	disposed := timing(g.Timed, msg.Parked, "dispose")
 	d, dec, err := g.Executor.Dispose(ctx, msg)
-	disposed()
+	disposed(err)
 	if err != nil {
 		g.Log.Warn("ingest: disposition failed", delivery(&msg), "error", safetext.Text(err.Error()))
 		_ = m.NakWithDelay(g.delay(msg.Delivered))
@@ -424,11 +434,11 @@ func (g *Ingester) act(ctx context.Context, e Entry, dec Decision, delivered uin
 	switch dec.Action {
 	case ActBatch: // settled once its batch is registered: a batch the Writer refuses keeps it deferred
 		g.Metrics.Held([]string{e.D.deferralID()}) // kept from now, the heartbeat keeping it while held
-		batched := timing(g.Timed, "batch")
+		batched := timing(g.Timed, e.D.Msg.Parked, "batch")
 		g.mu.Lock()
 		g.Batcher.Add(e, g.Now())
 		g.mu.Unlock()
-		batched()
+		batched(nil)
 	case ActAck:
 		g.resolved(e)
 		g.acknowledge(ctx, e)
@@ -590,8 +600,8 @@ func (g *Ingester) flush(ctx context.Context, batches []*Batch) error {
 
 // flushBatch flushes b within the ack wait: a flush that has not registered and acknowledged by then is given up (ingest.md §6.2).
 func (g *Ingester) flushBatch(ctx context.Context, b *Batch) (Flushed, error) {
-	flushed := timing(g.Timed, "flush")
-	defer flushed()
+	flushed := timing(g.Timed, g.Incarnation.Role == catalog.RoleParking, "flush")
+	defer flushed(nil)
 	if g.AckWait > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, g.AckWait)
@@ -641,15 +651,28 @@ func (g *Ingester) refused(entries []Entry) int {
 	return most
 }
 
-// timing starts timing stage for seam, a test seam told each stage's wall time, and returns what reports it;
-// with no seam it reads no clock.
-func timing(seam func(stage string, took time.Duration), stage string) (done func()) {
+// timing starts timing stage for seam, a test seam told each stage's wall time, and returns what reports it, with the stage's error;
+// a parked copy's stage is named parked/<stage>, apart from the traffic's, and a failed one <stage>/failed.
+// With no seam it reads no clock and names nothing.
+func timing(seam func(stage string, took time.Duration), parked bool, stage string) (done func(err error)) {
 	if seam == nil {
-		return func() {}
+		return func(error) {}
 	}
 	start := time.Now()
 
-	return func() { seam(stage, time.Since(start)) }
+	return func(err error) { seam(stageName(parked, stage, err), time.Since(start)) }
+}
+
+// stageName is stage as timing names it.
+func stageName(parked bool, stage string, err error) string {
+	if parked {
+		stage = "parked/" + stage
+	}
+	if err != nil {
+		stage += "/failed"
+	}
+
+	return stage
 }
 
 // readMessage reads a delivery's headers, body, stream sequence and delivery count.

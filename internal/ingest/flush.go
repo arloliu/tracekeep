@@ -47,7 +47,7 @@ type Flusher struct {
 	// Metrics records the put and registration of each segment; nil records none.
 	Metrics *metrics.Ingest
 	// Timed, a test seam for the load harness, is told the wall time of each segment's write, put and registration
-	// and of each batch's acknowledgements; nil in production, where no clock is read for it.
+	// and of each batch's acknowledgements, a parked batch's named apart (timing); nil in production, where no clock is read for it.
 	Timed func(stage string, took time.Duration)
 	// Log reports local file work that outlasts its flush's bound; nil logs nothing.
 	Log *slog.Logger
@@ -144,9 +144,9 @@ func (f *Flusher) Flush(ctx context.Context, b *Batch) (Flushed, error) {
 	}()
 	for i := range segs {
 		err := f.local(ctx, "write", func() error {
-			written := timing(f.Timed, "write")
+			written := timing(f.Timed, b.parked(), "write")
 			w, err := f.writeFile(b, &capture, &cfg, &segs[i])
-			written()
+			written(err)
 			if err == nil {
 				files = append(files, w)
 			}
@@ -177,7 +177,7 @@ func (f *Flusher) Flush(ctx context.Context, b *Batch) (Flushed, error) {
 	if err := f.hook(hookAfterRegister); err != nil {
 		return out, err
 	}
-	acked := timing(f.Timed, "acknowledge")
+	acked := timing(f.Timed, b.parked(), "acknowledge")
 	for _, e := range b.Entries {
 		if err := f.ack(ctx, e); err != nil {
 			return out, err // the rest are redelivered, written again and deduplicated by the merge
@@ -187,7 +187,7 @@ func (f *Flusher) Flush(ctx context.Context, b *Batch) (Flushed, error) {
 			return out, err
 		}
 	}
-	acked()
+	acked(nil)
 
 	return out, nil
 }
@@ -305,7 +305,7 @@ func (f *Flusher) register(ctx context.Context, b *Batch, capture *catalog.Captu
 	}
 	f.Metrics.Put(time.Since(started))
 	if f.Timed != nil {
-		f.Timed("put", time.Since(started))
+		f.Timed(stageName(b.parked(), "put", nil), time.Since(started))
 	}
 	if err := f.hook(hookAfterPut); err != nil {
 		return 0, err
@@ -327,7 +327,7 @@ func (f *Flusher) register(ctx context.Context, b *Batch, capture *catalog.Captu
 	case catalog.Registered:
 		f.Metrics.Registered(time.Since(started), capture.ToolID, w.size, seg.role == catalog.RoleConflict)
 		if f.Timed != nil {
-			f.Timed("register", time.Since(started))
+			f.Timed(stageName(b.parked(), "register", nil), time.Since(started))
 		}
 		f.Metrics.GapsObserved(capture.ToolID, gaps)
 
@@ -516,7 +516,7 @@ func evidence(entries []Entry) *catalog.Evidence {
 // A parked copy, whose version the registration staged, is acknowledged through the coordinator, its copy row acked.
 func (f *Flusher) ack(ctx context.Context, e Entry) error {
 	if e.D.Msg.Parked {
-		return (&Coordinator{Catalog: f.Catalog}).Acknowledge(ctx, e.D, e.Msg)
+		return (&Coordinator{Catalog: f.Catalog, Timed: f.Timed}).Acknowledge(ctx, e.D, e.Msg)
 	}
 	if e.D.Raw.ClaimCheck {
 		return e.Msg.DoubleAck(ctx)

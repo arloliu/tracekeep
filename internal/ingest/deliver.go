@@ -114,8 +114,11 @@ type Executor struct {
 	// Metrics records the masking's duration; nil records nothing.
 	Metrics *metrics.Ingest
 
-	// accepts is the descriptor check, nil for acceptedDescriptor; a test widens it to stand in for a fixed release.
-	accepts func(descriptor []byte) bool
+	// Accepts, a test seam, is the descriptor check, nil for AcceptedDescriptor; a test widens it to stand in for a fixed release.
+	Accepts func(descriptor []byte) bool
+	// Timed, a test seam for the load harness, is told the wall time of each admission, ending at its commit,
+	// a parked start's named apart (timing); nil in production.
+	Timed func(stage string, took time.Duration)
 }
 
 // Dispose decides msg's disposition, running the steps Decide asks for (ingest.md §6.1).
@@ -163,15 +166,19 @@ func (x *Executor) run(ctx context.Context, d *Delivery, s Step) error {
 		return x.fetchClaim(ctx, d)
 	case StepValidateDescriptor:
 		f.Descriptor = No
-		accepts := acceptedDescriptor
-		if x.accepts != nil {
-			accepts = x.accepts
+		accepts := AcceptedDescriptor
+		if x.Accepts != nil {
+			accepts = x.Accepts
 		}
 		if accepts(d.Record.Descriptor) {
 			f.Descriptor = Yes
 		}
 	case StepAdmit:
-		return x.admit(ctx, d)
+		admitted := timing(x.Timed, d.Msg.Parked, "admit")
+		err := x.admit(ctx, d)
+		admitted(err)
+
+		return err
 	case StepReject:
 		return x.reject(ctx, d)
 	case StepLookupReceipt:
@@ -459,9 +466,9 @@ func (d *Delivery) descriptorBytes() []byte {
 	return []byte(d.Msg.Env.Descriptor)
 }
 
-// acceptedDescriptor reports whether this service accepts a start's descriptor:
+// AcceptedDescriptor reports whether this service accepts a start's descriptor:
 // a raw-stream capture of an HSMS-SS connection that names its device (architecture.md §3.4).
-func acceptedDescriptor(descriptor []byte) bool {
+func AcceptedDescriptor(descriptor []byte) bool {
 	m, err := tracepack.DecodeDescriptor(descriptor)
 
 	return err == nil && m.Transport == tracepack.TransportHSMSSS && m.CaptureMethod == tracepack.CaptureMethodRawStream &&
