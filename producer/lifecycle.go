@@ -211,13 +211,22 @@ func (p *Producer) lockLife(dl time.Time, cancel <-chan struct{}) bool {
 	case p.lifeSem <- struct{}{}:
 		return true
 	case <-t.C:
+		p.giveUp(context.DeadlineExceeded)
 		return false
 	case <-cancel:
+		p.giveUp(context.Canceled)
 		return false
 	}
 }
 
 func (p *Producer) unlockLife() { <-p.lifeSem }
+
+// giveUp tells the tests' hook why a wait gave up.
+func (p *Producer) giveUp(err error) {
+	if p.gaveUp != nil {
+		p.gaveUp(err)
+	}
+}
 
 // rotateLocked builds a capture for d and rotates to it; the caller holds the lifecycle lock.
 func (p *Producer) rotateLocked(ctx context.Context, d *CaptureDescriptor, previous *tracepack.UUID, reason rotationReason) error {
@@ -252,6 +261,7 @@ func (p *Producer) rotateLocked(ctx context.Context, d *CaptureDescriptor, previ
 
 	res := p.rec.Rotate(c, deadline(ctx), func() bool { return p.stoppingNow() || ctx.Err() != nil }, p.now)
 	if res.Abandoned {
+		p.giveUp(ctx.Err())
 		return ErrRotationAbandoned
 	}
 	p.desc, p.descKey, p.last = *d, key, &id
