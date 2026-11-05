@@ -166,7 +166,7 @@ nats.go v1.55.0's `go.mod` declares `go 1.26.0`, so a producer builds with Go 1.
 and its own requirements rise (nkeys, `klauspost/compress`, `golang.org/x/crypto`).
 The SDK's go-secs requirement is a floor the same way:
 `producer/v0.1.0` requires go-secs v2.8.0 (its HSMS observers) and tracepack v0.9.0, so importing it also raises the gateway's go-secs from v2.6.0 to v2.8.0 (phase G);
-`producer/v0.4.0` requires tracepack v0.12.0, its API frozen before v1.0, the bus codec in `tracepack/bus`.
+`producer/v0.5.0` requires tracepack v0.14.0, its API frozen before v1.0, the bus codec in `tracepack/bus`.
 nats-server is required by the service module (`internal/testbus`) and the SDK's test-only bus module (T-35), never by the SDK, so no producer pulls it in.
 CI runs a sample producer's **resolved** graph (`go list -m all`) at that minimum and at the latest nats.go,
 since producers will usually be newer than the floor;
