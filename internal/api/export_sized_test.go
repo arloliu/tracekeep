@@ -340,7 +340,7 @@ func TestExportWorkerStoppedAtAPacksFirstGet(t *testing.T) {
 	sp := sized(t, &sizedCase{resize: func(n int64) int64 { return n }})
 	m, capture := sp.m, sp.capture
 	held := sp.f.HoldNextGet()
-	m.srv.Exports.WorkDir, m.srv.Exports.Lease = t.TempDir(), 600*time.Millisecond
+	m.srv.Exports.WorkDir, m.srv.Exports.Lease = t.TempDir(), 3*time.Second // as workers', which take the job over once it passes
 	ctx, stop := context.WithCancel(t.Context())
 	done := make(chan error, 1)
 	go func() { done <- m.srv.RunExports(ctx, "r0", 20*time.Millisecond) }()
