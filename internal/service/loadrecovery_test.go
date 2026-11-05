@@ -14,6 +14,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -336,21 +337,15 @@ func recoveryEpisode(t *testing.T, spec loadSpec, k int, rate float64, m int, li
 			parkedRedelivered = max(parkedRedelivered, uint64(ci.NumRedelivered)) //nolint:gosec // a count
 		}
 	}
-	endCalls()
-	<-called
+	// The stages and counters at the completion's sample, before an attempt under way ends.
 	to := h.mark(tools)
 	auditN2, auditSum2 := h.histogram("tracekeep_catalog_audit_wait_seconds")
+	endCalls()
+	<-called
 
-	ep := drainEpisode{drain: end.at.Sub(clock), traffic: judgeDrain(rate, samples, h.probe.readPasses())}
-	ep.calls = append(ep.calls, calls.latencies...)
-	for range calls.failed {
-		ep.calls = append(ep.calls, failedCall)
-	}
 	st := stageDelta(from, to)
-	for _, s := range []string{"prepare-ack", "double-ack", "ack-copy"} {
-		ep.ack += st["parked/"+s].sum + st["parked/"+s+"/failed"].sum
-	}
-	h.recoveryRows(ep, m, parked, clock, samples, st, calls)
+	ep := drainOf(rate, clock, end.at, samples, h.probe.readPasses(), &calls, st)
+	h.recoveryRows(ep, m, parked, clock, samples, st, calls.within(clock, end.at))
 	var trafficRedelivered uint64
 	for _, s := range samples {
 		trafficRedelivered = max(trafficRedelivered, s.redelivered)
@@ -362,6 +357,26 @@ func recoveryEpisode(t *testing.T, spec loadSpec, k int, rate float64, m int, li
 	h.log("", "| audit waits | audit wait mean | traffic max redelivered pending | parked max redelivered pending | redeliveries, both consumers |", "|---|---|---|---|---|",
 		fmt.Sprintf("| %.0f | %s | %d | %d | %.0f |", auditN2-auditN, time.Duration(mean*float64(time.Second)).Round(time.Microsecond),
 			trafficRedelivered, parkedRedelivered, to.redelivered-from.redelivered))
+
+	return ep
+}
+
+// drainOf is an episode's drain from the release's clock to its completion at end, read from what was observed within it alone:
+// the traffic judged over the samples from the release's to the completion's, the first taken at or after end, and the passes between them,
+// the PackURL attempts begun within the drain, and the parked consumer's acknowledgement in st, its stages' totals over the drain.
+func drainOf(rate float64, clock, end time.Time, samples []loadSample, passes []settledPass, calls *packURLResult, st map[string]stageTotal) drainEpisode {
+	if i := slices.IndexFunc(samples, func(s loadSample) bool { return !s.at.Before(end) }); i >= 0 {
+		samples = samples[:i+1]
+	}
+	ep := drainEpisode{drain: end.Sub(clock), traffic: judgeDrain(rate, samples, passes)}
+	in := calls.within(clock, end)
+	ep.calls = append(ep.calls, in.latencies...)
+	for range in.failed {
+		ep.calls = append(ep.calls, failedCall)
+	}
+	for _, s := range []string{"prepare-ack", "double-ack", "ack-copy"} {
+		ep.ack += st["parked/"+s].sum + st["parked/"+s+"/failed"].sum
+	}
 
 	return ep
 }

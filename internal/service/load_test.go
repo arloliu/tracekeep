@@ -645,8 +645,9 @@ func (h *loadHarness) packURLs(ctx context.Context, cl tracekeepv1connect.Machin
 		for attempt := 0; attempt <= packURLRetries; attempt++ {
 			if attempt > 0 || time.Since(listed) >= time.Second {
 				var err error
+				began := time.Now()
 				if pack, err = h.newestPack(ctx, cl, tool); err != nil {
-					r.fail("listing: "+err.Error(), 0)
+					r.record(packAttempt{began: began, listing: true, why: "listing: " + err.Error()})
 					return
 				}
 				listed = time.Now()
@@ -664,16 +665,17 @@ func (h *loadHarness) call(ctx context.Context, cl tracekeepv1connect.MachineSer
 	defer cancel()
 	req := connectrpc.NewRequest(&tkv1.PackURLRequest{PackId: pack.id})
 	req.Header().Set("Authorization", "Bearer "+h.token)
-	began := time.Now()
+	a := packAttempt{began: time.Now()}
 	resp, err := cl.PackURL(actx, req)
-	took := time.Since(began)
-	r.made++
+	a.took = time.Since(a.began)
 	switch {
 	case connectrpc.CodeOf(err) == connectrpc.CodeFailedPrecondition:
-		r.superseded++
+		a.superseded = true
+		r.record(a)
 		return true
 	case err != nil:
-		r.fail(connectrpc.CodeOf(err).String()+": "+err.Error(), took)
+		a.why = connectrpc.CodeOf(err).String() + ": " + err.Error()
+		r.record(a)
 		return false
 	}
 	// The row names the pack and the URL's expiry; two URLs of one pack in one second share it, so rows are counted against calls.
@@ -681,20 +683,44 @@ func (h *loadHarness) call(ctx context.Context, cl tracekeepv1connect.MachineSer
 	audited[pack.id+suffix]++
 	n, err := h.auditRows(ctx, pack, suffix)
 	if err != nil || n < audited[pack.id+suffix] {
-		r.fail(fmt.Sprintf("pack %s: %d audit rows for %d URLs, %v", pack.id, n, audited[pack.id+suffix], err), took)
-		return false
+		a.why = fmt.Sprintf("pack %s: %d audit rows for %d URLs, %v", pack.id, n, audited[pack.id+suffix], err)
 	}
-	r.succeeded++
-	r.latencies = append(r.latencies, took)
+	r.record(a)
 
 	return false
 }
 
-func (r *packURLResult) fail(why string, took time.Duration) {
-	if r.failed == 0 {
-		r.failure, r.took = why, took
+// record counts an attempt: a listing's failure is no call made, a superseded call neither succeeded nor failed,
+// and a call with a failure's why failed, the first one's why and RPC time kept.
+func (r *packURLResult) record(a packAttempt) {
+	r.attempts = append(r.attempts, a)
+	if !a.listing {
+		r.made++
 	}
-	r.failed++
+	switch {
+	case a.superseded:
+		r.superseded++
+	case a.why != "":
+		if r.failed == 0 {
+			r.failure, r.took = a.why, a.took
+		}
+		r.failed++
+	default:
+		r.succeeded++
+		r.latencies = append(r.latencies, a.took)
+	}
+}
+
+// within is r over the attempts begun from from to to, both included.
+func (r *packURLResult) within(from, to time.Time) packURLResult {
+	var w packURLResult
+	for _, a := range r.attempts {
+		if !a.began.Before(from) && !a.began.After(to) {
+			w.record(a)
+		}
+	}
+
+	return w
 }
 
 // auditRows counts the pack-url rows of pack's capture naming pack and ending in suffix.
