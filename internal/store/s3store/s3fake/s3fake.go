@@ -4,6 +4,7 @@
 package s3fake
 
 import (
+	"cmp"
 	"fmt"
 	"io"
 	"net/http"
@@ -31,6 +32,8 @@ type Server struct {
 	Heads atomic.Int64
 	// IgnoreRange, when set, answers a GET with the whole object and no Content-Range, as a proxy ignoring Range does.
 	IgnoreRange atomic.Bool
+	// Message, when set before the requests it answers, is every error's message in place of its code: the store's own text.
+	Message string
 }
 
 // New starts a Server, closed when tb ends.
@@ -80,7 +83,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case bucket != Bucket && r.Method == http.MethodHead:
 		w.WriteHeader(http.StatusNotFound)
 	case bucket != Bucket:
-		s3Error(w, http.StatusNotFound, "NoSuchBucket")
+		s.s3Error(w, http.StatusNotFound, "NoSuchBucket")
 	case key == "": // the bucket's HEAD
 	case r.Method == http.MethodPut:
 		body, err := io.ReadAll(r.Body)
@@ -120,7 +123,7 @@ func (s *Server) get(w http.ResponseWriter, r *http.Request, key string) {
 
 		return
 	case !ok:
-		s3Error(w, http.StatusNotFound, "NoSuchKey")
+		s.s3Error(w, http.StatusNotFound, "NoSuchKey")
 		return
 	case s.IgnoreRange.Load():
 		_, _ = w.Write(obj)
@@ -135,7 +138,7 @@ func (s *Server) get(w http.ResponseWriter, r *http.Request, key string) {
 		w.WriteHeader(http.StatusBadRequest)
 		return
 	case lo >= len(obj):
-		s3Error(w, http.StatusRequestedRangeNotSatisfiable, "InvalidRange")
+		s.s3Error(w, http.StatusRequestedRangeNotSatisfiable, "InvalidRange")
 		return
 	default:
 	}
@@ -146,8 +149,8 @@ func (s *Server) get(w http.ResponseWriter, r *http.Request, key string) {
 	_, _ = w.Write(obj[lo : hi+1])
 }
 
-func s3Error(w http.ResponseWriter, status int, code string) {
+func (s *Server) s3Error(w http.ResponseWriter, status int, code string) {
 	w.Header().Set("Content-Type", "application/xml")
 	w.WriteHeader(status)
-	_, _ = fmt.Fprintf(w, `<?xml version="1.0" encoding="UTF-8"?><Error><Code>%s</Code><Message>%s</Message></Error>`, code, code)
+	_, _ = fmt.Fprintf(w, `<?xml version="1.0" encoding="UTF-8"?><Error><Code>%s</Code><Message>%s</Message></Error>`, code, cmp.Or(s.Message, code))
 }

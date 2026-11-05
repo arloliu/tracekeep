@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -95,6 +96,9 @@ func sizedCases() []sizedCase {
 	}
 }
 
+// storeSentinel is the fake S3 store's text in every error it answers, which no log may carry.
+const storeSentinel = "store-text-sentinel"
+
 // sizedPack is a capture of one pack of one record on a fake S3 store.
 type sizedPack struct {
 	m       *masked
@@ -120,6 +124,7 @@ func sized(t *testing.T, tc *sizedCase) sizedPack {
 		}
 	})
 	f.IgnoreRange.Store(tc.ignoreRange)
+	f.Message = storeSentinel
 
 	return sizedPack{m: m, capture: capture, p: p, f: f}
 }
@@ -143,7 +148,7 @@ func readOf(msgs []*tkv1.QueryRecordsResponse) (recs int, reasons []string, end 
 
 // QueryRecords over a pack of the catalog's size, as its client sees it:
 // a pack read whole streams its record with no incomplete marker, the store's failure ends the stream unavailable with no record and nothing marked incomplete,
-// and a pack gone is marked gone, never corrupt.
+// and a pack gone is marked gone, never corrupt; the log names neither the pack's key nor the store's text.
 func TestQueryRecordsOpensByTheStoredSize(t *testing.T) {
 	t.Parallel()
 	for _, tc := range sizedCases() {
@@ -169,7 +174,20 @@ func TestQueryRecordsOpensByTheStoredSize(t *testing.T) {
 			if h := sp.f.Heads.Load(); h != tc.heads {
 				t.Errorf("%d HEADs, want %d", h, tc.heads)
 			}
+			keylessLog(t, &sp, tc.outcome == storeFails)
 		})
+	}
+}
+
+// keylessLog checks sp's log names neither its pack's key nor the store's text, and holds QueryRecords' failure when failed.
+func keylessLog(t *testing.T, sp *sizedPack, failed bool) {
+	t.Helper()
+	logs := sp.m.logs.String()
+	if failed && !strings.Contains(logs, `msg="api: request failed" operation=QueryRecords`) {
+		t.Errorf("the log = %s\nwant the failed request logged", logs)
+	}
+	if strings.Contains(logs, sp.p.Key) || strings.Contains(logs, storeSentinel) {
+		t.Errorf("the log = %s\nnaming the object's key or the store's text", logs)
 	}
 }
 
