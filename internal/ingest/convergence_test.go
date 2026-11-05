@@ -17,6 +17,7 @@ import (
 	"github.com/arloliu/tracekeep/internal/catalog"
 	"github.com/arloliu/tracekeep/internal/catalog/catalogtest"
 	"github.com/arloliu/tracekeep/internal/compact"
+	"github.com/arloliu/tracekeep/internal/testbus"
 	"github.com/arloliu/tracekeep/producer/busconfig"
 )
 
@@ -94,9 +95,11 @@ func TestSuppressedPublishConverges(t *testing.T) {
 			// A short window, so the scenario can outwait it.
 			cfg := parked.CachedInfo().Config
 			cfg.Duplicates = 500 * time.Millisecond
-			if _, err := js.UpdateStream(ctx, cfg); err != nil {
-				t.Fatal(err)
-			}
+			// A clustered update can meet a placement not yet settled, retried as the stream's creation is.
+			testbus.Retry(t, func(actx context.Context) error {
+				_, err := js.UpdateStream(actx, cfg)
+				return err
+			})
 			k := &Coordinator{Bus: js, ParkPrefix: busconfig.DefaultParkPrefix}
 			capture := tracepack.UUID{91}
 			a := delivered(transported(t, inline(t, capture, dataRecord(1, now), nil)))
