@@ -242,16 +242,26 @@ type loadProbe struct {
 	aging  bool
 	ages   []time.Duration
 	wg     sync.WaitGroup
-	// firsts, once since is set (sinceAt), are each stage's first report begun at or after it.
+	// firsts, once since is set (sinceAt), are each stage's first report begun at or after it; events, every report begun at or after it.
 	since  time.Time
 	firsts map[string]stageSpan
+	events []stageEvent
 }
 
 // stageSpan is when one report of a stage began and ended.
 type stageSpan struct{ start, end time.Time }
 
-func (p *loadProbe) timed(stage string, took time.Duration) {
-	end := time.Now()
+// stageEvent is one report of a stage: when it began and its wall time.
+type stageEvent struct {
+	stage string
+	start time.Time
+	took  time.Duration
+}
+
+func (p *loadProbe) timed(stage string, took time.Duration) { p.record(stage, time.Now(), took) }
+
+// record counts a report of stage that ended at end.
+func (p *loadProbe) record(stage string, end time.Time, took time.Duration) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	s := p.stages[stage]
@@ -261,12 +271,32 @@ func (p *loadProbe) timed(stage string, took time.Duration) {
 	}
 	s.n++
 	s.sum += took
-	if p.firsts == nil {
+	start := end.Add(-took)
+	if p.firsts == nil || start.Before(p.since) {
 		return
 	}
-	if _, ok := p.firsts[stage]; !ok && !end.Add(-took).Before(p.since) {
-		p.firsts[stage] = stageSpan{start: end.Add(-took), end: end}
+	if _, ok := p.firsts[stage]; !ok {
+		p.firsts[stage] = stageSpan{start: start, end: end}
 	}
+	p.events = append(p.events, stageEvent{stage: stage, start: start, took: took})
+}
+
+// within is each stage's reports begun from from to to, both included, of those begun since sinceAt.
+func (p *loadProbe) within(from, to time.Time) map[string]stageTotal {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	out := map[string]stageTotal{}
+	for _, e := range p.events {
+		if e.start.Before(from) || e.start.After(to) {
+			continue
+		}
+		s := out[e.stage]
+		s.n++
+		s.sum += e.took
+		out[e.stage] = s
+	}
+
+	return out
 }
 
 // sinceAt starts the firsts at at.

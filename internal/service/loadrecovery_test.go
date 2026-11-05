@@ -135,9 +135,10 @@ func (r *recovery) barrier(ctx context.Context, blocker *toolMetrics, m int, pol
 	}
 }
 
-// release holds the parked consumer at its next step's start, waiting at most limit for it, switches the descriptor acceptance,
-// reads the clock and starts the probe's firsts there; it returns the clock and what lets the consumer go.
-func (r *recovery) release(ctx context.Context, limit time.Duration) (time.Time, func(), error) {
+// release holds the parked consumer at its next step's start, waiting at most limit for it, runs before when set,
+// switches the descriptor acceptance, reads the clock and starts the probe's firsts and stage reports there;
+// it returns the clock and what lets the consumer go.
+func (r *recovery) release(ctx context.Context, limit time.Duration, before func()) (time.Time, func(), error) {
 	r.mu.Lock()
 	r.armed, r.arrived, r.open = true, make(chan struct{}), make(chan struct{})
 	arrived, open := r.arrived, r.open
@@ -148,6 +149,9 @@ func (r *recovery) release(ctx context.Context, limit time.Duration) (time.Time,
 		return time.Time{}, nil, ctx.Err()
 	case <-time.After(limit):
 		return time.Time{}, nil, fmt.Errorf("the parked consumer did not reach a step's start within %s", limit)
+	}
+	if before != nil {
+		before()
 	}
 	r.released.Store(true)
 	clock := time.Now()
@@ -294,13 +298,17 @@ func recoveryEpisode(t *testing.T, spec loadSpec, k int, rate float64, m int, li
 	wait(t, spec.warmup) // the traffic's backlog from the parking subsides
 
 	cl := tracekeepv1connect.NewMachineServiceClient(trusting(t, filepath.Join(h.d.opts.Dir, DevCertFile)), c.API.PublicURL)
-	clock, letGo, err := h.rec.release(ctx, time.Minute)
+	var samples []loadSample
+	var from loadMark
+	var auditN, auditSum float64
+	clock, letGo, err := h.rec.release(ctx, time.Minute, func() {
+		samples = append(samples, h.sample(tools)) // the release's, just before its clock
+		from = h.mark(tools)
+		auditN, auditSum = h.histogram("tracekeep_catalog_audit_wait_seconds")
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	samples := []loadSample{h.sample(tools)} // the release's
-	from := h.mark(tools)
-	auditN, auditSum := h.histogram("tracekeep_catalog_audit_wait_seconds")
 	cctx, endCalls := context.WithCancel(ctx)
 	var calls packURLResult
 	called := make(chan struct{})
@@ -337,13 +345,13 @@ func recoveryEpisode(t *testing.T, spec loadSpec, k int, rate float64, m int, li
 			parkedRedelivered = max(parkedRedelivered, uint64(ci.NumRedelivered)) //nolint:gosec // a count
 		}
 	}
-	// The stages and counters at the completion's sample, before an attempt under way ends.
+	// The counters at the completion's sample, before an attempt under way ends.
 	to := h.mark(tools)
 	auditN2, auditSum2 := h.histogram("tracekeep_catalog_audit_wait_seconds")
 	endCalls()
 	<-called
 
-	st := stageDelta(from, to)
+	st := h.probe.within(clock, end.at)
 	ep := drainOf(rate, clock, end.at, samples, h.probe.readPasses(), &calls, st)
 	h.recoveryRows(ep, m, parked, clock, samples, st, calls.within(clock, end.at))
 	var trafficRedelivered uint64
@@ -361,13 +369,15 @@ func recoveryEpisode(t *testing.T, spec loadSpec, k int, rate float64, m int, li
 	return ep
 }
 
-// drainOf is an episode's drain from the release's clock to its completion at end, read from what was observed within it alone:
-// the traffic judged over the samples from the release's to the completion's, the first taken at or after end, and the passes between them,
-// the PackURL attempts begun within the drain, and the parked consumer's acknowledgement in st, its stages' totals over the drain.
+// drainOf is an episode's drain from the release's clock to its completion at end, read from what was observed within it alone, by each observation's own time:
+// the traffic's rates over the samples from the release's, taken just before the clock, to the completion's, the first taken at or after end,
+// and its passes completed from the clock to end; the PackURL attempts begun within the drain;
+// and the parked consumer's acknowledgement in st, its stages' reports begun within the drain.
 func drainOf(rate float64, clock, end time.Time, samples []loadSample, passes []settledPass, calls *packURLResult, st map[string]stageTotal) drainEpisode {
 	if i := slices.IndexFunc(samples, func(s loadSample) bool { return !s.at.Before(end) }); i >= 0 {
 		samples = samples[:i+1]
 	}
+	passes = slices.DeleteFunc(slices.Clone(passes), func(p settledPass) bool { return p.at.Before(clock) || p.at.After(end) })
 	ep := drainEpisode{drain: end.Sub(clock), traffic: judgeDrain(rate, samples, passes)}
 	in := calls.within(clock, end)
 	ep.calls = append(ep.calls, in.latencies...)
@@ -489,7 +499,7 @@ func TestRecoveryHoldsTheParkedStart(t *testing.T) {
 		ctx := t.Context()
 		r, probe := parkedCohort(t, c, m, limit, nil)
 
-		clock, letGo, err := r.release(ctx, limit)
+		clock, letGo, err := r.release(ctx, limit, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -622,7 +632,7 @@ func TestRecoveryCompletesThroughReconciliation(t *testing.T) {
 		f := &lostBookkeeping{t: t, c: c, failed: make(chan struct{}), others: make(chan struct{})}
 		r, _ := parkedCohort(t, c, m, limit, f.stage)
 		f.want.Store(int64(r.n - 1))
-		_, letGo, err := r.release(ctx, limit)
+		_, letGo, err := r.release(ctx, limit, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
