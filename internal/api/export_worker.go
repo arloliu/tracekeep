@@ -16,6 +16,7 @@ import (
 
 	"github.com/arloliu/tracekeep/internal/catalog"
 	"github.com/arloliu/tracekeep/internal/records"
+	"github.com/arloliu/tracekeep/internal/safetext"
 )
 
 func (c *ExportConfig) lease() time.Duration      { return cmp.Or(c.Lease, time.Minute) }
@@ -50,7 +51,7 @@ func (s *Server) RunExports(ctx context.Context, holder string, poll time.Durati
 		if err != nil || !ok {
 			<-slots
 			if err != nil && ctx.Err() == nil && s.Log != nil {
-				s.Log.Warn("api: exports: claim", "error", safeText(err.Error()))
+				s.Log.Warn("api: exports: claim", "error", safetext.Text(err.Error()))
 			}
 			select {
 			case <-ctx.Done():
@@ -120,7 +121,7 @@ func (s *Server) attempt(parent context.Context, cl *catalog.Claim, claimed time
 		s.Metrics.Export(outcome, 0)
 	case err != nil && s.Log != nil && parent.Err() == nil:
 		// The attempt ends; the lease's expiry starts the next.
-		s.Log.Warn("api: exports: attempt ended", "job", a.Job.String(), "fence", a.Fence, "error", safeText(err.Error()))
+		s.Log.Warn("api: exports: attempt ended", "job", a.Job.String(), "fence", a.Fence, "error", safetext.Text(err.Error()))
 	default: // done, counted where it completed
 	}
 }
