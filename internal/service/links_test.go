@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/url"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -174,6 +175,28 @@ func TestBusErrorCausesLoggedSafe(t *testing.T) {
 			t.Errorf("%s: line %s after %q, want it next, naming the cause by its words and its URL's host", msg, line, before)
 		}
 		absent(t, []string{line}, "pw-sentinel", "q-sentinel")
+	}
+}
+
+// A bus URL that does not parse fails the connection before any dial, its error shown by its structure:
+// the operation, the scheme alone and the cause without the URL's fragments it quotes, or a fixed diagnostic for a scheme not the bus's;
+// no credential or query appears, and the client's *url.Error is still found in the chain.
+func TestConnectFailureShownByStructure(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct{ url, want string }{
+		{"nats://u: pw-sentinel@bus.invalid:bad?token=q-sentinel", `service: connect the bus: parse a nats URL: invalid port "…" after host`},
+		{"nats://user:pw-sentinel", `service: connect the bus: parse a nats URL: invalid port "…" after host`},
+		{"nats://a.invalid,TLS://u: pw-sentinel@b.invalid?q-sentinel", "service: connect the bus: parse a tls URL: net/url: invalid userinfo"},
+		{"ht tp://u:pw-sentinel@a.invalid b?q-sentinel", "bus: connect: parse failed on a URL not shown"},
+	} {
+		_, err := connect(&config.Bus{URL: tc.url}, slog.New(slog.DiscardHandler))
+		var ue *url.Error
+		if err == nil || err.Error() != tc.want || !errors.As(err, &ue) {
+			t.Errorf("connect(%q) = %v, want %q with the client's *url.Error kept", tc.url, err, tc.want)
+		}
+		if err != nil && (strings.Contains(err.Error(), "pw-sentinel") || strings.Contains(err.Error(), "q-sentinel")) {
+			t.Errorf("connect(%q) = %v, holding a credential or a query", tc.url, err)
+		}
 	}
 }
 
