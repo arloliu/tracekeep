@@ -490,6 +490,32 @@ func TestProbeStagesWithin(t *testing.T) {
 	}
 }
 
+// The probe keeps a timed report only of the parked consumer's acknowledgement stages, which the decision reads, so its history grows with the cohort alone:
+// the traffic's stages, and the parked consumer's others, are running totals only.
+func TestProbeKeepsTheAcknowledgementsAlone(t *testing.T) {
+	t.Parallel()
+	clock := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	p := &loadProbe{stages: map[string]*stageTotal{}}
+	p.sinceAt(clock)
+	for i := range 1000 {
+		for _, s := range []string{"dispose", "batch", "flush", "acknowledge", "parked/copy", "parked/dispose"} {
+			p.record(s, clock.Add(time.Duration(i+1)*time.Millisecond), time.Microsecond)
+		}
+	}
+	for _, s := range []string{"prepare-ack", "double-ack", "ack-copy", "ack-copy/failed"} {
+		p.record("parked/"+s, clock.Add(time.Second), time.Millisecond)
+	}
+	if n := len(p.events); n != 4 {
+		t.Errorf("%d timed reports kept, want the 4 acknowledgements'", n)
+	}
+	if st := p.readStages(); st["dispose"].n != 1000 || st["parked/copy"].n != 1000 {
+		t.Errorf("running totals %v, want every report counted", st)
+	}
+	if got := p.within(clock, clock.Add(time.Minute)); len(got) != 4 || got["parked/ack-copy/failed"].n != 1 {
+		t.Errorf("acknowledgements within the drain %v, want each of the 4", got)
+	}
+}
+
 // The batched acknowledgement merges only on a cut of a fifth with its traffic judged sustained in every episode it ran:
 // a judged base whose head is too short to judge leaves the merge unknown.
 func TestMergeRule(t *testing.T) {

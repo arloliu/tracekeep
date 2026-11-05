@@ -242,10 +242,16 @@ type loadProbe struct {
 	aging  bool
 	ages   []time.Duration
 	wg     sync.WaitGroup
-	// firsts, once since is set (sinceAt), are each stage's first report begun at or after it; events, every report begun at or after it.
+	// firsts, once since is set (sinceAt), are each stage's first report begun at or after it;
+	// events, every report of an acknowledgement stage (ackStages) begun at or after it, so they grow with the parked cohort alone.
 	since  time.Time
 	firsts map[string]stageSpan
 	events []stageEvent
+}
+
+// ackStages are the parked consumer's acknowledgement stages, done or failed: the drain's acknowledgement time, which the decision reads.
+var ackStages = []string{
+	"parked/prepare-ack", "parked/prepare-ack/failed", "parked/double-ack", "parked/double-ack/failed", "parked/ack-copy", "parked/ack-copy/failed",
 }
 
 // stageSpan is when one report of a stage began and ended.
@@ -278,10 +284,12 @@ func (p *loadProbe) record(stage string, end time.Time, took time.Duration) {
 	if _, ok := p.firsts[stage]; !ok {
 		p.firsts[stage] = stageSpan{start: start, end: end}
 	}
-	p.events = append(p.events, stageEvent{stage: stage, start: start, took: took})
+	if slices.Contains(ackStages, stage) {
+		p.events = append(p.events, stageEvent{stage: stage, start: start, took: took})
+	}
 }
 
-// within is each stage's reports begun from from to to, both included, of those begun since sinceAt.
+// within is each acknowledgement stage's reports begun from from to to, both included, of those begun since sinceAt.
 func (p *loadProbe) within(from, to time.Time) map[string]stageTotal {
 	p.mu.Lock()
 	defer p.mu.Unlock()
