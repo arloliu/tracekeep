@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
@@ -45,6 +46,9 @@ type Coordinator struct {
 	Bus     Publisher
 	// ParkPrefix is the parking stream's subject prefix.
 	ParkPrefix string
+	// Timed, a test seam for the load harness, is told the wall time of each acknowledgement's three steps, prepare-ack, double-ack and ack-copy,
+	// a parked copy's named apart from an original's and a failed step's apart from a done one's (timing); nil in production.
+	Timed func(stage string, took time.Duration)
 }
 
 // Parking is what parking an original did.
@@ -123,18 +127,26 @@ func (k *Coordinator) Advance(ctx context.Context, d *Delivery) (catalog.Version
 // whatever resolution the caller decided from), a DoubleAck, then the copy row acked once the server confirmed it.
 // No catalog transaction is open across the DoubleAck.
 func (k *Coordinator) Acknowledge(ctx context.Context, d *Delivery, m Msg) error {
+	prepared := timing(k.Timed, d.Msg.Parked, "prepare-ack")
 	_, err := k.Catalog.PrepareAck(ctx, d.identity(), catalog.AuditEntry{
 		Actor: "ingest", Action: ReasonTerminated,
 		Detail: fmt.Sprintf("seq %d incarnation %d stream seq %d", d.Raw.Version.Seq, d.Msg.Incarnation, d.Msg.StreamSeq),
 	})
+	prepared(err)
 	if err != nil {
 		return err
 	}
-	if err := m.DoubleAck(ctx); err != nil {
+	acked := timing(k.Timed, d.Msg.Parked, "double-ack")
+	err = m.DoubleAck(ctx)
+	acked(err)
+	if err != nil {
 		return err
 	}
+	recorded := timing(k.Timed, d.Msg.Parked, "ack-copy")
+	err = k.Catalog.AckCopy(ctx, d.identity())
+	recorded(err)
 
-	return k.Catalog.AckCopy(ctx, d.identity())
+	return err
 }
 
 // confirm reads a copy's publish: a PubAck with Duplicate false, or error 10071 whose description parses to a strictly positive sequence

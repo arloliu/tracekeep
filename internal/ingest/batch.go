@@ -45,6 +45,9 @@ type Batch struct {
 	opened    time.Time
 }
 
+// parked reports a batch of parked copies, the parked consumer's: a consumer batches only its own deliveries.
+func (b *Batch) parked() bool { return len(b.Entries) > 0 && b.Entries[0].D.Msg.Parked }
+
 // DefaultBatchMetaBytes is half the reader's metadata budget, which every reader of a pack opens with:
 // the estimate's margin, and room for the rest of the metadata.
 const DefaultBatchMetaBytes = tracepack.DefaultMaxPackMetadataLen / 2
