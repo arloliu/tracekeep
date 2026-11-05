@@ -23,6 +23,7 @@ import (
 	"github.com/arloliu/tracekeep/internal/ingest"
 	"github.com/arloliu/tracekeep/internal/keys"
 	"github.com/arloliu/tracekeep/internal/metrics"
+	"github.com/arloliu/tracekeep/internal/records"
 	"github.com/arloliu/tracekeep/internal/store"
 	"github.com/arloliu/tracekeep/web"
 )
@@ -324,11 +325,11 @@ func (e *Env) sessions(ctx context.Context) error {
 
 // checkPresign presigns a GET of a key that does not exist and fetches it (storage.md §5.2 *Downloads*):
 // not-found shows the store accepts the signature, and anything else, a redirect included, fails the start.
-// Its errors never carry the signed URL.
+// Its errors never carry the signed URL, nor a presigning failure's text, which is the store's.
 func checkPresign(ctx context.Context, p store.Presigner) error {
 	u, _, err := p.PresignGet(ctx, "tracekeep-presign-check/"+rand.Text(), time.Now().Add(time.Minute))
 	if err != nil {
-		return fmt.Errorf("service: api: presign: %w", err)
+		return fmt.Errorf("service: api: presign: %w", records.Keyless(err))
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, http.NoBody)
 	if err != nil {
