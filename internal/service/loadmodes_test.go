@@ -242,10 +242,9 @@ type loadProbe struct {
 	aging  bool
 	ages   []time.Duration
 	wg     sync.WaitGroup
-	// firsts, once since is set (sinceAt), are each stage's first report begun at or after it; lasts, each stage's latest report's end.
+	// firsts, once since is set (sinceAt), are each stage's first report begun at or after it.
 	since  time.Time
 	firsts map[string]stageSpan
-	lasts  map[string]time.Time
 }
 
 // stageSpan is when one report of a stage began and ended.
@@ -265,7 +264,6 @@ func (p *loadProbe) timed(stage string, took time.Duration) {
 	if p.firsts == nil {
 		return
 	}
-	p.lasts[stage] = end
 	if _, ok := p.firsts[stage]; !ok && !end.Add(-took).Before(p.since) {
 		p.firsts[stage] = stageSpan{start: end.Add(-took), end: end}
 	}
@@ -275,7 +273,7 @@ func (p *loadProbe) timed(stage string, took time.Duration) {
 func (p *loadProbe) sinceAt(at time.Time) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	p.since, p.firsts, p.lasts = at, map[string]stageSpan{}, map[string]time.Time{}
+	p.since, p.firsts = at, map[string]stageSpan{}
 }
 
 // first is stage's first report begun since sinceAt, false for none.
@@ -285,14 +283,6 @@ func (p *loadProbe) first(stage string) (stageSpan, bool) {
 	s, ok := p.firsts[stage]
 
 	return s, ok
-}
-
-// last is the end of stage's latest report since sinceAt, zero for none.
-func (p *loadProbe) last(stage string) time.Time {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-
-	return p.lasts[stage]
 }
 
 // count is stage's reports so far.
