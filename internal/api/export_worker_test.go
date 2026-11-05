@@ -54,7 +54,7 @@ func workers(t *testing.T, m *masked) string {
 	if err := os.Mkdir(stale, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	m.srv.Exports.WorkDir, m.srv.Exports.Lease = dir, 600*time.Millisecond
+	m.srv.Exports.WorkDir, m.srv.Exports.Lease = dir, 3*time.Second // a third of it between renewals outlasts a slow runner's stalls
 	ctx, stop := context.WithCancel(t.Context())
 	done := make(chan error, 1)
 	go func() { done <- m.srv.RunExports(ctx, "r1", 20*time.Millisecond) }()
