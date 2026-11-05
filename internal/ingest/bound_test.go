@@ -354,32 +354,54 @@ func TestFlushRemoteCallsEndWithTheirContext(t *testing.T) {
 	})
 }
 
-// The ack wait alone, with no deadline above it, gives up a flush whose registration never answers:
-// the registration ended at the ack wait, every message nak'd, the put object kept for the reconciler and nothing registered.
-// The ack wait starts with the flush, as it does in service, so the work before the registration is inside it;
-// a runner too slow for that work within the bound fails on the registration never reached, not on what follows.
-func TestAckWaitEndsAStalledRegistration(t *testing.T) {
+// The ack wait bounds a flush's registration, with no deadline above it: the registration's context ends at the ack wait from the flush's start.
+func TestAckWaitBoundsTheRegistration(t *testing.T) {
 	t.Parallel()
 	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
 		p := newPipeline(t, c)
 		g := p.ingester(slog.New(slog.DiscardHandler))
-		g.AckWait = bound
-		capture := tracepack.UUID{0xc1, 0x16}
-		hs := p.deliver(t, traffic(t, capture))
-		release := lockCapture(t, p.cat, capture)
-		entered := false
+		g.AckWait = time.Hour
+		capture := tracepack.UUID{0xc1, 0x17}
+		p.deliver(t, traffic(t, capture))
+		var deadline time.Time
+		var bounded bool
 		p.f.registerPack = func(ctx context.Context, pk *catalog.Pack, r catalog.Registration) (catalog.PackOutcome, int, error) {
-			entered = true
+			deadline, bounded = ctx.Deadline()
 			return c.RegisterPackGaps(ctx, pk, r)
 		}
 
+		began := time.Now()
 		err := g.flush(t.Context(), p.b.All())
-		release()
-		if !entered {
-			t.Fatalf("flush = %v before its registration; the ack wait was spent first", err)
+		if err != nil {
+			t.Fatalf("flush = %v", err)
 		}
+		if start := deadline.Add(-g.AckWait); !bounded || start.Before(began) || start.After(time.Now()) {
+			t.Errorf("the registration's deadline %v (set %v) is not the ack wait from the flush's start", deadline, bounded)
+		}
+	})
+}
+
+// A flush whose registration never answers is given up at its deadline, here passing once the registration is entered:
+// every message nak'd, the put object kept for the reconciler and nothing registered.
+func TestStalledRegistrationGivenUp(t *testing.T) {
+	t.Parallel()
+	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
+		p := newPipeline(t, c)
+		g := p.ingester(slog.New(slog.DiscardHandler))
+		g.AckWait = time.Hour // the deadline is the test's, on cue
+		exp := newExpiring(t.Context())
+		capture := tracepack.UUID{0xc1, 0x16}
+		hs := p.deliver(t, traffic(t, capture))
+		release := lockCapture(t, p.cat, capture)
+		p.f.registerPack = func(ctx context.Context, pk *catalog.Pack, r catalog.Registration) (catalog.PackOutcome, int, error) {
+			time.AfterFunc(bound, exp.expire)
+			return c.RegisterPackGaps(ctx, pk, r)
+		}
+
+		err := g.flush(exp, p.b.All())
+		release()
 		if !errors.Is(err, context.DeadlineExceeded) {
-			t.Fatalf("flush = %v, want the ack wait's deadline", err)
+			t.Fatalf("flush = %v, want the deadline", err)
 		}
 		for i, h := range hs {
 			if got := h.done(); !slices.Equal(got, []string{"nak " + firstNakDelay.String()}) {
