@@ -758,3 +758,17 @@ concurrent acknowledgement tracks completion by delivery, never as a prefix; a s
 **Before and after**: the base is the branch once its benchmarks are added, judged as the catalog's sub-phase was; the benchmark workflow runs only if the catalog changes.
 **The write-connection gate** runs again on the final head.
 Considered and not taken: a backoff kept in the catalog (a schema for a best-effort schedule); a derived-key cache; batching a parked copy's acknowledgements now; a flush budget that grows with `ack_wait`.
+
+### T-57 — what the phase 5 plan's gate settled (2026-11-05)
+
+Five points the phase 5 plan raised before its gate, read from every gate case against the test bodies, the packaging runs and the measurement record, amended by the plan's external review;
+the owner set the recovery drain's thresholds and the performance case's wording, the rest follow the specs under the owner's standing instruction.
+**No object key in a log** (`operations.md` §10.4): a field holding a key is a key, and a delivery's message id names its claim object; each boundary is cleaned where it is crossed and by the error's origin, never by trimming text at the log call:
+a store's own error through `Keyless`, a callback's error through a store call unchanged, a catalog's or the bus's through the API's text sanitizer, a start's URL error by its structure; every outcome the code reads from an error (a lease lost, a missing claim, an object's end) kept.
+**A recovery backlog's drain**: measured beside the offered rate from a harness event that releases a rejected capture's parked records to every copy acknowledged by identity, the traffic judged by completed flush cycles within one episode;
+a parked copy's batched acknowledgement is admitted if the traffic falls behind, a paced `PackURL` p99 passes 2 s, or the acknowledgement takes a fifth of a drain longer than a compactor cycle, each condition true, false or unknown, an unknown never read as false;
+admitted, its protocol goes into `parking.md` and is reviewed before its code.
+**The performance case**: every change has its before and after, and no benchmark regresses beyond its noise but by the costs the owner kept; a row still inconclusive is measured once more and, if still so, recorded and not passed.
+**A test's budget starts on cue**, once the stalled call waits, never covering the test's own setup.
+**Evidence on `main`**: the measurements of the catalog's and the paths' sub-phases stand on `main`, whose code outside tests matches their final commit; the clustered runs, the packaging run and the write-connection gate run again on the gate's merge, and the gate closes once they are recorded.
+Considered and not taken: cleaning every error with `Keyless` (it would make a catalog failure the store's and lose a lease lost); judging a short drain over windows shorter than a flush; pooling windows across episodes.
