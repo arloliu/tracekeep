@@ -412,12 +412,13 @@ type brokenObject struct {
 }
 
 func (o brokenObject) ReadAt([]byte, int64) (int, error) {
-	return 0, errors.New("the store broke reading " + o.key)
+	return 0, errors.New("the store broke reading " + o.key + ": " + storeSentinel)
 }
 
 // A store that fails to read a pack after the hour's earlier packs exported fails the attempt, never leaving the pack out:
 // the failed attempt puts and completes no bundle, its work directory is removed, and the next attempt, under a new fence,
-// exports every pack; the failed attempt's fence can complete nothing afterwards.
+// exports every pack; the failed attempt's fence can complete nothing afterwards,
+// and its logged end names neither the broken object's key nor the store's text.
 func TestExportWorkerStoreFailureFailsTheAttempt(t *testing.T) {
 	t.Parallel()
 	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
@@ -462,6 +463,14 @@ func TestExportWorkerStoreFailureFailsTheAttempt(t *testing.T) {
 		failed := catalog.Attempt{Job: job, Fence: 1, Holder: "r1"}
 		if _, err := c.CompleteExport(t.Context(), failed, "exports/"+job.String()+"/1.tar", 1, time.Hour); err == nil {
 			t.Error("the failed attempt completed the job after the next one")
+		}
+		// The failed attempt's line was written before the next attempt claimed the job, which await read.
+		logs := m.logs.String()
+		if !strings.Contains(logs, `msg="api: exports: attempt ended" job=`+job.String()+" fence=1") {
+			t.Errorf("the log = %s\nwant the failed attempt's end", logs)
+		}
+		if strings.Contains(logs, packs[2].Key) || strings.Contains(logs, storeSentinel) {
+			t.Errorf("the log = %s\nnaming the broken object's key or the store's text", logs)
 		}
 	})
 }
