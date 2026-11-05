@@ -131,5 +131,5 @@ it never carries an object key, a store's error text (made keyless by `Keyless`)
 whichever error's text would carry it:
 a boundary that logs an error whose text may hold such material (a store's, an IdP fetch's, a parking publish's) logs fields it builds itself, never the error's text (T-53).
 The service's bus connection logs a loss, a restoration, an asynchronous error and a close with an error, each naming its server with credentials and query removed.
-A field holding an object key carries the key, and so does a delivery's message id, which names its claim object; text the code builds names no key;
+A field holding an object key carries the key, and text the code builds names no key; a claim object's name is its version's capture and seq, which a log names as `capture_id` and `seq` do, so it is no key to hide;
 a start's failure printed on stderr is held to the same rule, a URL's error shown by its scheme alone (T-57).

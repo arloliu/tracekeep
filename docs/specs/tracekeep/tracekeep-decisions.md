@@ -763,7 +763,7 @@ Considered and not taken: a backoff kept in the catalog (a schema for a best-eff
 
 Five points the phase 5 plan raised before its gate, read from every gate case against the test bodies, the packaging runs and the measurement record, amended by the plan's external review;
 the owner set the recovery drain's thresholds and the performance case's wording, the rest follow the specs under the owner's standing instruction.
-**No object key in a log** (`operations.md` §10.4): a field holding a key is a key, and a delivery's message id names its claim object; each boundary is cleaned where it is crossed and by the error's origin, never by trimming text at the log call:
+**No object key in a log** (`operations.md` §10.4): a field holding a key is a key, while a claim object's name, its version's capture and seq, is what a log already names; each boundary is cleaned where it is crossed and by the error's origin, never by trimming text at the log call:
 a store's own error through `Keyless`, a callback's error through a store call unchanged, a catalog's or the bus's through the API's text sanitizer, a start's URL error by its structure; every outcome the code reads from an error (a lease lost, a missing claim, an object's end) kept.
 **A recovery backlog's drain**: measured beside the offered rate from a harness event that releases a rejected capture's parked records to every copy acknowledged by identity, the traffic judged by completed flush cycles within one episode;
 a parked copy's batched acknowledgement is admitted if the traffic falls behind, a paced `PackURL` p99 passes 2 s, or the acknowledgement takes a fifth of a drain longer than a compactor cycle, each condition true, false or unknown, an unknown never read as false;
