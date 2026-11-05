@@ -279,6 +279,47 @@ func TestFlushRemoteCallsEndWithTheirContext(t *testing.T) {
 	})
 }
 
+// The ack wait alone, with no deadline above it, gives up a flush whose registration never answers:
+// the registration ended at the ack wait, every message nak'd, the put object kept for the reconciler and nothing registered.
+// The ack wait starts with the flush, as it does in service, so the work before the registration is inside it;
+// a runner too slow for that work within the bound fails on the registration never reached, not on what follows.
+func TestAckWaitEndsAStalledRegistration(t *testing.T) {
+	t.Parallel()
+	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
+		p := newPipeline(t, c)
+		g := p.ingester(slog.New(slog.DiscardHandler))
+		g.AckWait = bound
+		capture := tracepack.UUID{0xc1, 0x16}
+		hs := p.deliver(t, traffic(t, capture))
+		release := lockCapture(t, p.cat, capture)
+		entered := false
+		p.f.registerPack = func(ctx context.Context, pk *catalog.Pack, r catalog.Registration) (catalog.PackOutcome, int, error) {
+			entered = true
+			return c.RegisterPackGaps(ctx, pk, r)
+		}
+
+		err := g.flush(t.Context(), p.b.All())
+		release()
+		if !entered {
+			t.Fatalf("flush = %v before its registration; the ack wait was spent first", err)
+		}
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("flush = %v, want the ack wait's deadline", err)
+		}
+		for i, h := range hs {
+			if got := h.done(); !slices.Equal(got, []string{"nak " + firstNakDelay.String()}) {
+				t.Errorf("message %d: %v, want nak'd", i, got)
+			}
+		}
+		if ks := storedKeys(t, p.st); len(ks) != 1 {
+			t.Errorf("objects %v, want the put object kept for the reconciler", ks)
+		}
+		if got, err := c.Capture(t.Context(), capture); err != nil || got.HasHighestSeq {
+			t.Errorf("capture %+v, %v; want nothing registered", got, err)
+		}
+	})
+}
+
 // A registration whose commit succeeded but whose answer is lost fails the flush at the catalog's call:
 // the segment stays registered and its object kept, nothing is acknowledged,
 // and the messages are nak'd and written again at their redelivery, the merge deduplicating them.
