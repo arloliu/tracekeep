@@ -172,14 +172,14 @@ func subjectSuffix(subject string) string {
 }
 
 // cohortParked names why the cohort does not yet hold before the release, empty when it does:
-// m+1 versions parked, each original's row on the traffic incarnation acked, and the parking stream holding one copy on each version's subject, no other.
-func cohortParked(vs []catalog.ParkedVersion, subjects map[string]uint64, m int, traffic int64) string {
-	if len(vs) != m+1 {
-		return fmt.Sprintf("%d versions parked, want %d", len(vs), m+1)
+// n versions parked, each original's row on the traffic incarnation acked, and the parking stream holding one copy on each version's subject, no other.
+func cohortParked(vs []catalog.ParkedVersion, subjects map[string]uint64, n int, traffic int64) string {
+	if len(vs) != n {
+		return fmt.Sprintf("%d versions parked, want %d", len(vs), n)
 	}
 	copies := map[string]uint64{}
-	for s, n := range subjects {
-		copies[subjectSuffix(s)] += n
+	for s, k := range subjects {
+		copies[subjectSuffix(s)] += k
 	}
 	for _, v := range vs {
 		if v.State != catalog.VersionParked {
@@ -188,27 +188,27 @@ func cohortParked(vs []catalog.ParkedVersion, subjects map[string]uint64, m int,
 		if !slices.ContainsFunc(v.Copies, func(c catalog.ParkedCopy) bool { return c.Incarnation == traffic && c.State == "acked" }) {
 			return fmt.Sprintf("seq %d: its original is not acknowledged", v.Version.Seq)
 		}
-		switch n := copies[versionSuffix(v.Version)]; n {
+		switch k := copies[versionSuffix(v.Version)]; k {
 		case 0:
 			return fmt.Sprintf("seq %d: no copy on its subject", v.Version.Seq)
 		case 1:
 		default:
-			return fmt.Sprintf("seq %d: %d copies on its subject", v.Version.Seq, n)
+			return fmt.Sprintf("seq %d: %d copies on its subject", v.Version.Seq, k)
 		}
 	}
-	if len(copies) != m+1 {
-		return fmt.Sprintf("the parking stream holds %d subjects, want %d", len(copies), m+1)
+	if len(copies) != n {
+		return fmt.Sprintf("the parking stream holds %d subjects, want %d", len(copies), n)
 	}
 
 	return ""
 }
 
-// cohortDrained names why the drain is not complete, empty when it is: m+1 versions staged, registered in a pack,
+// cohortDrained names why the drain is not complete, empty when it is: n versions staged, registered in a pack,
 // each with its copy's row on the parked incarnation present and acked, read by identity, never by acked_at.
-// err is a state the drain cannot leave: a lost row, a terminated or evicted version, more versions than m+1.
-func cohortDrained(vs []catalog.ParkedVersion, m int, parked int64) (string, error) {
-	if len(vs) > m+1 {
-		return "", fmt.Errorf("%d versions, want %d", len(vs), m+1)
+// err is a state the drain cannot leave: a lost row, a terminated or evicted version, more versions than n.
+func cohortDrained(vs []catalog.ParkedVersion, n int, parked int64) (string, error) {
+	if len(vs) > n {
+		return "", fmt.Errorf("%d versions, want %d", len(vs), n)
 	}
 	for _, v := range vs {
 		for _, c := range v.Copies {
@@ -220,8 +220,8 @@ func cohortDrained(vs []catalog.ParkedVersion, m int, parked int64) (string, err
 			return "", fmt.Errorf("seq %d is %s", v.Version.Seq, v.State)
 		}
 	}
-	if len(vs) < m+1 {
-		return fmt.Sprintf("%d versions, want %d", len(vs), m+1), nil
+	if len(vs) < n {
+		return fmt.Sprintf("%d versions, want %d", len(vs), n), nil
 	}
 	for _, v := range vs {
 		if v.State != catalog.VersionStaged {
@@ -477,7 +477,7 @@ func TestCohortParked(t *testing.T) {
 	} {
 		vs, subjects := cohort(m, catalog.VersionParked, "acked", "")
 		vs = tc.edit(vs, subjects)
-		if why := cohortParked(vs, subjects, m, 1); (why == "") != (tc.why == "") || !strings.Contains(why, tc.why) {
+		if why := cohortParked(vs, subjects, m+1, 1); (why == "") != (tc.why == "") || !strings.Contains(why, tc.why) {
 			t.Errorf("%s: %q, want naming %q", name, why, tc.why)
 		}
 	}
@@ -533,7 +533,7 @@ func TestCohortDrained(t *testing.T) {
 		for i := range vs {
 			vs[i].AckedAt = 1
 		}
-		why, err := cohortDrained(tc.edit(vs), m, 2)
+		why, err := cohortDrained(tc.edit(vs), m+1, 2)
 		text := why
 		if err != nil {
 			text = err.Error()

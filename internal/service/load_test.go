@@ -24,7 +24,11 @@ package service
 //   - production runs ingest's defaults, flush 5 m and ack_wait 7 m (the heartbeat every ack_wait/3), at 1,600 records a second over K = 100,
 //     with max_ack_pending 600,000 and then the default 50,000 as its control, each after a warm-up of a flush plus ack_wait,
 //     judged over at least six completed drain cycles spanning at least three heartbeat periods (about 1.5 hours both);
-//   - ceiling-smoke, claimcheck-smoke and production-smoke check those three in a few minutes, at a low rate over short spans.
+//   - recovery measures a recovery backlog's drain (loadrecovery_test.go): K = 100 at 800 fwd/s on dev's 10 s flush, max_ack_pending 600,000 on both consumers,
+//     one more tool's capture rejected by a refused descriptor and its start and M data records parked, then released and drained,
+//     M from TRACEKEEP_LOAD_RECOVERY_M (1000, 10000 or 100000); an unknown condition runs the episode again, at most three episodes;
+//   - ceiling-smoke, claimcheck-smoke, production-smoke and recovery-smoke check those four in a few minutes, at a low rate over short spans,
+//     recovery-smoke parking 200 records unless TRACEKEEP_LOAD_RECOVERY_M names M.
 //
 // TRACEKEEP_LOAD_OFFERED, forwards a second, skips the sweep and offers that rate at the largest K, as the gate does with the rate a baseline recorded.
 // TRACEKEEP_LOAD_PROFILES is the directory the ceiling's and production's profiles are written to, a new temporary one when unset.
@@ -77,6 +81,10 @@ type loadSpec struct {
 	maxAckPending int
 	// probed installs the ingester's test seams and reads the consumer every sample, for the ceiling's, claim-check and production modes.
 	probed bool
+	// recovery installs the recovery drain's seams (loadrecovery_test.go) on a probed harness; redelivery, when not zero,
+	// replaces the parked consumer's nak delay.
+	recovery   bool
+	redelivery time.Duration
 }
 
 var (
@@ -107,6 +115,8 @@ const (
 type toolMetrics struct {
 	mu                              sync.Mutex
 	ring, reserved, dropped, claims float64
+	// data and other are the records observed, data records and the rest (the connection's control frames and events), the start apart.
+	data, other float64
 }
 
 var _ producer.Metrics = (*toolMetrics)(nil)
@@ -119,6 +129,10 @@ func (m *toolMetrics) Add(name string, labels map[string]string, delta float64) 
 		m.dropped += delta
 	case name == "claim_puts_total" && labels["outcome"] == "put":
 		m.claims += delta
+	case name == "records_observed_total" && labels["kind"] == "data":
+		m.data += delta
+	case name == "records_observed_total":
+		m.other += delta
 	default:
 	}
 }
@@ -165,9 +179,11 @@ type loadHarness struct {
 	stream jetstream.Stream
 	token  string
 	report []string
-	// cons is the traffic consumer, read every sample when the spec is probed; probe gathers the ingester's seams.
-	cons  jetstream.Consumer
-	probe *loadProbe
+	// cons is the traffic consumer, read every sample when the spec is probed, parked the parked one; probe gathers the ingester's seams,
+	// and rec, in the recovery mode, releases the rejected capture.
+	cons, parked jetstream.Consumer
+	probe        *loadProbe
+	rec          *recovery
 	// claimEvery makes every n-th forward a claim-check one of claimItem bytes, 0 none.
 	claimEvery uint32
 	claimItem  []byte
@@ -194,9 +210,15 @@ func newLoadHarness(t *testing.T, spec loadSpec) *loadHarness {
 	if spec.maxAckPending > 0 {
 		d.Env.Config.Ingest.MaxAckPending = spec.maxAckPending
 	}
+	if spec.redelivery > 0 {
+		d.Env.Config.Parking.RedeliveryDelay = spec.redelivery
+	}
 	if spec.probed {
 		h.probe = &loadProbe{stages: map[string]*stageTotal{}}
 		d.Env.timed, d.Env.passSettled = h.probe.timed, h.probe.settled
+	}
+	if spec.recovery {
+		h.rec = newRecovery(d.Env, h.probe)
 	}
 	bound, joined := make(chan struct{}), make(chan struct{})
 	d.Env.apiBound = func() { close(bound) }
@@ -282,7 +304,7 @@ func TestLoad(t *testing.T) {
 		return
 	}
 	if mode != "baseline" && mode != "gate" && mode != "smoke" {
-		t.Fatalf("TRACEKEEP_LOAD=%q: want baseline, gate, smoke, ceiling, claimcheck or production, the last three with -smoke or without", mode)
+		t.Fatalf("TRACEKEEP_LOAD=%q: want baseline, gate, smoke, ceiling, claimcheck, production or recovery, the last four with -smoke or without", mode)
 	}
 	spec := fullLoad
 	if mode == "smoke" {
@@ -378,25 +400,11 @@ func (h *loadHarness) row(k int, v loadVerdict) {
 // an explicit T3, and plain traffic: no withholding, process program or thinning.
 func (h *loadHarness) startTools(k int) []*loadTool {
 	h.t.Helper()
-	c := h.d.Env.Config
 	tools := make([]*loadTool, k)
 	g, ctx := errgroup.WithContext(h.t.Context())
 	g.SetLimit(8) // a start's admission waits on SQLite's one write connection
 	for i := range tools {
-		g.Go(func() error {
-			lt := &loadTool{id: fmt.Sprintf("LOAD-K%d-%03d", k, i), m: &toolMetrics{}}
-			cfg := producer.Config{Servers: []string{h.d.URL()}, SubjectPrefix: c.Bus.SubjectPrefix, ClaimBucket: c.Bus.ClaimBucket}
-			var err error
-			if lt.p, err = producer.New(cfg, producer.WithMetrics(lt.m), producer.WithLogger(slog.New(slog.DiscardHandler))); err != nil {
-				return err
-			}
-			tools[i] = lt
-			if lt.l, err = sim.NewLoopback(lt.p, sim.Options{ToolID: lt.id, DeviceName: "eqp", SessionID: 1, T3: loadT3}); err != nil {
-				return err
-			}
-
-			return lt.l.Start(ctx)
-		})
+		g.Go(func() error { return startTool(ctx, h.d.Env, &tools[i], fmt.Sprintf("LOAD-K%d-%03d", k, i), "eqp") })
 	}
 	if err := g.Wait(); err != nil {
 		h.stopTools(tools)
@@ -404,6 +412,24 @@ func (h *loadHarness) startTools(k int) []*loadTool {
 	}
 
 	return tools
+}
+
+// startTool starts one simulated tool on e's bus into *lt, set once its producer exists so a failed start is still stopped,
+// its descriptor naming device: one this service refuses when it is blank.
+func startTool(ctx context.Context, e *Env, lt **loadTool, id, device string) error {
+	c := e.Config
+	t := &loadTool{id: id, m: &toolMetrics{}}
+	cfg := producer.Config{Servers: []string{e.NC.ConnectedUrl()}, SubjectPrefix: c.Bus.SubjectPrefix, ClaimBucket: c.Bus.ClaimBucket}
+	var err error
+	if t.p, err = producer.New(cfg, producer.WithMetrics(t.m), producer.WithLogger(slog.New(slog.DiscardHandler))); err != nil {
+		return err
+	}
+	*lt = t
+	if t.l, err = sim.NewLoopback(t.p, sim.Options{ToolID: id, DeviceName: device, SessionID: 1, T3: loadT3}); err != nil {
+		return err
+	}
+
+	return t.l.Start(ctx)
 }
 
 // stopTools ends each tool's capture and closes its producer.

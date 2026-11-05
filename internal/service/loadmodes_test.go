@@ -27,12 +27,14 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 	"modernc.org/sqlite"
 
+	"github.com/arloliu/tracekeep/internal/bus"
+	"github.com/arloliu/tracekeep/internal/catalog"
 	"github.com/arloliu/tracekeep/internal/ingest"
 )
 
 // loadModes are TRACEKEEP_LOAD's measuring modes, each run at full size or, smoke, as a few minutes' check of itself.
 var loadModes = map[string]func(t *testing.T, smoke bool){
-	"ceiling": loadCeiling, "claimcheck": loadClaimCheck, "production": loadProduction,
+	"ceiling": loadCeiling, "claimcheck": loadClaimCheck, "production": loadProduction, "recovery": loadRecovery,
 }
 
 const (
@@ -163,20 +165,30 @@ func profileDir(t *testing.T) string {
 	return d
 }
 
-// consumer finds the traffic consumer ingest created and asserts that its effective configuration is the one dev was given.
+// consumer finds the traffic and parked consumers ingest created and asserts that each one's effective configuration is the one dev was given.
 func (h *loadHarness) consumer() {
 	ctx := h.t.Context()
-	names := h.stream.ConsumerNames(ctx)
+	parking, err := h.d.Env.JS.Stream(ctx, bus.StreamName(h.d.Env.Bus(), catalog.RoleParking))
+	if err != nil {
+		h.t.Fatal(err)
+	}
+	h.cons, h.parked = h.effective(h.stream, "tk-ingest-"), h.effective(parking, "tk-parked-") // bus.ConsumerName's
+}
+
+// effective finds s's consumer named with prefix and asserts its effective configuration.
+func (h *loadHarness) effective(s jetstream.Stream, prefix string) jetstream.Consumer {
+	ctx := h.t.Context()
+	names := s.ConsumerNames(ctx)
 	var name string
 	for n := range names.Name() {
-		if strings.HasPrefix(n, "tk-ingest-") { // bus.ConsumerName's traffic consumer
+		if strings.HasPrefix(n, prefix) {
 			name = n
 		}
 	}
 	if err := names.Err(); err != nil {
 		h.t.Fatal(err)
 	}
-	cons, err := h.stream.Consumer(ctx, name)
+	cons, err := s.Consumer(ctx, name)
 	if err != nil {
 		h.t.Fatal(err)
 	}
@@ -185,11 +197,12 @@ func (h *loadHarness) consumer() {
 		h.t.Fatal(err)
 	}
 	c := h.d.Env.Config.Ingest
-	if info.Config.AckWait != c.AckWait || info.Config.MaxAckPending != c.MaxAckPending {
-		h.t.Fatalf("consumer %s: ack_wait %s and max_ack_pending %d, want %s and %d", name, info.Config.AckWait, info.Config.MaxAckPending, c.AckWait, c.MaxAckPending)
+	if err := effective(name, info.Config, c); err != nil {
+		h.t.Fatal(err)
 	}
-	h.cons = cons
 	h.log(fmt.Sprintf("effective consumer %s: ack_wait %s, max_ack_pending %d, the heartbeat every %s", name, info.Config.AckWait, info.Config.MaxAckPending, c.AckWait/3))
+
+	return cons
 }
 
 // forward relays one request through lt: every claimEvery-th a claim-check one, the rest as the loopback's Forward does.
@@ -229,9 +242,17 @@ type loadProbe struct {
 	aging  bool
 	ages   []time.Duration
 	wg     sync.WaitGroup
+	// firsts, once since is set (sinceAt), are each stage's first report begun at or after it; lasts, each stage's latest report's end.
+	since  time.Time
+	firsts map[string]stageSpan
+	lasts  map[string]time.Time
 }
 
+// stageSpan is when one report of a stage began and ended.
+type stageSpan struct{ start, end time.Time }
+
 func (p *loadProbe) timed(stage string, took time.Duration) {
+	end := time.Now()
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	s := p.stages[stage]
@@ -241,6 +262,48 @@ func (p *loadProbe) timed(stage string, took time.Duration) {
 	}
 	s.n++
 	s.sum += took
+	if p.firsts == nil {
+		return
+	}
+	p.lasts[stage] = end
+	if _, ok := p.firsts[stage]; !ok && !end.Add(-took).Before(p.since) {
+		p.firsts[stage] = stageSpan{start: end.Add(-took), end: end}
+	}
+}
+
+// sinceAt starts the firsts at at.
+func (p *loadProbe) sinceAt(at time.Time) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.since, p.firsts, p.lasts = at, map[string]stageSpan{}, map[string]time.Time{}
+}
+
+// first is stage's first report begun since sinceAt, false for none.
+func (p *loadProbe) first(stage string) (stageSpan, bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	s, ok := p.firsts[stage]
+
+	return s, ok
+}
+
+// last is the end of stage's latest report since sinceAt, zero for none.
+func (p *loadProbe) last(stage string) time.Time {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	return p.lasts[stage]
+}
+
+// count is stage's reports so far.
+func (p *loadProbe) count(stage string) int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if s := p.stages[stage]; s != nil {
+		return s.n
+	}
+
+	return 0
 }
 
 // settled records a pass. A delivery's age is the pass's settlement less the time the stream stored its message,
