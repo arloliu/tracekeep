@@ -114,8 +114,12 @@ func (r *Compactor) Deletions(ctx context.Context, lease catalog.Lease, rep *Ret
 	for _, d := range cands {
 		ok, err := r.Catalog.DeletePack(ctx, lease, d, nowNs, r.DeleteDelay)
 		at := []any{"pack", d.Pack, "capture", d.Capture}
-		if err := r.stepFailed(ctx, err, "delete a merged input", rep, at...); err != nil {
-			return err
+		if err != nil {
+			if err := r.stepFailed(ctx, err, "delete a merged input", rep, at...); err != nil {
+				return err
+			}
+
+			continue // failed, not refused: counted once
 		}
 		if !ok {
 			r.Log.Warn("compact: a merged input's deletion refused", at...)
@@ -166,8 +170,12 @@ func (r *Compactor) Retain(ctx context.Context, lease catalog.Lease, rep *Retent
 	for _, s := range cands {
 		ev, err := r.Catalog.EvictHour(ctx, lease, s, nowNs)
 		at := []any{"capture", s.Capture, "hour", s.Hour}
-		if err := r.stepFailed(ctx, err, "evict an hour", rep, at...); err != nil {
-			return err
+		if err != nil {
+			if err := r.stepFailed(ctx, err, "evict an hour", rep, at...); err != nil {
+				return err
+			}
+
+			continue // failed, not refused: counted once
 		}
 		if !ev.Evicted {
 			r.Log.Warn("compact: an hour's eviction refused", at...)

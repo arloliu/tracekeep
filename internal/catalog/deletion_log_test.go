@@ -104,8 +104,11 @@ func TestDeletionLogsNameNoKey(t *testing.T) {
 					t.Fatal(err)
 				}
 				recs := h.with(msg)
-				if len(recs) != 2 || (refused && rep.Refused != 2) || (!refused && rep.Failed != 2) {
-					t.Fatalf("%d records %q, report %+v; want two", len(recs), msg, rep)
+				if len(recs) != 2 || (refused && (rep.Refused != 2 || rep.Failed != 0)) || (!refused && (rep.Failed != 2 || rep.Refused != 0)) {
+					t.Fatalf("%d records %q, report %+v; want two, each counted once", len(recs), msg, rep)
+				}
+				if !refused && len(h.with("compact: a merged input's deletion refused")) != 0 {
+					t.Errorf("a failed deletion logged as refused too")
 				}
 				for _, rec := range recs {
 					if (rec["pack"] != inputs[0].ID.String() && rec["pack"] != inputs[1].ID.String()) || rec["capture"] != inputs[0].Capture.String() {
