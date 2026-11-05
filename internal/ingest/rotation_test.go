@@ -23,6 +23,7 @@ import (
 	"github.com/arloliu/tracekeep/internal/keys"
 	"github.com/arloliu/tracekeep/internal/maskingtest"
 	"github.com/arloliu/tracekeep/internal/policy"
+	tkrecords "github.com/arloliu/tracekeep/internal/records"
 	"github.com/arloliu/tracekeep/internal/store"
 )
 
@@ -242,7 +243,7 @@ var crashes = map[string]crash{
 	"before the put": {stop: func(t *testing.T, w *rotationWorld, p *pipeline, hs []*msg) ([][]byte, int) {
 		var got [][]byte
 		p.f.Store = capturingPut{ObjectStore: w.st, got: &got}
-		if _, err := p.flushOne(t); !errors.Is(err, errCrash) {
+		if _, err := p.flushOne(t); !errors.Is(err, tkrecords.ErrStore) { // the crash, reported as the store's failure
 			t.Fatalf("Flush = %v, want the crash", err)
 		}
 		if len(got) != 1 || len(storedKeys(t, w.st)) != 0 {
