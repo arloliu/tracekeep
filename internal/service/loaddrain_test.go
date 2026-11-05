@@ -400,16 +400,14 @@ func TestDrainDecision(t *testing.T) {
 	}
 }
 
-// An episode's drain reads only what was observed from the release's clock to its completion,
-// the release's sample taken just before the clock and the completion's the first taken at or after the completion:
-// samples, passes and PackURL attempts after the completion, as a late observation of it leaves them,
-// and passes between either sample and its instant, or before the release, change nothing,
-// while the same observations within the drain change the verdict and the calls.
+// An episode's drain reads only what was observed from the release to its completion, whose instants are the release's and the completion's samples' times:
+// the drain's samples run from exactly the one to exactly the other, so a drop in a gap before the release or after the completion, as at end + 500µs, counts nothing;
+// samples, passes and PackURL attempts outside the drain change nothing, while the same observations within it change the verdict and the calls.
 func TestDrainOfItsInterval(t *testing.T) {
 	t.Parallel()
 	const rate, k = 1600.0, 120 // the completion's sample, two minutes after the release's
 	all, passes := drainSchedule(1, 0).run(time.Minute, 3*time.Minute)
-	clock, end := all[0].at.Add(time.Millisecond), all[k].at.Add(-time.Millisecond)
+	clock, end := all[0].at, all[k].at
 	var calls packURLResult
 	for i := range 300 {
 		calls.record(packAttempt{began: clock.Add(time.Duration(i) * 300 * time.Millisecond), took: 50 * time.Millisecond})
@@ -445,8 +443,15 @@ func TestDrainOfItsInterval(t *testing.T) {
 
 		return s
 	}
-	outside := failedAt(passes, all[0].at.Add(-5*time.Second), all[0].at.Add(500*time.Microsecond), end.Add(500*time.Microsecond), all[k+5].at)
-	late := drainOf(rate/2, clock, end, dropped(all, k+1), outside, new(failing(calls, all[k+1].at)), nil)
+	// Samples taken 500µs before the release and after the completion, each after a drop in its gap: the release's sample shows the first, the second sample after the completion the second.
+	at := func(s loadSample, t time.Time) loadSample { s.at = t; return s }
+	observed := append(append([]loadSample{at(all[0], clock.Add(-500*time.Microsecond))}, all[:k+1]...), at(all[k], end.Add(500*time.Microsecond)))
+	observed = dropped(dropped(append(observed, all[k+1:]...), 1), k+2)
+	if got := drainSamples(observed, clock, end); !got[0].at.Equal(clock) || !got[len(got)-1].at.Equal(end) {
+		t.Errorf("the drain's samples run from %s to %s, want exactly the release's %s and the completion's %s", got[0].at, got[len(got)-1].at, clock, end)
+	}
+	outside := failedAt(passes, clock.Add(-5*time.Second), clock.Add(-250*time.Microsecond), end.Add(250*time.Microsecond), all[k+5].at)
+	late := drainOf(rate/2, clock, end, observed, outside, new(failing(calls, end.Add(time.Microsecond))), nil)
 	if late.drain != base.drain || !reflect.DeepEqual(late.traffic, base.traffic) || !slices.Equal(late.calls, base.calls) ||
 		decide([]drainEpisode{late}).outcome() != decide([]drainEpisode{base}).outcome() {
 		t.Errorf("with observations outside the drain: drain %s, judged %v, sustained %v (%s), %d calls, p99 %s; want %s, sustained, %d calls, p99 %s",
