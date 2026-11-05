@@ -1,6 +1,6 @@
 # Phase 5 — correctness, error handling and performance
 
-Status: active (2026-11-06) — 5.6 step 9 next
+Status: active (2026-11-06) — the gate passed; closing
 
 The owner's next phase after the roadmap's milestones:
 no new feature, but the service and the producer SDK made correct under faults, their failures reported, and their hot paths measured and made faster.
@@ -396,7 +396,7 @@ Not in this phase: new features, go-secs' changes (point 4), the eqp-hub side of
 | 5.3 — measurement | benchmarks for the SDK's observe path, ingest's dispose, batch, flush and acknowledgement, the catalog's registration, listing and reads on both engines, `QueryRecords` over an hour of N records in K packs (binary and JSON measured apart), merge and the compactor's passes; P4's predicates explained on both engines; `pprof` on the metrics listener, opt-in; the baselines and the offered rate of the write-connection case recorded here | done (#70) |
 | 5.4 — performance: the catalog and its writer | P1–P6 under points 30 to 38, each measured before and after, each test on both engines: registration's evidence read in sets, the range probes bounded by the capture's widest range, the claim listing in bounded transactions that never forget a row from a chunk not yet listed, deletion and eviction on new indexes, listings batched across captures with completeness unchanged, the API audit write's deadline and wait histogram (point 5); `bench.yaml` narrowed so it finishes | done (#74) |
 | 5.5 — performance: ingest, reads, compactor, API | P7–P18 that 5.3 shows worth their change, each measured before and after; concurrent acknowledgements only with completion tracked by identity, not as a prefix; any key-path change keeps the binding-check and cancellation tests | done (#78) |
-| 5.6 — gate | audit every gate case against the test bodies, then one step per gap, as 4.6 did | pending |
+| 5.6 — gate | audit every gate case against the test bodies, then one step per gap, as 4.6 did | done (#82, #83) |
 
 ## Phase 5.6 — gate
 
@@ -434,7 +434,7 @@ The flakes seen on CI or likely on a slow runner: `TestStopSharesOneBudget` and 
 | 6 | the clustered family: `convergence_test.go:96` through the retry; a make target running the clustered tests with `-race -count=20`, its run recorded in step 9 (point 52) | done (#82) |
 | 7 | the recovery drain (point 49): the load mode, its smoke case refusing a completion while a cohort copy is `waiting`, missing or `lost`, a cohort beyond the default pending budget, a parked start held behind the release's barrier for a set interval, the drain including it and the admission after it, on both engines, the decision's three states checked on synthetic series (an unknown traffic verdict with the rest passing, too few `PackURL` calls, every call failing, a judged base whose head is too short to judge, three episodes each growing within its drain and falling between, judged not sustained, a bounded sawtooth of flushes at every starting phase judged sustained, the offered rate and drops counted from the release's and completion's samples while the slope reads whole cycles, rising cycle floors judged not, and a sustained episode beside an unjudged one judged false), the traffic's and the parked consumer's stages timed apart; the runs at 1,000, 10,000 and 100,000 recorded in *Baselines*; P8's batching admitted or closed by its thresholds and recorded as T-58; admitted, its protocol in `parking.md` and this plan, reviewed, then its code with failing-first cases (a prepare failure before any acknowledgement, a confirmation stopped halfway, confirmed copies whose bookkeeping is rolled back or lost, a retried transaction leaving no stale result, a termination, a duplicate delivery, a cancellation between batches) and its before and after | done (#82) |
 | 8 | *Baselines* on the branch: point 50's remeasure of the inconclusive rows, each result kept as pass, a kept cost or inconclusive; absolute rows for 5.4's added benchmarks from its sitting's samples and for `MergeSchedule` on its base; the hot-path row naming 5.3's steps at 1c0e5f2; a line on why `bench.yaml`'s runs end `failure` (`benchjudge` fails an inconclusive row, decided by the local remeasure) | done (#82) |
-| 9 | after the merge, on its commit on `main` (point 52): the clustered family's 20 runs, recorded with the tests it ran by name and each catalog engine's result, so a skipped case shows, the Packaging run and the write-connection gate, each recorded with that commit by the close's pull request, and each gate row's owner naming its evidence | pending |
+| 9 | after the merge, on its commit on `main` (point 52): the clustered family's 20 runs, recorded with the tests it ran by name and each catalog engine's result, so a skipped case shows, the Packaging run and the write-connection gate, each recorded with that commit by the close's pull request, and each gate row's owner naming its evidence | done (#83) |
 
 ## Baselines
 
@@ -1273,6 +1273,24 @@ The head attempts 15 and 60 (5.5's row above).
 **`bench.yaml`'s runs end `failure`** whenever a row is inconclusive: `benchjudge` exits nonzero on an inconclusive row, as point 21 never passes one,
 and such a row is decided by the local remeasure (point 50), not by the workflow's result.
 
+### 5.6: the gate's evidence on `main` (step 9)
+
+On 5e2e745, #82's merge on `main` (2026-11-06), on the machine above.
+
+**The clustered family**, `make test-clustered` (`-race -count 20`) with MariaDB 11.8 in a container beside SQLite: every test passes 20 of 20, none failing or skipped:
+`TestStartClusterReplicates`, `TestPublishCopy/clustered`, `TestSuppressedPublishConverges/clustered`,
+`TestTwoVersionsInOneWindow/inline/clustered` and `/claim-check/clustered` on each engine, and `TestCopiesFromAFollower` on each engine.
+
+**The Packaging run** 42087369982 on the push of 5e2e745: both legs pass, the standalone unit and the cluster, each stopping `tracekeep all` cleanly.
+
+**The write-connection gate**, `TRACEKEEP_LOAD=gate TRACEKEEP_LOAD_OFFERED=800` (K = 100, dev's flush of 10 s):
+
+| p50 | p99 | made | succeeded | superseded | failed | flushes | made fwd/s | published rec/s | sustained |
+|---|---|---|---|---|---|---|---|---|---|
+| 1.17 ms | 1.90 ms | 1,209 | 1,209 | 0 | 0 | 12 | 800.0 | 1,599.3 | yes |
+
+The gate (1,000 audited successes, p99 within 2 s) passes, enforced.
+
 ## The audit
 
 Read 2026-11-01 at e3b9722 by five read-only passes (the SDK; ingest, bus and store; the catalog; compactor, records and API; auth, keys, service and commands),
@@ -1368,12 +1386,12 @@ Only two benchmarks exist, the SDK's allocation and the fleet metrics', and noth
 
 | Gate case | Owner |
 |---|---|
-| every C finding has a test that failed before its fix (C8's on MinIO and Ceph RGW, b7f931f before b375459), except C19, proven by the SDK's conformance cases (#64) | 5.1; checked by 5.6 |
-| a remote store or catalog call that never answers ends an ingester's flush and its stop within the stop budget, local file work that stalls is reported, the acknowledged prefix kept, every message not acknowledged left to redelivery, and every object it may have put kept for reconciliation (`ingest.md` §6.2) | 5.1 |
-| a client that stops reading frees its read slot within the send timeout, and a window of years reads only the hours with a scope or an eviction | 5.1 |
-| `tracekeep all` stops with exit status 0, its unit inactive on the standalone leg and its containers' exit code 0 on the cluster leg, from a Packaging run on `main` at a recorded commit | 5.1 |
-| the testbus retry passes its test-double cases, and the clustered family then passes 20 consecutive runs | 5.1 |
-| every refusal answers its own code, and no response or log carries what point 11 keeps out of it (an object key, a URL's query or credentials, a download token, a cookie, an authorization code, a secret, a clear payload, a store's error text; a `MachineService` response also no catalog or provider text), shown by sentinels injected into every error path 5.2 touches | 5.2 |
-| every hot path has a benchmark and a recorded baseline: those of `650-perf-sec.md`, of 5.3's steps 4 to 8 (its step table's last text at 1c0e5f2) and of the rows 5.4 and 5.5 added, each with its row in *Baselines*; the offered rate and the plans of point 26 recorded there | 5.3 |
+| every C finding has a test that failed before its fix (C8's on MinIO and Ceph RGW, b7f931f before b375459), except C19, proven by the SDK's conformance cases (#64) | 5.1; checked by 5.6, its partial tests added (#82) |
+| a remote store or catalog call that never answers ends an ingester's flush and its stop within the stop budget, local file work that stalls is reported, the acknowledged prefix kept, every message not acknowledged left to redelivery, and every object it may have put kept for reconciliation (`ingest.md` §6.2) | 5.1; every remote call stalled by 5.6 (#82) |
+| a client that stops reading frees its read slot within the send timeout, and a window of years reads only the hours with a scope or an eviction | 5.1; bounded by the send timeout and read on each engine by 5.6 (#82) |
+| `tracekeep all` stops with exit status 0, its unit inactive on the standalone leg and its containers' exit code 0 on the cluster leg, from a Packaging run on `main` at a recorded commit | 5.1; run 42087369982 at 5e2e745 |
+| the testbus retry passes its test-double cases, and the clustered family then passes 20 consecutive runs | 5.1; 20 runs at 5e2e745 (*Baselines*) |
+| every refusal answers its own code, and no response or log carries what point 11 keeps out of it (an object key, a URL's query or credentials, a download token, a cookie, an authorization code, a secret, a clear payload, a store's error text; a `MachineService` response also no catalog or provider text), shown by sentinels injected into every error path 5.2 touches | 5.2; the carried sites and point 48's paths by 5.6 (#82) |
+| every hot path has a benchmark and a recorded baseline: those of `650-perf-sec.md`, of 5.3's steps 4 to 8 (its step table's last text at 1c0e5f2) and of the rows 5.4 and 5.5 added, each with its row in *Baselines*; the offered rate and the plans of point 26 recorded there | 5.3; 5.4's rows and `MergeSchedule`'s base by 5.6 (*Baselines*) |
 | every performance change has its before and after, and no benchmark regresses beyond its recorded noise but by the costs the owner kept under points 37 and 46, each named in *Baselines*; a row still inconclusive after point 50's remeasure is recorded so, never passed | 5.4, 5.5; remeasured by 5.6 |
-| on SQLite under `tracekeep dev` ingesting at the offered rate 5.3 records, with the ingest lag not growing, at least 1,000 successful, audited `PackURL` calls after a one-minute warm-up answer within 2 s at the 99th percentile | 5.4 |
+| on SQLite under `tracekeep dev` ingesting at the offered rate 5.3 records, with the ingest lag not growing, at least 1,000 successful, audited `PackURL` calls after a one-minute warm-up answer within 2 s at the 99th percentile | 5.4; at 5e2e745 (*Baselines*) |
