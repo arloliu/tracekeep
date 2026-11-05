@@ -415,14 +415,15 @@ func (g *Ingester) delay(delivered uint64) time.Duration {
 }
 
 // alert logs a disposition that raises an alert: its reason, and for a masking failure its incident and why,
-// an error that names keys, references and seqs and never material or content.
+// an error that names keys, references and seqs and never material or content, presented through safetext.Text,
+// since a cold key resolution carries the catalog's or a provider's error, whose URL may hold a credential or a query.
 func (g *Ingester) alert(d *Delivery, dec Decision) {
 	if !dec.Alert {
 		return
 	}
 	attrs := []any{"reason", dec.Reason, delivery(&d.Msg)}
 	if d.MaskErr != nil {
-		attrs = append(attrs, "incident", d.Incident, "error", d.MaskErr.Error())
+		attrs = append(attrs, "incident", d.Incident, "error", safetext.Text(d.MaskErr.Error()))
 	}
 	g.Log.Warn("ingest: alert", attrs...)
 }

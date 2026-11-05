@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/pem"
+	"errors"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -33,7 +34,7 @@ func maskingKeys(t testing.TB, c *catalog.Catalog) *keys.Keys {
 }
 
 // maskingKeysAt is maskingKeys with the key files under dir, d-1 at dir/d-1 and m-1 at dir/m-1, read through providers when given.
-func maskingKeysAt(t testing.TB, c *catalog.Catalog, dir string, providers map[string]keys.Provider) *keys.Keys {
+func maskingKeysAt(t testing.TB, c keys.Binder, dir string, providers map[string]keys.Provider) *keys.Keys {
 	t.Helper()
 	declared := map[string]keys.Declaration{}
 	for id, kind := range map[string]string{"d-1": catalog.KindDigest, "m-1": catalog.KindMaster} {
@@ -263,6 +264,50 @@ func TestMaskingFailures(t *testing.T) {
 			}
 		})
 	}
+}
+
+// failingBinding is a catalog whose key binding reads fail with its error.
+type failingBinding struct {
+	keys.Binder
+	err error
+}
+
+func (f failingBinding) KeyBinding(context.Context, string) (catalog.KeyBinding, bool, error) {
+	return catalog.KeyBinding{}, false, f.err
+}
+
+// A catalog error in a cold key resolution nak's the record as key-unavailable, its error kept unchanged for control flow,
+// and the alert presents it through safetext.Text: its words and its URL's host stay, and no credential or query of the URL reaches any field.
+func TestMaskingAlertCatalogErrorSafe(t *testing.T) {
+	t.Parallel()
+	b := policy.Baseline()
+	carriers, err := maskingtest.Carriers(&b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cause := errors.New("catalog: key binding: dial mysql://u:pw-sentinel@db.invalid:3306/tk?tls=q-sentinel: binding-words")
+	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
+		k := maskingKeysAt(t, failingBinding{Binder: c, err: cause}, t.TempDir(), nil)
+		p := maskingPipeline(t, c, k)
+		capture := tracepack.UUID{0x53}
+		p.feed(t, inline(t, capture, startRecord(t, now), descriptorOf(t, "eqp")))
+		d, dec := dispose(t, p.x, inline(t, capture, carrierRecord(&carriers[0], 1), nil))
+		if want := (Decision{Action: ActNak, Reason: ReasonKeyUnavailable, Alert: true}); dec != want || d.Incident != ReasonKeyUnavailable || !errors.Is(d.MaskErr, cause) {
+			t.Fatalf("disposed %+v, incident %q, error %v; want %+v under %q, the catalog's error kept", dec, d.Incident, d.MaskErr, want, ReasonKeyUnavailable)
+		}
+		var log bytes.Buffer
+		(&Ingester{Log: slog.New(slog.NewJSONHandler(&log, nil))}).alert(d, dec)
+		line := log.String()
+		if !strings.Contains(line, `"msg":"ingest: alert"`) || !strings.Contains(line, `"incident":"`+ReasonKeyUnavailable+`"`) ||
+			!strings.Contains(line, "dial mysql://db.invalid:3306: binding-words") {
+			t.Errorf("the alert logged %q, want its incident and the error's words and host", line)
+		}
+		for _, marker := range []string{"pw-sentinel", "q-sentinel"} {
+			if strings.Contains(line, marker) {
+				t.Errorf("the alert holds %q: %s", marker, line)
+			}
+		}
+	})
 }
 
 // A failing Vault, through the keys module, nak's the record as key-unavailable,
