@@ -48,6 +48,9 @@ type DevOptions struct {
 	// PublicURL is the https URL the browser reaches the API at, such as Vite's server; empty is the API's own address.
 	PublicURL string
 	Log       *slog.Logger
+
+	// bound, a test seam, is told the addresses the API and the IdP listen at once both are bound; nil in production.
+	bound func(api, idp string)
 }
 
 // Dev is tracekeep dev: an embedded bus, a SQLite catalog and an fs store under one directory,
@@ -121,6 +124,9 @@ func (d *Dev) devAPI(cfg *config.Config) (err error) {
 	}
 	if idpLn, idpAddr, err = devListen("idp", cmp.Or(o.IDP, "127.0.0.1:8444")); err != nil {
 		return err
+	}
+	if o.bound != nil {
+		o.bound(apiAddr, idpAddr)
 	}
 	// The IdP's listener is dev's to close until its server serves it, which Close then shuts down.
 	defer func() {
