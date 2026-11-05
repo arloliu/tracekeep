@@ -21,8 +21,8 @@ github.com/arloliu/go-secs/tracepack v0.14.0 h1:b76c673KVUTpkV43fEQR403fbTWI2AH1
 github.com/arloliu/go-secs/tracepack v0.14.0/go.mod h1:BKyTMJM3/QR7hNUHzRivfguTQsn8TsxIv+RhfT7Xg1Q=
 github.com/arloliu/go-secs/v2 v2.8.0 h1:gkBY7QQsCBDNWqp98arnSCUdcjSFpRiKLZo6Vddl7iE=
 github.com/arloliu/go-secs/v2 v2.8.0/go.mod h1:SEbNIic8oZ6zb0EW/ldiw7gfQNPgePSDqpZITKHqiHA=
-github.com/arloliu/tracekeep/producer v0.4.0 h1:Oa9Yft8YvSLUlfKUKDzMbZDmiR8Bx1uSCcrHWqlJD/U=
-github.com/arloliu/tracekeep/producer v0.4.0/go.mod h1:JiRMOaVxTkCpVQ8V1g+jmZZ4698kHQ9ENwb+eXiYS7A=
+github.com/arloliu/tracekeep/producer v0.5.0 h1:1qWixGsVV0OLZ7X6unK8NFnlDPlhccGfcE9Hc6uFPaY=
+github.com/arloliu/tracekeep/producer v0.5.0/go.mod h1:lS6jpH7lQ8KEsEZO/ylprJv7fb53UadEvt7NPn8zUCo=
 github.com/aws/aws-sdk-go-v2 v1.47.4 h1:bTvk6UdSSSvaQsfLVj1JRDEEqj/PDRwGf1KanaRzau0=
 github.com/aws/aws-sdk-go-v2 v1.47.4/go.mod h1:XkrjAZvr705Nytv6PkPUhoSB2W9+vVHBp5oAWpkh8Ak=
 github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream v1.7.24 h1:t7FxqJ5KHDeKceyD4HtGaG6z7hMSeVGjs5/4c+L5ArM=
