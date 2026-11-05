@@ -72,6 +72,9 @@ type Producer struct {
 	faultGap func()
 	// lockWait, set only by the package's tests, runs when a lifecycle-lock attempt finds the lock held and starts to wait.
 	lockWait func()
+	// gaveUp, set only by the package's tests, receives why a lifecycle-lock wait or a rotation gave up:
+	// context.Canceled once Close cancelled it, context.DeadlineExceeded or nil otherwise.
+	gaveUp func(error)
 
 	// gauge is the current_capture label set the sink keeps applied, nil for none; gaugeSet wakes the sink.
 	gauge    atomic.Pointer[map[string]string]
