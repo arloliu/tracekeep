@@ -8,6 +8,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net"
@@ -426,5 +427,16 @@ func waitReady(t *testing.T, addr string, done <-chan int) (int, bool) {
 				}
 			}
 		}
+	}
+}
+
+// A command's failure is printed with every URL in its text cut to scheme and host,
+// as a role's error carrying a catalog's or the bus's cause would hold one.
+func TestReportCutsURLs(t *testing.T) {
+	t.Parallel()
+	var b strings.Builder
+	report(&b, fmt.Errorf("ingest: stop: catalog: dial mysql://u:pw-sentinel@db.invalid:3306/tk?tls=q-sentinel: refused"))
+	if got, want := b.String(), "tracekeep: ingest: stop: catalog: dial mysql://db.invalid:3306: refused\n"; got != want {
+		t.Errorf("report = %q, want %q", got, want)
 	}
 }
