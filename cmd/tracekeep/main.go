@@ -166,10 +166,11 @@ func dispatch(ctx context.Context, args []string, stdout, stderr io.Writer) erro
 	return runAdmin(ctx, a, words, stdout)
 }
 
-// closeLogged closes c, what it names, logging a failure, which leaves the command's exit code as it is.
+// closeLogged closes c, what it names, logging a failure, which leaves the command's exit code as it is;
+// the failure, which may hold the catalog's own, is presented through safetext.Text.
 func closeLogged(log *slog.Logger, what string, c io.Closer) {
 	if err := c.Close(); err != nil {
-		log.Error("tracekeep: close", "what", what, "error", err)
+		log.Error("tracekeep: close", "what", what, "error", safetext.Text(err.Error()))
 	}
 }
 
