@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
@@ -159,6 +160,37 @@ func TestIngestJoinsBothConsumers(t *testing.T) {
 			&catalog.Descriptor{Bytes: []byte("d"), ToolID: "T1", RecorderInstanceID: tracepack.UUID{6}, Device: "eqp", OriginNS: 1})
 		if err != nil || res.ConfigID != newer {
 			t.Errorf("Admit after the stop = %+v, %v; want the newer configuration bound, no member left", res, err)
+		}
+	})
+}
+
+// The ingest role takes its budgets and its store's kind from the configuration:
+// each ingester its ack wait, its heartbeat a third of it, its stop budget, and a flusher told the store is local for an fs store.
+func TestIngestWiresItsConfiguration(t *testing.T) {
+	t.Parallel()
+	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
+		ctx := t.Context()
+		e := env(t, c)
+		// Values apart from the defaults, so a field left unset or set from another key shows.
+		e.Config.Ingest.AckWait, e.Config.Ingest.StopTimeout = 5*time.Minute+7*time.Second, 17*time.Second
+		gs, err := ingesters(ctx, e)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, g := range gs {
+			e.leave(g.Replica)
+		}
+		if len(gs) != 2 {
+			t.Fatalf("%d ingesters, want the traffic and the parked one", len(gs))
+		}
+		for _, g := range gs {
+			if g.AckWait != e.Config.Ingest.AckWait || g.Heartbeat != e.Config.Ingest.AckWait/3 || g.StopTimeout != e.Config.Ingest.StopTimeout {
+				t.Errorf("%s: ack wait %s, heartbeat %s, stop budget %s; want %s, a third of it, %s",
+					g.Replica, g.AckWait, g.Heartbeat, g.StopTimeout, e.Config.Ingest.AckWait, e.Config.Ingest.StopTimeout)
+			}
+			if !g.Flusher.LocalStore {
+				t.Errorf("%s: the flusher does not know the fs store is local", g.Replica)
+			}
 		}
 	})
 }
