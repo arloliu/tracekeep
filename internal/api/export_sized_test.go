@@ -368,6 +368,7 @@ func TestExportWorkerStoppedAtAPacksFirstGet(t *testing.T) {
 
 // QueryRecords and export attempts reading one pack by its stored size at once each read it whole, asking for no HEAD;
 // with a wrong stored size each fails as the store's, nothing streamed and no bundle built.
+// Each sized open's first read waits until every caller's has arrived, so the reads overlap.
 func TestSizedOpensInParallel(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []sizedCase{
@@ -379,6 +380,12 @@ func TestSizedOpensInParallel(t *testing.T) {
 			sp := sized(t, &tc)
 			req := &exportRequest{Kind: "canonical", Selector: exportSelector{ToolID: tool, Capture: sp.capture.String(), From: hour * nsPerHour, To: (hour + 1) * nsPerHour}}
 			const n = 4
+			st, ok := sp.m.srv.Store.(*s3store.Store)
+			if !ok {
+				t.Fatalf("store %T, want the fake's s3 store", sp.m.srv.Store)
+			}
+			ov := &overlapping{Store: st, n: 2 * n, all: make(chan struct{})}
+			sp.m.srv.Store = ov
 			errs, bundles := make([]error, 2*n), make([]string, n)
 			var wg sync.WaitGroup
 			for i := range n {
@@ -392,6 +399,9 @@ func TestSizedOpensInParallel(t *testing.T) {
 				})
 			}
 			wg.Wait()
+			if late := ov.late.Load(); late != 0 {
+				t.Fatalf("%d first reads waited out the barrier, %d of %d arrived: the reads did not overlap", late, ov.arrived.Load(), 2*n)
+			}
 			if err := errors.Join(errs...); err != nil {
 				t.Fatal(err)
 			}
@@ -436,4 +446,46 @@ func parallelExport(i int, outcome, path string, err error) error {
 	default:
 		return nil
 	}
+}
+
+// overlapping is an s3 store whose sized opens each hold their first read until n have arrived, so n readers overlap;
+// a first read that waits longer than overlapWait goes on and is counted late.
+type overlapping struct {
+	*s3store.Store
+	n             int64
+	arrived, late atomic.Int64
+	all           chan struct{}
+}
+
+const overlapWait = 10 * time.Second
+
+func (s *overlapping) OpenSized(ctx context.Context, key string, size int64) (store.Object, error) {
+	o, err := s.Store.OpenSized(ctx, key, size)
+	if err != nil {
+		return nil, err
+	}
+
+	return &overlapObject{Object: o, s: s}, nil
+}
+
+// overlapObject is an object of an overlapping store.
+type overlapObject struct {
+	store.Object
+	s    *overlapping
+	once sync.Once
+}
+
+func (o *overlapObject) ReadAt(p []byte, off int64) (int, error) {
+	o.once.Do(func() {
+		if o.s.arrived.Add(1) == o.s.n {
+			close(o.s.all)
+		}
+		select {
+		case <-o.s.all:
+		case <-time.After(overlapWait):
+			o.s.late.Add(1)
+		}
+	})
+
+	return o.Object.ReadAt(p, off)
 }
