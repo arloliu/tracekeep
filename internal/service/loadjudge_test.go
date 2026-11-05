@@ -181,8 +181,9 @@ type cycleVerdict struct {
 	// The slopes are records a second of rise through the cycles' backlog minima and queue maxima against elapsed time, bound their limit.
 	backlogSlope, ringSlope, reservedSlope float64
 	bound                                  float64
-	sustained                              bool
-	why                                    string
+	// judged reports a verdict reached; one not judged, its sampling or its cycles too few, is neither sustained nor not.
+	judged, sustained bool
+	why               string
 }
 
 // cycleMin is a cycle's backlog minimum and when it was read.
@@ -199,6 +200,11 @@ type cycleMin struct {
 // and the least-squares rise of the minima, and of the queue maxima, against elapsed time each below 0.5% of the published rate a second,
 // which is judgeLoad's 0.5% of a window's records a window, whatever the window; fewer than least observed cycles leave it unjudged.
 func judgeCycles(offered float64, origin loadSample, samples []loadSample, passes []settledPass, least int) cycleVerdict {
+	return judgeSpan(offered, origin, samples, passes, least, false)
+}
+
+// judgeSpan is judgeCycles, its rates read from the first and the last sample when fromEnds is set, from the cycles' own otherwise.
+func judgeSpan(offered float64, origin loadSample, samples []loadSample, passes []settledPass, least int, fromEnds bool) cycleVerdict {
 	v := cycleVerdict{offered: offered, dropped: samples[len(samples)-1].dropped - origin.dropped}
 	if v.why = sampling(samples, samples, 1, time.Time{}); v.why != "" {
 		return v
@@ -243,10 +249,14 @@ func judgeCycles(offered float64, origin loadSample, samples []loadSample, passe
 		v.why = fmt.Sprintf("cycles: %d completed, want at least %d", len(v.minima), least)
 		return v
 	}
+	if fromEnds {
+		first, last = &samples[0], &samples[len(samples)-1]
+	}
 	secs := last.at.Sub(first.at).Seconds()
 	v.made, v.published = float64(last.made-first.made)/secs, float64(last.published-first.published)/secs
 	v.backlogSlope, v.ringSlope, v.reservedSlope = fit(xs, mins), fit(xs, ring), fit(xs, reserved)
 	v.bound = 0.005 * v.published
+	v.judged = true
 	switch {
 	case math.Abs(v.made-offered) > 0.02*offered:
 		v.why = fmt.Sprintf("made %.1f/s against %.1f/s offered", v.made, offered)
