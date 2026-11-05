@@ -33,10 +33,9 @@ type Config struct {
 
 // ConsumerConfig bounds ingest's pull consumer (architecture.md §3.1).
 type ConsumerConfig struct {
-	// AckWait exceeds a routine delivery's life, the flush interval, a fetch's wait and a flush's budget,
-	// so only a delivery waiting longer is kept with in-progress acks (ingest.md §6.2).
+	// AckWait exceeds the flush interval plus an upload; a held batch's messages are kept with in-progress acks every AckWait/3.
 	AckWait time.Duration
-	// MaxAckPending exceeds the peak rate times that life.
+	// MaxAckPending exceeds the peak rate times the flush interval plus an upload.
 	MaxAckPending int
 }
 

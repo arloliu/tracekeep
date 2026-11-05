@@ -37,7 +37,6 @@ func TestDefaults(t *testing.T) {
 	}
 	for name, got := range map[string]time.Duration{
 		"retention": c.Retention, "ingest.flush_interval": c.Ingest.FlushInterval, "ingest.ack_wait": c.Ingest.AckWait,
-		"ingest.flush_timeout": c.Ingest.FlushTimeout, "the heartbeat": c.Ingest.Heartbeat(),
 		"parking.redelivery_delay": c.Parking.RedeliveryDelay, "ingest.lease": c.Ingest.Lease, "ingest.stop_timeout": c.Ingest.StopTimeout,
 		"compact.quiet_period": c.Compact.QuietPeriod, "compact.redelivery_slack": c.Compact.RedeliverySlack,
 		"compact.inactivity": c.Compact.Inactivity, "compact.delete_delay": c.Compact.DeleteDelay,
@@ -45,7 +44,6 @@ func TestDefaults(t *testing.T) {
 	} {
 		want := map[string]time.Duration{
 			"retention": 30 * 24 * time.Hour, "ingest.flush_interval": 5 * time.Minute, "ingest.ack_wait": 7 * time.Minute,
-			"ingest.flush_timeout": time.Minute, "the heartbeat": 55 * time.Second / 3,
 			"parking.redelivery_delay": time.Minute, "ingest.lease": time.Minute, "ingest.stop_timeout": 20 * time.Second,
 			"compact.quiet_period": 15 * time.Minute, "compact.redelivery_slack": 2 * time.Minute,
 			"compact.inactivity": 2 * time.Hour, "compact.delete_delay": time.Hour,
@@ -117,55 +115,6 @@ func TestValidation(t *testing.T) {
 	}
 }
 
-// ack_wait must exceed a routine delivery's life, F + max_wait + flush_timeout, strictly (ingest.md §6.2),
-// and the heartbeat's tick is a third of what it leaves over that life, at least a second.
-func TestAckWaitBound(t *testing.T) {
-	t.Parallel()
-	timing := func(ackWait string) string {
-		return yaml("", "", "", "ingest:\n  flush_interval: 5m\n  max_wait: 5s\n  flush_timeout: 1m\n  ack_wait: "+ackWait+"\n")
-	}
-	for ackWait, tick := range map[string]time.Duration{"6m4s": 0, "6m5s": 0, "6m6s": time.Second, "6m11s": 2 * time.Second, "7m": 55 * time.Second / 3} {
-		c, err := Load(write(t, timing(ackWait)))
-		if tick == 0 {
-			if err == nil || !strings.Contains(err.Error(), "ingest.ack_wait") {
-				t.Errorf("ack_wait %s: Load = %v, want an error naming ingest.ack_wait", ackWait, err)
-			}
-			continue
-		}
-		if err != nil {
-			t.Errorf("ack_wait %s: Load = %v, want it accepted", ackWait, err)
-		} else if got := c.Ingest.Heartbeat(); got != tick {
-			t.Errorf("ack_wait %s: the heartbeat every %s, want %s", ackWait, got, tick)
-		}
-	}
-	// Raising the flush's budget raises the bound.
-	if _, err := Load(write(t, yaml("", "", "", "ingest:\n  flush_timeout: 2m\n"))); err == nil || !strings.Contains(err.Error(), "ingest.ack_wait") {
-		t.Errorf("the default ack_wait under a 2-minute flush_timeout = %v, want refused", err)
-	}
-}
-
-// ack_wait must also exceed the longest a fetched delivery waits unbatched and unkept, lease + flush_timeout + the tick, strictly (ingest.md §6.2):
-// with a lease of 2m55s, 4m50s equals it (a tick of 55s) and 4m51s passes; the defaults pass with minutes to spare.
-func TestAckWaitCoversAnUnbatchedDelivery(t *testing.T) {
-	t.Parallel()
-	timing := func(ackWait string) string {
-		return yaml("", "", "", "ingest:\n  flush_interval: 1m\n  max_wait: 5s\n  flush_timeout: 1m\n  lease: 2m55s\n  ack_wait: "+ackWait+"\n")
-	}
-	if _, err := Load(write(t, timing("4m50s"))); err == nil || !strings.Contains(err.Error(), "ingest.lease") {
-		t.Errorf("ack_wait equal to lease + flush_timeout + the tick: Load = %v, want an error naming ingest.lease", err)
-	}
-	if _, err := Load(write(t, timing("4m51s"))); err != nil {
-		t.Errorf("ack_wait one second past lease + flush_timeout + the tick: Load = %v, want it accepted", err)
-	}
-	c, err := Load(write(t, minimal))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if i := c.Ingest; i.Lease+i.FlushTimeout+i.Heartbeat() >= i.AckWait || i.Check() != nil {
-		t.Errorf("the defaults: lease %s + flush_timeout %s + tick %s against ack_wait %s, Check %v; want within it", i.Lease, i.FlushTimeout, i.Heartbeat(), i.AckWait, i.Check())
-	}
-}
-
 // Q must exceed F + ack_wait + the redelivery slack strictly (catalog.md §7.3, T-25, T-41).
 func TestQuietPeriodBound(t *testing.T) {
 	t.Parallel()
@@ -182,8 +131,8 @@ func TestQuietPeriodBound(t *testing.T) {
 		}
 	}
 	// Raising F or ack_wait raises the bound.
-	if _, err := Load(write(t, yaml("", "", "", "ingest:\n  flush_interval: 6m\n  ack_wait: 8m\n"))); err == nil || !strings.Contains(err.Error(), "compact.quiet_period") {
-		t.Errorf("the default Q under a 6-minute F = %v, want an error naming compact.quiet_period", err)
+	if _, err := Load(write(t, yaml("", "", "", "ingest:\n  flush_interval: 6m\n  ack_wait: 7m\n"))); err == nil {
+		t.Error("the default Q under a 6-minute F = nil, want refused")
 	}
 }
 

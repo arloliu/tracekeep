@@ -5,7 +5,6 @@ import (
 	"errors"
 	"log/slog"
 	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -163,13 +162,13 @@ func (r *replica) pending(t *testing.T) uint64 {
 	return info.State.Msgs
 }
 
-// settled is pending once it reaches none, or after 10s: an inline record's acknowledgement is not confirmed,
+// settled is pending once it reaches want, or after 10s: an inline record's acknowledgement is not confirmed,
 // so the server may remove its message a moment after the flush returned.
-func (r *replica) settled(t *testing.T) uint64 {
+func (r *replica) settled(t *testing.T, want uint64) uint64 {
 	t.Helper()
 	deadline := time.Now().Add(10 * time.Second)
 	for {
-		if n := r.pending(t); n == 0 || time.Now().After(deadline) {
+		if n := r.pending(t); n == want || time.Now().After(deadline) {
 			return n
 		}
 		time.Sleep(10 * time.Millisecond)
@@ -306,12 +305,11 @@ func TestIngesterStopsOnAnotherIncarnation(t *testing.T) {
 	})
 }
 
-// stuck is a held message whose first in-progress blocks until released, any later one returning at once; nakked closes at its first nak.
+// stuck is a held message whose first in-progress blocks until released; nakked closes at its first nak.
 type stuck struct {
 	msg
 	entered, release, nakked chan struct{}
-	first                    atomic.Bool
-	nakOnce                  sync.Once
+	once, nakOnce            sync.Once
 }
 
 func (m *stuck) NakWithDelay(d time.Duration) error {
@@ -338,10 +336,10 @@ func (a *alerted) Handle(ctx context.Context, r slog.Record) error {
 }
 
 func (m *stuck) InProgress() error {
-	if m.first.CompareAndSwap(false, true) {
+	m.once.Do(func() {
 		close(m.entered)
 		<-m.release
-	}
+	})
 
 	return m.msg.InProgress()
 }

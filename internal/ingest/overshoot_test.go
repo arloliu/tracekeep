@@ -78,7 +78,7 @@ func TestFullBatchFlushedWithinItsFetch(t *testing.T) {
 		if stored != n+1 {
 			t.Errorf("%d records stored, want %d, each once", stored, n+1)
 		}
-		if left := r.settled(t); left != 0 {
+		if left := r.settled(t, 0); left != 0 {
 			t.Errorf("%d messages left on the stream, want every one acknowledged", left)
 		}
 	})

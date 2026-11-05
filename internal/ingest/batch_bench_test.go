@@ -155,7 +155,6 @@ func BenchmarkTakeDue(b *testing.B) {
 			}
 			g := benchIngester(b)
 			g.Flusher = &Flusher{Configs: map[int64]Config{}}
-			g.AckWait, g.FlushTimeout, g.Heartbeat = 7*time.Minute, time.Minute, 55*time.Second/3 // the defaults: no batch is kept
 			ctx := b.Context()
 			b.ReportAllocs()
 			for b.Loop() {
