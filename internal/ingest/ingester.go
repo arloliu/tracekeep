@@ -1,6 +1,7 @@
 package ingest
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -86,6 +87,8 @@ type Ingester struct {
 	// PassSettled, a test seam for the load harness, is called once every batch a flush pass took is settled,
 	// acknowledged or nak'd, with the pass's batches and its failure; an empty pass calls nothing. Nil in production.
 	PassSettled func(at time.Time, batches []*Batch, err error)
+	// stopStart, a test seam, is the context whose end starts the stop budget in place of Run's; nil in production.
+	stopStart context.Context
 
 	// writeFailures counts, by record version, the flushes the Writer refused holding it: a record refused three times is deterministic,
 	// whichever batch held it, since a live capture's redelivered records join fresh ones and the metadata budget splits a key's batches.
@@ -125,7 +128,7 @@ func (g *Ingester) Run(ctx context.Context) error {
 	if g.Heartbeat <= 0 {
 		return errors.New("ingest: no heartbeat")
 	}
-	stopping, release := stopBudget(ctx, g.StopTimeout)
+	stopping, release := stopBudget(ctx, cmp.Or(g.stopStart, ctx), g.StopTimeout)
 	defer release()
 	beat, stop := context.WithCancel(context.WithoutCancel(ctx))
 	ticker := time.NewTicker(g.Heartbeat)
@@ -169,16 +172,16 @@ func (g *Ingester) Run(ctx context.Context) error {
 // errStopFlush marks the failure of a flush a stop overlapped, which fails the stop.
 var errStopFlush = errors.New("ingest: a flush during the stop failed")
 
-// stopBudget is a context that outlives ctx by budget, the one budget every flush still due at a stop shares (ingest.md §6.2),
-// and its release; with no budget it ends only at its release.
-func stopBudget(ctx context.Context, budget time.Duration) (context.Context, context.CancelFunc) {
+// stopBudget is a context that outlives start by budget, the one budget every flush still due at a stop shares (ingest.md §6.2),
+// and its release; it carries ctx's values, and with no budget it ends only at its release.
+func stopBudget(ctx, start context.Context, budget time.Duration) (context.Context, context.CancelFunc) {
 	out, cancel := context.WithCancel(context.WithoutCancel(ctx))
 	if budget <= 0 {
 		return out, cancel
 	}
 	var mu sync.Mutex
 	var timer *time.Timer
-	armed := context.AfterFunc(ctx, func() {
+	armed := context.AfterFunc(start, func() {
 		mu.Lock()
 		defer mu.Unlock()
 		timer = time.AfterFunc(budget, cancel)
