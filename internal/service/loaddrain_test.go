@@ -16,6 +16,7 @@ import (
 
 	"github.com/arloliu/tracekeep/internal/catalog"
 	"github.com/arloliu/tracekeep/internal/config"
+	"github.com/arloliu/tracekeep/internal/ingest"
 )
 
 // The recovery drain's judgement (load_test.go's recovery mode): the traffic beside a drain judged by completed flush cycles within it,
@@ -182,8 +183,8 @@ func cohortParked(vs []catalog.ParkedVersion, subjects map[string]uint64, n int,
 		copies[subjectSuffix(s)] += k
 	}
 	for _, v := range vs {
-		if v.State != catalog.VersionParked {
-			return fmt.Sprintf("seq %d is %s", v.Version.Seq, v.State)
+		if v.State != catalog.VersionParked || v.Reason != ingest.ReasonCaptureRejected {
+			return fmt.Sprintf("seq %d is %s, %s", v.Version.Seq, v.State, v.Reason)
 		}
 		if !slices.ContainsFunc(v.Copies, func(c catalog.ParkedCopy) bool { return c.Incarnation == traffic && c.State == "acked" }) {
 			return fmt.Sprintf("seq %d: its original is not acknowledged", v.Version.Seq)
@@ -428,7 +429,7 @@ func cohort(m int, state catalog.VersionState, orig, copied string) ([]catalog.P
 	for i := range vs {
 		v := catalog.VersionKey{Capture: tracepack.UUID{7}, Seq: uint64(i)} //nolint:gosec // a small index
 		v.Digest[0] = byte(i)
-		vs[i] = catalog.ParkedVersion{Version: v, State: state, Copies: []catalog.ParkedCopy{{Incarnation: 1, StreamSeq: int64(10 + i), State: orig}}}
+		vs[i] = catalog.ParkedVersion{Version: v, State: state, Reason: ingest.ReasonCaptureRejected, Copies: []catalog.ParkedCopy{{Incarnation: 1, StreamSeq: int64(10 + i), State: orig}}}
 		if copied != "" {
 			vs[i].Copies = append(vs[i].Copies, catalog.ParkedCopy{Incarnation: 2, StreamSeq: int64(1 + i), State: copied})
 		}
@@ -457,6 +458,11 @@ func TestCohortParked(t *testing.T) {
 			vs[1].State = catalog.VersionParking
 			return vs
 		}, "parking"},
+		// A record parked for another reason is another scenario.
+		"a version parked for another reason": {func(vs []catalog.ParkedVersion, _ map[string]uint64) []catalog.ParkedVersion {
+			vs[2].Reason = ingest.ReasonUnknownCapture
+			return vs
+		}, ingest.ReasonUnknownCapture},
 		"an original not acknowledged": {func(vs []catalog.ParkedVersion, _ map[string]uint64) []catalog.ParkedVersion {
 			vs[3].Copies[0].State = "waiting"
 			return vs
