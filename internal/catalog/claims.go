@@ -361,7 +361,7 @@ func (c *Catalog) MarkSurvivorDeletable(ctx context.Context, l Lease, key string
 		return nil
 	}))
 	if err != nil {
-		return false, fmt.Errorf("catalog: release survivor %s: %w", key, err)
+		return false, fmt.Errorf("catalog: release a survivor: %w", err)
 	}
 
 	return deletable, nil
@@ -378,7 +378,7 @@ func (c *Catalog) RemoveClaimObject(ctx context.Context, l Lease, key string) er
 		return err
 	})
 	if err != nil {
-		return fmt.Errorf("catalog: remove claim object %s: %w", key, err)
+		return fmt.Errorf("catalog: remove a claim object: %w", err)
 	}
 
 	return nil

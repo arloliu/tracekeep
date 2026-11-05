@@ -393,13 +393,13 @@ const (
 func (c *Catalog) KeyStanding(ctx context.Context, key string) (KeyStanding, error) {
 	var n int
 	if err := c.read.GetContext(ctx, &n, `SELECT COUNT(*) FROM tombstones WHERE object_key = ?`, key); err != nil {
-		return 0, fmt.Errorf("catalog: key %s: %w", key, err)
+		return 0, fmt.Errorf("catalog: a key's standing: %w", err)
 	}
 	if n > 0 {
 		return KeyTombstoned, nil
 	}
 	if err := c.read.GetContext(ctx, &n, `SELECT COUNT(*) FROM packs WHERE object_key = ?`, key); err != nil {
-		return 0, fmt.Errorf("catalog: key %s: %w", key, err)
+		return 0, fmt.Errorf("catalog: a key's standing: %w", err)
 	}
 	if n > 0 {
 		return KeyRegistered, nil
