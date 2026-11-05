@@ -1,6 +1,6 @@
 # Phase 5 — correctness, error handling and performance
 
-Status: active (2026-11-05) — 5.6 next
+Status: active (2026-11-06) — 5.6 step 9 next
 
 The owner's next phase after the roadmap's milestones:
 no new feature, but the service and the producer SDK made correct under faults, their failures reported, and their hot paths measured and made faster.
@@ -426,14 +426,14 @@ The flakes seen on CI or likely on a slow runner: `TestStopSharesOneBudget` and 
 
 | Step | Scope | State |
 |---|---|---|
-| 1 | T-57 recording points 48 to 52 in `tracekeep-decisions.md`; the gate cases' table reworded (point 50, C8) | pending |
-| 2 | the flakes (point 51), each failing first where a test can force it: `TestStopSharesOneBudget` and `TestClaimReadIsBounded` with their budgets on cue, the latter's deadline only on the case with no end; `TestDownloadRefusals` flipping a byte of the decoded MAC; `NewDev` reporting its bound addresses so `TestDevFailedStartReleasesItsListeners` listens on `:0` and asserts the failure is the token's read; `TestAPIClosesItsVerifier` once its CI log names the cause | pending |
-| 3 | the C findings' partial tests, each failing first: C1's per-batch ack wait on a stalled registration (the deadline, every message nak'd, the object kept, nothing registered), and the ingest role built from a configuration asserting its ack wait, stop budget and local store; C3's idle connection over HTTP/2; C17's listing with a pack registered in another hour by a barrier between its in-hour check and its read (`copies.go:41`, `:51`), the listing without it; C10's retry over a failed first commit for every closure 26210de gave a reset, listed by name, each asserting what the failed attempt would have leaked (not only the retry's success), table-driven on both engines; C13's gauge seen set before the sink blocks; C14's waits asserted cancelled, not timed | pending |
-| 4 | ingest's stalls (gate row 2), in `internal/ingest`, both engines: a registration stalled during `Run`'s stop (it returns within the stop budget, nothing registered, every message pending, the object kept); the capture read and a beyond-horizon delete stalled; a parked copy's acknowledgement stalled after N copies completed, at each of its three boundaries (`park.go:125`): in `PrepareAck` (no confirmation, the rest nak'd), in the double acknowledgement (the copy not confirmed, the rest nak'd), and in `AckCopy` after the broker confirmed it (`out.Acked` stays N, the confirmed copy's row left `waiting` for its reconciliation, `parking.md` §6.1, and completed by it without a redelivery); local work stalled during a stop, the stop's failure reported and counted, the worker joined only once the test releases it (`flush.go:194`, `ingest.md` §6.2); the lost registration answer kept (`bound_test.go:285`: the object kept, the messages unacknowledged) | pending |
-| 5 | reads and logs: a stalled stream's slot free within the send timeout and a slack; a window of years over each engine, a counting catalog bounding its read sets and next-hour reads; point 48's path matrix, each path's test failing first (successful adoption, quarantine, an unadmitted capture, a mismatched orphan's reconstructed key, a refused deletion, the carried sites, `orphans.go:179`, a close's publication put, the orphan listing's failure and a lease lost through its callback, merge and conflict open failures, a read failing after its open, a claim's fetch, read, listing and deletion with their not-found outcomes kept, a bus error's cause, the first bus connection's failure (a malformed URL holding a space, a credential and a query, failing before any connection), a store's construction and the presign check's start errors on stderr, each a nonzero exit with a permitted diagnostic kept; the presentation helper's table with quoted malformed URLs, embedded spaces, several URLs and text around them; the delivery logs that name a message id today, a copy row's failure, a resolved copy's acknowledgement, a parked hour's eviction and a parking failure, `ingester.go:358`, `:468`, `:476`, `:498`), the built text's keys dropped (`KeyStanding` dropped instead if only tests call it), store errors through `Keyless` by provenance, catalog errors through `safeText`, each error's class kept; the API's store-failure tests (`QueryRecords`, an export attempt) scanning the log for both markers | pending |
-| 6 | the clustered family: `convergence_test.go:96` through the retry; a make target running the clustered tests with `-race -count=20`, its run recorded in step 9 (point 52) | pending |
-| 7 | the recovery drain (point 49): the load mode, its smoke case refusing a completion while a cohort copy is `waiting`, missing or `lost`, a cohort beyond the default pending budget, a parked start held behind the release's barrier for a set interval, the drain including it and the admission after it, on both engines, the decision's three states checked on synthetic series (an unknown traffic verdict with the rest passing, too few `PackURL` calls, every call failing, a judged base whose head is too short to judge, three episodes each growing within its drain and falling between, judged not sustained, a bounded sawtooth of flushes at every starting phase judged sustained, the offered rate and drops counted from the release's and completion's samples while the slope reads whole cycles, rising cycle floors judged not, and a sustained episode beside an unjudged one judged false), the traffic's and the parked consumer's stages timed apart; the runs at 1,000, 10,000 and 100,000 recorded in *Baselines*; P8's batching admitted or closed by its thresholds and recorded as T-58; admitted, its protocol in `parking.md` and this plan, reviewed, then its code with failing-first cases (a prepare failure before any acknowledgement, a confirmation stopped halfway, confirmed copies whose bookkeeping is rolled back or lost, a retried transaction leaving no stale result, a termination, a duplicate delivery, a cancellation between batches) and its before and after | pending |
-| 8 | *Baselines* on the branch: point 50's remeasure of the inconclusive rows, each result kept as pass, a kept cost or inconclusive; absolute rows for 5.4's added benchmarks from its sitting's samples and for `MergeSchedule` on its base; the hot-path row naming 5.3's steps at 1c0e5f2; a line on why `bench.yaml`'s runs end `failure` (`benchjudge` fails an inconclusive row, decided by the local remeasure) | pending |
+| 1 | T-57 recording points 48 to 52 in `tracekeep-decisions.md`; the gate cases' table reworded (point 50, C8) | done (#82) |
+| 2 | the flakes (point 51), each failing first where a test can force it: `TestStopSharesOneBudget` and `TestClaimReadIsBounded` with their budgets on cue, the latter's deadline only on the case with no end; `TestDownloadRefusals` flipping a byte of the decoded MAC; `NewDev` reporting its bound addresses so `TestDevFailedStartReleasesItsListeners` listens on `:0` and asserts the failure is the token's read; `TestAPIClosesItsVerifier` once its CI log names the cause | done (#82) |
+| 3 | the C findings' partial tests, each failing first: C1's per-batch ack wait on a stalled registration (the deadline, every message nak'd, the object kept, nothing registered), and the ingest role built from a configuration asserting its ack wait, stop budget and local store; C3's idle connection over HTTP/2; C17's listing with a pack registered in another hour by a barrier between its in-hour check and its read (`copies.go:41`, `:51`), the listing without it; C10's retry over a failed first commit for every closure 26210de gave a reset, listed by name, each asserting what the failed attempt would have leaked (not only the retry's success), table-driven on both engines; C13's gauge seen set before the sink blocks; C14's waits asserted cancelled, not timed | done (#82) |
+| 4 | ingest's stalls (gate row 2), in `internal/ingest`, both engines: a registration stalled during `Run`'s stop (it returns within the stop budget, nothing registered, every message pending, the object kept); the capture read and a beyond-horizon delete stalled; a parked copy's acknowledgement stalled after N copies completed, at each of its three boundaries (`park.go:125`): in `PrepareAck` (no confirmation, the rest nak'd), in the double acknowledgement (the copy not confirmed, the rest nak'd), and in `AckCopy` after the broker confirmed it (`out.Acked` stays N, the confirmed copy's row left `waiting` for its reconciliation, `parking.md` §6.1, and completed by it without a redelivery); local work stalled during a stop, the stop's failure reported and counted, the worker joined only once the test releases it (`flush.go:194`, `ingest.md` §6.2); the lost registration answer kept (`bound_test.go:285`: the object kept, the messages unacknowledged) | done (#82) |
+| 5 | reads and logs: a stalled stream's slot free within the send timeout and a slack; a window of years over each engine, a counting catalog bounding its read sets and next-hour reads; point 48's path matrix, each path's test failing first (successful adoption, quarantine, an unadmitted capture, a mismatched orphan's reconstructed key, a refused deletion, the carried sites, `orphans.go:179`, a close's publication put, the orphan listing's failure and a lease lost through its callback, merge and conflict open failures, a read failing after its open, a claim's fetch, read, listing and deletion with their not-found outcomes kept, a bus error's cause, the first bus connection's failure (a malformed URL holding a space, a credential and a query, failing before any connection), a store's construction and the presign check's start errors on stderr, each a nonzero exit with a permitted diagnostic kept; the presentation helper's table with quoted malformed URLs, embedded spaces, several URLs and text around them; the delivery logs that name a message id today, a copy row's failure, a resolved copy's acknowledgement, a parked hour's eviction and a parking failure, `ingester.go:358`, `:468`, `:476`, `:498`), the built text's keys dropped (`KeyStanding` dropped instead if only tests call it), store errors through `Keyless` by provenance, catalog errors through `safeText`, each error's class kept; the API's store-failure tests (`QueryRecords`, an export attempt) scanning the log for both markers | done (#82) |
+| 6 | the clustered family: `convergence_test.go:96` through the retry; a make target running the clustered tests with `-race -count=20`, its run recorded in step 9 (point 52) | done (#82) |
+| 7 | the recovery drain (point 49): the load mode, its smoke case refusing a completion while a cohort copy is `waiting`, missing or `lost`, a cohort beyond the default pending budget, a parked start held behind the release's barrier for a set interval, the drain including it and the admission after it, on both engines, the decision's three states checked on synthetic series (an unknown traffic verdict with the rest passing, too few `PackURL` calls, every call failing, a judged base whose head is too short to judge, three episodes each growing within its drain and falling between, judged not sustained, a bounded sawtooth of flushes at every starting phase judged sustained, the offered rate and drops counted from the release's and completion's samples while the slope reads whole cycles, rising cycle floors judged not, and a sustained episode beside an unjudged one judged false), the traffic's and the parked consumer's stages timed apart; the runs at 1,000, 10,000 and 100,000 recorded in *Baselines*; P8's batching admitted or closed by its thresholds and recorded as T-58; admitted, its protocol in `parking.md` and this plan, reviewed, then its code with failing-first cases (a prepare failure before any acknowledgement, a confirmation stopped halfway, confirmed copies whose bookkeeping is rolled back or lost, a retried transaction leaving no stale result, a termination, a duplicate delivery, a cancellation between batches) and its before and after | done (#82) |
+| 8 | *Baselines* on the branch: point 50's remeasure of the inconclusive rows, each result kept as pass, a kept cost or inconclusive; absolute rows for 5.4's added benchmarks from its sitting's samples and for `MergeSchedule` on its base; the hot-path row naming 5.3's steps at 1c0e5f2; a line on why `bench.yaml`'s runs end `failure` (`benchjudge` fails an inconclusive row, decided by the local remeasure) | done (#82) |
 | 9 | after the merge, on its commit on `main` (point 52): the clustered family's 20 runs, recorded with the tests it ran by name and each catalog engine's result, so a skipped case shows, the Packaging run and the write-connection gate, each recorded with that commit by the close's pull request, and each gate row's owner naming its evidence | pending |
 
 ## Baselines
@@ -443,6 +443,7 @@ under a line naming the run's commit and point 22's machine facts; then step 9's
 
 Carried from 5.2 to the gate (5.6): a few catalog and compactor errors on paths 5.2 did not touch name an object key in the operator's log
 (a claim survivor's release and removal, a registration's key lookups, an abandoned close's delete), which point 11 keeps out of every log.
+5.6 removed them (point 48).
 
 **The local sitting** (2026-11-02), at 77930eb, the tip of `test/phase-5/measurement`:
 Go 1.26.10 linux/amd64, benchstat `v0.0.0-20261009192801-be2c69fb417e` (pinned in `bench.yaml`);
@@ -1163,7 +1164,7 @@ Each admitted row against its benefit threshold (point 45), head over base by th
 | P13 (point 42) | `ReadSeqRange` at 72,000 records: 1 KiB disjoint 0.70 (bytes 0.12 to 0.14), overlapping 0.84 (bytes 0.68 to 0.74), 14 B 0.93 to 0.96 (bytes 0.18 disjoint); at 1,000 records 0.86 to 0.98; `QueryRecords/*/seq-range` 0.92 (72,000) and 0.97, bytes 0.09 and 0.85 | none (point 42) | — |
 | P14, JSON | `QueryRecords/*/json/whole` 0.77 (1,000 records) and 0.68 (72,000); sizing alone 0.059 and 0.058 | a whole read 10% | yes |
 | P16, steady (point 43) | `KeyStandings` 0.20 at 128, 129 and 1,024 keys (bytes 0.23, allocations 0.12), 0.85 at one; `Orphans/*/steady` 0.22 and 0.23 (bytes 0.33) | none (point 43) | — |
-| P17 (point 44) | `MergeSchedule`, two hours at the default interval, 10 healthy scopes: 15 merges attempted with one failing scope, 60 with ten (5 failures a failing scope); the base attempts a failing scope every cycle, 24 a schedule, so 34 and 250 by the rule (not measured) | none (point 44) | — |
+| P17 (point 44) | `MergeSchedule`, two hours at the default interval, 10 healthy scopes: 15 merges attempted with one failing scope, 60 with ten (5 failures a failing scope); the base attempts a failing scope every cycle, 24 a schedule: 34 and 250 attempted, measured by 5.6 | none (point 44) | — |
 | P10, overshoot | `FetchOvershoot` peak held against the byte bound: 7.78× → 1.17× (fetch 20), 1.01× (100 and 500), closed batches counted; time 0.72 at fetch 20, passing at 100 and 500 | 25% fewer | yes |
 | P10, the heartbeat's protocol | production timing at 600,000 (below): the bus server's CPU a message 1.5% less | the bus server's CPU 10% or the sustained rate up, no more redeliveries, every age below `ack_wait` | no: reverted |
 | P11, S3 | requests of a read on both conformance stores: 16 KiB and 1 MiB 2 → 1 (HEAD 1 → 0), 16 MiB 8 → 7 | 20% fewer or 10% faster | 16 KiB and 1 MiB yes; 16 MiB 12.5%, its time inconclusive at step 2 |
@@ -1212,6 +1213,65 @@ The gate (1,000 audited successes, p99 within 2 s) passes, enforced; its p99 was
 The sweep was not run again: no kept row changes the rate ingest sustains at K = 100 (the production run sustains 800 fwd/s), so point 27's offered rate stands.
 
 The S3 counts ran on both conformance stores (`scripts/test-s3.sh` with `S3_BENCH`); one MinIO sample of the 16-record whole read failed on the counting proxy's reset connection, the read reporting the store's failure, and the other nine counted alike.
+
+### 5.6: the recovery drain and the remeasure (steps 7 and 8)
+
+**The recovery drain** (point 49) at 813695d, `TRACEKEEP_LOAD=recovery` (2026-11-05), on the machine above, SQLite, dev's flush of 10 s, `ack_wait` 7 m, the parked consumer's redelivery 1 m, `max_ack_pending` 600,000 on both consumers (asserted from their effective configuration), 800 fwd/s over K = 100, a warm-up of 1 m before the parking and again before the release, one episode each.
+The cohort is M + 6 versions, not point 49's M + 1: the blocker's capture parks its start, its M data records and the five records its connection observed (control frames and events), and completion waits for every one.
+
+| M | parked by identity after | backlog at the release | drain | first copy fetched | admission committed | acknowledgement (share) | traffic cycles | minima slope /s (bound) | sustained | made fwd/s | `PackURL` calls, p50, p99 | redeliveries |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| 1,000 | 3 s | 14,969 | 2 m 8.0 s | 56.9 s | 58.5 s | 0.68 s (0.5%) | 20 | −20.38 (8.00) | yes | 799.9 | 1,280, 1.17 ms, 2.20 ms | 1,800 |
+| 10,000 | 21 s | 10,580 | 1 m 50.1 s | 38.0 s | 39.7 s | 6.62 s (6.0%) | 25 | 22.73 (7.99) | no | 799.5 | 1,100, 1.09 ms, 1.78 ms | 10,799 |
+| 100,000 | 4 m 9 s | 13,361 | 1 m 52.6 s | 1 ms | 4.19 s | 1 m 4.9 s (57.7%) | 50 | −1.72 (8.00) | yes | 800.0 | 1,121, 0.79 ms, 4.75 ms | 111,102 |
+
+Nothing dropped, no flush pass failed and every `PackURL` call succeeded in each run; the traffic's consumer redelivered nothing, every redelivery is the parked consumer's, its copies fetched again each minute while the release held them.
+The drain's length is the wait to fetch the start again at 1,000 and 10,000 (57 s and 38 s), and at 100,000, whose copies were already being redelivered, the acknowledgement:
+a parked copy costs 0.65 ms (`PrepareAck` 0.28 ms, the double acknowledgement 0.06 ms, `AckCopy` 0.32 ms), as 5.3 measured, and the 100,000 copies took four parked flushes of 16.6 s on average, 16.3 s of each acknowledging.
+
+**The decision at 100,000**, one episode: the traffic sustained (false), the `PackURL` p99 4.75 ms over 1,121 calls (false), the acknowledgement 57.7% of a drain of 1 m 52.6 s, shorter than a compactor cycle (false):
+every condition false, so P8's batched `PrepareAck` and `AckCopy` is closed with these numbers (T-58).
+
+At 10,000 the cycle judge reads not sustained, though the traffic made 799.5 of 800 fwd/s and nothing dropped.
+Its minima alternate a second apart, two settled passes in most flush intervals, so each interval adds a one-second cycle whose minimum is the backlog before the later pass;
+the floors after a flush stay between 781 and 2,283 records, and the series ends on two such highs (13,037 at 106 s, 14,472 at 107 s), which lift the fit.
+The decision reads 100,000 alone, where the same judge reads 50 cycles sustained, its floors (3,398 to 4,968) and its highs (about 7,000 to 9,500) both flat.
+The judge stays as it is in this phase, since it is point 39's production judge too; merging passes closer than a flush into one cycle is a follow-up.
+
+**Point 50's remeasure** (2026-11-05 to 2026-11-06), base 66da01a, head 813695d, base again in one sitting on the machine above, SQLite, `-count 20` at `medium`, `Heartbeat`, `MergeFailingPut` and `MergeWrite` at 3 s, `Flush`, `FlushDue` and `Acknowledge` at 100x, judged by `benchjudge`:
+no row regresses.
+`Heartbeat/held=1000`, `FlushDue/batches=10`, `Flush`'s bytes at fs 1 KiB with 1,000 records and mem 1 KiB with 100, its time at mem 14 B with 1,000, and `Acknowledge`'s bytes and allocations at claim-check 100 now pass.
+Still inconclusive, recorded so and not passed:
+`Flush/store=fs/payload=1KiB/records=100`'s bytes [1.000, 1.156];
+`Acknowledge`'s bytes at claim-check 1,000 [0.976, 1.072], inline 100 [0.603, 1.380] and inline 1,000 [0.944, 1.092], inline's allocations at 1,000 [0.929, 1.108] and at 100 (a varying base of zero), and its parked time at 1,000 [0.849, 1.173];
+`MergeFailingPut/inputs=2/records=10000`'s time [0.814, 1.057], its bytes passing now;
+`MergeWrite/inputs=12/records=1000/masked=false`'s bytes [0.933, 1.159], its time passing.
+
+**The rows 5.4 added**, absolute at db2a5b1 from its sitting's head samples (2026-11-03, 10 runs at 1 s, `medium`, SQLite):
+
+| Row | Time | Bytes | Allocations |
+|---|---|---|---|
+| `DeleteCandidates/merges=1000/due=10` | 49.5 µs ±1% | 7.06 KiB | 150 |
+| `DeleteCandidates/merges=100000/due=10` | 56.5 µs ±1% | 7.06 KiB | 150 |
+| `EvictMerges/merges=1000` | 622 µs ±3% | 34.4 KiB | 882 |
+| `EvictMerges/merges=100000` | 687 µs ±1% | 34.4 KiB | 882 |
+| `RegisterPack/parked/deliveries=100/prior=1000` | 747 µs ±3% | 43.5 KiB | 797 |
+| `RegisterPack/parked/deliveries=100/prior=20000` | 674 µs ±7% | 43.5 KiB | 797 |
+| `RegisterPack/parked/deliveries=1000/prior=1000` | 1.85 ms ±2% | 306 KiB | 3,704 |
+| `RegisterPack/parked/deliveries=1000/prior=20000` | 1.83 ms ±2% | 306 KiB | 3,704 |
+| `Resolve/prior=1000/held-start` | 29.1 µs ±0% | 3.84 KiB | 93 |
+| `Resolve/prior=1000/wide-evicted` | 29.3 µs ±1% | 3.89 KiB | 98 |
+| `Resolve/prior=1000/wide-stored` | 76.4 µs ±1% | 3.89 KiB | 98 |
+| `Resolve/prior=20000/held-start` | 29.4 µs ±2% | 3.84 KiB | 93 |
+| `Resolve/prior=20000/wide-evicted` | 29.4 µs ±2% | 3.89 KiB | 98 |
+| `Resolve/prior=20000/wide-stored` | 78.0 µs ±1% | 3.89 KiB | 98 |
+
+**`MergeSchedule` on its base**, 66da01a with the benchmark's file copied in (2026-11-05, one run, `medium`, SQLite), two hours at the default interval with 10 healthy scopes:
+34 merges attempted, 24 failed and 10 merged with one failing scope (39.5 ms, 2.33 MiB, 32,528 allocations a schedule); 250 attempted, 240 failed and 10 merged with ten (236 ms, 14.7 MiB, 204,302 allocations).
+The head attempts 15 and 60 (5.5's row above).
+
+**`bench.yaml`'s runs end `failure`** whenever a row is inconclusive: `benchjudge` exits nonzero on an inconclusive row, as point 21 never passes one,
+and such a row is decided by the local remeasure (point 50), not by the workflow's result.
 
 ## The audit
 
