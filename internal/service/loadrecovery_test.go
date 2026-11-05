@@ -659,18 +659,22 @@ func TestRecoveryCompletesThroughReconciliation(t *testing.T) {
 			t.Fatalf("completion %+v before the reconciliation", end)
 		default:
 		}
+		// Taken before the reconciliation starts: the watcher may read its commit before Copies returns.
+		reconciling := time.Now()
 		rc := &compact.Compactor{Catalog: c, Log: slog.New(slog.DiscardHandler)}
 		if n, err := rc.Copies(ctx, lease, catalog.RoleParking, r.parking); err != nil || n != 1 {
 			t.Fatalf("Copies = %d, %v; want the confirmed copy's row marked", n, err)
 		}
-		reconciled := time.Now()
 		select {
 		case end := <-ended:
-			if end.err != nil || end.at.Before(reconciled) {
-				t.Errorf("completion %s after the reconciliation, %v; want it read after it", end.at.Sub(reconciled), end.err)
+			if end.err != nil || end.at.Before(reconciling) {
+				t.Errorf("completion %s after the reconciliation began, %v; want it read after it", end.at.Sub(reconciling), end.err)
 			}
 		case <-time.After(limit):
 			t.Fatalf("no completion within %s of the reconciliation: %v", limit, why.Load())
+		}
+		if w, err := r.drained(ctx); err != nil || w != "" {
+			t.Errorf("after the completion the cohort reads %q, %v; want every version registered and every copy acked", w, err)
 		}
 	})
 }
