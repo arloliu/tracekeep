@@ -16,6 +16,8 @@ import (
 
 	"github.com/arloliu/tracekeep/internal/catalog"
 	"github.com/arloliu/tracekeep/internal/procconfig"
+	tkrecords "github.com/arloliu/tracekeep/internal/records"
+	"github.com/arloliu/tracekeep/internal/safetext"
 )
 
 // closeFilePattern names a close's working file under the working directory.
@@ -54,7 +56,7 @@ func (r *Compactor) Closes(ctx context.Context, lease catalog.Lease) (CloseRepor
 			return rep, err
 		}
 		if err != nil {
-			r.Log.Error("compact: close intent", "capture", cand.Capture, "error", err)
+			r.Log.Error("compact: close intent", "capture", cand.Capture, "error", safetext.Text(err.Error()))
 			rep.Failed++
 
 			continue
@@ -78,7 +80,7 @@ func (r *Compactor) Closes(ctx context.Context, lease catalog.Lease) (CloseRepor
 		}
 		switch {
 		case err != nil:
-			r.Log.Error("compact: publish a close", "capture", pending[i].Capture, "error", err)
+			r.Log.Error("compact: publish a close", "pack", pending[i].PackID, "capture", pending[i].Capture, "error", safetext.Text(err.Error()))
 			rep.Failed++
 		case state == "published":
 			rep.Published++
@@ -160,7 +162,7 @@ func (r *Compactor) publishClose(ctx context.Context, lease catalog.Lease, c *ca
 	if err := r.Store.Put(ctx, p.Key, tmp, p.Size); err != nil {
 		// A put whose result was lost: the object stands only if it holds exactly the bytes written (compactor.md §8.2 step 2).
 		if same, serr := r.stored(ctx, p.Key, tmp, p.Size); serr != nil || !same {
-			return "", err
+			return "", tkrecords.Keyless(err)
 		}
 	}
 	r.hook(hookClosePut)
@@ -174,7 +176,7 @@ func (r *Compactor) publishClose(ctx context.Context, lease catalog.Lease, c *ca
 			return state, err
 		}
 		if err := r.Store.Delete(ctx, p.Key); err != nil {
-			r.Log.Warn("compact: delete an abandoned close", "key", p.Key, "error", err)
+			r.Log.Warn("compact: delete an abandoned close", "pack", p.ID, "capture", p.Capture, "hour", p.Hour, "error", tkrecords.Keyless(err))
 		}
 	}
 

@@ -9,6 +9,7 @@ import (
 
 	"github.com/arloliu/tracekeep/internal/bus"
 	"github.com/arloliu/tracekeep/internal/catalog"
+	"github.com/arloliu/tracekeep/internal/safetext"
 )
 
 // ErrAllowDirect reports a stream that allows direct gets: a GetMsg could then be served by a replica
@@ -50,7 +51,7 @@ func (r *Compactor) Copies(ctx context.Context, lease catalog.Lease, role string
 			if ctx.Err() != nil {
 				return n, ctx.Err()
 			}
-			r.Log.Warn("compact: copy not checked", "incarnation", inc.ID, "stream_seq", seq, "error", err)
+			r.Log.Warn("compact: copy not checked", "incarnation", inc.ID, "stream_seq", seq, "error", safetext.Text(err.Error()))
 
 			continue
 		}

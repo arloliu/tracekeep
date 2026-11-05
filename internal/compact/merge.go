@@ -15,6 +15,8 @@ import (
 	"github.com/arloliu/go-secs/tracepack"
 
 	"github.com/arloliu/tracekeep/internal/catalog"
+	tkrecords "github.com/arloliu/tracekeep/internal/records"
+	"github.com/arloliu/tracekeep/internal/safetext"
 	"github.com/arloliu/tracekeep/internal/store"
 )
 
@@ -138,7 +140,7 @@ func (r *Compactor) attempt(ctx context.Context, lease catalog.Lease, s catalog.
 	}
 	switch {
 	case err != nil:
-		r.Log.Error("compact: merge failed", "capture", s.Capture, "hour", s.Hour, "error", err)
+		r.Log.Error("compact: merge failed", "capture", s.Capture, "hour", s.Hour, "error", safetext.Text(err.Error()))
 		rep.Failed = append(rep.Failed, s)
 	case out == merged:
 		rep.Merged = append(rep.Merged, s)
@@ -207,7 +209,7 @@ func (r *Compactor) mergeSnapshot(ctx context.Context, lease catalog.Lease, snap
 		return conflicted, r.mergeConflicts(ctx, lease, s, found)
 	}
 	if overBudget(err) {
-		r.Log.Warn("compact: alert", "reason", "merge-over-budget", "capture", s.Capture, "hour", s.Hour, "error", err)
+		r.Log.Warn("compact: alert", "reason", "merge-over-budget", "capture", s.Capture, "hour", s.Hour, "error", safetext.Text(err.Error()))
 		out, err := r.Catalog.RefuseMerge(ctx, lease, &catalog.Refusal{Scope: s, Revision: snap.Revision, Request: request, Reason: overBudgetReason})
 		if err != nil || out != catalog.Refused {
 			return stale, err
@@ -226,7 +228,7 @@ func (r *Compactor) mergeSnapshot(ctx context.Context, lease catalog.Lease, snap
 		return 0, err
 	}
 	if err := r.Store.Put(ctx, archive.Key, tmp, archive.Size); err != nil {
-		return 0, err
+		return 0, fmt.Errorf("compact: put archive %s: %w", archive.ID, tkrecords.Keyless(err))
 	}
 	r.hook(hookMergePut)
 	m := &catalog.Merge{Scope: s, Revision: snap.Revision, Archive: archive, Request: request, DeleteDelay: r.DeleteDelay}
@@ -261,9 +263,10 @@ func (r *Compactor) write(ctx context.Context, w *os.File, lease catalog.Lease, 
 		}
 	}()
 	for _, in := range snap.Inputs {
-		obj, err := r.Store.Open(ctx, in.Key)
+		// Keyless, its reads too: tracepack's errors quote a failed read's.
+		obj, err := tkrecords.Open(ctx, r.Store, in.Key)
 		if err != nil {
-			return tracepack.MergeReport{}, nil, fmt.Errorf("compact: open input %s: %w", in.Key, err)
+			return tracepack.MergeReport{}, nil, fmt.Errorf("compact: open input %s: %w", in.ID, err)
 		}
 		opened = append(opened, obj)
 		inputs = append(inputs, tracepack.MergeInput{ReaderAt: obj, Size: obj.Size()})
@@ -305,7 +308,7 @@ func (r *Compactor) describeArchive(ctx context.Context, w *os.File, snap *catal
 	}
 	p, reason := describe(rd, r.KeyPrefix, store.ObjectInfo{Key: key, Size: info.Size()})
 	if reason != "" {
-		return nil, fmt.Errorf("compact: archive %s: %s", key, reason)
+		return nil, fmt.Errorf("compact: archive %s: %s", id, reason)
 	}
 	if err := records(ctx, rd, p); err != nil {
 		return nil, err

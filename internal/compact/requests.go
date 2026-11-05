@@ -5,6 +5,7 @@ import (
 	"errors"
 
 	"github.com/arloliu/tracekeep/internal/catalog"
+	"github.com/arloliu/tracekeep/internal/safetext"
 )
 
 // RequestReport is what a request pass did.
@@ -54,7 +55,7 @@ func (r *Compactor) requestsIn(ctx context.Context, lease catalog.Lease, cyc *me
 		}
 		switch {
 		case err != nil:
-			r.Log.Warn("compact: merge request", "request", q.ID, "error", err)
+			r.Log.Warn("compact: merge request", "request", q.ID, "error", safetext.Text(err.Error()))
 			rep.Pending++
 		case ended == "":
 			rep.Pending++

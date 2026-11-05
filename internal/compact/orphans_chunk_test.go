@@ -14,6 +14,7 @@ import (
 
 	"github.com/arloliu/tracekeep/internal/catalog"
 	"github.com/arloliu/tracekeep/internal/catalog/catalogtest"
+	tkrecords "github.com/arloliu/tracekeep/internal/records"
 	"github.com/arloliu/tracekeep/internal/store"
 )
 
@@ -203,7 +204,7 @@ func TestOrphanRepeatedKey(t *testing.T) {
 	})
 }
 
-// A failed listing, in the first or the second area and in the middle of a chunk, ends the pass with its error,
+// A failed listing, in the first or the second area and in the middle of a chunk, ends the pass with the store's class,
 // keeps the previous pass's unknown keys and never makes a key first listed by it a second sighting.
 func TestOrphanListingFails(t *testing.T) {
 	t.Parallel()
@@ -217,7 +218,7 @@ func TestOrphanListingFails(t *testing.T) {
 				f.pass(t)
 				later := f.orphans(t, capture, 10, 3)
 				f.r.Store = &listing{ObjectStore: f.s, failArea: area, failAfter: 2}
-				if rep, err := f.r.Orphans(t.Context(), f.lease); !errors.Is(err, errListing) || len(rep.Adopted) != 0 {
+				if rep, err := f.r.Orphans(t.Context(), f.lease); !errors.Is(err, tkrecords.ErrStore) || len(rep.Adopted) != 0 {
 					t.Fatalf("a pass whose %s listing fails = %d adopted, %v; want nothing and its error", area, len(rep.Adopted), err)
 				}
 				f.r.Store = f.s

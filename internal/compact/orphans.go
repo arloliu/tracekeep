@@ -19,6 +19,8 @@ import (
 	"github.com/arloliu/tracekeep/internal/bus"
 	"github.com/arloliu/tracekeep/internal/catalog"
 	"github.com/arloliu/tracekeep/internal/metrics"
+	tkrecords "github.com/arloliu/tracekeep/internal/records"
+	"github.com/arloliu/tracekeep/internal/safetext"
 	"github.com/arloliu/tracekeep/internal/store"
 )
 
@@ -128,11 +130,13 @@ func (r *Compactor) Orphans(ctx context.Context, lease catalog.Lease) (OrphanRep
 	// listed is every key this pass judged; seen, the unknown ones among them, the next pass's history.
 	listed, seen := map[string]bool{}, map[string]bool{}
 	chunk := make([]store.ObjectInfo, 0, catalog.MaxKeyStandings)
+	// settled is the error a chunk's settling returned through a listing, a lost lease or a cancellation, which passes unchanged.
+	var settled error
 	settle := func() error {
-		err := r.settleChunk(ctx, lease, chunk, seen, &rep)
+		settled = r.settleChunk(ctx, lease, chunk, seen, &rep)
 		chunk = chunk[:0]
 
-		return err
+		return settled
 	}
 	for _, area := range []string{"staging/", "archive/"} {
 		prefix := area
@@ -150,8 +154,11 @@ func (r *Compactor) Orphans(ctx context.Context, lease catalog.Lease) (OrphanRep
 
 			return settle()
 		})
-		if err != nil {
+		if settled != nil && errors.Is(err, settled) {
 			return rep, err
+		}
+		if err != nil {
+			return rep, tkrecords.Keyless(err) // the store's own failure, whose text may name a key
 		}
 	}
 	if err := settle(); err != nil {
@@ -176,7 +183,7 @@ func (r *Compactor) settleChunk(ctx context.Context, lease catalog.Lease, chunk 
 		if ctx.Err() != nil {
 			return err
 		}
-		r.Log.Warn("compact: orphan standings", "keys", len(keys), "first", keys[0], "error", err)
+		r.Log.Warn("compact: orphan standings", "keys", len(keys), "error", safetext.Text(err.Error()))
 
 		return nil
 	}
@@ -187,7 +194,8 @@ func (r *Compactor) settleChunk(ctx context.Context, lease catalog.Lease, chunk 
 			return err
 		}
 		if err != nil {
-			r.Log.Warn("compact: orphan", "key", info.Key, "error", err)
+			// The error names the operation and the pack's id once it was read, never the key.
+			r.Log.Warn("compact: orphan", "error", safetext.Text(err.Error()))
 		}
 	}
 
@@ -220,7 +228,11 @@ func (r *Compactor) settle(ctx context.Context, lease catalog.Lease, info store.
 	}
 	if reason != "" {
 		rep.Quarantined = append(rep.Quarantined, Quarantine{Key: info.Key, Reason: reason})
-		r.Log.Error("compact: orphan quarantined", "key", info.Key, "reason", reason)
+		if p != nil {
+			r.Log.Error("compact: orphan quarantined", "pack", p.ID, "capture", p.Capture, "hour", p.Hour, "reason", reason)
+		} else {
+			r.Log.Error("compact: orphan quarantined", "reason", reason)
+		}
 
 		return nil
 	}
@@ -231,19 +243,21 @@ func (r *Compactor) settle(ctx context.Context, lease catalog.Lease, info store.
 // adopt registers p as adopted under lease and acts on the outcome.
 func (r *Compactor) adopt(ctx context.Context, lease catalog.Lease, p *catalog.Pack, rep *OrphanReport) error {
 	out, err := r.Catalog.RegisterPack(ctx, p, catalog.Registration{Lease: &lease, Adopted: true, HorizonHour: r.HorizonHour()})
+	at := []any{"pack", p.ID, "capture", p.Capture, "hour", p.Hour}
 	if errors.Is(err, catalog.ErrInvalidRegistration) {
-		rep.Quarantined = append(rep.Quarantined, Quarantine{Key: p.Key, Reason: err.Error()})
-		r.Log.Error("compact: orphan quarantined", "key", p.Key, "reason", err.Error())
+		reason := safetext.Text(err.Error())
+		rep.Quarantined = append(rep.Quarantined, Quarantine{Key: p.Key, Reason: reason})
+		r.Log.Error("compact: orphan quarantined", append(at, "reason", reason)...)
 
 		return nil
 	}
 	if err != nil {
-		return err
+		return fmt.Errorf("compact: adopt pack %s: %w", p.ID, err)
 	}
 	switch out {
 	case catalog.Registered:
 		rep.Adopted = append(rep.Adopted, p.Key)
-		r.Log.Info("compact: orphan adopted", "key", p.Key)
+		r.Log.Info("compact: orphan adopted", at...)
 	case catalog.AlreadyRegistered:
 		// Its registration committed after the listing's look.
 	case catalog.BeyondHorizon, catalog.LostToTermination:
@@ -254,9 +268,9 @@ func (r *Compactor) adopt(ctx context.Context, lease catalog.Lease, p *catalog.P
 		return r.delete(ctx, lease, p.Key, rep)
 	case catalog.UnadmittedCapture:
 		rep.Unadmitted = append(rep.Unadmitted, Unadmitted{Key: p.Key, Capture: p.Capture})
-		r.Log.Warn("compact: orphan of an unadmitted capture", "key", p.Key, "capture", p.Capture)
+		r.Log.Warn("compact: orphan of an unadmitted capture", at...)
 	case catalog.FoundAdopted:
-		return fmt.Errorf("compact: adoption of %s found it adopted, an outcome only evidence gets", p.Key)
+		return fmt.Errorf("compact: adoption of pack %s found it adopted, an outcome only evidence gets", p.ID)
 	default:
 		return fmt.Errorf("compact: unknown registration outcome %d", out)
 	}
@@ -271,7 +285,7 @@ func (r *Compactor) delete(ctx context.Context, lease catalog.Lease, key string,
 		return err
 	}
 	if err := r.Store.Delete(ctx, key); err != nil {
-		return err
+		return fmt.Errorf("compact: delete a tombstoned orphan: %w", tkrecords.Keyless(err))
 	}
 	rep.Deleted = append(rep.Deleted, key)
 
@@ -279,11 +293,12 @@ func (r *Compactor) delete(ctx context.Context, lease catalog.Lease, key string,
 }
 
 // read verifies the object of info in full and reads the pack it holds;
-// a non-empty reason quarantines it, and an error leaves it for the next pass.
+// a non-empty reason quarantines it, with the pack when its header was read, and an error leaves it for the next pass.
+// The object's errors, its open's and its reads', are keyless, their classes kept.
 func (r *Compactor) read(ctx context.Context, info store.ObjectInfo) (*catalog.Pack, string, error) {
-	obj, err := r.Store.Open(ctx, info.Key)
+	obj, err := tkrecords.Open(ctx, r.Store, info.Key)
 	if err != nil {
-		return nil, "", err
+		return nil, "", fmt.Errorf("compact: open an orphan: %w", err)
 	}
 	defer obj.Close()
 	rd, err := tracepack.Open(ctx, obj, obj.Size(), tracepack.ReaderOptions{})
@@ -295,14 +310,14 @@ func (r *Compactor) read(ctx context.Context, info store.ObjectInfo) (*catalog.P
 		if ctx.Err() == nil && quarantines(err) {
 			return nil, fmt.Sprintf("verify: %v", err), nil
 		}
-		return nil, "", err
+		return nil, "", fmt.Errorf("compact: verify an orphan: %w", err)
 	}
 	if reason := judge(&vr); reason != "" {
 		return nil, reason, nil
 	}
 	p, reason := describe(rd, r.KeyPrefix, info)
 	if reason != "" {
-		return nil, reason, nil
+		return p, reason, nil
 	}
 	if err := records(ctx, rd, p); err != nil {
 		return nil, "", err
@@ -343,6 +358,7 @@ func judge(vr *tracepack.VerifyReport) string {
 
 // describe reads the pack's identity from its header and checks that the key spells it ([STO §3]):
 // a segment's capture, first seq and pack id, an archive's hour, capture and pack id.
+// A reason refuses the pack, which is returned too once its header named it; the reason names no key.
 func describe(rd *tracepack.Reader, keyPrefix string, info store.ObjectInfo) (*catalog.Pack, string) {
 	h := rd.Header()
 	m := h.Meta
@@ -367,15 +383,15 @@ func describe(rd *tracepack.Reader, keyPrefix string, info store.ObjectInfo) (*c
 		p.Role = catalog.RoleArchive
 		key, err = tracepack.ArchiveKey(keyPrefix, m.ToolID, h.CaptureID, p.Hour, h.PackID)
 	case tracepack.PackRoleUnknown, tracepack.PackRoleExtract, tracepack.PackRoleRepair:
-		return nil, fmt.Sprintf("pack role %v, which no tracekeep key holds", m.PackRole)
+		return p, fmt.Sprintf("pack role %v, which no tracekeep key holds", m.PackRole)
 	default:
-		return nil, fmt.Sprintf("pack role %v", m.PackRole)
+		return p, fmt.Sprintf("pack role %v", m.PackRole)
 	}
 	if err != nil {
-		return nil, fmt.Sprintf("key: %v", err)
+		return p, fmt.Sprintf("key: %v", err)
 	}
 	if key != info.Key {
-		return nil, fmt.Sprintf("the pack's key is %s", key)
+		return p, "the key does not spell the pack's identity"
 	}
 	for _, cv := range m.Coverage {
 		if cv.CaptureID == nil || *cv.CaptureID == h.CaptureID {
@@ -422,7 +438,7 @@ func records(ctx context.Context, rd *tracepack.Reader, p *catalog.Pack) error {
 		// The pack's own coverage entries and crash gaps say what it never held; any other defect is a fault of this read,
 		// since Verify validated every block, and the next pass reads again.
 		if d.Reason != tracepack.IncompleteReasonCoverage && d.Reason != tracepack.IncompleteReasonCrashGap {
-			return fmt.Errorf("compact: read of %s incomplete: %v", p.Key, d.Reason)
+			return fmt.Errorf("compact: read of pack %s incomplete: %v", p.ID, d.Reason)
 		}
 	}
 	slices.SortFunc(pts, func(a, b point) int {
