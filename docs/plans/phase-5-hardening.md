@@ -363,14 +363,14 @@ and ingest's, step 7. A step whose row is not admitted is marked `closed` with i
 |---|---|---|
 | 1 | spec, with T-56 recording points 39 to 47: `compactor.md` §8.1 and §8.3 (a failing merge's backoff and a cycle's cap, point 44), the configuration guide (`compact.merge_attempts`), `api.md` §10.1 *Records* and *Exports* (a configuration decoded once a request, point 41) | done (0087b6d) |
 | 2 | measurement (point 39): the ceiling's profiles, the budget experiment, the claim-check load and the production-timing run; the stale rows again; the missing rows added, each with its equivalent work on the base; the S3 request counts; each row of point 45 admitted, closed or left to its checkpoint (P9 after step 7's P7 and P8, P16 adopting after step 5) in *Baselines* under a 5.5 heading. This commit is the base | done (596fab7 and the *Baselines* commit on it) |
-| 3 | P12 (point 41) in `internal/api`. Failing cases first: one decode a configuration a request across hours, captures and a retry; a shared id across captures; a later read set with no or another configuration still checked and withheld; a decode failure not cached; a cancellation on a memo hit; a new RPC decoding again; two export attempts never sharing a memo | pending |
-| 4 | P13 (point 42) in `internal/records`. Failing cases first: a rejected large payload never copied; a kept record's bytes surviving the reader's buffer reuse; a seq's versions at the range's edges kept together; each predicate exact and wildcard; a kept seq followed by a rejected one, then a gone object or an error, resuming after the last delivered group; a corrupt tail past the range still reported; a retry after a gone object not repeating output | pending |
-| 5 | P16 steady (point 43): `KeyStandings` in `internal/catalog` on both engines, the pass in `internal/compact`. Failing cases first: 127, 128 and 129 keys a chunk; registered, tombstoned and unknown mixed; a key repeated across a chunk boundary not taken as its second sighting; a failed listing keeping the previous pass's unknown keys; a listing failing mid-chunk; a key registered or tombstoned between the look and the act; a lost lease; an unknown key adopted only on its second sighting; no registered key opened | pending |
-| 6 | P17 (point 44), after step 5 in its worktree: `MergeCandidates` returning the revision in `internal/catalog` on both engines, the schedule in `internal/compact`, the cap in `internal/config`. Failing cases first, on a fake clock: the backoff's doubling and its cap; a registration between the snapshot and the failure, and one during the wait, each making the scope due; a registration during the wait of a requested `unmergeable` scope and of a not-yet-quiet one, each making the request due, an unchanged revision staying suppressed, and a failed revision read attempting nothing; 1,025 candidates and the cap, the scope past it leading the next cycle's scheduled scopes; requests arriving every cycle beside carried-over scheduled scopes; repeatedly stale older scopes not starving the rest; a failure after reading; two pending requests and a new one, each bypassing once; cycles at the default interval with the lease lapsing between them keeping the backoff; another holder taking and releasing the lease between two of this process's takes, and a restart, each starting it over; the cap spent before a close request, with close requests, close publication, deletion and retention still running; closes, deletion and retention still running; no merge counted for a skipped scope | pending |
-| 7 | ingest rows admitted (point 45: P7, P8's claim-check acknowledgements and P10 from step 2; P9 at its checkpoint after P7 and P8), in that order in one worktree, since they share a delivery's completion and the heartbeat; a spec change first in its own commit. Failing cases first for each admitted row as point 45 names them, and for P8: completion out of order with the first acknowledgement failing, two copies of one version and two versions of one seq settled by delivery, a parked claim-check delivery acknowledged through the coordinator, cancellation joining every worker, a crash after confirmation; for P9: batches failing at once, a termination between registrations, local work outlasting cancellation, every worker joined before files and batch memory are released; for P10's overshoot, near-limit payloads of one capture across a full fetch; for the heartbeat's alternative, several production flush periods, a delayed put, queued batches, the largest delivery age, and local work outlasting both the flush's budget and the new `ack_wait`, redelivered safely, acknowledged only after registration, its files owned until it joins | pending: P10's overshoot and the heartbeat's protocol admitted; P7, P8's claim-check acknowledgements, P9, P10's formatting and `TakeDue` closed |
-| 8 | P11's S3 half and P14 if step 2 admits them: P14 after step 3 in the API's worktree; the S3 half after step 4 in the records' worktree, its callers after steps 3 and 4 land. Failing cases first, each asserting the RPC's and the export's outcome, not only an error: a stored size smaller, larger and zero; stored sizes 1, 79 and 80 against a valid pack, and a missing object with a tiny stored size, never an omission as corrupt; a valid pack with extra bytes; a missing object at the first GET; a missing bucket; an ignored range; cancellation; parallel reads; for P14, exact 128 KiB boundaries with escaping and base64, an oversized seq group, a failed send | pending: P11's S3 half and P14's JSON admitted; P14's binary closed |
-| 9 | P16 adopting if its checkpoint admits it, after step 6 in the compactor's worktree; then the integrated lease-loss, concurrent-registration and retention cases with steps 5 and 6 | pending its checkpoint after step 5 |
-| 10 | measurement (points 46, 47): the local sitting base against head, `bench.yaml` if step 5 ran, the S3 counts, recorded in *Baselines* under the 5.5 heading; the write-connection gate run and recorded; a P row its numbers do not support is reverted and closed with them | pending |
+| 3 | P12 (point 41) in `internal/api`. Failing cases first: one decode a configuration a request across hours, captures and a retry; a shared id across captures; a later read set with no or another configuration still checked and withheld; a decode failure not cached; a cancellation on a memo hit; a new RPC decoding again; two export attempts never sharing a memo | done (7cc76f7) |
+| 4 | P13 (point 42) in `internal/records`. Failing cases first: a rejected large payload never copied; a kept record's bytes surviving the reader's buffer reuse; a seq's versions at the range's edges kept together; each predicate exact and wildcard; a kept seq followed by a rejected one, then a gone object or an error, resuming after the last delivered group; a corrupt tail past the range still reported; a retry after a gone object not repeating output | done (e1a6acd) |
+| 5 | P16 steady (point 43): `KeyStandings` in `internal/catalog` on both engines, the pass in `internal/compact`. Failing cases first: 127, 128 and 129 keys a chunk; registered, tombstoned and unknown mixed; a key repeated across a chunk boundary not taken as its second sighting; a failed listing keeping the previous pass's unknown keys; a listing failing mid-chunk; a key registered or tombstoned between the look and the act; a lost lease; an unknown key adopted only on its second sighting; no registered key opened | done (06e2b16) |
+| 6 | P17 (point 44), after step 5 in its worktree: `MergeCandidates` returning the revision in `internal/catalog` on both engines, the schedule in `internal/compact`, the cap in `internal/config`. Failing cases first, on a fake clock: the backoff's doubling and its cap; a registration between the snapshot and the failure, and one during the wait, each making the scope due; a registration during the wait of a requested `unmergeable` scope and of a not-yet-quiet one, each making the request due, an unchanged revision staying suppressed, and a failed revision read attempting nothing; 1,025 candidates and the cap, the scope past it leading the next cycle's scheduled scopes; requests arriving every cycle beside carried-over scheduled scopes; repeatedly stale older scopes not starving the rest; a failure after reading; two pending requests and a new one, each bypassing once; cycles at the default interval with the lease lapsing between them keeping the backoff; another holder taking and releasing the lease between two of this process's takes, and a restart, each starting it over; the cap spent before a close request, with close requests, close publication, deletion and retention still running; closes, deletion and retention still running; no merge counted for a skipped scope | done (e98c5e5, 1472a87, b2eef76) |
+| 7 | ingest rows admitted (point 45: P7, P8's claim-check acknowledgements and P10 from step 2; P9 at its checkpoint after P7 and P8), in that order in one worktree, since they share a delivery's completion and the heartbeat; a spec change first in its own commit. Failing cases first for each admitted row as point 45 names them, and for P8: completion out of order with the first acknowledgement failing, two copies of one version and two versions of one seq settled by delivery, a parked claim-check delivery acknowledged through the coordinator, cancellation joining every worker, a crash after confirmation; for P9: batches failing at once, a termination between registrations, local work outlasting cancellation, every worker joined before files and batch memory are released; for P10's overshoot, near-limit payloads of one capture across a full fetch; for the heartbeat's alternative, several production flush periods, a delayed put, queued batches, the largest delivery age, and local work outlasting both the flush's budget and the new `ack_wait`, redelivered safely, acknowledged only after registration, its files owned until it joins | done: P10's overshoot (a8c3c82); the heartbeat's protocol (ab086ed, 99a0721 and their fixes) reverted at step 10 (22e40a5, 6168e41), below its benefit threshold; P7, P8's claim-check acknowledgements, P9, P10's formatting and `TakeDue` closed |
+| 8 | P11's S3 half and P14 if step 2 admits them: P14 after step 3 in the API's worktree; the S3 half after step 4 in the records' worktree, its callers after steps 3 and 4 land. Failing cases first, each asserting the RPC's and the export's outcome, not only an error: a stored size smaller, larger and zero; stored sizes 1, 79 and 80 against a valid pack, and a missing object with a tiny stored size, never an omission as corrupt; a valid pack with extra bytes; a missing object at the first GET; a missing bucket; an ignored range; cancellation; parallel reads; for P14, exact 128 KiB boundaries with escaping and base64, an oversized seq group, a failed send | done: P14's JSON (f423eb4), P11's S3 half (022cc49, fc81026, 29e2b34, cf28693); P14's binary closed |
+| 9 | P16 adopting if its checkpoint admits it, after step 6 in the compactor's worktree; then the integrated lease-loss, concurrent-registration and retention cases with steps 5 and 6 | closed at its checkpoint: 46.9 s at 100,000 objects, its removable part 17%, below 20% |
+| 10 | measurement (points 46, 47): the local sitting base against head, `bench.yaml` if step 5 ran, the S3 counts, recorded in *Baselines* under the 5.5 heading; the write-connection gate run and recorded; a P row its numbers do not support is reverted and closed with them | done (*Baselines*, 5.5: before and after) |
 
 ## Baselines
 
@@ -1046,8 +1046,8 @@ The acknowledgement share at K = 10 is the inline acknowledgement's, closed by p
 
 | `max_ack_pending` | sustained | cycles' minima slope /s (bound) | messages | in-progress acks a message | redeliveries | age p50, p90, p99, max | the bus server's CPU | process CPU cores |
 |---|---|---|---|---|---|---|---|---|
-| 600,000 | yes | 0.28 (8.0) | 3,306,000 | 1.02 | 0 | 2 m 32 s, 4 m 33 s, 5 m 0 s, 5 m 4 s | 181 s, 19% of the process's samples | 0.46 |
-| 50,000 | no | 1,434 (8.0) | 315,684 | 2.22 | 0 | 27 m, 41 m, 41 m, 41 m | 28 s, 7% | 0.19 |
+| 600,000 | yes | 0.28 (8.0) | 3,306,000 | 1.02 | 0 | 2 m 32 s, 4 m 33 s, 5 m 0 s, 5 m 4 s | 362 s, 38% of the process's samples | 0.46 |
+| 50,000 | no | 1,434 (8.0) | 315,684 | 2.22 | 0 | 27 m, 41 m, 41 m, 41 m | 90 s, 24% | 0.19 |
 
 At the default 50,000 ingest falls behind the production rate within a minute and its deliveries wait 27 minutes and more, as `architecture.md` §3.1 foresees in asking for the larger budget; the default stays the owner's call, and step 7's heartbeat change revisits §3.1.
 
@@ -1068,6 +1068,86 @@ At the default 50,000 ingest falls behind the production rate within a minute an
 | P16, adopting | 48.2 s at 100,000 objects | 30 s and a removable part of 20%, after step 5 | left to its checkpoint after step 5 |
 
 P12 (point 41) is not conditional: `QueryRecordsDay` reads the configuration 25 times for a day of one configuration in one RPC (at most 2,400 records, within the default page of 5,000); its target is one.
+
+### 5.5: before and after (step 10)
+
+Base 66da01a (the branch after step 2 and its *Baselines*), head d5abd0c (steps 3 to 9 and the review's fixes), each judged by `benchjudge` under point 21.
+The heartbeat's protocol missed its benefit threshold (below) and was reverted (22e40a5, 6168e41);
+ingest's rows were measured again on 6168e41 the next day against the same base runs, and the rows of every other package run code the revert left as it was.
+
+**The local sitting** (2026-11-04), on the machine above, as step 2's: `-count 10 -benchtime 1s` at `medium`, `Flush`, `FlushDue` and `Acknowledge` at 50x, `FetchOvershoot` at `large` 1x, SQLite, base, head and base again, ingest's head run on 6168e41 (2026-11-05):
+610 metrics, 569 pass (88 of them exact allocation counts), 11 regress, 30 inconclusive.
+The inconclusive rows and `Heartbeat/held=100`'s were measured again at `-benchtime 3s` (`Flush` and `FlushDue` at 100x, the most their registration bound allows, and `Acknowledge` at 100x), base, head and base again,
+and those still inconclusive among ingest's, whose head ran a day after the base, again at 3 s and 20 runs, base, head and base again in one sitting (2026-11-05):
+`DisposeFetch/captures=10/ordinary`, `TakeDue/batches=100` and `Batcher/batches=1` pass.
+Still inconclusive, never passed, each running code the phase left as the base's:
+`Heartbeat/held=1000`'s time [0.996, 1.075];
+`Flush`'s bytes at fs 1 KiB (100 and 1,000 records) and mem 1 KiB (100), and its time at mem 14 B, 1,000 records [0.95, 1.68];
+`FlushDue/batches=10`'s time [0.86, 1.15];
+`Acknowledge`'s bytes and allocations (claim-check at 100 and 1,000, inline at 1,000, inline's allocations at 100 from a varying base of zero) and its parked time at 1,000 [0.88, 1.12].
+The compactor's `MergeFailingPut/inputs=2/records=10000` and `MergeWrite/inputs=12/records=1000/masked=false`, at 3 s and 20 runs, stay inconclusive on their bytes ([0.97, 1.07], [0.76, 1.27]), their times passing.
+**`bench.yaml` on MariaDB**, run 41781268019 at `medium`, base 66da01a against 1472a87, which holds every catalog change of the phase (none came after it):
+the registration, listings and metrics jobs pass; the lookups, retention and claim-listing jobs regress nowhere, eight rows inconclusive
+(`DeleteCandidates/merges=100000`, `Lookups/*/RecordCopies` at prior 1,000 and 20,000, `MergeCandidates/scopes=100000`, `Resolve/*/wide-evicted`, `held-start` and `wide-stored`, `RecordListing/objects=10000/attributed/new`),
+measured again locally on MariaDB 11.8 at `-benchtime 3s`, base, head and base again: each passes, but `MergeCandidates/scopes=100000`'s bytes (1.33) and allocations, P17's (below).
+
+Each admitted row against its benefit threshold (point 45), head over base by the medians:
+
+| Row | Measured | Threshold | Met |
+|---|---|---|---|
+| P12 (point 41) | `QueryRecordsDay`: configuration reads an RPC 25 → 1; time 0.93 and 0.97 | one a configuration an RPC | yes |
+| P13 (point 42) | `ReadSeqRange` at 72,000 records: 1 KiB disjoint 0.70 (bytes 0.12 to 0.14), overlapping 0.84 (bytes 0.68 to 0.74), 14 B 0.93 to 0.96 (bytes 0.18 disjoint); at 1,000 records 0.86 to 0.98; `QueryRecords/*/seq-range` 0.92 (72,000) and 0.97, bytes 0.09 and 0.85 | none (point 42) | — |
+| P14, JSON | `QueryRecords/*/json/whole` 0.77 (1,000 records) and 0.68 (72,000); sizing alone 0.059 and 0.058 | a whole read 10% | yes |
+| P16, steady (point 43) | `KeyStandings` 0.20 at 128, 129 and 1,024 keys (bytes 0.23, allocations 0.12), 0.85 at one; `Orphans/*/steady` 0.22 and 0.23 (bytes 0.33) | none (point 43) | — |
+| P17 (point 44) | `MergeSchedule`, two hours at the default interval, 10 healthy scopes: 15 merges attempted with one failing scope, 60 with ten (5 failures a failing scope); the base attempts a failing scope every cycle, 24 a schedule, so 34 and 250 by the rule (not measured) | none (point 44) | — |
+| P10, overshoot | `FetchOvershoot` peak held against the byte bound: 7.78× → 1.17× (fetch 20), 1.01× (100 and 500), closed batches counted; time 0.72 at fetch 20, passing at 100 and 500 | 25% fewer | yes |
+| P10, the heartbeat's protocol | production timing at 600,000 (below): the bus server's CPU a message 1.5% less | the bus server's CPU 10% or the sustained rate up, no more redeliveries, every age below `ack_wait` | no: reverted |
+| P11, S3 | requests of a read on both conformance stores: 16 KiB and 1 MiB 2 → 1 (HEAD 1 → 0), 16 MiB 8 → 7 | 20% fewer or 10% faster | 16 KiB and 1 MiB yes; 16 MiB 12.5%, its time inconclusive at step 2 |
+| P16, adopting (checkpoint after step 5) | 46.9 s at 100,000 objects; the removable part (SQLite statement preparation) 17% of the pass | 30 s and a removable part of 20% | closed at its checkpoint: below 20% |
+
+**Production timing** on d5abd0c, the heartbeat's protocol in place (`TRACEKEEP_LOAD=production`, flush 5 m, `ack_wait` 7 m, `flush_timeout` 1 m, the heartbeat every 19.7 s keeping a delivery past 5 m 20.7 s, 800 fwd/s over K = 100, six completed cycles):
+
+| `max_ack_pending` | sustained | cycles' minima slope /s (bound) | messages | in-progress acks a message | redeliveries | age p50, p90, p99, max | the bus server's CPU a message (share) | process CPU cores |
+|---|---|---|---|---|---|---|---|---|
+| 600,000, base | yes | 0.28 (8.0) | 3,306,000 | 1.02 | 0 | 2 m 32 s, 4 m 33 s, 5 m 0 s, 5 m 4 s | 110 µs (38%) | 0.46 |
+| 600,000, head | yes | −177 (8.0) | 2,544,200 | 0 | 0 | 2 m 23 s, 4 m 28 s, 4 m 58 s, 5 m 2 s | 108 µs (38%) | 0.45 |
+| 50,000, base | no | 1,434 (8.0) | 315,684 | 2.22 | 0 | 27 m, 41 m, 41 m, 41 m | 285 µs (24%) | 0.19 |
+| 50,000, head | no | 1,434 (8.0) | 312,500 | 0 | 0 | 27 m, 41 m, 41 m, 41 m | 259 µs (24%) | 0.17 |
+
+The step-2 table above first gave the bus server's CPU as 181 s, 19%, and 28 s, 7%: those were its largest function's alone (`encodeConsumerState`, the consumer's state with its pending set), read with `-nodecount=1`;
+the server's whole, `go tool pprof -top -focus 'nats-server/v2/server' -nodefraction=0`, is 362 s, 38%, and 90 s, 24%, now in that table and the numbers here.
+The runs' lengths differ, so the CPU is compared a message: 1.5% less at 600,000, 9% at 50,000.
+The in-progress acknowledgements were never the bus server's cost: its handling of them took 0.24 s of the base's 951 s of samples, and of every acknowledgement 2 s;
+the server's time goes to its stream and the consumer's state.
+The sustained rate was not measured again: step 2 found the ceiling a configuration's (point 39).
+The protocol met its admission (in-progress acknowledgements 1.02 → 0 a message, no redelivery, every age below `ack_wait`) but not its benefit, so under point 45 it was reverted, its specs with it, and the row is closed with these numbers;
+with it went its costs at the sitting: `TakeDue/batches=10` 1.38 to 1.42 (4.6 → 6.4 µs), `Act` 1.10 and 1.11, `Batcher` bytes 1.07 and 1.11 (a batch's keep time), each passing again on 6168e41.
+
+The regressions, each a cost of the change named:
+
+| P row | Rows | SQLite | MariaDB |
+|---|---|---|---|
+| P17, the revision `MergeCandidates` returns | `MergeCandidates/*` | bytes 1.31 and 1.32, allocations 288 → 292 at 1,000 scopes and 25,050 → 25,054 at 100,000; time 1.07 at 1,000 scopes, passing at 100,000 | bytes 1.33, allocations up, at 100,000 scopes; time passes |
+| P17, the backoff's state | `MergePass/*/cycles=10` | bytes 1.11 and allocations 310 → 340 with no failing scope, allocations 3,401 → 3,431 with one | not run there |
+
+`Heartbeat/held=100` regressed at 1 s on 6168e41 (1.07 to 1.12) against the day-old base and passes at 3 s; its code is the base's.
+
+Why each costs what it does:
+`MergeCandidates` reads each scope's revision beside its candidates, and its rows carry it;
+the compactor keeps each scope's backoff and the request ids it attempted across cycles.
+
+Point 46 fails the step on a regression unless the owner keeps its cost: the owner kept P17's (2026-11-05), for the merges its backoff saves.
+
+**The write-connection gate** (point 47) at 6168e41, `TRACEKEEP_LOAD=gate TRACEKEEP_LOAD_OFFERED=800` (K = 100, dev's flush of 10 s):
+
+| p50 | p99 | made | succeeded | superseded | failed | flushes | made fwd/s | published rec/s | sustained |
+|---|---|---|---|---|---|---|---|---|---|
+| 1.13 ms | 2.33 ms | 1,199 | 1,199 | 0 | 0 | 12 | 800.0 | 1,600.2 | yes |
+
+The gate (1,000 audited successes, p99 within 2 s) passes, enforced; its p99 was 1.98 ms at 5.4's head and 4.34 ms at d5abd0c.
+The sweep was not run again: no kept row changes the rate ingest sustains at K = 100 (the production run sustains 800 fwd/s), so point 27's offered rate stands.
+
+The S3 counts ran on both conformance stores (`scripts/test-s3.sh` with `S3_BENCH`); one MinIO sample of the 16-record whole read failed on the counting proxy's reset connection, the read reporting the store's failure, and the other nine counted alike.
 
 ## The audit
 
