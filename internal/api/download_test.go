@@ -132,7 +132,7 @@ func TestDownloadRefusals(t *testing.T) {
 		want int
 	}{
 		"an absent object": {"/download/" + absent, http.StatusNotFound},
-		"a changed token":  {"/download/" + valid[:len(valid)-2] + "AA", http.StatusForbidden},
+		"a changed token":  {"/download/" + changedMAC(t, valid), http.StatusForbidden},
 		"no token":         {"/download/", http.StatusForbidden},
 		"garbage":          {"/download/x.y", http.StatusForbidden},
 	} {
@@ -143,6 +143,19 @@ func TestDownloadRefusals(t *testing.T) {
 	if strings.Contains(logs.String(), valid[:20]) || strings.Contains(logs.String(), absent[:20]) {
 		t.Errorf("the log holds a token:\n%s", logs.String())
 	}
+}
+
+// changedMAC is tok with one bit of its MAC flipped, so it differs from tok whatever the MAC's text.
+func changedMAC(t *testing.T, tok string) string {
+	t.Helper()
+	payload, m, _ := strings.Cut(tok, ".")
+	sum, err := base64.RawURLEncoding.DecodeString(m)
+	if err != nil || len(sum) == 0 {
+		t.Fatalf("the token's MAC %q does not decode: %v", m, err)
+	}
+	sum[len(sum)-1] ^= 1
+
+	return payload + "." + base64.RawURLEncoding.EncodeToString(sum)
 }
 
 // Every download response is uncached and sent with no referrer, a refused range included,
