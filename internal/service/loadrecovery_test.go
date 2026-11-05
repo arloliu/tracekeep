@@ -11,6 +11,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -24,6 +25,7 @@ import (
 
 	"github.com/arloliu/tracekeep/internal/catalog"
 	"github.com/arloliu/tracekeep/internal/catalog/catalogtest"
+	"github.com/arloliu/tracekeep/internal/compact"
 	"github.com/arloliu/tracekeep/internal/ingest"
 	"github.com/arloliu/tracekeep/proto/tracekeep/v1/tracekeepv1connect"
 )
@@ -32,8 +34,10 @@ const (
 	// blockerTool is the rejected capture's tool; blockerEvery paces its forwards, two records each.
 	blockerTool  = "LOAD-PARKED"
 	blockerEvery = time.Millisecond
-	// cohortPoll paces the catalog reads of the cohort, which grow with M, off the sampling.
+	// cohortPoll paces the catalog reads of the cohort, which grow with M, off the sampling;
+	// cohortIdle bounds the time between two reads of the drain's cohort whatever the probe counts.
 	cohortPoll = time.Second
+	cohortIdle = 30 * time.Second
 )
 
 // recoveryStages are the stages the recovery mode reports for each consumer, in a delivery's order.
@@ -161,30 +165,35 @@ func (r *recovery) drained(ctx context.Context) (string, error) {
 	return cohortDrained(vs, r.n, r.incs[catalog.RoleParking].ID)
 }
 
-// drainEnd is a drain's completion, its last copy's acknowledgement, or why it cannot complete.
+// drainEnd is a drain's completion, the return of the first catalog read finding the cohort complete, or why it cannot complete.
 type drainEnd struct {
 	at  time.Time
 	err error
 }
 
-// watch reads the cohort every poll once the probe counts its copies acknowledged, and sends the completion, or a state the drain cannot leave;
+// watch reads the cohort from the catalog, which alone decides its completion, and sends the completion, or a state the drain cannot leave;
 // why holds the last read's reason.
-func (r *recovery) watch(ctx context.Context, poll time.Duration, why *atomic.Value) <-chan drainEnd {
+// It reads every poll once the probe's acknowledgements of copies, their bookkeeping done or failed, cover the cohort, and every idle regardless:
+// a copy the broker confirmed without its bookkeeping, or whose confirmation's answer was lost, is completed by the reconciler,
+// which times no acknowledgement. The completion is late by at most a poll and a read, inside the drain's clock.
+func (r *recovery) watch(ctx context.Context, poll, idle time.Duration, why *atomic.Value) <-chan drainEnd {
 	out := make(chan drainEnd, 1)
 	go func() {
 		tick := time.NewTicker(poll)
 		defer tick.Stop()
+		var read time.Time
 		for {
 			select {
 			case <-ctx.Done():
 				return
 			case <-tick.C:
 			}
-			if n := r.probe.count("parked/ack-copy"); n < r.n {
-				why.Store(fmt.Sprintf("%d of %d copies acknowledged", n, r.n))
+			if n := r.probe.count("parked/ack-copy") + r.probe.count("parked/ack-copy/failed"); n < r.n && time.Since(read) < idle {
+				why.Store(fmt.Sprintf("%d of %d copies' acknowledgements timed", n, r.n))
 				continue
 			}
 			w, err := r.drained(ctx)
+			read = time.Now()
 			if err != nil {
 				if ctx.Err() == nil {
 					out <- drainEnd{err: err}
@@ -192,7 +201,7 @@ func (r *recovery) watch(ctx context.Context, poll time.Duration, why *atomic.Va
 				return
 			}
 			if w == "" {
-				out <- drainEnd{at: r.probe.last("parked/ack-copy")}
+				out <- drainEnd{at: read}
 				return
 			}
 			why.Store(w)
@@ -304,7 +313,7 @@ func recoveryEpisode(t *testing.T, spec loadSpec, k int, rate float64, m int, li
 	why.Store("no copy acknowledged")
 	wctx, endWatch := context.WithCancel(ctx)
 	defer endWatch()
-	ended := h.rec.watch(wctx, cohortPoll, &why)
+	ended := h.rec.watch(wctx, cohortPoll, cohortIdle, &why)
 	tick := time.NewTicker(loadTick)
 	defer tick.Stop()
 	deadline := time.After(limit)
@@ -376,7 +385,7 @@ func (h *loadHarness) recoveryRows(ep drainEpisode, m int, parked time.Duration,
 	for i, mn := range v.minima {
 		minima[i] = fmt.Sprintf("%.0f@%.0fs", mn.backlog, mn.at.Sub(samples[0].at).Seconds())
 	}
-	h.log("", fmt.Sprintf("M = %d: parked by identity %s after the first forward; the release's backlog %d, its ack pending %d", m, parked.Round(time.Second), samples[0].backlog, samples[0].ackPending), "",
+	h.log("", fmt.Sprintf("M = %d: parked by identity %s after the first forward; the release's backlog %d, its ack pending %d; completion is the first cohort read finding it complete, read every %s once every copy's acknowledgement is timed, every %s before", m, parked.Round(time.Second), samples[0].backlog, samples[0].ackPending, cohortPoll, cohortIdle), "",
 		"| drain | first copy fetched after | admission committed after | traffic cycles | backlog minima (records@s) | made fwd/s | dropped | backlog slope /s | bound /s | judged | sustained |",
 		"|---|---|---|---|---|---|---|---|---|---|---|",
 		fmt.Sprintf("| %s | %s | %s | %d | %s | %.1f | %d | %.2f | %.2f | %v | %v %s |", ep.drain.Round(time.Millisecond), after("parked/copy", false), after("parked/admit", true),
@@ -456,51 +465,14 @@ func wait(t *testing.T, d time.Duration) {
 }
 
 // A parked start held behind the release's barrier for a set interval: the parked consumer, held at a step's start once the acceptance is switched,
-// admits nothing until it is let go, and the drain the clock reads, from the release to the last copy's acknowledgement,
+// admits nothing until it is let go, and the drain the clock reads, from the release to the first catalog read finding the cohort complete,
 // holds the interval, the first copy fetched after it and the admission after that.
 func TestRecoveryHoldsTheParkedStart(t *testing.T) {
 	t.Parallel()
 	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
 		const m, hold, limit = 6, 300 * time.Millisecond, 30 * time.Second
 		ctx := t.Context()
-		e := env(t, c)
-		e.Config.Ingest.FlushInterval, e.Config.Ingest.MaxWait, e.Config.Parking.RedeliveryDelay = 200*time.Millisecond, 200*time.Millisecond, 100*time.Millisecond
-		probe := &loadProbe{stages: map[string]*stageTotal{}}
-		e.timed = probe.timed
-		r := newRecovery(e, probe)
-		joined := make(chan struct{})
-		e.joined = func() { close(joined) }
-		run, stop := context.WithCancel(ctx)
-		done := make(chan error, 1)
-		go func() { done <- Ingest(run, e) }()
-		t.Cleanup(func() {
-			stop()
-			<-done //nolint:errcheck // the run's end, its result not checked here
-		})
-		select {
-		case <-joined:
-		case err := <-done:
-			t.Fatalf("ingest ended before it joined: %v", err)
-		}
-		var blocker *loadTool
-		err := startTool(ctx, e, &blocker, blockerTool, " ")
-		t.Cleanup(func() {
-			sctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), simStop)
-			defer cancel()
-			if blocker != nil {
-				blocker.l.Stop(sctx)
-				_ = blocker.p.Close()
-			}
-		})
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err := park(ctx, blocker, m); err != nil {
-			t.Fatal(err)
-		}
-		if err := r.barrier(ctx, blocker.m, m, 50*time.Millisecond, limit); err != nil {
-			t.Fatal(err)
-		}
+		r, probe := parkedCohort(t, c, m, limit, nil)
 
 		clock, letGo, err := r.release(ctx, limit)
 		if err != nil {
@@ -514,7 +486,7 @@ func TestRecoveryHoldsTheParkedStart(t *testing.T) {
 		var why atomic.Value
 		var end drainEnd
 		select {
-		case end = <-r.watch(ctx, 50*time.Millisecond, &why):
+		case end = <-r.watch(ctx, 50*time.Millisecond, 500*time.Millisecond, &why):
 		case <-time.After(limit):
 			t.Fatalf("no completion within %s: %v", limit, why.Load())
 		}
@@ -532,6 +504,148 @@ func TestRecoveryHoldsTheParkedStart(t *testing.T) {
 		}
 		if got, err := c.Capture(ctx, r.capture); err != nil || got.State != catalog.StateOpen {
 			t.Errorf("capture %+v, %v; want admitted", got, err)
+		}
+	})
+}
+
+// parkedCohort runs ingest on a dev Env over c with a fast flush and the recovery's seams, the probe its timing seam,
+// then parks a blocker's m data records and waits at most limit for the barrier.
+// also, when set, is told every stage the probe is, on the ingester's goroutine.
+func parkedCohort(t *testing.T, c *catalog.Catalog, m int, limit time.Duration, also func(stage string)) (*recovery, *loadProbe) {
+	t.Helper()
+	ctx := t.Context()
+	e := env(t, c)
+	e.Config.Ingest.FlushInterval, e.Config.Ingest.MaxWait, e.Config.Parking.RedeliveryDelay = 200*time.Millisecond, 200*time.Millisecond, 100*time.Millisecond
+	probe := &loadProbe{stages: map[string]*stageTotal{}}
+	e.timed = func(stage string, took time.Duration) {
+		probe.timed(stage, took)
+		if also != nil {
+			also(stage)
+		}
+	}
+	r := newRecovery(e, probe)
+	joined := make(chan struct{})
+	e.joined = func() { close(joined) }
+	run, stop := context.WithCancel(ctx)
+	done := make(chan error, 1)
+	go func() { done <- Ingest(run, e) }()
+	t.Cleanup(func() {
+		stop()
+		<-done //nolint:errcheck // the run's end, its result not checked here
+	})
+	select {
+	case <-joined:
+	case err := <-done:
+		t.Fatalf("ingest ended before it joined: %v", err)
+	}
+	var blocker *loadTool
+	err := startTool(ctx, e, &blocker, blockerTool, " ")
+	t.Cleanup(func() {
+		sctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), simStop)
+		defer cancel()
+		if blocker != nil {
+			blocker.l.Stop(sctx)
+			_ = blocker.p.Close()
+		}
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := park(ctx, blocker, m); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.barrier(ctx, blocker.m, m, 50*time.Millisecond, limit); err != nil {
+		t.Fatal(err)
+	}
+
+	return r, probe
+}
+
+// lostBookkeeping fails the bookkeeping of the first parked copy the broker confirms once armed:
+// the copy rows' table renamed away at its double acknowledgement and back at its AckCopy's failure, both on the ingester's goroutine.
+// failed closes at that failure; others once want other copies are acknowledged.
+type lostBookkeeping struct {
+	t              *testing.T
+	c              *catalog.Catalog
+	armed, broken  atomic.Bool
+	acked, want    atomic.Int64
+	failed, others chan struct{}
+}
+
+// stage is the probe's also.
+func (f *lostBookkeeping) stage(stage string) {
+	switch {
+	case stage == "parked/double-ack" && f.armed.CompareAndSwap(true, false):
+		// The broker confirmed the copy: its AckCopy, next on this goroutine, finds no table.
+		f.exec("ALTER TABLE parked_copies RENAME TO parked_copies_gone")
+		f.broken.Store(true)
+	case stage == "parked/ack-copy/failed" && f.broken.CompareAndSwap(true, false):
+		f.exec("ALTER TABLE parked_copies_gone RENAME TO parked_copies")
+		close(f.failed)
+	case stage == "parked/ack-copy" && f.acked.Add(1) == f.want.Load():
+		close(f.others)
+	default:
+	}
+}
+
+// exec runs stmt on the catalog's writer pool, which waits its turn with the ingesters' writes on SQLite's one write connection.
+func (f *lostBookkeeping) exec(stmt string) {
+	w, _ := f.c.Pools()
+	if _, err := w.ExecContext(context.WithoutCancel(f.t.Context()), stmt); err != nil {
+		f.t.Errorf("%s: %v", stmt, err) // off the test's goroutine
+	}
+}
+
+// A copy the broker confirmed whose bookkeeping failed completes the drain once the reconciler marks its row acked, without a redelivery:
+// no acknowledgement is timed for it again, so the catalog's rows read by identity end the drain, not a count of acknowledgements,
+// and the completion is the first read finding the cohort complete, after the reconciliation; before it, the waiting row holds the drain open.
+func TestRecoveryCompletesThroughReconciliation(t *testing.T) {
+	t.Parallel()
+	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
+		const m, limit = 6, 30 * time.Second
+		ctx := t.Context()
+		f := &lostBookkeeping{t: t, c: c, failed: make(chan struct{}), others: make(chan struct{})}
+		r, _ := parkedCohort(t, c, m, limit, f.stage)
+		f.want.Store(int64(r.n - 1))
+		_, letGo, err := r.release(ctx, limit)
+		if err != nil {
+			t.Fatal(err)
+		}
+		f.armed.Store(true)
+		letGo()
+		for _, ch := range []chan struct{}{f.failed, f.others} {
+			select {
+			case <-ch:
+			case <-time.After(limit):
+				t.Fatalf("within %s: a confirmed copy's bookkeeping failed and restored %v, %d of the other %d copies acknowledged", limit, !f.broken.Load(), f.acked.Load(), r.n-1)
+			}
+		}
+		var why atomic.Value
+		ended := r.watch(ctx, 50*time.Millisecond, 500*time.Millisecond, &why)
+		if w, err := r.drained(ctx); err != nil || !strings.Contains(w, "waiting") {
+			t.Fatalf("before the reconciliation the cohort reads %q, %v; want a copy's row waiting", w, err)
+		}
+		lease, ok, err := c.TakeLease(ctx, "compactor/2", "test", time.Hour)
+		if err != nil || !ok {
+			t.Fatalf("TakeLease = %v, %v", ok, err)
+		}
+		select {
+		case end := <-ended:
+			t.Fatalf("completion %+v before the reconciliation", end)
+		default:
+		}
+		rc := &compact.Compactor{Catalog: c, Log: slog.New(slog.DiscardHandler)}
+		if n, err := rc.Copies(ctx, lease, catalog.RoleParking, r.parking); err != nil || n != 1 {
+			t.Fatalf("Copies = %d, %v; want the confirmed copy's row marked", n, err)
+		}
+		reconciled := time.Now()
+		select {
+		case end := <-ended:
+			if end.err != nil || end.at.Before(reconciled) {
+				t.Errorf("completion %s after the reconciliation, %v; want it read after it", end.at.Sub(reconciled), end.err)
+			}
+		case <-time.After(limit):
+			t.Fatalf("no completion within %s of the reconciliation: %v", limit, why.Load())
 		}
 	})
 }
