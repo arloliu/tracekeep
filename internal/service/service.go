@@ -457,7 +457,7 @@ func Ingest(ctx context.Context, e *Env) error {
 		refreshed := make(chan struct{})
 		go func() {
 			defer close(refreshed)
-			e.refresh(rctx, gs[0].Metrics, states[0])
+			e.refresh(rctx, gs[0].Metrics, e.Catalog, states[0])
 		}()
 		defer func() {
 			cancel()
@@ -469,13 +469,14 @@ func Ingest(ctx context.Context, e *Env) error {
 }
 
 // refresh reads ingest's catalog and bus gauges every refreshInterval until ctx ends, each pass bounded by the interval.
-func (e *Env) refresh(ctx context.Context, m *metrics.Ingest, traffic busState) {
+// A failed pass's catalog and bus causes are logged through safetext.Text, so a URL they quote keeps no credential or query.
+func (e *Env) refresh(ctx context.Context, m *metrics.Ingest, cat metrics.Catalog, traffic metrics.Consumer) {
 	t := time.NewTicker(refreshInterval)
 	defer t.Stop()
 	for {
 		pctx, cancel := context.WithTimeout(ctx, refreshInterval)
-		if err := m.Refresh(pctx, e.Catalog, traffic); err != nil && ctx.Err() == nil {
-			e.Log.Warn("metrics: refresh", "error", err)
+		if err := m.Refresh(pctx, cat, traffic); err != nil && ctx.Err() == nil {
+			e.Log.Warn("metrics: refresh", "error", safetext.Text(err.Error()))
 		}
 		cancel()
 		select {
