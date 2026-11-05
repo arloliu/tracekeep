@@ -135,10 +135,10 @@ func (r *recovery) barrier(ctx context.Context, blocker *toolMetrics, m int, pol
 	}
 }
 
-// release holds the parked consumer at its next step's start, waiting at most limit for it, runs before when set,
-// switches the descriptor acceptance, reads the clock and starts the probe's firsts and stage reports there;
-// it returns the clock and what lets the consumer go.
-func (r *recovery) release(ctx context.Context, limit time.Duration, before func()) (time.Time, func(), error) {
+// release holds the parked consumer at its next step's start, waiting at most limit for it, takes the release's sample last before it switches the descriptor acceptance,
+// and starts the probe's firsts and stage reports at the sample's time, the clock; it returns the clock and what lets the consumer go.
+// sample, when set, takes the release's sample and returns its time; unset, the clock is read alone.
+func (r *recovery) release(ctx context.Context, limit time.Duration, sample func() time.Time) (time.Time, func(), error) {
 	r.mu.Lock()
 	r.armed, r.arrived, r.open = true, make(chan struct{}), make(chan struct{})
 	arrived, open := r.arrived, r.open
@@ -150,11 +150,11 @@ func (r *recovery) release(ctx context.Context, limit time.Duration, before func
 	case <-time.After(limit):
 		return time.Time{}, nil, fmt.Errorf("the parked consumer did not reach a step's start within %s", limit)
 	}
-	if before != nil {
-		before()
+	clock := time.Now()
+	if sample != nil {
+		clock = sample()
 	}
 	r.released.Store(true)
-	clock := time.Now()
 	r.probe.sinceAt(clock)
 
 	return clock, func() { close(open) }, nil
@@ -170,18 +170,21 @@ func (r *recovery) drained(ctx context.Context) (string, error) {
 	return cohortDrained(vs, r.n, r.incs[catalog.RoleParking].ID)
 }
 
-// drainEnd is a drain's completion, the return of the first catalog read finding the cohort complete, or why it cannot complete.
+// drainEnd is a drain's completion, the completion's sample, taken as the first catalog read finding the cohort complete returns, at its time;
+// or why it cannot complete.
 type drainEnd struct {
-	at  time.Time
-	err error
+	at     time.Time
+	sample loadSample
+	err    error
 }
 
 // watch reads the cohort from the catalog, which alone decides its completion, and sends the completion, or a state the drain cannot leave;
 // why holds the last read's reason.
 // It reads every poll once the probe's acknowledgements of copies, their bookkeeping done or failed, cover the cohort, and every idle regardless:
 // a copy the broker confirmed without its bookkeeping, or whose confirmation's answer was lost, is completed by the reconciler,
-// which times no acknowledgement. The completion is late by at most a poll and a read, inside the drain's clock.
-func (r *recovery) watch(ctx context.Context, poll, idle time.Duration, why *atomic.Value) <-chan drainEnd {
+// which times no acknowledgement. Once a read finds the cohort complete, complete takes the completion's sample at once, on this goroutine,
+// and its time is the completion, late by at most a poll and a read, inside the drain's clock; unset, the completion is the read's return.
+func (r *recovery) watch(ctx context.Context, poll, idle time.Duration, why *atomic.Value, complete func() (loadSample, error)) <-chan drainEnd {
 	out := make(chan drainEnd, 1)
 	go func() {
 		tick := time.NewTicker(poll)
@@ -206,7 +209,13 @@ func (r *recovery) watch(ctx context.Context, poll, idle time.Duration, why *ato
 				return
 			}
 			if w == "" {
-				out <- drainEnd{at: read}
+				end := drainEnd{sample: loadSample{at: read}}
+				if complete != nil {
+					end.sample, end.err = complete()
+				}
+				end.at = end.sample.at
+				out <- end
+
 				return
 			}
 			why.Store(w)
@@ -298,13 +307,16 @@ func recoveryEpisode(t *testing.T, spec loadSpec, k int, rate float64, m int, li
 	wait(t, spec.warmup) // the traffic's backlog from the parking subsides
 
 	cl := tracekeepv1connect.NewMachineServiceClient(trusting(t, filepath.Join(h.d.opts.Dir, DevCertFile)), c.API.PublicURL)
+	// The release's counters, then its sample, last: its time is the release's clock. No PackURL call, the audit's writer, runs before it.
 	var samples []loadSample
 	var from loadMark
 	var auditN, auditSum float64
-	clock, letGo, err := h.rec.release(ctx, time.Minute, func() {
-		samples = append(samples, h.sample(tools)) // the release's, just before its clock
+	clock, letGo, err := h.rec.release(ctx, time.Minute, func() time.Time {
 		from = h.mark(tools)
 		auditN, auditSum = h.histogram("tracekeep_catalog_audit_wait_seconds")
+		samples = append(samples, h.sample(tools))
+
+		return samples[0].at
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -322,7 +334,17 @@ func recoveryEpisode(t *testing.T, spec loadSpec, k int, rate float64, m int, li
 	why.Store("no copy acknowledged")
 	wctx, endWatch := context.WithCancel(ctx)
 	defer endWatch()
-	ended := h.rec.watch(wctx, cohortPoll, cohortIdle, &why)
+	// The completion's audit counters, then its sample at once, on the watcher's goroutine as its read finds the cohort complete:
+	// the sample's time is the completion.
+	var auditN2, auditSum2 float64
+	ended := h.rec.watch(wctx, cohortPoll, cohortIdle, &why, func() (loadSample, error) {
+		var err error
+		if auditN2, auditSum2, err = h.gathered("tracekeep_catalog_audit_wait_seconds"); err != nil {
+			return loadSample{}, err
+		}
+
+		return h.read(tools)
+	})
 	tick := time.NewTicker(loadTick)
 	defer tick.Stop()
 	deadline := time.After(limit)
@@ -335,19 +357,20 @@ func recoveryEpisode(t *testing.T, spec loadSpec, k int, rate float64, m int, li
 				endCalls()
 				t.Fatalf("the drain cannot complete: %v", end.err)
 			}
+			continue
 		case <-deadline:
 			endCalls()
 			t.Fatalf("the drain did not complete within %s: %s", limit, why.Load())
 		case <-tick.C:
 		}
-		samples = append(samples, h.sample(tools)) // the last, the completion's
+		samples = append(samples, h.sample(tools))
 		if ci, err := h.parked.Info(ctx); err == nil {
 			parkedRedelivered = max(parkedRedelivered, uint64(ci.NumRedelivered)) //nolint:gosec // a count
 		}
 	}
-	// The counters at the completion's sample, before an attempt under way ends.
-	to := h.mark(tools)
-	auditN2, auditSum2 := h.histogram("tracekeep_catalog_audit_wait_seconds")
+	// A tick's sample taken while the completion's was under way is past it; the completion's closes the drain.
+	samples = append(slices.DeleteFunc(samples, func(s loadSample) bool { return !s.at.Before(end.at) }), end.sample)
+	to := h.mark(tools) // the redeliveries' counters, reported, not judged
 	endCalls()
 	<-called
 
@@ -369,14 +392,12 @@ func recoveryEpisode(t *testing.T, spec loadSpec, k int, rate float64, m int, li
 	return ep
 }
 
-// drainOf is an episode's drain from the release's clock to its completion at end, read from what was observed within it alone, by each observation's own time:
-// the traffic's rates over the samples from the release's, taken just before the clock, to the completion's, the first taken at or after end,
-// and its passes completed from the clock to end; the PackURL attempts begun within the drain;
-// and the parked consumer's acknowledgement in st, its stages' reports begun within the drain.
+// drainOf is an episode's drain from the release's clock to its completion at end, the release's and the completion's samples' own times,
+// read from what was observed within it alone, by each observation's own time:
+// the traffic's counters and rates over the samples from the release's to the completion's, and its passes completed between them;
+// the PackURL attempts begun within the drain; and the parked consumer's acknowledgement in st, its stages' reports begun within the drain.
 func drainOf(rate float64, clock, end time.Time, samples []loadSample, passes []settledPass, calls *packURLResult, st map[string]stageTotal) drainEpisode {
-	if i := slices.IndexFunc(samples, func(s loadSample) bool { return !s.at.Before(end) }); i >= 0 {
-		samples = samples[:i+1]
-	}
+	samples = drainSamples(samples, clock, end)
 	passes = slices.DeleteFunc(slices.Clone(passes), func(p settledPass) bool { return p.at.Before(clock) || p.at.After(end) })
 	ep := drainEpisode{drain: end.Sub(clock), traffic: judgeDrain(rate, samples, passes)}
 	in := calls.within(clock, end)
@@ -389,6 +410,12 @@ func drainOf(rate float64, clock, end time.Time, samples []loadSample, passes []
 	}
 
 	return ep
+}
+
+// drainSamples are the samples the drain's traffic is judged over, those from clock to end, both included:
+// the release's sample is taken at clock and the completion's at end, so they open and close it.
+func drainSamples(samples []loadSample, clock, end time.Time) []loadSample {
+	return slices.DeleteFunc(slices.Clone(samples), func(s loadSample) bool { return s.at.Before(clock) || s.at.After(end) })
 }
 
 // recoveryRows reports an episode: the drain and its marks, the traffic beside it, PackURL, and each consumer's stages within it.
@@ -446,9 +473,19 @@ func (h *loadHarness) recoveryRows(ep drainEpisode, m int, parked time.Duration,
 
 // histogram sums the count and sum of every series of the histogram family name in dev's registry.
 func (h *loadHarness) histogram(name string) (n, sum float64) {
-	mfs, err := h.d.Env.Metrics.Registry().Gather()
+	n, sum, err := h.gathered(name)
 	if err != nil {
 		h.t.Fatal(err)
+	}
+
+	return n, sum
+}
+
+// gathered is histogram returning its error, for a goroutine other than the test's.
+func (h *loadHarness) gathered(name string) (n, sum float64, err error) {
+	mfs, err := h.d.Env.Metrics.Registry().Gather()
+	if err != nil {
+		return 0, 0, err
 	}
 	for _, mf := range mfs {
 		if mf.GetName() == name {
@@ -458,7 +495,7 @@ func (h *loadHarness) histogram(name string) (n, sum float64) {
 		}
 	}
 
-	return n, sum
+	return n, sum, nil
 }
 
 // park forwards m/2 requests through lt, paced, so its capture publishes m data records, a primary and a reply each.
@@ -511,7 +548,7 @@ func TestRecoveryHoldsTheParkedStart(t *testing.T) {
 		var why atomic.Value
 		var end drainEnd
 		select {
-		case end = <-r.watch(ctx, 50*time.Millisecond, 500*time.Millisecond, &why):
+		case end = <-r.watch(ctx, 50*time.Millisecond, 500*time.Millisecond, &why, nil):
 		case <-time.After(limit):
 			t.Fatalf("no completion within %s: %v", limit, why.Load())
 		}
@@ -646,7 +683,7 @@ func TestRecoveryCompletesThroughReconciliation(t *testing.T) {
 			}
 		}
 		var why atomic.Value
-		ended := r.watch(ctx, 50*time.Millisecond, 500*time.Millisecond, &why)
+		ended := r.watch(ctx, 50*time.Millisecond, 500*time.Millisecond, &why, nil)
 		if w, err := r.drained(ctx); err != nil || !strings.Contains(w, "waiting") {
 			t.Fatalf("before the reconciliation the cohort reads %q, %v; want a copy's row waiting", w, err)
 		}

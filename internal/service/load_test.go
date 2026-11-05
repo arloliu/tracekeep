@@ -477,15 +477,25 @@ func (h *loadHarness) drive(ctx context.Context, tools []*loadTool, rate float64
 
 // sample reads the stream's state, as busState does, and the tools' counters and gauges.
 func (h *loadHarness) sample(tools []*loadTool) loadSample {
-	info, err := h.stream.Info(h.t.Context())
+	s, err := h.read(tools)
 	if err != nil {
 		h.t.Fatal(err)
+	}
+
+	return s
+}
+
+// read is sample returning its error, for a goroutine other than the test's.
+func (h *loadHarness) read(tools []*loadTool) (loadSample, error) {
+	info, err := h.stream.Info(h.t.Context())
+	if err != nil {
+		return loadSample{}, err
 	}
 	s := loadSample{at: time.Now(), published: info.State.LastSeq, backlog: info.State.Msgs}
 	if h.cons != nil {
 		ci, err := h.cons.Info(h.t.Context())
 		if err != nil {
-			h.t.Fatal(err)
+			return loadSample{}, err
 		}
 		s.ackPending, s.redelivered = uint64(ci.NumAckPending), uint64(ci.NumRedelivered) //nolint:gosec // counts
 	}
@@ -495,7 +505,7 @@ func (h *loadHarness) sample(tools []*loadTool) loadSample {
 		s.ring, s.reserved, s.dropped = s.ring+ring, s.reserved+reserved, s.dropped+uint64(dropped)
 	}
 
-	return s
+	return s, nil
 }
 
 // measure runs one point: rate forwards a second through tools, a warm-up, then at least windows of samples.
