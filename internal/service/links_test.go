@@ -13,11 +13,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/arloliu/go-secs/tracepack"
 	"github.com/nats-io/nats.go"
 
 	"github.com/arloliu/tracekeep/internal/catalog"
 	"github.com/arloliu/tracekeep/internal/catalog/catalogtest"
 	"github.com/arloliu/tracekeep/internal/config"
+	"github.com/arloliu/tracekeep/internal/metrics"
 	"github.com/arloliu/tracekeep/internal/store"
 	"github.com/arloliu/tracekeep/internal/testbus"
 )
@@ -366,4 +368,51 @@ func TestCloseStoreKeyless(t *testing.T) {
 	if err := (&Env{Store: fs}).Close(); err != nil {
 		t.Errorf("Close of a clean store = %v", err)
 	}
+}
+
+// refreshFails is a catalog and a bus consumer whose every read fails with its error.
+type refreshFails struct{ err error }
+
+func (f refreshFails) ParkedCounts(context.Context) (map[string]int, error) { return nil, f.err }
+
+func (f refreshFails) OpenCaptures(context.Context) ([]catalog.OpenCapture, error) {
+	return nil, f.err
+}
+
+func (f refreshFails) Completeness(context.Context, tracepack.UUID) (catalog.Completeness, error) {
+	return catalog.Completeness{}, f.err
+}
+
+func (f refreshFails) State(context.Context) (metrics.BusState, error) {
+	return metrics.BusState{}, f.err
+}
+
+// A failed metrics refresh logs its catalog's and its bus's causes through safetext.Text:
+// each cause's words and its URL's host stay, and no credential or query of a URL either quotes reaches any field.
+func TestRefreshFailureLoggedSafe(t *testing.T) {
+	t.Parallel()
+	log := make(lines, 8)
+	m, err := metrics.NewIngest(metrics.NewServer(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cat := refreshFails{errors.New("dial mysql://u:cat-pw-sentinel@db.invalid:3306/tk?tls=cat-q-sentinel: catalog-words")}
+	bus := refreshFails{errors.New("dial nats://u:bus-pw-sentinel@bus.invalid:4222/?token=bus-q-sentinel: bus-words")}
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		(&Env{Log: log.logger()}).refresh(ctx, m, cat, bus)
+	}()
+	line, before := log.next(t, "metrics: refresh")
+	cancel()
+	<-done
+	for _, want := range []string{"dial mysql://db.invalid:3306: catalog-words", "dial nats://bus.invalid:4222: bus-words"} {
+		if !strings.Contains(line, want) {
+			t.Errorf("refresh line %s, want it to name %q", line, want)
+		}
+	}
+	all := append(append(before, line), log.drain()...)
+	absent(t, all, "cat-pw-sentinel", "bus-pw-sentinel")
+	absent(t, all, "cat-q-sentinel", "bus-q-sentinel")
 }
