@@ -8,6 +8,7 @@ import (
 	"errors"
 	"html"
 	"io"
+	"io/fs"
 	"log/slog"
 	"net"
 	"net/http"
@@ -170,9 +171,18 @@ func TestDevFailedStartReleasesItsListeners(t *testing.T) {
 	if err := os.Mkdir(filepath.Join(dir, DevTokenFile), 0o750); err != nil {
 		t.Fatal(err)
 	}
-	api, idp := freeAddr(t), freeAddr(t)
-	if _, err := NewDev(t.Context(), DevOptions{Dir: dir, Flush: time.Second, API: api, IDP: idp, Log: slog.New(slog.DiscardHandler)}); err == nil {
-		t.Fatal("NewDev started with an unreadable token")
+	// Free ports dev binds itself, so no other test can take one before dev binds it.
+	var api, idp string
+	_, err := NewDev(t.Context(), DevOptions{
+		Dir: dir, Flush: time.Second, API: "127.0.0.1:0", IDP: "127.0.0.1:0", Log: slog.New(slog.DiscardHandler),
+		bound: func(a, i string) { api, idp = a, i },
+	})
+	var pe *fs.PathError
+	if !errors.As(err, &pe) || pe.Op != "read" || pe.Path != filepath.Join(dir, DevTokenFile) {
+		t.Fatalf("NewDev = %v, want the token's read failing", err)
+	}
+	if api == "" || idp == "" {
+		t.Fatalf("dev bound the API at %q and the IdP at %q, want both bound", api, idp)
 	}
 	for _, addr := range []string{api, idp} {
 		ln, err := net.Listen("tcp", addr)
@@ -220,19 +230,6 @@ func TestDevCloseEndsAStalledIdPRequest(t *testing.T) {
 	if _, err := io.ReadAll(conn); errors.As(err, &ne) && ne.Timeout() {
 		t.Fatalf("the stalled connection outlived Close: %v", err)
 	}
-}
-
-// freeAddr is a loopback address no listener holds now.
-func freeAddr(t *testing.T) string {
-	t.Helper()
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	addr := ln.Addr().String()
-	_ = ln.Close()
-
-	return addr
 }
 
 // Dev's certificate is kept across runs while valid, and made again once it has expired.
