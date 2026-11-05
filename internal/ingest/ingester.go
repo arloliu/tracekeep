@@ -219,12 +219,7 @@ func (g *Ingester) stepFlushing(ctx, flushing context.Context) error {
 		g.Stepping(ctx)
 	}
 	if err := g.renew(ctx); err != nil {
-		if errors.Is(err, catalog.ErrIncarnationChanged) {
-			g.Log.Error("ingest: alert", "reason", ReasonIncarnationChanged, "error", err)
-			g.mu.Lock()
-			g.Batcher.All() // abandoned unacknowledged (parking.md *incarnations*)
-			g.mu.Unlock()
-		}
+		g.incarnationChanged(err)
 
 		return err
 	}
@@ -328,6 +323,18 @@ func (g *Ingester) renew(ctx context.Context) error {
 	g.leaseEnd = start.Add(g.Lease)
 
 	return nil
+}
+
+// incarnationChanged, when err is a renewal's bus-incarnation-changed, alerts and abandons the held deliveries unacknowledged (parking.md *incarnations*).
+// The alert presents err through safetext.Text: a failed rollback the catalog joined to it may quote a URL.
+func (g *Ingester) incarnationChanged(err error) {
+	if !errors.Is(err, catalog.ErrIncarnationChanged) {
+		return
+	}
+	g.Log.Error("ingest: alert", "reason", ReasonIncarnationChanged, "error", safetext.Text(err.Error()))
+	g.mu.Lock()
+	g.Batcher.All()
+	g.mu.Unlock()
 }
 
 // checkIncarnation verifies that the stream is still the incarnation the consumer was named for,

@@ -319,6 +319,26 @@ func TestCloseLogged(t *testing.T) {
 	}
 }
 
+// A failed close's error, which carries the catalog's close, is logged through safetext.Text:
+// its words and its URL's host stay, and no credential or query of the URL reaches any field.
+func TestCloseLoggedSafe(t *testing.T) {
+	t.Parallel()
+	var buf bytes.Buffer
+	log := slog.New(slog.NewJSONHandler(&buf, nil))
+	cause := errors.New("catalog: close: dial mysql://u:pw-sentinel@db.invalid:3306/tk?tls=q-sentinel: close-words")
+	closeLogged(log, "the environment", closer(func() error { return errors.Join(errors.New("store closed"), cause) }))
+	line := buf.String()
+	if !strings.Contains(line, `"msg":"tracekeep: close"`) || !strings.Contains(line, `"what":"the environment"`) ||
+		!strings.Contains(line, "dial mysql://db.invalid:3306: close-words") {
+		t.Fatalf("a failed close logged %q, want its event naming the error's words and host", line)
+	}
+	for _, marker := range []string{"pw-sentinel", "q-sentinel"} {
+		if strings.Contains(line, marker) {
+			t.Errorf("the close line holds %q: %s", marker, line)
+		}
+	}
+}
+
 type closer func() error
 
 func (c closer) Close() error { return c() }

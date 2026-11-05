@@ -1,9 +1,12 @@
 package ingest
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -301,6 +304,38 @@ func TestIngesterStopsOnAnotherIncarnation(t *testing.T) {
 		}
 		if n := r.pending(t); n != 1 {
 			t.Errorf("the stream holds %d messages, want the start unacknowledged", n)
+		}
+	})
+}
+
+// A bus-incarnation-changed joined with a failed rollback's error still abandons the held deliveries,
+// and its alert presents the joined text through safetext.Text: no credential or query of a URL the rollback quotes reaches any field.
+func TestIncarnationAlertSafe(t *testing.T) {
+	t.Parallel()
+	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
+		r := newReplica(t, c)
+		var log bytes.Buffer
+		r.g.Log = slog.New(slog.NewJSONHandler(&log, nil))
+		r.publish(t, inline(t, tracepack.UUID{0x54}, startRecord(t, now), descriptorOf(t, "eqp")), nil)
+		if err := r.g.Step(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+		log.Reset()
+		err := errors.Join(fmt.Errorf("%w: last sequence 1 below the 1000 observed", catalog.ErrIncarnationChanged),
+			errors.New("rollback: dial mysql://u:pw-sentinel@db.invalid:3306/tk?tls=q-sentinel: rollback-words"))
+		r.g.incarnationChanged(err)
+		if n := len(r.g.Batcher.batches); n != 0 {
+			t.Errorf("%d batches still held, want the deliveries abandoned", n)
+		}
+		line := log.String()
+		if !strings.Contains(line, `"msg":"ingest: alert"`) || !strings.Contains(line, `"reason":"`+ReasonIncarnationChanged+`"`) ||
+			!strings.Contains(line, "dial mysql://db.invalid:3306: rollback-words") {
+			t.Fatalf("the alert logged %q, want its reason and the rollback's words and host", line)
+		}
+		for _, marker := range []string{"pw-sentinel", "q-sentinel"} {
+			if strings.Contains(line, marker) {
+				t.Errorf("the alert holds %q: %s", marker, line)
+			}
 		}
 	})
 }
