@@ -7,6 +7,7 @@ import (
 
 	"github.com/arloliu/tracekeep/internal/bus"
 	"github.com/arloliu/tracekeep/internal/catalog"
+	"github.com/arloliu/tracekeep/internal/safetext"
 )
 
 // leaseName is the compactor lease's row, moved by the masking migration so earlier compactors cannot take it (T-43).
@@ -50,7 +51,7 @@ func (r *Compactor) Run(ctx context.Context) error {
 		if err := r.Step(ctx); errors.Is(err, catalog.ErrIncarnationChanged) || ctx.Err() != nil {
 			return err
 		} else if err != nil {
-			r.Log.Warn("compact: reconciler cycle", "error", err)
+			r.Log.Warn("compact: reconciler cycle", "error", safetext.Text(err.Error()))
 		}
 		select {
 		case <-ctx.Done():
@@ -153,7 +154,7 @@ func (r *Compactor) keep(ctx context.Context, cancel context.CancelCauseFunc, le
 			r.Metrics.Lease(asked.Add(r.LeaseTTL))
 			r.hook(hookRenewed)
 		case ctx.Err() == nil:
-			r.Log.Warn("compact: renew the compactor lease", "error", err)
+			r.Log.Warn("compact: renew the compactor lease", "error", safetext.Text(err.Error()))
 		default:
 			// The cycle ended during the renewal.
 		}
@@ -163,7 +164,7 @@ func (r *Compactor) keep(ctx context.Context, cancel context.CancelCauseFunc, le
 			cancel(err)
 			return
 		case err != nil && ctx.Err() == nil:
-			r.Log.Warn("compact: check the streams", "error", err)
+			r.Log.Warn("compact: check the streams", "error", safetext.Text(err.Error()))
 		default:
 		}
 	}
@@ -178,7 +179,7 @@ func (r *Compactor) release() {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	if err := r.Catalog.ReleaseLease(ctx, *r.lease); err != nil {
-		r.Log.Warn("compact: release the compactor lease", "error", err)
+		r.Log.Warn("compact: release the compactor lease", "error", safetext.Text(err.Error()))
 	}
 	r.lease = nil
 	r.Metrics.Lease(time.Time{})
@@ -266,7 +267,7 @@ func (r *Compactor) retentionPass(ctx context.Context, lease catalog.Lease) erro
 	}
 	st, err := r.Catalog.ClaimStats(ctx)
 	if err != nil {
-		r.Log.Warn("compact: read the claim object gauges", "error", err)
+		r.Log.Warn("compact: read the claim object gauges", "error", safetext.Text(err.Error()))
 
 		return nil
 	}
@@ -315,7 +316,7 @@ func (r *Compactor) mergePass(ctx context.Context, lease catalog.Lease) error {
 	}
 	st, err := r.Catalog.ScopeStats(ctx)
 	if err != nil {
-		r.Log.Warn("compact: read the scope gauges", "error", err)
+		r.Log.Warn("compact: read the scope gauges", "error", safetext.Text(err.Error()))
 
 		return nil
 	}
@@ -338,7 +339,7 @@ func (r *Compactor) hold(ctx context.Context) bool {
 			return true
 		case !errors.Is(err, catalog.ErrLeaseLost):
 			// The lease may still be live; this cycle is skipped and the next renews it again.
-			r.Log.Warn("compact: renew the compactor lease", "error", err)
+			r.Log.Warn("compact: renew the compactor lease", "error", safetext.Text(err.Error()))
 			r.setHoldErr(err)
 
 			return false
@@ -348,7 +349,7 @@ func (r *Compactor) hold(ctx context.Context) bool {
 	l, ok, err := r.Catalog.TakeLease(ctx, leaseName, r.Holder, r.LeaseTTL)
 	r.setHoldErr(err)
 	if err != nil {
-		r.Log.Warn("compact: take the compactor lease", "error", err)
+		r.Log.Warn("compact: take the compactor lease", "error", safetext.Text(err.Error()))
 	}
 	if !ok {
 		return false

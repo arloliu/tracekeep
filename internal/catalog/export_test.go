@@ -23,6 +23,11 @@ func FailFirstCommit(c *Catalog, err error) {
 	}
 }
 
+// FailCommits makes every commit whose statements succeeded fail with err, which is not retried.
+func FailCommits(c *Catalog, err error) {
+	c.testCommit = func() error { return err }
+}
+
 // MergedInputs merges two segments of a fresh capture under l with delete delay d, returning the inputs and the archive.
 func MergedInputs(t *testing.T, c *Catalog, l Lease, d time.Duration) (inputs []*Pack, archive *Pack) {
 	t.Helper()

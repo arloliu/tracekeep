@@ -11,6 +11,8 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 
 	"github.com/arloliu/tracekeep/internal/catalog"
+	tkrecords "github.com/arloliu/tracekeep/internal/records"
+	"github.com/arloliu/tracekeep/internal/safetext"
 	"github.com/arloliu/tracekeep/producer"
 )
 
@@ -111,18 +113,19 @@ func (r *Compactor) Deletions(ctx context.Context, lease catalog.Lease, rep *Ret
 	}
 	for _, d := range cands {
 		ok, err := r.Catalog.DeletePack(ctx, lease, d, nowNs, r.DeleteDelay)
-		if err := r.stepFailed(ctx, err, "delete a merged input", d.Key, rep); err != nil {
+		at := []any{"pack", d.Pack, "capture", d.Capture}
+		if err := r.stepFailed(ctx, err, "delete a merged input", rep, at...); err != nil {
 			return err
 		}
 		if !ok {
-			r.Log.Warn("compact: a merged input's deletion refused", "key", d.Key)
+			r.Log.Warn("compact: a merged input's deletion refused", at...)
 			rep.Refused++
 
 			continue
 		}
 		rep.Deleted++
 		rep.Tombstoned++
-		if err := r.removeObject(ctx, lease, d.Key, rep); err != nil {
+		if err := r.removeObject(ctx, lease, d.Key, rep, at...); err != nil {
 			return err
 		}
 	}
@@ -136,7 +139,7 @@ func (r *Compactor) Deletions(ctx context.Context, lease catalog.Lease, rep *Ret
 func (r *Compactor) Retain(ctx context.Context, lease catalog.Lease, rep *RetentionReport) error {
 	listed, err := r.Claims.List(ctx)
 	if err != nil {
-		return err
+		return tkrecords.Keyless(err) // the bucket's text may name an object
 	}
 	objs := make([]catalog.Listed, 0, len(listed))
 	for _, in := range listed {
@@ -162,11 +165,12 @@ func (r *Compactor) Retain(ctx context.Context, lease catalog.Lease, rep *Retent
 	}
 	for _, s := range cands {
 		ev, err := r.Catalog.EvictHour(ctx, lease, s, nowNs)
-		if err := r.stepFailed(ctx, err, "evict an hour", s.Capture.String(), rep); err != nil {
+		at := []any{"capture", s.Capture, "hour", s.Hour}
+		if err := r.stepFailed(ctx, err, "evict an hour", rep, at...); err != nil {
 			return err
 		}
 		if !ev.Evicted {
-			r.Log.Warn("compact: an hour's eviction refused", "capture", s.Capture, "hour", s.Hour)
+			r.Log.Warn("compact: an hour's eviction refused", at...)
 			rep.Refused++
 
 			continue
@@ -176,12 +180,12 @@ func (r *Compactor) Retain(ctx context.Context, lease catalog.Lease, rep *Retent
 		rep.Survivors += ev.Survivors
 		r.hook(hookEvicted)
 		for _, key := range ev.Packs {
-			if err := r.removeObject(ctx, lease, key, rep); err != nil {
+			if err := r.removeObject(ctx, lease, key, rep, at...); err != nil {
 				return err
 			}
 		}
 		for _, key := range ev.Claims {
-			if _, err := r.removeClaim(ctx, lease, key, rep); err != nil {
+			if _, err := r.removeClaim(ctx, lease, key, rep, at...); err != nil {
 				return err
 			}
 		}
@@ -205,13 +209,14 @@ func (r *Compactor) releaseSurvivors(ctx context.Context, lease catalog.Lease, r
 	}
 	for _, o := range survivors {
 		ok, err := r.Catalog.MarkSurvivorDeletable(ctx, lease, o.Key)
-		if err := r.stepFailed(ctx, err, "release a survivor", o.Key, rep); err != nil {
+		at := []any{"capture", o.Capture, "hour", o.Hour}
+		if err := r.stepFailed(ctx, err, "release a survivor", rep, at...); err != nil {
 			return err
 		}
 		if !ok {
 			continue
 		}
-		gone, err := r.removeClaim(ctx, lease, o.Key, rep)
+		gone, err := r.removeClaim(ctx, lease, o.Key, rep, at...)
 		if err != nil {
 			return err
 		}
@@ -219,7 +224,7 @@ func (r *Compactor) releaseSurvivors(ctx context.Context, lease catalog.Lease, r
 			continue
 		}
 		err = r.Catalog.RemoveClaimObject(ctx, lease, o.Key)
-		if err := r.stepFailed(ctx, err, "remove a released survivor", o.Key, rep); err != nil {
+		if err := r.stepFailed(ctx, err, "remove a released survivor", rep, at...); err != nil {
 			return err
 		}
 		if err == nil {
@@ -230,46 +235,47 @@ func (r *Compactor) releaseSurvivors(ctx context.Context, lease catalog.Lease, r
 	return nil
 }
 
-// stepFailed returns a lost lease or a done context, and logs and counts any other failure of one step, which the next cycle retries.
-func (r *Compactor) stepFailed(ctx context.Context, err error, what, key string, rep *RetentionReport) error {
+// stepFailed returns a lost lease or a done context, and logs and counts any other failure of one step, which the next cycle retries,
+// with at, the step's pack, capture or hour, never its key; a store's err arrives keyless, and a catalog's text is made safe here.
+func (r *Compactor) stepFailed(ctx context.Context, err error, what string, rep *RetentionReport, at ...any) error {
 	if err == nil {
 		return nil
 	}
 	if errors.Is(err, catalog.ErrLeaseLost) || ctx.Err() != nil {
 		return err
 	}
-	r.Log.Error("compact: "+what, "key", key, "error", err)
+	r.Log.Error("compact: "+what, append(at, "error", safetext.Text(err.Error()))...)
 	rep.Failed++
 
 	return nil
 }
 
 // removeObject removes the tombstoned pack key from the store while lease is held:
-// a lost lease or a done context is returned, and any other failure logged, counted and left to the orphan pass.
-func (r *Compactor) removeObject(ctx context.Context, lease catalog.Lease, key string, rep *RetentionReport) error {
+// a lost lease or a done context is returned, and any other failure logged with at, counted and left to the orphan pass.
+func (r *Compactor) removeObject(ctx context.Context, lease catalog.Lease, key string, rep *RetentionReport, at ...any) error {
 	if err := r.Catalog.VerifyLease(ctx, lease); err != nil {
-		return r.stepFailed(ctx, err, "check the lease before a removal", key, rep)
+		return r.stepFailed(ctx, err, "check the lease before a removal", rep, at...)
 	}
 	if err := r.Store.Delete(ctx, key); err != nil {
-		return r.stepFailed(ctx, err, "delete a tombstoned pack", key, rep)
+		return r.stepFailed(ctx, tkrecords.Keyless(err), "delete a tombstoned pack", rep, at...)
 	}
 
 	return nil
 }
 
 // removeClaim deletes the claim object of key from the bucket while lease is held and reports whether it is gone:
-// a lost lease or a done context is returned, and any other failure logged and counted,
+// a lost lease or a done context is returned, and any other failure logged with at and counted,
 // the next listing attributing the object again, or the next cycle resuming the survivor's release.
-func (r *Compactor) removeClaim(ctx context.Context, lease catalog.Lease, key string, rep *RetentionReport) (bool, error) {
+func (r *Compactor) removeClaim(ctx context.Context, lease catalog.Lease, key string, rep *RetentionReport, at ...any) (bool, error) {
 	name, ok := r.claimName(key)
 	if !ok {
-		return false, r.stepFailed(ctx, errors.New("a claim object of another bucket"), "delete a claim object", key, rep)
+		return false, r.stepFailed(ctx, errors.New("a claim object of another bucket"), "delete a claim object", rep, at...)
 	}
 	if err := r.Catalog.VerifyLease(ctx, lease); err != nil {
-		return false, r.stepFailed(ctx, err, "check the lease before a removal", key, rep)
+		return false, r.stepFailed(ctx, err, "check the lease before a removal", rep, at...)
 	}
 	if err := r.Claims.Delete(ctx, name); err != nil {
-		return false, r.stepFailed(ctx, err, "delete a claim object", key, rep)
+		return false, r.stepFailed(ctx, tkrecords.Keyless(err), "delete a claim object", rep, at...)
 	}
 
 	return true, nil

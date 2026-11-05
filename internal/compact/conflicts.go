@@ -9,6 +9,8 @@ import (
 	"github.com/arloliu/go-secs/tracepack"
 
 	"github.com/arloliu/tracekeep/internal/catalog"
+	tkrecords "github.com/arloliu/tracekeep/internal/records"
+	"github.com/arloliu/tracekeep/internal/safetext"
 	"github.com/arloliu/tracekeep/internal/store"
 )
 
@@ -38,7 +40,7 @@ func (r *Compactor) Conflicts(ctx context.Context, lease catalog.Lease) (Conflic
 			return rep, ctx.Err()
 		}
 		if err != nil {
-			r.Log.Warn("compact: compare a suspect", "capture", s.Capture, "seq_from", s.SeqFrom, "seq_to", s.SeqTo, "error", err)
+			r.Log.Warn("compact: compare a suspect", "capture", s.Capture, "seq_from", s.SeqFrom, "seq_to", s.SeqTo, "error", safetext.Text(err.Error()))
 			rep.Failed++
 
 			continue
@@ -73,14 +75,15 @@ func (r *Compactor) compare(ctx context.Context, s *catalog.Suspect) (bool, erro
 		}
 	}()
 	for _, p := range []catalog.ConflictPack{s.Pack, s.Other} {
-		obj, err := r.Store.Open(ctx, p.Key)
+		// Keyless, its reads too: tracepack's errors quote a failed read's.
+		obj, err := tkrecords.Open(ctx, r.Store, p.Key)
 		if err != nil {
-			return false, err
+			return false, fmt.Errorf("compact: open pack %s: %w", p.ID, err)
 		}
 		opened = append(opened, obj)
 		rd, err := tracepack.Open(ctx, obj, obj.Size(), tracepack.ReaderOptions{})
 		if err != nil {
-			return false, fmt.Errorf("compact: open %s: %w", p.Key, err)
+			return false, fmt.Errorf("compact: open pack %s: %w", p.ID, err)
 		}
 		readers = append(readers, rd)
 	}

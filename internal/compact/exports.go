@@ -8,6 +8,7 @@ import (
 
 	"github.com/arloliu/tracekeep/internal/catalog"
 	tkrecords "github.com/arloliu/tracekeep/internal/records"
+	"github.com/arloliu/tracekeep/internal/safetext"
 )
 
 // clockSkew is the clock skew the export cleanup waits out twice past a put deadline or a bundle's deadline
@@ -48,7 +49,7 @@ func (r *Compactor) ExportCleanup(ctx context.Context, lease catalog.Lease, rep 
 			if errors.Is(err, catalog.ErrLeaseLost) || ctx.Err() != nil {
 				return err
 			}
-			r.Log.Error("compact: forget an export object", "job", o.Job.String(), "fence", o.Fence, "error", err)
+			r.Log.Error("compact: forget an export object", "job", o.Job.String(), "fence", o.Fence, "error", safetext.Text(err.Error()))
 			rep.Failed++
 
 			continue
@@ -74,7 +75,7 @@ func (r *Compactor) exportPass(ctx context.Context, lease catalog.Lease) error {
 	if byState, err := r.Catalog.ExportJobCounts(ctx); err == nil {
 		r.Metrics.ExportJobs(byState)
 	} else {
-		r.Log.Warn("compact: read the export job gauges", "error", err)
+		r.Log.Warn("compact: read the export job gauges", "error", safetext.Text(err.Error()))
 	}
 
 	return nil
