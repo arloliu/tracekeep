@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"testing"
@@ -355,6 +356,44 @@ func TestDispatchLogsAKeylessCloseError(t *testing.T) {
 	}
 	if n := strings.Count(stderr, "tracekeep: close"); n != 1 || strings.Contains(stderr, "key-sentinel") || strings.Contains(stderr, "backend-sentinel") {
 		t.Errorf("stderr %q, want one keyless close line", stderr)
+	}
+}
+
+// A role whose start fails on its first bus connection exits 1 with a diagnostic of that failure,
+// and stderr holds no marker the failure's own text carries:
+// a bus URL that does not parse, holding a space, a credential and a query, is shown by its structure, failing before any connection.
+func TestStartFailureOnStderr(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name, line, with, want string
+		markers                []string
+	}{
+		{
+			name: "the bus URL", line: `(?m)^  url: .*$`, with: `  url: "nats://u: pw-sentinel@bus.invalid:bad?token=q-sentinel"`,
+			want: `tracekeep: service: connect the bus: parse a nats URL: invalid port "…" after host`, markers: []string{"pw-sentinel", "q-sentinel"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			path := setup(t)
+			b, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			b = regexp.MustCompile(tc.line).ReplaceAll(b, []byte(tc.with))
+			if err := os.WriteFile(path, b, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			code, _, stderr := tracekeep(t, "ingest", "--config", path)
+			if code != 1 || !strings.Contains(stderr, tc.want) {
+				t.Errorf("ingest = %d, %q; want 1 with %q", code, stderr, tc.want)
+			}
+			for _, m := range tc.markers {
+				if strings.Contains(stderr, m) {
+					t.Errorf("stderr holds %q: %s", m, stderr)
+				}
+			}
+		})
 	}
 }
 

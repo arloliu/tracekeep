@@ -14,6 +14,8 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -204,12 +206,47 @@ func connect(b *config.Bus, log *slog.Logger) (*nats.Conn, error) {
 	}
 	nc, err := nats.Connect(b.URL, opts...)
 	if err != nil {
-		return nil, fmt.Errorf("service: connect the bus: %w", err)
+		return nil, connectFailed(err)
 	}
 	events.connected(nc)
 
 	return nc, nil
 }
+
+// busSchemes are the URL schemes the bus client takes, the only ones a start's error names.
+var busSchemes = []string{"nats", "tls", "ws", "wss"}
+
+// quotedText is a Go-quoted string, as a URL's parse error quotes a fragment of the URL.
+var quotedText = regexp.MustCompile(`"(?:[^"\\]|\\.)*"`)
+
+// connectFailed is the bus client's err as a start's failure shows it on stderr (operations.md §10.4 *Logs*, T-57), err kept for errors.Is.
+// A *url.Error quotes its URL whole, spaces included, which safetext.Text cannot cut, so it is shown by its structure:
+// its operation, the URL's scheme alone and its cause, without the fragments of the URL the cause quotes;
+// one whose scheme is not the bus's cannot be shown and gives a fixed diagnostic, its operation alone.
+// Any other error's text goes through safetext.Text.
+func connectFailed(err error) error {
+	var ue *url.Error
+	if !errors.As(err, &ue) {
+		return &shownError{text: "service: connect the bus: " + safetext.Text(err.Error()), err: err}
+	}
+	scheme, _, _ := strings.Cut(ue.URL, "://")
+	if scheme = strings.ToLower(scheme); !slices.Contains(busSchemes, scheme) {
+		return &shownError{text: "bus: connect: " + ue.Op + " failed on a URL not shown", err: err}
+	}
+	cause := safetext.Text(quotedText.ReplaceAllString(ue.Err.Error(), `"…"`))
+
+	return &shownError{text: "service: connect the bus: " + ue.Op + " a " + scheme + " URL: " + cause, err: err}
+}
+
+// shownError is an error presented by text of its own, err kept for errors.Is and errors.As.
+type shownError struct {
+	text string
+	err  error
+}
+
+func (e *shownError) Error() string { return e.text }
+
+func (e *shownError) Unwrap() error { return e.err }
 
 // busEvents logs the bus connection's loss, restoration, asynchronous errors and a close with an error (operations.md §10.4 *Logs*),
 // each naming the server last connected to by its scheme and host only, and its error's text through safetext.Text,
