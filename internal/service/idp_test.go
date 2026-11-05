@@ -253,6 +253,9 @@ func TestAPIClosesItsVerifier(t *testing.T) {
 		requests.Add(1)
 		entered <- struct{}{}
 		<-r.Context().Done() // held until its client gives up
+		// No answer: one returned here can reach the client between its TLS close_notify and its close,
+		// and the cancelled fetch would then read it as a malformed document.
+		panic(http.ErrAbortHandler)
 	}))
 	t.Cleanup(srv.Close)
 	ca := filepath.Join(t.TempDir(), "idp-ca.pem")
