@@ -152,6 +152,31 @@ func TestBusClosedLogged(t *testing.T) {
 	absent(t, append(before, closed), "config-pw-sentinel", "other-pw")
 }
 
+// A bus error's cause in the loss, asynchronous-error and close lines goes through safetext.Text:
+// its words and the URL's scheme and host stay, and no credential or query of a URL it quotes reaches any field.
+func TestBusErrorCausesLoggedSafe(t *testing.T) {
+	t.Parallel()
+	log := make(lines, 8)
+	b := &busEvents{log: log.logger()}
+	var o nats.Options
+	for _, opt := range b.options() {
+		if err := opt(&o); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cause := errors.New("dial nats://u:pw-sentinel@bus.invalid:4222/?token=q-sentinel: cause-words")
+	o.DisconnectedErrCB(nil, cause)
+	o.AsyncErrorCB(nil, nil, cause)
+	b.closed(cause)
+	for _, msg := range []string{"bus: connection lost", "bus: connection error", "bus: connection closed"} {
+		line, before := log.next(t, msg)
+		if len(before) != 0 || !strings.Contains(line, "dial nats://bus.invalid:4222: cause-words") {
+			t.Errorf("%s: line %s after %q, want it next, naming the cause by its words and its URL's host", msg, line, before)
+		}
+		absent(t, []string{line}, "pw-sentinel", "q-sentinel")
+	}
+}
+
 // tlsBus is an embedded bus over TLS, its certificate a self-signed one for 127.0.0.1, and that certificate's file.
 func tlsBus(t *testing.T) (*testbus.Server, string) {
 	t.Helper()

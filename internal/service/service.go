@@ -32,6 +32,7 @@ import (
 	"github.com/arloliu/tracekeep/internal/keys"
 	"github.com/arloliu/tracekeep/internal/metrics"
 	"github.com/arloliu/tracekeep/internal/records"
+	"github.com/arloliu/tracekeep/internal/safetext"
 	"github.com/arloliu/tracekeep/internal/store"
 	"github.com/arloliu/tracekeep/internal/store/s3store"
 	"github.com/arloliu/tracekeep/producer/busconfig"
@@ -211,7 +212,8 @@ func connect(b *config.Bus, log *slog.Logger) (*nats.Conn, error) {
 }
 
 // busEvents logs the bus connection's loss, restoration, asynchronous errors and a close with an error (operations.md §10.4 *Logs*),
-// each naming the server last connected to by its scheme and host only, so no credential or query in its URL reaches the log.
+// each naming the server last connected to by its scheme and host only, and its error's text through safetext.Text,
+// so no credential or query in a URL reaches the log.
 type busEvents struct {
 	log *slog.Logger
 	// server is the last connected server's name: a lost or closed connection no longer reports one.
@@ -222,7 +224,7 @@ func (b *busEvents) options() []nats.Option {
 	return []nats.Option{
 		nats.DisconnectErrHandler(func(_ *nats.Conn, err error) {
 			if err != nil {
-				b.log.Warn("bus: connection lost", "server", b.name(), "error", err)
+				b.log.Warn("bus: connection lost", "server", b.name(), "error", safetext.Text(err.Error()))
 			}
 		}),
 		nats.ReconnectHandler(func(nc *nats.Conn) {
@@ -230,13 +232,16 @@ func (b *busEvents) options() []nats.Option {
 			b.log.Info("bus: connection restored", "server", b.name())
 		}),
 		nats.ErrorHandler(func(_ *nats.Conn, _ *nats.Subscription, err error) {
-			b.log.Warn("bus: connection error", "server", b.name(), "error", err)
+			b.log.Warn("bus: connection error", "server", b.name(), "error", safetext.Text(err.Error()))
 		}),
-		nats.ClosedHandler(func(nc *nats.Conn) {
-			if err := nc.LastError(); err != nil {
-				b.log.Error("bus: connection closed", "server", b.name(), "error", err)
-			}
-		}),
+		nats.ClosedHandler(func(nc *nats.Conn) { b.closed(nc.LastError()) }),
+	}
+}
+
+// closed logs a close with the error err, the connection's last.
+func (b *busEvents) closed(err error) {
+	if err != nil {
+		b.log.Error("bus: connection closed", "server", b.name(), "error", safetext.Text(err.Error()))
 	}
 }
 
