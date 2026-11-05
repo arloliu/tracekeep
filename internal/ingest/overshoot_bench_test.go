@@ -39,7 +39,6 @@ func (f *fetched) NakWithDelay(time.Duration) error {
 	f.naks.Add(1)
 	return nil
 }
-func (f *fetched) InProgress() error { return nil }
 
 // benchConsumer is a consumer whose every fetch delivers the same messages at once, then ends.
 type benchConsumer struct {
@@ -63,23 +62,15 @@ type fetchBatch <-chan jetstream.Msg
 func (b fetchBatch) Messages() <-chan jetstream.Msg { return b }
 func (b fetchBatch) Error() error                   { return nil }
 
-// heldPayload sums the payload bytes of every delivery g holds:
+// heldPayload sums the payload bytes of every delivery g holds, the set its heartbeat walks:
 // open and closed batches, and those a flush took and has not finished; ok is false while another holds g's lock.
 func heldPayload(g *Ingester) (bytes int, ok bool) {
 	if !g.mu.TryLock() {
 		return 0, false
 	}
 	defer g.mu.Unlock()
-	add := func(b *Batch) {
-		for _, e := range b.Entries {
-			bytes += len(e.D.Record.Record.Payload)
-		}
-	}
-	g.Batcher.Held(add)
-	for _, b := range g.flushing {
-		add(b)
-	}
-	for _, e := range g.inFlight {
+	g.Batcher.Held(func(e Entry) { bytes += len(e.D.Record.Record.Payload) })
+	for _, e := range g.flushing {
 		bytes += len(e.D.Record.Record.Payload)
 	}
 

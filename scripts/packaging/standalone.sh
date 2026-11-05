@@ -78,7 +78,7 @@ configure() {
 catalog: {engine: sqlite, dsn: /var/lib/tracekeep/catalog.db}
 bus: {url: "nats://127.0.0.1:4222", subject_prefix: tpk, claim_bucket: tpk-objects}
 store: {kind: fs, dir: /var/lib/tracekeep/packs, presign: false}
-ingest: {flush_interval: 15s, ack_wait: 3m}
+ingest: {flush_interval: 15s, ack_wait: 2m}
 compact: {interval: 1m}
 metrics: {listen: "127.0.0.1:9090"}
 api:

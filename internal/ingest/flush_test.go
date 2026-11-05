@@ -154,12 +154,7 @@ func TestFlushWritesRegistersThenAcks(t *testing.T) {
 			held = append(held, p.feed(t, inline(t, capture, dataRecord(seq, now+int64(seq)), nil)))
 		}
 		var inProgress int
-		p.b.Held(func(b *Batch) {
-			for _, e := range b.Entries {
-				inProgress++
-				_ = e.Msg.InProgress()
-			}
-		})
+		p.b.Held(func(e Entry) { inProgress++; _ = e.Msg.InProgress() })
 		if inProgress != 4 {
 			t.Errorf("%d held messages kept in progress, want 4", inProgress)
 		}
@@ -273,9 +268,8 @@ func TestFlushReceiptOfAnEqualCopy(t *testing.T) {
 	})
 }
 
-// While a flush runs, the heartbeat keeps in progress the messages of the batches still to flush and of those the batcher holds,
-// once they have waited long enough, but never those of the batch it writes,
-// whose budget ends before their ack wait (architecture.md §3.1).
+// While a flush runs, the heartbeat keeps in progress the messages of the batch it writes, of the batches still to flush
+// and of those the batcher holds (architecture.md §3.1).
 func TestHeartbeatDuringAFlush(t *testing.T) {
 	t.Parallel()
 	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
@@ -289,8 +283,6 @@ func TestHeartbeatDuringAFlush(t *testing.T) {
 		waiting := start(tracepack.UUID{6})
 		batches = append(batches, p.b.All()...)
 		held := start(tracepack.UUID{7})
-		at := time.Unix(0, now)
-		g.Now = func() time.Time { return at }
 
 		tick := make(chan time.Time)
 		ctx, cancel := context.WithCancel(t.Context())
@@ -298,7 +290,6 @@ func TestHeartbeatDuringAFlush(t *testing.T) {
 		go func() { g.heartbeats(ctx, tick); close(stopped) }()
 		p.f.hooks[hookAfterPut] = func() error {
 			p.f.hooks[hookAfterPut] = nil
-			at = at.Add(g.AckWait) // every batch has waited long enough to be kept; read by the beat once the tick is taken
 			tick <- time.Time{}
 			tick <- time.Time{} // taken once the first beat is done
 			return nil
@@ -309,13 +300,10 @@ func TestHeartbeatDuringAFlush(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		for name, h := range map[string]*msg{"a waiting batch's": waiting, "a held batch's": held} {
+		for name, h := range map[string]*msg{"the flushing batch's": flushing, "a waiting batch's": waiting, "a held batch's": held} {
 			if got := h.done(); len(got) == 0 || got[0] != "in-progress" {
 				t.Errorf("%s message: %v, want kept in progress during the flush", name, got)
 			}
-		}
-		if got := flushing.done(); slices.Contains(got, "in-progress") {
-			t.Errorf("the flushing batch's message: %v, want never kept once its flush started", got)
 		}
 	})
 }
@@ -326,7 +314,6 @@ func TestHeartbeatHoldsTakenBatches(t *testing.T) {
 	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
 		p := newPipeline(t, c)
 		g := p.ingester(slog.New(slog.DiscardHandler))
-		g.AckWait = 0 // every waiting batch kept at every tick
 		h := p.feed(t, inline(t, tracepack.UUID{8}, startRecord(t, now), descriptorOf(t, "eqp")))
 		taken := g.take(p.b.All)
 		g.beat() // a tick between the take and the flush

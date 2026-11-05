@@ -120,9 +120,7 @@ func loadProduction(t *testing.T, smoke bool) {
 	spec := loadSpec{flush: 5 * time.Minute, ackWait: 7 * time.Minute, probed: true}
 	k, rate, budgets := 100, 800.0, []int{600_000, 50_000}
 	if smoke {
-		// dev's fetch waits a second: F + max_wait + flush_timeout is 8 s, so a routine delivery needs no in-progress ack here either;
-		// a lease of 5 s keeps an unbatched delivery's wait, the lease, a flush's budget and a tick, about 8.3 s, within the ack wait.
-		spec.flush, spec.ackWait, spec.flushTimeout, spec.lease = 5*time.Second, 12*time.Second, 2*time.Second, 5*time.Second
+		spec.flush, spec.ackWait = 5*time.Second, 9*time.Second
 		k, rate, budgets = 2, 20, []int{2_000, 50}
 	}
 	dir := profileDir(t)
@@ -131,9 +129,7 @@ func loadProduction(t *testing.T, smoke bool) {
 		t.Run(fmt.Sprintf("max_ack_pending=%d", budget), func(t *testing.T) {
 			spec.maxAckPending = budget
 			h := newReportingHarness(t, spec)
-			c := h.d.Env.Config.Ingest
-			h.log(fmt.Sprintf("production: flush %s, ack_wait %s, flush_timeout %s, %.0f fwd/s over K = %d; profiles in %s",
-				spec.flush, spec.ackWait, c.FlushTimeout, rate, k, dir))
+			h.log(fmt.Sprintf("production: flush %s, ack_wait %s, %.0f fwd/s over K = %d; profiles in %s", spec.flush, spec.ackWait, rate, k, dir))
 			tools := h.startTools(k)
 			defer h.stopTools(tools)
 			h.cycles(tools, rate, dir)
@@ -193,8 +189,7 @@ func (h *loadHarness) consumer() {
 		h.t.Fatalf("consumer %s: ack_wait %s and max_ack_pending %d, want %s and %d", name, info.Config.AckWait, info.Config.MaxAckPending, c.AckWait, c.MaxAckPending)
 	}
 	h.cons = cons
-	h.log(fmt.Sprintf("effective consumer %s: ack_wait %s, max_ack_pending %d, flush_timeout %s, the heartbeat every %s keeping a delivery past %s",
-		name, info.Config.AckWait, info.Config.MaxAckPending, c.FlushTimeout, c.Heartbeat(), c.AckWait-c.FlushTimeout-2*c.Heartbeat()))
+	h.log(fmt.Sprintf("effective consumer %s: ack_wait %s, max_ack_pending %d, the heartbeat every %s", name, info.Config.AckWait, info.Config.MaxAckPending, c.AckWait/3))
 }
 
 // forward relays one request through lt: every claimEvery-th a claim-check one, the rest as the loopback's Forward does.

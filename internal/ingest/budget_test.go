@@ -42,7 +42,7 @@ func TestMetadataBudgetClosesABatch(t *testing.T) {
 		feedCarriers(t, p, tracepack.UUID{0x61}, carriers)
 		n := len(carriers) + 1
 		held := 0
-		p.b.Held(func(b *Batch) { held += len(b.Entries) })
+		p.b.Held(func(Entry) { held++ })
 		if held != n {
 			t.Fatalf("the batcher holds %d records, want %d: a closed batch's records are held too", held, n)
 		}
@@ -128,7 +128,7 @@ func TestOverBudgetSegmentIsRefused(t *testing.T) {
 
 // part parts b into two batches of its key, those of its entries in held and the rest, as the metadata budget's close leaves siblings.
 func part(b *Batch, held func(seq uint64) bool) (in, out *Batch) {
-	in, out = &Batch{Key: b.Key, ConfigID: b.ConfigID, kept: b.kept}, &Batch{Key: b.Key, ConfigID: b.ConfigID, kept: b.kept}
+	in, out = &Batch{Key: b.Key, ConfigID: b.ConfigID}, &Batch{Key: b.Key, ConfigID: b.ConfigID}
 	for _, e := range b.Entries {
 		if held(e.D.Raw.Version.Seq) {
 			in.Entries = append(in.Entries, e)
@@ -304,8 +304,8 @@ func TestSiblingVersionsKeepTheirDeferrals(t *testing.T) {
 						p.deliver(t, start[1:])
 					}
 					b := p.b.All()[0]
-					refused := &Batch{Key: b.Key, ConfigID: b.ConfigID, kept: b.kept}
-					fresh := &Batch{Key: b.Key, ConfigID: b.ConfigID, kept: b.kept}
+					refused := &Batch{Key: b.Key, ConfigID: b.ConfigID}
+					fresh := &Batch{Key: b.Key, ConfigID: b.ConfigID}
 					for _, e := range b.Entries {
 						if e.D.Raw.Version.Digest == refusedDigest(t, other) {
 							refused.Entries = append(refused.Entries, e)

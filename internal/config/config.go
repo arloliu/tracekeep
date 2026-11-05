@@ -99,11 +99,8 @@ type S3 struct {
 type Ingest struct {
 	// FlushInterval is F (T-25).
 	FlushInterval time.Duration `yaml:"flush_interval" default:"5m" env:"TRACEKEEP_INGEST_FLUSH_INTERVAL" validate:"gt=0"`
-	// AckWait is the consumer's ack wait: above F, MaxWait and FlushTimeout, a routine delivery's longest life,
-	// and below Q minus F with the redelivery slack (T-25, ingest.md §6.2).
+	// AckWait is the consumer's ack wait: above F plus an upload, and below Q minus F with the redelivery slack (T-25).
 	AckWait time.Duration `yaml:"ack_wait" default:"7m" env:"TRACEKEEP_INGEST_ACK_WAIT" validate:"gt=0"`
-	// FlushTimeout is a batch's flush budget: a flush not done within it is given up and its messages nak'd (ingest.md §6.2).
-	FlushTimeout time.Duration `yaml:"flush_timeout" default:"1m" env:"TRACEKEEP_INGEST_FLUSH_TIMEOUT" validate:"gt=0"`
 	// MaxAckPending is above the peak message rate times F plus an upload.
 	MaxAckPending int `yaml:"max_ack_pending" default:"50000" env:"TRACEKEEP_INGEST_MAX_ACK_PENDING" validate:"gt=0"`
 	// FetchBatch bounds one fetch; MaxWait bounds its wait.
@@ -242,36 +239,12 @@ func Load(path string) (*Config, error) {
 // once between those that record a deletion time and act on it.
 const clockSkew = 2 * time.Minute
 
-// Heartbeat is the tick that keeps in progress a delivery waiting past a routine delivery's life (ingest.md §6.2):
-// a third of what AckWait leaves over F, MaxWait and FlushTimeout, at least a second,
-// so a batch is kept a tick past F and MaxWait, where a routine flush starts, and every flush still starts with its budget and two ticks left.
-func (i *Ingest) Heartbeat() time.Duration {
-	return max((i.AckWait-i.FlushInterval-i.MaxWait-i.FlushTimeout)/3, time.Second)
-}
-
-// Check holds the rules ingest's timing must keep (ingest.md §6.2), which a configuration's load checks too:
-// ack_wait exceeds a routine delivery's life, F, max_wait and flush_timeout,
-// and the longest a delivery of a fetch waits unbatched and unkept, the lease and a flush's budget, with a tick to spare.
-func (i *Ingest) Check() error {
-	var errs []error
-	if life := i.FlushInterval + i.MaxWait + i.FlushTimeout; i.AckWait <= life {
-		errs = append(errs, fmt.Errorf("ingest.ack_wait %s must exceed ingest.flush_interval + ingest.max_wait + ingest.flush_timeout, %s (T-25, ingest.md §6.2)",
-			i.AckWait, life))
-	}
-	if unbatched := i.Lease + i.FlushTimeout + i.Heartbeat(); i.AckWait <= unbatched {
-		errs = append(errs, fmt.Errorf("ingest.ack_wait %s must exceed ingest.lease + ingest.flush_timeout + the heartbeat's tick %s, %s: "+
-			"a fetched delivery waits that long unbatched before it is nak'd (ingest.md §6.2)", i.AckWait, i.Heartbeat(), unbatched))
-	}
-
-	return errors.Join(errs...)
-}
-
 // check holds the rules that span fields; dev admits what only tracekeep dev may use.
 func (c *Config) check(dev bool) error {
 	errs := c.Auth.check()
 	errs = append(errs, c.Keys.check(dev)...)
-	if err := c.Ingest.Check(); err != nil {
-		errs = append(errs, err)
+	if c.Ingest.AckWait <= c.Ingest.FlushInterval {
+		errs = append(errs, fmt.Errorf("ingest.ack_wait %s must exceed ingest.flush_interval %s (T-25)", c.Ingest.AckWait, c.Ingest.FlushInterval))
 	}
 	if bound := c.Ingest.FlushInterval + c.Ingest.AckWait + c.Compact.RedeliverySlack; c.Compact.QuietPeriod <= bound {
 		errs = append(errs, fmt.Errorf("compact.quiet_period %s must exceed ingest.flush_interval + ingest.ack_wait + compact.redelivery_slack, %s (T-25, T-41)",
@@ -324,8 +297,7 @@ func Dev(dir, url string, flush time.Duration) (*Config, error) {
 	c.Catalog.DSN = filepath.Join(dir, "catalog.db")
 	c.Bus.URL, c.Bus.SubjectPrefix, c.Bus.ClaimBucket = url, "tk", "tk-claims"
 	c.Store.Kind, c.Store.Dir, c.Store.Presign = "fs", filepath.Join(dir, "packs"), false
-	c.Ingest.FlushInterval, c.Ingest.MaxWait = flush, time.Second
-	c.Ingest.AckWait = max(time.Minute, 2*flush) + c.Ingest.FlushTimeout + c.Ingest.Lease
+	c.Ingest.FlushInterval, c.Ingest.AckWait, c.Ingest.MaxWait = flush, max(time.Minute, 2*flush), time.Second
 	c.Compact.Interval = 30 * time.Second
 	c.Compact.QuietPeriod = c.Ingest.FlushInterval + c.Ingest.AckWait + c.Compact.RedeliverySlack + time.Minute
 	c.Replica, c.Metrics.Listen = "dev", "" // dev serves metrics only where asked
