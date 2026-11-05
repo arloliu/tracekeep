@@ -79,6 +79,9 @@ func (o countedObject) Close() error {
 	return o.Object.Close()
 }
 
+// stalledHeader marks the request whose stream the test stalls.
+const stalledHeader = "Tk-Test-Stalled"
+
 // stallWorld is m's API served over HTTP/2 with TLS, or HTTP/1.1, on small socket buffers at both ends and a 64 KiB client stream window,
 // its QueryRecords streams' ends signalled on ended and its requests counted in sm.
 type stallWorld struct {
@@ -86,13 +89,15 @@ type stallWorld struct {
 	cl    tracekeepv1connect.MachineServiceClient
 	ln    *smallBuffers
 	ended chan struct{}
-	sm    *metrics.Server
-	st    *counted
+	// stalledEnd receives the time the stream sent with stalledHeader ended, its read slot already released.
+	stalledEnd chan time.Time
+	sm         *metrics.Server
+	st         *counted
 }
 
 func newStallWorld(t *testing.T, c *catalog.Catalog, h2, slow bool, opts ...connect.ClientOption) *stallWorld {
 	t.Helper()
-	w := &stallWorld{masked: newMasked(t, c), ended: make(chan struct{}, 8), sm: metrics.NewServer()}
+	w := &stallWorld{masked: newMasked(t, c), ended: make(chan struct{}, 8), stalledEnd: make(chan time.Time, 1), sm: metrics.NewServer()}
 	am, err := metrics.NewAPI(w.sm)
 	if err != nil {
 		t.Fatal(err)
@@ -103,6 +108,9 @@ func newStallWorld(t *testing.T, c *catalog.Catalog, h2, slow bool, opts ...conn
 	h := w.srv.Handler()
 	hs := httptest.NewUnstartedServer(http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
 		h.ServeHTTP(rw, r)
+		if r.Header.Get(stalledHeader) != "" {
+			w.stalledEnd <- time.Now()
+		}
 		if strings.HasSuffix(r.URL.Path, "/QueryRecords") {
 			w.ended <- struct{}{}
 		}
@@ -188,7 +196,9 @@ func stalledStreamEnds(t *testing.T, h2 bool, opts []connect.ClientOption) {
 		w := newStallWorld(t, c, h2, false, opts...)
 		w.srv.Records.MaxReads, w.srv.Records.SendTimeout = 2, 500*time.Millisecond
 		capture := w.bigCapture(t, n, 4000)
-		stalled, err := w.cl.QueryRecords(t.Context(), query(capture, nil))
+		req := query(capture, nil)
+		req.Header().Set(stalledHeader, "1")
+		stalled, err := w.cl.QueryRecords(t.Context(), req)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -196,6 +206,8 @@ func stalledStreamEnds(t *testing.T, h2 bool, opts []connect.ClientOption) {
 		if !stalled.Receive() {
 			t.Fatalf("the first message: %v", stalled.Err())
 		}
+		// The client reads no further from here: the server's sends stall once the buffers and the stream's window are full.
+		cue := time.Now()
 		first := seqsOf(stalled.Msg().GetItems())
 		cursor := stalled.Msg().GetCursor()
 		ends := 1
@@ -214,6 +226,12 @@ func stalledStreamEnds(t *testing.T, h2 bool, opts []connect.ClientOption) {
 			ends++
 		}
 		w.awaitEnds(t, ends)
+		// The slack covers the sends that fill the buffers after the cue and the stream's unwinding, on a loaded race-enabled runner.
+		const slack = 2 * time.Second
+		if took := (<-w.stalledEnd).Sub(cue); took > w.srv.Records.SendTimeout+slack {
+			t.Errorf("the stalled stream freed its read slot %s after the client stopped reading, want within the send timeout %s and %s",
+				took, w.srv.Records.SendTimeout, slack)
+		}
 		if got := scrape(t, w.sm); !strings.Contains(got, `tracekeep_api_requests_total{code="deadline_exceeded",operation="QueryRecords"} 1`) {
 			t.Errorf("no stalled stream counted with deadline_exceeded:\n%s", grep(got, "QueryRecords"))
 		}
