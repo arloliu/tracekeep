@@ -370,13 +370,17 @@ func recoveryEpisode(t *testing.T, spec loadSpec, k int, rate float64, m int, li
 	}
 	// A tick's sample taken while the completion's was under way is past it; the completion's closes the drain.
 	samples = append(slices.DeleteFunc(samples, func(s loadSample) bool { return !s.at.Before(end.at) }), end.sample)
-	to := h.mark(tools) // the redeliveries' counters, reported, not judged
+	to := h.mark(tools) // the stages' running totals and the redeliveries' counters, reported, not judged
 	endCalls()
 	<-called
 
 	st := h.probe.within(clock, end.at)
 	ep := drainOf(rate, clock, end.at, samples, h.probe.readPasses(), &calls, st)
-	h.recoveryRows(ep, m, parked, clock, samples, st, calls.within(clock, end.at))
+	rows := stageDelta(from, to)
+	for _, s := range ackStages {
+		rows[s] = st[s] // the acknowledgement as the decision reads it
+	}
+	h.recoveryRows(ep, m, parked, clock, samples, rows, calls.within(clock, end.at))
 	var trafficRedelivered uint64
 	for _, s := range samples {
 		trafficRedelivered = max(trafficRedelivered, s.redelivered)
@@ -405,8 +409,8 @@ func drainOf(rate float64, clock, end time.Time, samples []loadSample, passes []
 	for range in.failed {
 		ep.calls = append(ep.calls, failedCall)
 	}
-	for _, s := range []string{"prepare-ack", "double-ack", "ack-copy"} {
-		ep.ack += st["parked/"+s].sum + st["parked/"+s+"/failed"].sum
+	for _, s := range ackStages {
+		ep.ack += st[s].sum
 	}
 
 	return ep
