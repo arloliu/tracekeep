@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"maps"
 	"math"
 	"reflect"
 	"slices"
@@ -399,19 +400,21 @@ func TestDrainDecision(t *testing.T) {
 	}
 }
 
-// An episode's drain reads only what was observed from the release to its completion, the completion's sample the first taken at or after it:
-// samples, passes and PackURL attempts after the completion, as a late observation of it leaves them, and a failed pass before the release change nothing,
+// An episode's drain reads only what was observed from the release's clock to its completion,
+// the release's sample taken just before the clock and the completion's the first taken at or after the completion:
+// samples, passes and PackURL attempts after the completion, as a late observation of it leaves them,
+// and passes between either sample and its instant, or before the release, change nothing,
 // while the same observations within the drain change the verdict and the calls.
 func TestDrainOfItsInterval(t *testing.T) {
 	t.Parallel()
 	const rate, k = 1600.0, 120 // the completion's sample, two minutes after the release's
 	all, passes := drainSchedule(1, 0).run(time.Minute, 3*time.Minute)
-	clock, end := all[0].at.Add(-time.Millisecond), all[k].at.Add(-time.Millisecond)
+	clock, end := all[0].at.Add(time.Millisecond), all[k].at.Add(-time.Millisecond)
 	var calls packURLResult
 	for i := range 300 {
 		calls.record(packAttempt{began: clock.Add(time.Duration(i) * 300 * time.Millisecond), took: 50 * time.Millisecond})
 	}
-	within := slices.DeleteFunc(slices.Clone(passes), func(p settledPass) bool { return p.at.After(end) })
+	within := slices.DeleteFunc(slices.Clone(passes), func(p settledPass) bool { return p.at.Before(clock) || p.at.After(end) })
 	base := drainOf(rate/2, clock, end, all[:k+1], within, &calls, nil)
 	if !base.traffic.judged || !base.traffic.sustained || len(base.calls) != 300 {
 		t.Fatalf("the drain alone: judged %v, sustained %v (%s), %d calls; want sustained over 300", base.traffic.judged, base.traffic.sustained, base.traffic.why, len(base.calls))
@@ -442,9 +445,11 @@ func TestDrainOfItsInterval(t *testing.T) {
 
 		return s
 	}
-	late := drainOf(rate/2, clock, end, dropped(all, k+1), failedAt(passes, all[0].at.Add(-5*time.Second), all[k+5].at), new(failing(calls, all[k+1].at)), nil)
-	if late.drain != base.drain || !reflect.DeepEqual(late.traffic, base.traffic) || !slices.Equal(late.calls, base.calls) {
-		t.Errorf("with observations after the completion and a failed pass before the release: drain %s, judged %v, sustained %v (%s), %d calls, p99 %s; want %s, sustained, %d calls, p99 %s",
+	outside := failedAt(passes, all[0].at.Add(-5*time.Second), all[0].at.Add(500*time.Microsecond), end.Add(500*time.Microsecond), all[k+5].at)
+	late := drainOf(rate/2, clock, end, dropped(all, k+1), outside, new(failing(calls, all[k+1].at)), nil)
+	if late.drain != base.drain || !reflect.DeepEqual(late.traffic, base.traffic) || !slices.Equal(late.calls, base.calls) ||
+		decide([]drainEpisode{late}).outcome() != decide([]drainEpisode{base}).outcome() {
+		t.Errorf("with observations outside the drain: drain %s, judged %v, sustained %v (%s), %d calls, p99 %s; want %s, sustained, %d calls, p99 %s",
 			late.drain, late.traffic.judged, late.traffic.sustained, late.traffic.why, len(late.calls), percentile(late.calls, 0.99), base.drain, len(base.calls), percentile(base.calls, 0.99))
 	}
 
@@ -458,6 +463,25 @@ func TestDrainOfItsInterval(t *testing.T) {
 	}
 	if ep := drainOf(rate/2, clock, end, all[:k+1], within, new(failing(calls, end.Add(-time.Second))), nil); len(ep.calls) != 310 || percentile(ep.calls, 0.99) != failedCall {
 		t.Errorf("failed calls within the drain: %d calls, p99 %s; want 310, failed", len(ep.calls), percentile(ep.calls, 0.99))
+	}
+}
+
+// A stage's report is the drain's when it begins within it, by its own time:
+// one begun before the release's clock, or after the completion though reported before a later snapshot, is not counted.
+func TestProbeStagesWithin(t *testing.T) {
+	t.Parallel()
+	clock := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	end := clock.Add(time.Minute)
+	p := &loadProbe{stages: map[string]*stageTotal{}}
+	p.sinceAt(clock)
+	p.record("parked/double-ack", clock.Add(time.Second), 2*time.Second) // begun before the clock
+	p.record("parked/ack-copy", clock.Add(time.Second), time.Millisecond)
+	p.record("parked/ack-copy", end, time.Millisecond)
+	p.record("parked/ack-copy", end.Add(time.Millisecond), 500*time.Microsecond) // begun after the completion
+	p.record("parked/prepare-ack", end.Add(time.Second), time.Millisecond)
+	want := map[string]stageTotal{"parked/ack-copy": {n: 2, sum: 2 * time.Millisecond}}
+	if got := p.within(clock, end); !maps.Equal(got, want) {
+		t.Errorf("stages within the drain %v, want %v", got, want)
 	}
 }
 
