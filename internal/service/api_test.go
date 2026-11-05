@@ -572,7 +572,7 @@ func TestAPIRoleUnreadyBeforeItsListenerCloses(t *testing.T) {
 	}
 }
 
-// The api server closes a connection idle past its idle timeout, so idle clients never hold connections for good.
+// The api server closes a connection idle past its idle timeout, over HTTP/1.1 and HTTP/2, so idle clients never hold connections for good.
 func TestAPIRoleClosesIdleConnections(t *testing.T) {
 	t.Parallel()
 	e := devEnv(t)
@@ -611,9 +611,73 @@ func TestAPIRoleClosesIdleConnections(t *testing.T) {
 	_ = resp.Body.Close()
 	_ = conn.SetReadDeadline(time.Now().Add(10 * time.Second)) // bounds a connection never closed
 	if _, err := r.ReadByte(); !errors.Is(err, io.EOF) {
-		t.Errorf("reading an idle connection = %v, want EOF: the server closes it", err)
+		t.Errorf("reading an idle connection over HTTP/1.1 = %v, want EOF: the server closes it", err)
+	}
+
+	// Over HTTP/2 the server sends GOAWAY and closes the connection: its TLS close ends the client's read loop, which closes the connection.
+	ended := make(chan struct{})
+	tr := &http.Transport{
+		Protocols: new(http.Protocols),
+		DialTLSContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			raw, err := (&net.Dialer{}).DialContext(ctx, network, addr)
+			if err != nil {
+				return nil, err
+			}
+			host, _, _ := net.SplitHostPort(addr)
+			// The transport speaks HTTP/2 only over a *tls.Conn, so the end is seen beneath it.
+			tc := tls.Client(&readEnd{Conn: raw, ended: ended}, &tls.Config{RootCAs: roots, ServerName: host, NextProtos: []string{"h2"}, MinVersion: tls.VersionTLS12})
+			if err := tc.HandshakeContext(ctx); err != nil {
+				return nil, err
+			}
+
+			return tc, nil
+		},
+	}
+	tr.Protocols.SetHTTP2(true)
+	defer tr.CloseIdleConnections()
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, "https://"+e.APIAddr()+"/download/x", http.NoBody)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err = tr.RoundTrip(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = io.Copy(io.Discard, resp.Body)
+	_ = resp.Body.Close()
+	if resp.ProtoMajor != 2 {
+		t.Fatalf("the request went over %s, want HTTP/2", resp.Proto)
+	}
+	select {
+	case <-ended:
+	case <-time.After(10 * time.Second): // bounds a connection never closed
+		t.Error("an idle HTTP/2 connection is still open: the server does not close it")
 	}
 }
+
+// readEnd is a connection that closes ended once a read fails or it is closed.
+type readEnd struct {
+	net.Conn
+	ended chan struct{}
+	once  sync.Once
+}
+
+func (c *readEnd) Read(p []byte) (int, error) {
+	n, err := c.Conn.Read(p)
+	if err != nil {
+		c.end()
+	}
+
+	return n, err
+}
+
+func (c *readEnd) Close() error {
+	c.end()
+
+	return c.Conn.Close()
+}
+
+func (c *readEnd) end() { c.once.Do(func() { close(c.ended) }) }
 
 // The api role resolves every accepted session key id at start (T-48), so a started replica validates every cookie without the provider;
 // one it cannot resolve fails the start.
