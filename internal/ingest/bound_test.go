@@ -515,7 +515,11 @@ func TestStopSharesOneBudget(t *testing.T) {
 	t.Parallel()
 	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
 		r := newReplica(t, c)
-		st := &stallingPut{ObjectStore: r.st}
+		// The budget starts once the put waits, so the work before it, slower on some engines and runners than any fixed bound,
+		// is never what spends it.
+		start, started := context.WithCancel(t.Context())
+		r.g.stopStart = start
+		st := &stallingPut{ObjectStore: r.st, entered: started}
 		r.g.Flusher.Store = st
 		r.g.AckWait, r.g.StopTimeout = time.Hour, bound
 		captures := []tracepack.UUID{{0xc1, 0x13}, {0xc1, 0x14}}
@@ -591,9 +595,11 @@ func TestStopRightAfterAFetchThatSpendsTheBudget(t *testing.T) {
 	t.Parallel()
 	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
 		r := newReplica(t, c)
-		st := &stallingPut{ObjectStore: r.st}
+		start, started := context.WithCancel(t.Context())
+		r.g.stopStart = start
+		st := &stallingPut{ObjectStore: r.st, entered: started}
 		r.g.Flusher.Store = st
-		r.g.AckWait, r.g.StopTimeout = time.Hour, time.Second
+		r.g.AckWait, r.g.StopTimeout = time.Hour, bound
 		capture := tracepack.UUID{0xc9, 2}
 		r.publish(t, inline(t, capture, startRecord(t, now), descriptorOf(t, "eqp")), nil)
 		r.publish(t, inline(t, capture, dataRecord(1, now+1), nil), nil)
@@ -602,7 +608,7 @@ func TestStopRightAfterAFetchThatSpendsTheBudget(t *testing.T) {
 			t.Fatalf("%d batches held after the first step, want 1", n)
 		}
 		r.clk.flushInterval() // the batch is due at the next step
-		// The stop's fetch waits briefly and the budget is long beside it, so it is the put that spends the budget.
+		// The stop's fetch waits briefly, and the budget starts once the put waits, so it is the put that spends the budget.
 		r.g.MaxWait = time.Millisecond
 		ctx, cancel := context.WithCancel(t.Context())
 		r.g.Consumer = stopOnFetch{Consumer: r.g.Consumer, stop: cancel}
