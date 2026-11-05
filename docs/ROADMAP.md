@@ -1,6 +1,6 @@
 # Roadmap
 
-Status: current (2026-11-01) — milestones from seed v21 §12
+Status: current (2026-11-06) — milestones from seed v21 §12
 
 Where tracekeep's work stands, and the single index of active plans (`.agents/rules/450-doc-lifecycle.md`).
 The milestones and their gates are seed v21 §12, moved unchanged;
@@ -57,7 +57,6 @@ Milestones the owner set after seed v21 §12's (T-52).
 
 ## Active plans
 
-- [Phase 5 — correctness, error handling and performance](plans/phase-5-hardening.md)
 - [P3 — host log feed](specs/tracekeep/proposals/p3-host-log-feed.md), a proposal the owner accepted; its tracepack changes come first, in go-secs
 
 Phase 0 is done (#1, #3, #4, #7, #8).
@@ -67,6 +66,8 @@ Its closed plan's step tables (last text at e396be1) name commits of the branche
 which are not on `main`; each is among the commits of the pull request its phase row names.
 Phase 3 is done (#33, #34, #35, #36, #39, #41, #43); its closed plan's last text is at 6238649.
 Phase 4 is done (#46, #48, #49, #52, #53, #55, #58); its closed plan's last text is at e95dee5.
+Phase 5 is done (#64, #67, #70, #74, #78, #82, #83); its closed plan's last text, with its measurements and the gate's evidence, is at 89a01d8.
+Like phase 2's, the commits its step tables and measurements name are the branches' before their rebase merge, each among the commits of the pull request its sub-phase names.
 
 ## Open items
 
@@ -80,8 +81,11 @@ Phase 4 is done (#46, #48, #49, #52, #53, #55, #58); its closed plan's last text
     the AES-SIV cipher built once per key, not once per masked field (35–45 % of `Mask` on many-field records);
     no plaintext copy for a single contiguous range, and an HMAC reused across records;
     fewer allocations in the item walker.
-  - tracekeep: the capture key derived once per fetch batch rather than once per record (0.9 µs and 21 allocations a masked record),
-    which keeps derived key material for the batch and needs `masking-keys.md` §9 and `ingest.md` §6.1–§6.2 amended first.
+  - tracekeep: a capture key derived once per fetch batch, or a derived-key cache, was closed by phase 5 on its numbers
+    (masking adds about 4 µs a message, `Dispose` 31 against 27 µs; T-56), `masking-keys.md` §9 unchanged.
+- The load harness's cycle judge splits a flush into two cycles when its passes settle a second apart,
+  so a short drain can read not sustained while its floors stay flat (the recovery drain at 10,000 parked records);
+  merging passes closer than a flush into one cycle would fix it, checked against the production-timing records it also judges.
 - go-secs is asked to export a filtered JSONL writer; until it does, `StartExport` refuses `kind=filtered` (T-48).
 - Configuration retirement waits for the first release that needs it.
 - The veq branch `docs/ve/log-service-decisions` (commit 7b8a019) carries the LS-row amendments and V-35;
