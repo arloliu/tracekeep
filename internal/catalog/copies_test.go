@@ -85,6 +85,36 @@ func TestRecordCopies(t *testing.T) {
 	})
 }
 
+// The in-hour check and the listing read one snapshot:
+// a pack of another hour registered and committed between them is not listed, and the next call lists it.
+func TestRecordCopiesReadsOneSnapshot(t *testing.T) {
+	t.Parallel()
+	engines(t, func(t *testing.T, c *Catalog) {
+		capture := admitted(t, c)
+		first := segment(t, capture, 1, 0, 9)
+		register(t, c, first, Registration{Evidence: &Evidence{}})
+		held, release := holdAt(c, hookCopiesChecked)
+		var got []Copy
+		var inHour bool
+		var err error
+		listed := run(func() { got, inHour, err = c.RecordCopies(t.Context(), capture, 5, 1, 100) })
+		<-held
+		later := segment(t, capture, 3, 5, 5)
+		register(t, c, later, Registration{Evidence: &Evidence{}})
+		close(release)
+		<-listed
+		if err != nil || !inHour {
+			t.Fatal(inHour, err)
+		}
+		if len(got) != 1 || got[0].Pack != first.ID {
+			t.Errorf("RecordCopies(5) held between its check and its listing = %+v, want only the pack committed before its snapshot", got)
+		}
+		if ids := copyIDs(t, c, capture, 5); !sameIDs(ids, first.ID, later.ID) {
+			t.Errorf("RecordCopies(5) after both commits = %v, want both packs", ids)
+		}
+	})
+}
+
 // sameIDs reports whether got holds exactly want, in any order.
 func sameIDs(got []tracepack.UUID, want ...tracepack.UUID) bool {
 	if len(got) != len(want) {

@@ -42,6 +42,7 @@ func (c *Catalog) RecordCopies(ctx context.Context, capture tracepack.UUID, seq 
 		if inHour = n > 0; err != nil || !inHour {
 			return err
 		}
+		c.hook(hookCopiesChecked)
 		var rows []struct {
 			Pack  []byte `db:"pack_id"`
 			Key   string `db:"object_key"`
