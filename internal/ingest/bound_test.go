@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -17,6 +18,7 @@ import (
 	"github.com/arloliu/go-secs/tracepack"
 	"github.com/arloliu/tracekeep/internal/catalog"
 	"github.com/arloliu/tracekeep/internal/catalog/catalogtest"
+	"github.com/arloliu/tracekeep/internal/compact"
 	"github.com/arloliu/tracekeep/internal/metrics"
 	"github.com/arloliu/tracekeep/internal/store"
 )
@@ -95,6 +97,49 @@ func (s afterPut) Put(ctx context.Context, key string, r io.ReadSeeker, size int
 	}
 
 	return err
+}
+
+// stallingDelete is a store whose deletes never answer: each tells entered it waits, then returns only once its context ends.
+type stallingDelete struct {
+	store.ObjectStore
+	entered func()
+}
+
+func (s stallingDelete) Delete(ctx context.Context, _ string) error {
+	s.entered()
+	t := time.NewTimer(guard)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-t.C:
+		return errNotEnded
+	}
+}
+
+// holdReads takes the catalog's one read connection, its read pool cut to one, so every read waits for it until its context ends;
+// release, the guard or the test's end gives it back and restores the pool.
+func holdReads(t *testing.T, c *catalog.Catalog) (release func()) {
+	t.Helper()
+	_, r := c.Pools()
+	limit := r.Stats().MaxOpenConnections
+	r.SetMaxOpenConns(1)
+	conn, err := r.Conn(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var once sync.Once
+	release = func() {
+		once.Do(func() {
+			_ = conn.Close()
+			r.SetMaxOpenConns(limit)
+		})
+	}
+	timer := time.AfterFunc(guard, release) // the guard: a read no context ends goes on after it
+	t.Cleanup(func() { timer.Stop() })
+	t.Cleanup(release)
+
+	return release
 }
 
 // stallingAck is a message whose confirmed acknowledgement never answers, returning only once its context ends;
@@ -176,7 +221,8 @@ func lockCapture(t *testing.T, c *catalog.Catalog, capture tracepack.UUID) (rele
 }
 
 // A flush whose remote call never answers is given up at its deadline, each call ended by its context in turn:
-// the store's put, a put made durable whose answer is lost, the catalog's registration at the ack wait,
+// the catalog's read of the capture, the store's put, a put made durable whose answer is lost, the catalog's registration,
+// the deletion of a segment whose hour passed the horizon before its registration,
 // and a confirmed acknowledgement at a deadline passed once it waits.
 // Whatever the outcome, nothing is acknowledged before its registration, a message not acknowledged is nak'd,
 // and an object the flush may have put is kept for the reconciler, never deleted by the flush (ingest.md §6.2).
@@ -184,6 +230,7 @@ func TestFlushRemoteCallsEndWithTheirContext(t *testing.T) {
 	t.Parallel()
 	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
 		nak := []string{"nak " + firstNakDelay.String()}
+		var reads func() // the held read connection, given back once the flush returned
 		for _, tc := range []struct {
 			name string
 			// stall sets the stall up once the batch is held, passing exp's deadline once the stalled call waits,
@@ -195,6 +242,16 @@ func TestFlushRemoteCallsEndWithTheirContext(t *testing.T) {
 			registered bool
 			want       [][]string // each message's disposition, in seq order
 		}{
+			{
+				name: "capture read",
+				stall: func(t *testing.T, p *pipeline, _ tracepack.UUID, exp *expiring) *stallingPut {
+					reads = holdReads(t, p.cat)
+					// The read is the flush's first call, so the deadline passing a bound from here passes while it waits.
+					time.AfterFunc(bound, exp.expire)
+					return nil
+				},
+				want: [][]string{nak, nak, nak, nak},
+			},
 			{
 				name: "put",
 				stall: func(_ *testing.T, p *pipeline, _ tracepack.UUID, exp *expiring) *stallingPut {
@@ -215,6 +272,16 @@ func TestFlushRemoteCallsEndWithTheirContext(t *testing.T) {
 					lockCapture(t, p.cat, capture)
 					// The deadline passes a bound after the put, while the registration waits for the capture.
 					p.f.Store = afterPut{ObjectStore: p.st, after: func() { time.AfterFunc(bound, exp.expire) }}
+					return nil
+				},
+				objects: 1, want: [][]string{nak, nak, nak, nak},
+			},
+			{
+				// The registration tombstoned the key; the object it could not delete is the orphan pass's.
+				name: "beyond-horizon delete",
+				stall: func(_ *testing.T, p *pipeline, _ tracepack.UUID, exp *expiring) *stallingPut {
+					p.f.HorizonHour = func() int64 { return HourOf(now) + 1 }
+					p.f.Store = stallingDelete{ObjectStore: p.st, entered: exp.expire}
 					return nil
 				},
 				objects: 1, want: [][]string{nak, nak, nak, nak},
@@ -254,7 +321,15 @@ func TestFlushRemoteCallsEndWithTheirContext(t *testing.T) {
 					}
 				}
 
+				flushed := time.Now()
 				err := g.flush(ctx, p.b.All())
+				if took := time.Since(flushed); took >= guard {
+					t.Errorf("flush returned after %v, want the stalled call ended by its deadline, not the guard", took)
+				}
+				if reads != nil {
+					reads()
+					reads = nil
+				}
 				if !errors.Is(err, context.DeadlineExceeded) {
 					t.Fatalf("flush = %v, want the deadline", err)
 				}
@@ -589,6 +664,329 @@ func TestStopSharesOneBudget(t *testing.T) {
 			}
 		}
 	})
+}
+
+// On a stop, a registration that never answers is ended by the stop's budget, which starts once it waits:
+// Run returns within the budget, the put object kept for the reconciler, nothing registered and every message left to redelivery.
+func TestStopEndsAStalledRegistration(t *testing.T) {
+	t.Parallel()
+	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
+		r := newReplica(t, c)
+		start, started := context.WithCancel(t.Context())
+		r.g.stopStart = start
+		r.g.AckWait, r.g.StopTimeout = time.Hour, bound
+		capture := tracepack.UUID{0xc1, 0x17}
+		r.publish(t, inline(t, capture, startRecord(t, now), descriptorOf(t, "eqp")), nil)
+		r.publish(t, inline(t, capture, dataRecord(1, now+1), nil), nil)
+		if err := r.g.Step(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+		release := lockCapture(t, c, capture) // after the step, whose renewal writes; the stop renews nothing
+		var waiting time.Time
+		r.g.Flusher.registerPack = func(ctx context.Context, pk *catalog.Pack, reg catalog.Registration) (catalog.PackOutcome, int, error) {
+			waiting = time.Now()
+			started()
+			return c.RegisterPackGaps(ctx, pk, reg)
+		}
+		ctx, cancel := context.WithCancel(t.Context())
+		cancel() // the stop: the batch is still due
+
+		err := r.g.Run(ctx)
+		release()
+		if waiting.IsZero() {
+			t.Fatalf("Run = %v before the registration", err)
+		}
+		if took := time.Since(waiting); took >= guard {
+			t.Errorf("Run returned %v after the registration waited, want it ended by the stop's budget", took)
+		}
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("Run = %v, want the stop's budget spent", err)
+		}
+		if n := r.pending(t); n != 2 {
+			t.Errorf("the stream holds %d messages, want both left to redelivery", n)
+		}
+		if ks := storedKeys(t, r.st); len(ks) != 1 {
+			t.Errorf("objects %v, want the put object kept for the reconciler", ks)
+		}
+		if got, err := c.Capture(t.Context(), capture); err != nil || got.HasHighestSeq {
+			t.Errorf("capture %+v, %v; want nothing registered", got, err)
+		}
+	})
+}
+
+// On a stop, local file work is not interrupted either: a working file's write that outlasts the stop's budget is reported stalled and counted,
+// and Run waits for it, returning only once the test releases the write, with the stop's failure and every message left to redelivery.
+func TestStopWaitsForStalledLocalWork(t *testing.T) {
+	t.Parallel()
+	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
+		r := newReplica(t, c)
+		start, started := context.WithCancel(t.Context())
+		r.g.stopStart = start
+		r.g.AckWait, r.g.StopTimeout = time.Hour, bound
+		s := metrics.NewServer()
+		m, err := metrics.NewIngest(s, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		stalled := make(chan struct{}, 1)
+		r.g.Flusher.Metrics, r.g.Flusher.Log = m, slog.New(stallLog{Handler: slog.DiscardHandler, stalled: stalled})
+		released := make(chan struct{})
+		var returned atomic.Bool
+		r.g.Flusher.hooks[hookWrite] = func() error { // the write, held inside the working file's abstraction until the test releases it
+			started()
+			timer := time.NewTimer(guard)
+			defer timer.Stop()
+			select {
+			case <-released:
+			case <-timer.C:
+			}
+			returned.Store(true)
+
+			return nil
+		}
+		capture := tracepack.UUID{0xc1, 0x18}
+		r.publish(t, inline(t, capture, startRecord(t, now), descriptorOf(t, "eqp")), nil)
+		r.publish(t, inline(t, capture, dataRecord(1, now+1), nil), nil)
+		if err := r.g.Step(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+		ctx, cancel := context.WithCancel(t.Context())
+		cancel() // the stop: the batch is still due
+		done := make(chan error, 1)
+		go func() { done <- r.g.Run(ctx) }()
+
+		timer := time.NewTimer(guard)
+		defer timer.Stop()
+		select {
+		case <-stalled:
+		case <-timer.C:
+			t.Fatal("no stall reported once the stop's budget was spent")
+		}
+		// Nothing signals a wait that goes on, so a bound past the spent budget is what Run must outlast while the write is held.
+		held := time.NewTimer(bound)
+		defer held.Stop()
+		select {
+		case err := <-done:
+			t.Fatalf("Run = %v while its write is held, want it waiting for the write", err)
+		case <-held.C:
+		}
+		close(released)
+		err = <-done
+		if !returned.Load() {
+			t.Fatal("Run returned before the write it started")
+		}
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("Run = %v, want the stop's failure", err)
+		}
+		if body := scrape(t, s); !strings.Contains(body, "tracekeep_ingest_flush_stalls_total 1") {
+			t.Errorf("no stall counted:\n%s", grep(body, "flush_stalls"))
+		}
+		if n := r.pending(t); n != 2 {
+			t.Errorf("the stream holds %d messages, want both left to redelivery", n)
+		}
+		if ks := storedKeys(t, r.st); len(ks) != 0 {
+			t.Errorf("objects %v, want none put after the budget was spent", ks)
+		}
+		if got, err := c.Capture(t.Context(), capture); err != nil || got.HasHighestSeq {
+			t.Errorf("capture %+v, %v; want nothing registered", got, err)
+		}
+	})
+}
+
+// watchedMsg is a delivered message whose naks are recorded and whose confirmed acknowledgement doubleAck replaces when set.
+type watchedMsg struct {
+	Msg
+	seq       uint64
+	doubleAck func(ctx context.Context) error
+	naked     bool
+}
+
+func (m *watchedMsg) DoubleAck(ctx context.Context) error {
+	if m.doubleAck != nil {
+		return m.doubleAck(ctx)
+	}
+
+	return m.Msg.DoubleAck(ctx)
+}
+
+func (m *watchedMsg) NakWithDelay(d time.Duration) error {
+	m.naked = true
+
+	return m.Msg.NakWithDelay(d)
+}
+
+// A parked copy's acknowledgement that never answers ends its flush at each of its three boundaries (parking.md §6.1),
+// after the copies before it completed: those stay acknowledged, their rows acked, and the copy and the rest are nak'd.
+// Stalled in PrepareAck, the copy is not acknowledged; stalled in the confirmed acknowledgement, it is not confirmed;
+// stalled in AckCopy once the server confirmed it, the flush counts it unacknowledged and its row stays waiting,
+// and the copy reconciliation marks the row acked from the stream, which no longer holds the copy, with no redelivery.
+func TestParkedAcknowledgementStalls(t *testing.T) {
+	t.Parallel()
+	const done = 2 // copies acknowledged before the stall, in seq order
+	for i, tc := range []struct {
+		name string
+		// arm stalls s.stalled's acknowledgement at its boundary, passing s.exp's deadline once the stalled call waits.
+		arm func(t *testing.T, s *ackStall)
+		// confirmed reports the server confirmed the stalled copy's acknowledgement.
+		confirmed bool
+	}{
+		{
+			name: "prepare",
+			arm: func(t *testing.T, s *ackStall) {
+				acked := 0
+				s.pg.Flusher.hooks[hookAfterAck] = func() error {
+					if acked++; acked == done {
+						s.release = lockCapture(t, s.c, s.capture)
+						time.AfterFunc(bound, s.exp.expire) // while the next copy's PrepareAck waits for the capture
+					}
+
+					return nil
+				}
+				s.stalled.doubleAck = func(context.Context) error {
+					t.Error("the stalled copy's acknowledgement was sent")
+					return nil
+				}
+			},
+		},
+		{
+			name: "double-ack",
+			arm: func(_ *testing.T, s *ackStall) {
+				s.stalled.doubleAck = func(ctx context.Context) error {
+					s.exp.expire()
+					timer := time.NewTimer(guard)
+					defer timer.Stop()
+					select {
+					case <-ctx.Done():
+						return ctx.Err()
+					case <-timer.C:
+						return errNotEnded
+					}
+				}
+			},
+		},
+		{
+			name: "ack-copy",
+			arm: func(t *testing.T, s *ackStall) {
+				s.stalled.doubleAck = func(ctx context.Context) error {
+					if err := s.stalled.Msg.DoubleAck(ctx); err != nil {
+						return err
+					}
+					s.release = lockCapture(t, s.c, s.capture)
+					time.AfterFunc(bound, s.exp.expire) // while AckCopy waits for the capture
+
+					return nil
+				}
+			},
+			confirmed: true,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
+				r := newReplica(t, c)
+				s := &ackStall{c: c, capture: tracepack.UUID{0xc2, byte(i)}, exp: newExpiring(t.Context())}
+				parkTraffic(t, r, s.capture)
+				s.pg = r.parkedConsumer(t)
+				batches, ws := watchedBatch(t, s.pg)
+				s.stalled = ws[done]
+				tc.arm(t, s)
+
+				err := s.pg.flush(s.exp, batches)
+				if s.release != nil {
+					s.release()
+				}
+				if !errors.Is(err, context.DeadlineExceeded) {
+					t.Fatalf("flush = %v, want the deadline", err)
+				}
+				for j, w := range ws {
+					if w.naked != (j >= done) {
+						t.Errorf("copy of seq %d nak'd %v; want the first %d acknowledged, the stalled copy and the rest nak'd", w.seq, w.naked, done)
+					}
+				}
+				want := []string{"acked", "acked", "waiting", "waiting"}
+				if got := copyStates(versions(t, c, s.capture), s.pg.Incarnation.ID); !slices.Equal(got, want) {
+					t.Errorf("copy rows %v, want %v", got, want)
+				}
+				held := uint64(len(ws) - done)
+				if tc.confirmed {
+					held-- // the work-queue stream removed the confirmed copy
+				}
+				if n := msgs(t, r.parked(t)); n != held {
+					t.Errorf("the parking stream holds %d copies, want %d", n, held)
+				}
+				if !tc.confirmed {
+					return
+				}
+				rc := &compact.Compactor{Catalog: c, Log: slog.New(slog.DiscardHandler)}
+				if n, err := rc.Copies(t.Context(), retention(t, c), catalog.RoleParking, r.parked(t)); err != nil || n != 1 {
+					t.Fatalf("Copies = %d, %v; want the confirmed copy's row marked", n, err)
+				}
+				want[done] = "acked"
+				if got := copyStates(versions(t, c, s.capture), s.pg.Incarnation.ID); !slices.Equal(got, want) {
+					t.Errorf("copy rows after the reconciliation %v, want %v", got, want)
+				}
+				if n := msgs(t, r.parked(t)); n != held {
+					t.Errorf("the parking stream holds %d copies after the reconciliation, want %d: the confirmed copy is not redelivered", n, held)
+				}
+			})
+		})
+	}
+}
+
+// ackStall is one stalled acknowledgement of a parked copy: the parked consumer flushing it, the copy, the deadline the stall passes,
+// and the release of a capture row the stall holds.
+type ackStall struct {
+	c       *catalog.Catalog
+	capture tracepack.UUID
+	pg      *Ingester
+	stalled *watchedMsg
+	exp     *expiring
+	release func()
+}
+
+// watchedBatch fetches and batches the parked copies with pg, not yet due, takes the batches for a flush
+// and returns them with each copy's message watched, in seq order.
+func watchedBatch(t *testing.T, pg *Ingester) ([]*Batch, []*watchedMsg) {
+	t.Helper()
+	if err := pg.Step(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	batches := pg.take(pg.Batcher.All)
+	var ws []*watchedMsg
+	for _, b := range batches {
+		for j := range b.Entries {
+			w := &watchedMsg{Msg: b.Entries[j].Msg, seq: b.Entries[j].D.Raw.Version.Seq}
+			b.Entries[j].Msg = w
+			ws = append(ws, w)
+		}
+	}
+	if len(ws) != 4 {
+		t.Fatalf("%d copies batched, want 4", len(ws))
+	}
+	slices.SortFunc(ws, func(a, b *watchedMsg) int { return cmpSeq(a.seq, b.seq) })
+
+	return batches, ws
+}
+
+// parkTraffic parks capture's traffic: its four versions parked write-failure, the Writer refusing their batch three times.
+func parkTraffic(t *testing.T, r *replica, capture tracepack.UUID) {
+	t.Helper()
+	r.g.Flusher.hooks[hookWrite] = func() error { return fmt.Errorf("%w: %w", tracepack.ErrRefused, tracepack.ErrInvalidRecord) }
+	for _, m := range traffic(t, capture) {
+		r.publish(t, m, nil)
+	}
+	r.step(t)
+	for _, b := range r.g.Batcher.batches {
+		for range writeFailureLimit - 1 {
+			r.g.refused(b.Entries)
+		}
+	}
+	r.clk.flushInterval()
+	r.step(t)
+	if vs := versions(t, r.cat, capture); len(vs) != 4 {
+		t.Fatalf("%d versions parked, want 4", len(vs))
+	}
+	r.g.Flusher.hooks[hookWrite] = nil // the Writer is fixed
 }
 
 // stopOnFetch is a consumer whose every fetch is followed by a stop, as a signal arriving while one waits.
