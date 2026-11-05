@@ -88,6 +88,8 @@ const (
 	hookIncarnationAllocated
 	// hookListingRead runs once a claim listing's chunk read the keys already recorded, outside any transaction.
 	hookListingRead
+	// hookCopiesChecked runs once RecordCopies found its hour holds a copy, inside its snapshot, before it lists.
+	hookCopiesChecked
 	numHooks
 )
 
