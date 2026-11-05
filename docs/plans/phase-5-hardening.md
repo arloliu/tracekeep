@@ -1,6 +1,6 @@
 # Phase 5 — correctness, error handling and performance
 
-Status: active (2026-11-03) — 5.5 next
+Status: active (2026-11-05) — 5.6 next
 
 The owner's next phase after the roadmap's milestones:
 no new feature, but the service and the producer SDK made correct under faults, their failures reported, and their hot paths measured and made faster.
@@ -346,7 +346,7 @@ Not in this phase: new features, go-secs' changes (point 4), the eqp-hub side of
 | 5.2 — error handling and signals | spec first (`api.md` §10.1–§10.2, `operations.md` §10.4, `650-perf-sec.md`, the configuration guide), then E1–E15, E17–E19: each error with its own code, the SDK's panics, drops and sink events counted from zero, the service's bus events logged, dropped errors logged with keyless causes, readiness without internal text, retries with jittered backoff and a bound on further runs, the warning for a link without TLS (point 3), configuration bounds, JWKS fetched ahead of its TTL, downloads' headers, the restore's store errors keyless; each error test injects sentinels and asserts their absence where point 11 forbids them | done (#67) |
 | 5.3 — measurement | benchmarks for the SDK's observe path, ingest's dispose, batch, flush and acknowledgement, the catalog's registration, listing and reads on both engines, `QueryRecords` over an hour of N records in K packs (binary and JSON measured apart), merge and the compactor's passes; P4's predicates explained on both engines; `pprof` on the metrics listener, opt-in; the baselines and the offered rate of the write-connection case recorded here | done (#70) |
 | 5.4 — performance: the catalog and its writer | P1–P6 under points 30 to 38, each measured before and after, each test on both engines: registration's evidence read in sets, the range probes bounded by the capture's widest range, the claim listing in bounded transactions that never forget a row from a chunk not yet listed, deletion and eviction on new indexes, listings batched across captures with completeness unchanged, the API audit write's deadline and wait histogram (point 5); `bench.yaml` narrowed so it finishes | done (#74) |
-| 5.5 — performance: ingest, reads, compactor, API | P7–P18 that 5.3 shows worth their change, each measured before and after; concurrent acknowledgements only with completion tracked by identity, not as a prefix; any key-path change keeps the binding-check and cancellation tests | pending |
+| 5.5 — performance: ingest, reads, compactor, API | P7–P18 that 5.3 shows worth their change, each measured before and after; concurrent acknowledgements only with completion tracked by identity, not as a prefix; any key-path change keeps the binding-check and cancellation tests | done (#78) |
 | 5.6 — gate | audit every gate case against the test bodies, then one step per gap, as 4.6 did | pending |
 
 ## Phase 5.5 — performance: ingest, reads, compactor, API
