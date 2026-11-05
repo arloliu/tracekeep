@@ -58,6 +58,16 @@ type packURLResult struct {
 	// failure is the first failed attempt's error, took its duration.
 	failure string
 	took    time.Duration
+	// attempts are every attempt recorded, in order.
+	attempts []packAttempt
+}
+
+// packAttempt is one PackURL attempt or the listing before it: when it began, its RPC time, and how it ended, a failure by its why.
+type packAttempt struct {
+	began               time.Time
+	took                time.Duration
+	listing, superseded bool
+	why                 string
 }
 
 // judgeLoad judges a sweep point: offered forwards a second, the sample at its origin (before the warm-up),

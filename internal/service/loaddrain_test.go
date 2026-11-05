@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"math"
+	"reflect"
 	"slices"
 	"strconv"
 	"strings"
@@ -51,11 +52,14 @@ func (c cond) String() string { return [...]string{"unknown", "false", "true"}[c
 // judgeDrain judges the traffic beside a drain: samples run from the release's sample to the completion's, both taken explicitly,
 // and the cycles are the traffic's completed flush cycles between them, as judgeCycles reads them, at least drainCycles of them;
 // the offered, made and published rates and the drops are counted from the release's and completion's samples, the slope through whole cycles.
+// A failed pass counts only between them, never one before the release or after the completion.
 // A drain with too few samples or cycles is not judged, never judged over a shorter span.
 func judgeDrain(offered float64, samples []loadSample, passes []settledPass) cycleVerdict {
 	if len(samples) < 2 {
 		return cycleVerdict{offered: offered, why: fmt.Sprintf("sampling: %d samples, want the release's and the completion's at least", len(samples))}
 	}
+	from, to := samples[0].at, samples[len(samples)-1].at
+	passes = slices.DeleteFunc(slices.Clone(passes), func(p settledPass) bool { return p.at.Before(from) || p.at.After(to) })
 
 	return judgeSpan(offered, samples[0], samples, passes, drainCycles, true)
 }
@@ -392,6 +396,68 @@ func TestDrainDecision(t *testing.T) {
 			t.Errorf("%s: traffic %s, p99 %s (%s over %d calls), ack %s, %s, rerun %v; want %s, %s, %s, %s, rerun %v",
 				name, d.traffic, d.p99, d.p99v, d.calls, d.ack, d.outcome(), d.rerun(), tc.traffic, tc.p99, tc.ack, tc.outcome, tc.rerun)
 		}
+	}
+}
+
+// An episode's drain reads only what was observed from the release to its completion, the completion's sample the first taken at or after it:
+// samples, passes and PackURL attempts after the completion, as a late observation of it leaves them, and a failed pass before the release change nothing,
+// while the same observations within the drain change the verdict and the calls.
+func TestDrainOfItsInterval(t *testing.T) {
+	t.Parallel()
+	const rate, k = 1600.0, 120 // the completion's sample, two minutes after the release's
+	all, passes := drainSchedule(1, 0).run(time.Minute, 3*time.Minute)
+	clock, end := all[0].at.Add(-time.Millisecond), all[k].at.Add(-time.Millisecond)
+	var calls packURLResult
+	for i := range 300 {
+		calls.record(packAttempt{began: clock.Add(time.Duration(i) * 300 * time.Millisecond), took: 50 * time.Millisecond})
+	}
+	within := slices.DeleteFunc(slices.Clone(passes), func(p settledPass) bool { return p.at.After(end) })
+	base := drainOf(rate/2, clock, end, all[:k+1], within, &calls, nil)
+	if !base.traffic.judged || !base.traffic.sustained || len(base.calls) != 300 {
+		t.Fatalf("the drain alone: judged %v, sustained %v (%s), %d calls; want sustained over 300", base.traffic.judged, base.traffic.sustained, base.traffic.why, len(base.calls))
+	}
+
+	failedAt := func(ps []settledPass, at ...time.Time) []settledPass {
+		ps = slices.Clone(ps)
+		for _, a := range at {
+			ps = append(ps, settledPass{at: a, failed: true})
+		}
+		slices.SortFunc(ps, func(a, b settledPass) int { return a.at.Compare(b.at) })
+
+		return ps
+	}
+	failing := func(r packURLResult, from time.Time) packURLResult {
+		r.attempts = slices.Clone(r.attempts)
+		for i := range 10 {
+			r.record(packAttempt{began: from.Add(time.Duration(i) * 100 * time.Millisecond), took: packURLDeadline, why: "deadline_exceeded"})
+		}
+
+		return r
+	}
+	dropped := func(s []loadSample, from int) []loadSample {
+		s = slices.Clone(s)
+		for i := from; i < len(s); i++ {
+			s[i].dropped += 10
+		}
+
+		return s
+	}
+	late := drainOf(rate/2, clock, end, dropped(all, k+1), failedAt(passes, all[0].at.Add(-5*time.Second), all[k+5].at), new(failing(calls, all[k+1].at)), nil)
+	if late.drain != base.drain || !reflect.DeepEqual(late.traffic, base.traffic) || !slices.Equal(late.calls, base.calls) {
+		t.Errorf("with observations after the completion and a failed pass before the release: drain %s, judged %v, sustained %v (%s), %d calls, p99 %s; want %s, sustained, %d calls, p99 %s",
+			late.drain, late.traffic.judged, late.traffic.sustained, late.traffic.why, len(late.calls), percentile(late.calls, 0.99), base.drain, len(base.calls), percentile(base.calls, 0.99))
+	}
+
+	for name, ep := range map[string]drainEpisode{
+		"a drop":        drainOf(rate/2, clock, end, dropped(all[:k+1], k), within, &calls, nil),
+		"a failed pass": drainOf(rate/2, clock, end, all[:k+1], failedAt(within, all[k-5].at), &calls, nil),
+	} {
+		if !ep.traffic.judged || ep.traffic.sustained {
+			t.Errorf("%s within the drain: judged %v, sustained %v (%s); want not sustained", name, ep.traffic.judged, ep.traffic.sustained, ep.traffic.why)
+		}
+	}
+	if ep := drainOf(rate/2, clock, end, all[:k+1], within, new(failing(calls, end.Add(-time.Second))), nil); len(ep.calls) != 310 || percentile(ep.calls, 0.99) != failedCall {
+		t.Errorf("failed calls within the drain: %d calls, p99 %s; want 310, failed", len(ep.calls), percentile(ep.calls, 0.99))
 	}
 }
 
