@@ -189,7 +189,18 @@ func (c *Catalog) attempt(ctx context.Context, fn func(tx *sqlx.Tx) error) error
 		}
 	}
 
-	return tx.Commit()
+	return committed(ctx, tx.Commit())
+}
+
+// committed is a commit's err, with ctx's error beside it once ctx has ended:
+// database/sql rolls back a transaction whose context ends, and its Commit then answers sql.ErrTxDone,
+// which would hide from the caller that a cancellation, not a failure, ended it.
+func committed(ctx context.Context, err error) error {
+	if err != nil && ctx.Err() != nil && !errors.Is(err, ctx.Err()) {
+		return errors.Join(ctx.Err(), err)
+	}
+
+	return err
 }
 
 func rollback(tx *sqlx.Tx) error {

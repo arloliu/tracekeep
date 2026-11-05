@@ -415,3 +415,24 @@ func TestSleepEndsWithTheContext(t *testing.T) {
 		t.Errorf("sleep of zero = %v, want nil", err)
 	}
 }
+
+// A commit that fails once its context has ended answers the context's error too, so a stop reads as one:
+// database/sql rolls such a transaction back and its Commit answers sql.ErrTxDone.
+func TestCommittedAfterACancel(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithCancel(t.Context())
+	if err := committed(ctx, sql.ErrTxDone); errors.Is(err, context.Canceled) {
+		t.Errorf("committed before the cancel = %v, want no cancellation", err)
+	}
+	cancel()
+	err := committed(ctx, sql.ErrTxDone)
+	if !errors.Is(err, context.Canceled) || !errors.Is(err, sql.ErrTxDone) {
+		t.Errorf("committed after the cancel = %v, want context.Canceled beside sql.ErrTxDone", err)
+	}
+	if err := committed(ctx, nil); err != nil {
+		t.Errorf("a commit that succeeded = %v, want nil", err)
+	}
+	if err := committed(ctx, context.Canceled); err != context.Canceled { //nolint:errorlint // the same error, not joined twice
+		t.Errorf("a commit that answered the cancel = %v, want it alone", err)
+	}
+}
