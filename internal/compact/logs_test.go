@@ -327,6 +327,26 @@ func TestOrphanStandingsFailureLogged(t *testing.T) {
 	})
 }
 
+// cancelledList is a store whose listing fails with a cancellation, its text naming a key.
+type cancelledList struct{ store.ObjectStore }
+
+func (cancelledList) List(_ context.Context, prefix string, _ func(store.ObjectInfo) error) error {
+	return fmt.Errorf("list %sx.tpk: %s: %w", prefix, storeSentinel, context.Canceled)
+}
+
+// A listing the store reports cancelled stays a cancellation once made keyless.
+func TestOrphanListingCancellationKept(t *testing.T) {
+	t.Parallel()
+	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
+		f := newFixture(t, c)
+		f.r.Store = cancelledList{f.s}
+		_, err := f.r.Orphans(t.Context(), f.lease)
+		if !errors.Is(err, context.Canceled) || strings.Contains(err.Error(), "x.tpk") || strings.Contains(err.Error(), storeSentinel) {
+			t.Errorf("Orphans over a cancelled listing = %v, want the cancellation without the key or the store's text", err)
+		}
+	})
+}
+
 // A merged input's removal whose store fails is logged by the pack and its capture with the store's class;
 // the deletion's refusal and the catalog's failure are logged in the catalog's tests, which hold its seams.
 func TestDeletionLogsNameNoKey(t *testing.T) {
