@@ -19,6 +19,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/nats-io/nats.go"
@@ -331,7 +332,13 @@ func openStore(s *config.Store) (store.ObjectStore, error) {
 	if s.Kind == "fs" {
 		fs, err := store.NewFS(s.Dir)
 		if err != nil {
-			return nil, err
+			// Its text names the directory: the start's error carries its class alone, the system's error number where it has one.
+			var errno syscall.Errno
+			if errors.As(err, &errno) {
+				return nil, fmt.Errorf("service: open the fs store: %w", errno)
+			}
+
+			return nil, fmt.Errorf("service: open the fs store: %w", records.Keyless(err))
 		}
 
 		return fs, nil

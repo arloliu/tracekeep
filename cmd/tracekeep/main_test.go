@@ -359,9 +359,10 @@ func TestDispatchLogsAKeylessCloseError(t *testing.T) {
 	}
 }
 
-// A role whose start fails on its first bus connection exits 1 with a diagnostic of that failure,
-// and stderr holds no marker the failure's own text carries:
-// a bus URL that does not parse, holding a space, a credential and a query, is shown by its structure, failing before any connection.
+// A role whose start fails on its first bus connection or its store's construction exits 1 with a diagnostic of that failure,
+// and stderr holds neither marker the failure's own text carries:
+// a bus URL that does not parse, holding a space, a credential and a query, is shown by its structure, failing before any connection,
+// and a missing store directory by its class.
 func TestStartFailureOnStderr(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
@@ -371,6 +372,10 @@ func TestStartFailureOnStderr(t *testing.T) {
 		{
 			name: "the bus URL", line: `(?m)^  url: .*$`, with: `  url: "nats://u: pw-sentinel@bus.invalid:bad?token=q-sentinel"`,
 			want: `tracekeep: service: connect the bus: parse a nats URL: invalid port "…" after host`, markers: []string{"pw-sentinel", "q-sentinel"},
+		},
+		{
+			name: "the store's directory", line: `(?m)^  dir: (.*)$`, with: `  dir: $1/missing-dir-sentinel`,
+			want: "tracekeep: service: open the fs store: no such file or directory", markers: []string{"missing-dir-sentinel"},
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
