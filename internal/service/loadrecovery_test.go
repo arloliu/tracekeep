@@ -205,10 +205,12 @@ func (r *recovery) watch(ctx context.Context, poll time.Duration, why *atomic.Va
 // loadRecovery runs the recovery drain's episodes, each on a dev of its own, until no condition is unknown or three ran,
 // and reports the decision.
 func loadRecovery(t *testing.T, smoke bool) {
-	spec := loadSpec{flush: 10 * time.Second, warmup: time.Minute, maxAckPending: recoveryPending, probed: true, recovery: true}
+	// The ack wait is production's default, not dev's minute: a parked flush acknowledging tens of thousands of copies
+	// at about 0.6 ms each could outlast a minute, be given up and redeliver, which would measure dev's setting, not the drain.
+	spec := loadSpec{flush: 10 * time.Second, warmup: time.Minute, ackWait: 7 * time.Minute, maxAckPending: recoveryPending, probed: true, recovery: true}
 	k, rate, def, limit := 100, 800.0, 0, 2*time.Hour
 	if smoke {
-		spec.flush, spec.warmup, spec.redelivery = time.Second, 5*time.Second, 8*time.Second
+		spec.flush, spec.warmup, spec.ackWait, spec.redelivery = time.Second, 5*time.Second, 0, 8*time.Second
 		k, rate, def, limit = 2, 20, 200, 3*time.Minute
 	}
 	m, err := recoveryM(os.Getenv("TRACEKEEP_LOAD_RECOVERY_M"), def)
