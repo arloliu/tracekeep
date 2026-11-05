@@ -16,6 +16,7 @@ import (
 	"github.com/arloliu/tracekeep/internal/catalog"
 	"github.com/arloliu/tracekeep/internal/metrics"
 	"github.com/arloliu/tracekeep/internal/procconfig"
+	tkrecords "github.com/arloliu/tracekeep/internal/records" // records names a test helper of this package
 	"github.com/arloliu/tracekeep/internal/store"
 )
 
@@ -208,6 +209,15 @@ func (f *Flusher) local(ctx context.Context, work string, fn func() error) error
 	return fn()
 }
 
+// keyless is a store's err without its text, which names the object's key (records.Keyless), its class kept; nil stays nil.
+func keyless(err error) error {
+	if err == nil {
+		return nil
+	}
+
+	return tkrecords.Keyless(err)
+}
+
 // CleanWorkDir removes the working files a crashed process left: their messages were never acknowledged (storage.md §5.1).
 func CleanWorkDir(dir string) error {
 	names, err := filepath.Glob(filepath.Join(dir, workFilePattern))
@@ -285,9 +295,9 @@ func (f *Flusher) register(ctx context.Context, b *Batch, capture *catalog.Captu
 	started := time.Now()
 	if f.LocalStore {
 		// The put runs uninterrupted; ctx still bounds its start, reports its stall and bounds the registration after it.
-		err = f.local(ctx, "put", func() error { return f.Store.Put(context.WithoutCancel(ctx), key, w.file, w.size) })
+		err = f.local(ctx, "put", func() error { return keyless(f.Store.Put(context.WithoutCancel(ctx), key, w.file, w.size)) })
 	} else {
-		err = f.Store.Put(ctx, key, w.file, w.size)
+		err = keyless(f.Store.Put(ctx, key, w.file, w.size))
 	}
 	if err != nil {
 		// An unknown outcome: an object the put may have made is left to the reconciler and the orphan pass (storage.md §5.4).
@@ -324,7 +334,7 @@ func (f *Flusher) register(ctx context.Context, b *Batch, capture *catalog.Captu
 		return outcome, nil
 	case catalog.BeyondHorizon, catalog.LostToTermination:
 		// The key is tombstoned; the object goes, and so would a put delayed across eviction.
-		return outcome, f.Store.Delete(ctx, key)
+		return outcome, keyless(f.Store.Delete(ctx, key))
 	case catalog.AlreadyRegistered, catalog.Tombstoned, catalog.UnadmittedCapture:
 		// A fresh pack id meets no earlier registration or tombstone, and its capture is admitted.
 		return outcome, fmt.Errorf("ingest: registration of the fresh pack %s returned outcome %d", seg.id, outcome)

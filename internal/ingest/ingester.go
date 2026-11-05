@@ -16,6 +16,7 @@ import (
 	"github.com/arloliu/tracekeep/internal/bus"
 	"github.com/arloliu/tracekeep/internal/catalog"
 	"github.com/arloliu/tracekeep/internal/metrics"
+	"github.com/arloliu/tracekeep/internal/safetext"
 	"github.com/arloliu/tracekeep/producer/busconfig"
 )
 
@@ -153,7 +154,7 @@ func (g *Ingester) Run(ctx context.Context) error {
 		case errors.Is(err, errStopFlush):
 			stopErr = err
 		case err != nil:
-			g.Log.Warn("ingest: step failed", "error", err)
+			g.Log.Warn("ingest: step failed", "error", safetext.Text(err.Error()))
 			backoff = min(max(2*backoff, firstStepBackoff), lastStepBackoff)
 			t := time.NewTimer(backoff)
 			select {
@@ -223,7 +224,7 @@ func (g *Ingester) stepFlushing(ctx, flushing context.Context) error {
 	var fetchErr, flushErr error
 	flushDue := func(remove func() []*Batch) {
 		if err := g.flush(flushing, g.take(remove)); err != nil {
-			g.Log.Warn("ingest: flush failed", "error", err)
+			g.Log.Warn("ingest: flush failed", "error", safetext.Text(err.Error()))
 			flushErr = errors.Join(flushErr, err)
 		}
 	}
@@ -358,7 +359,7 @@ func (g *Ingester) handle(ctx context.Context, m jetstream.Msg, generation int64
 	msg.Incarnation, msg.Parked = g.Incarnation.ID, g.Incarnation.Role == catalog.RoleParking
 	if msg.Parked {
 		if err := g.recordCopy(ctx, msg); err != nil {
-			g.Log.Warn("ingest: copy row failed", "msg_id", msg.Env.MsgID, "error", err)
+			g.Log.Warn("ingest: copy row failed", delivery(&msg), "error", safetext.Text(err.Error()))
 			_ = m.NakWithDelay(g.delay(msg.Delivered))
 
 			return
@@ -368,7 +369,7 @@ func (g *Ingester) handle(ctx context.Context, m jetstream.Msg, generation int64
 	d, dec, err := g.Executor.Dispose(ctx, msg)
 	disposed()
 	if err != nil {
-		g.Log.Warn("ingest: disposition failed", "msg_id", msg.Env.MsgID, "error", err)
+		g.Log.Warn("ingest: disposition failed", delivery(&msg), "error", safetext.Text(err.Error()))
 		_ = m.NakWithDelay(g.delay(msg.Delivered))
 
 		return
@@ -409,7 +410,7 @@ func (g *Ingester) alert(d *Delivery, dec Decision) {
 	if !dec.Alert {
 		return
 	}
-	attrs := []any{"reason", dec.Reason, "msg_id", d.Msg.Env.MsgID}
+	attrs := []any{"reason", dec.Reason, delivery(&d.Msg)}
 	if d.MaskErr != nil {
 		attrs = append(attrs, "incident", d.Incident, "error", d.MaskErr.Error())
 	}
@@ -468,7 +469,7 @@ func (g *Ingester) deferMsg(e Entry, reason string, delay time.Duration) {
 func (g *Ingester) acknowledge(ctx context.Context, e Entry) {
 	if err := g.Coordinator.Acknowledge(ctx, e.D, e.Msg); err != nil {
 		// Unacknowledged: the message returns and is acknowledged again under the same resolution.
-		g.Log.Warn("ingest: ack failed", "msg_id", e.D.Msg.Env.MsgID, "error", err)
+		g.Log.Warn("ingest: ack failed", delivery(&e.D.Msg), "error", safetext.Text(err.Error()))
 	}
 }
 
@@ -476,9 +477,9 @@ func (g *Ingester) acknowledge(ctx context.Context, e Entry) {
 // it is neither staged nor terminated for its age, and only an operator ends it.
 func (g *Ingester) evict(ctx context.Context, e Entry) {
 	if _, err := g.Executor.Catalog.EvictParked(ctx, e.D.versionKey()); err != nil {
-		g.Log.Warn("ingest: eviction of a parked version failed", "msg_id", e.D.Msg.Env.MsgID, "error", err)
+		g.Log.Warn("ingest: eviction of a parked version failed", delivery(&e.D.Msg), "error", safetext.Text(err.Error()))
 	}
-	g.Log.Warn("ingest: alert", "reason", ReasonBeyondRetention, "msg_id", e.D.Msg.Env.MsgID, "parked", true)
+	g.Log.Warn("ingest: alert", "reason", ReasonBeyondRetention, delivery(&e.D.Msg), "parked", true)
 	_ = e.Msg.NakWithDelay(g.RedeliveryDelay)
 }
 
@@ -486,7 +487,6 @@ func (g *Ingester) evict(ctx context.Context, e Entry) {
 // a version past the horizon is terminated, a resolved one acknowledged, an unconfirmed copy's original nak'd to be parked again.
 // Without parking, and for a copy already parked, the deferral is nak'd like any other.
 func (g *Ingester) park(ctx context.Context, e Entry, reason string, delivered uint64) {
-	id := e.D.Msg.Env.MsgID
 	if !g.Park || e.D.Msg.Parked {
 		g.deferMsg(e, reason, g.delay(delivered))
 		return
@@ -494,11 +494,11 @@ func (g *Ingester) park(ctx context.Context, e Entry, reason string, delivered u
 	p, err := g.Coordinator.Park(ctx, e, reason, HourOf(g.Executor.Horizon()))
 	switch {
 	case err != nil:
-		cause := slog.Any("error", err)
+		cause := slog.String("error", safetext.Text(err.Error()))
 		if p.Confirmation == Unconfirmed {
 			cause = publishCause(err)
 		}
-		g.Log.Warn("ingest: parking failed", "msg_id", id, cause)
+		g.Log.Warn("ingest: parking failed", delivery(&e.D.Msg), cause)
 		g.deferMsg(e, reason, g.delay(delivered))
 	case p.Begun.BeyondRetention:
 		g.act(ctx, e, Decision{Action: ActTerminate, Reason: ReasonBeyondRetention, Alert: true, Audit: true}, delivered)
@@ -512,6 +512,11 @@ func (g *Ingester) park(ctx context.Context, e Entry, reason string, delivered u
 	default: // parked: the original was acknowledged
 		g.resolved(e)
 	}
+}
+
+// delivery names m in a log by its stream sequence and incarnation, never by its message id, which names its claim object (operations.md §10.4).
+func delivery(m *Message) slog.Attr {
+	return slog.Group("", "stream_seq", m.StreamSeq, "incarnation", m.Incarnation)
 }
 
 // publishCause is an unconfirmed publish's cause as fields built here, never the error's text,
@@ -682,10 +687,10 @@ type ObjectClaims struct{ Store jetstream.ObjectStore }
 func (o ObjectClaims) Get(ctx context.Context, name string, size int64) ([]byte, error) {
 	r, err := o.Store.Get(ctx, name)
 	if errors.Is(err, jetstream.ErrObjectNotFound) {
-		return nil, fmt.Errorf("%w: %s", ErrClaimNotFound, name)
+		return nil, ErrClaimNotFound // the name is the message id, which names the object
 	}
 	if err != nil {
-		return nil, err
+		return nil, keyless(err)
 	}
 	defer r.Close()
 	b := make([]byte, size+1)
@@ -694,7 +699,7 @@ func (o ObjectClaims) Get(ctx context.Context, name string, size int64) ([]byte,
 		err = nil
 	}
 	if err != nil {
-		return nil, err
+		return nil, keyless(err)
 	}
 
 	return b[:n], nil

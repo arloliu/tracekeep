@@ -24,6 +24,7 @@ import (
 	"github.com/arloliu/tracekeep/internal/compact"
 	"github.com/arloliu/tracekeep/internal/maskingtest"
 	"github.com/arloliu/tracekeep/internal/policy"
+	tkrecords "github.com/arloliu/tracekeep/internal/records"
 	"github.com/arloliu/tracekeep/internal/store"
 )
 
@@ -430,7 +431,7 @@ func ingestARun(t *testing.T, p *pipeline, g *Ingester, capture tracepack.UUID, 
 	feedCarriers(t, p, capture, carriers[:half])
 	batches := p.b.All()
 	failedPut := g.flush(t.Context(), batches)
-	if !errors.Is(failedPut, errCrash) {
+	if !errors.Is(failedPut, tkrecords.ErrStore) { // the store's failure, its text dropped
 		t.Fatalf("the flush = %v, want the failed put", failedPut)
 	}
 	if err := g.flush(t.Context(), batches); err != nil {

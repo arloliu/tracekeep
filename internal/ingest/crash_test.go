@@ -18,6 +18,7 @@ import (
 	"github.com/arloliu/tracekeep/internal/catalog/catalogtest"
 	"github.com/arloliu/tracekeep/internal/compact"
 	"github.com/arloliu/tracekeep/internal/metrics"
+	tkrecords "github.com/arloliu/tracekeep/internal/records"
 	"github.com/arloliu/tracekeep/internal/store"
 )
 
@@ -102,7 +103,7 @@ func TestCrashBeforeThePut(t *testing.T) {
 		p.f.Store = &failingPut{ObjectStore: p.st, at: 1}
 		capture := tracepack.UUID{1}
 		hs := p.deliver(t, traffic(t, capture))
-		if _, err := p.flushOne(t); !errors.Is(err, errCrash) {
+		if _, err := p.flushOne(t); !errors.Is(err, tkrecords.ErrStore) { // the crash, reported as the store's failure
 			t.Fatalf("Flush = %v, want the crash", err)
 		}
 		untouched(t, hs)
@@ -359,7 +360,7 @@ func TestPutFailsAfterTheFirstSegment(t *testing.T) {
 		capture := tracepack.UUID{7}
 		msgs := append(traffic(t, capture), otherVersion(t, capture, 1))
 		hs := p.deliver(t, msgs)
-		if _, err := p.flushOne(t); !errors.Is(err, errCrash) {
+		if _, err := p.flushOne(t); !errors.Is(err, tkrecords.ErrStore) { // the crash, reported as the store's failure
 			t.Fatalf("Flush = %v, want the crash", err)
 		}
 		untouched(t, hs)
