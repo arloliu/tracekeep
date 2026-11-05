@@ -5,10 +5,14 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
 	"os"
 	"path/filepath"
+	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"connectrpc.com/connect"
 	"github.com/arloliu/go-secs/tracepack"
@@ -17,6 +21,7 @@ import (
 	"github.com/arloliu/tracekeep/internal/catalog/catalogtest"
 	"github.com/arloliu/tracekeep/internal/records"
 	"github.com/arloliu/tracekeep/internal/store"
+	"github.com/arloliu/tracekeep/internal/store/s3store"
 	"github.com/arloliu/tracekeep/internal/store/s3store/s3fake"
 	tkv1 "github.com/arloliu/tracekeep/proto/tracekeep/v1"
 )
@@ -227,7 +232,7 @@ func TestExportOpensByTheStoredSize(t *testing.T) {
 
 // A sized open failing as the store's fails the worker's attempt: it puts and completes no bundle,
 // and the next attempt, under a new fence, finds the store mended and exports the pack, none left out.
-// The first attempt reads a wrong stored size, extra bytes or an ignored range; the store is mended at the next read set.
+// The first attempt reads a wrong stored size, extra bytes, an ignored range or a missing bucket; the store is mended at the next read set.
 func TestExportWorkerRetriesASizedOpensFailure(t *testing.T) {
 	t.Parallel()
 	same := func(n int64) int64 { return n }
@@ -237,6 +242,8 @@ func TestExportWorkerRetriesASizedOpensFailure(t *testing.T) {
 		{name: "80", resize: func(int64) int64 { return 80 }},
 		{name: "a valid pack with extra bytes", resize: same, extra: true},
 		{name: "an ignored range", resize: same, ignoreRange: true},
+		{name: "a missing bucket", resize: same, bucket: "other"},
+		{name: "a missing bucket, a tiny stored size", resize: func(int64) int64 { return 1 }, bucket: "other"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -254,9 +261,18 @@ func TestExportWorkerRetriesASizedOpensFailure(t *testing.T) {
 			sp := sized(t, &tc)
 			m, capture, p, f := sp.m, sp.capture, sp.p, sp.f
 			body := objectBytes(t, m.st, p.Key)
+			st, ok := m.srv.Store.(*s3store.Store)
+			if !ok {
+				t.Fatalf("store %T, want the fake's s3 store", m.srv.Store)
+			}
+			rb := &rebucketed{}
+			rb.cur.Store(st)
+			m.srv.Store = rb
+			fixed := f.Store(t, s3fake.Bucket)
 			mend = func() {
 				f.IgnoreRange.Store(false)
 				f.Edit(func(objs map[string][]byte) { objs[p.Key] = body })
+				rb.cur.Store(fixed)
 			}
 			stale := workers(t, m)
 			job := startExport(t, m.c, capture)
@@ -285,5 +301,139 @@ func TestExportWorkerRetriesASizedOpensFailure(t *testing.T) {
 				t.Errorf("the failed attempt's work directory: %v, want removed", err)
 			}
 		})
+	}
+}
+
+// rebucketed is an s3 store that a test moves to another bucket while workers use it.
+type rebucketed struct {
+	cur atomic.Pointer[s3store.Store]
+}
+
+func (s *rebucketed) Put(ctx context.Context, key string, r io.ReadSeeker, size int64) error {
+	return s.cur.Load().Put(ctx, key, r, size)
+}
+
+func (s *rebucketed) Open(ctx context.Context, key string) (store.Object, error) {
+	return s.cur.Load().Open(ctx, key)
+}
+
+func (s *rebucketed) OpenSized(ctx context.Context, key string, size int64) (store.Object, error) {
+	return s.cur.Load().OpenSized(ctx, key, size)
+}
+
+func (s *rebucketed) Stat(ctx context.Context, key string) (store.ObjectInfo, error) {
+	return s.cur.Load().Stat(ctx, key)
+}
+
+func (s *rebucketed) List(ctx context.Context, prefix string, fn func(store.ObjectInfo) error) error {
+	return s.cur.Load().List(ctx, prefix, fn)
+}
+
+func (s *rebucketed) Delete(ctx context.Context, key string) error {
+	return s.cur.Load().Delete(ctx, key)
+}
+
+// A worker stopped while its attempt waits on a pack's first GET ends the attempt: it puts no bundle and completes nothing,
+// and the next worker's attempt, under a new fence, exports the pack.
+func TestExportWorkerStoppedAtAPacksFirstGet(t *testing.T) {
+	t.Parallel()
+	sp := sized(t, &sizedCase{resize: func(n int64) int64 { return n }})
+	m, capture := sp.m, sp.capture
+	held := sp.f.HoldNextGet()
+	m.srv.Exports.WorkDir, m.srv.Exports.Lease = t.TempDir(), 600*time.Millisecond
+	ctx, stop := context.WithCancel(t.Context())
+	done := make(chan error, 1)
+	go func() { done <- m.srv.RunExports(ctx, "r0", 20*time.Millisecond) }()
+	job := startExport(t, m.c, capture)
+	<-held
+	stop()
+	if err := <-done; err != nil {
+		t.Fatalf("the stopped worker = %v, want nil", err)
+	}
+	if objs, err := m.c.ExportObjects(t.Context(), job); err != nil || len(objs) != 0 {
+		t.Fatalf("rows = %+v, %v; want none: the stopped attempt put nothing", objs, err)
+	}
+	workers(t, m)
+	j := await(t, m.c, job)
+	if j.State != catalog.ExportDone || j.Fence != 2 {
+		t.Fatalf("job = %+v, want done by the second attempt", j)
+	}
+	if _, err := m.srv.Store.Stat(t.Context(), "exports/"+job.String()+"/1.tar"); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("the stopped attempt's bundle: %v, want none put", err)
+	}
+	if objs, err := m.c.ExportObjects(t.Context(), job); err != nil || len(objs) != 1 || objs[0].Fence != 2 {
+		t.Errorf("rows = %+v, %v; want only the completing attempt's", objs, err)
+	}
+}
+
+// QueryRecords and export attempts reading one pack by its stored size at once each read it whole, asking for no HEAD;
+// with a wrong stored size each fails as the store's, nothing streamed and no bundle built.
+func TestSizedOpensInParallel(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []sizedCase{
+		{name: "the stored size", resize: func(n int64) int64 { return n }, outcome: readsWhole},
+		{name: "smaller", resize: func(n int64) int64 { return n - 1 }, outcome: storeFails},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			sp := sized(t, &tc)
+			req := &exportRequest{Kind: "canonical", Selector: exportSelector{ToolID: tool, Capture: sp.capture.String(), From: hour * nsPerHour, To: (hour + 1) * nsPerHour}}
+			const n = 4
+			errs, bundles := make([]error, 2*n), make([]string, n)
+			var wg sync.WaitGroup
+			for i := range n {
+				wg.Go(func() {
+					msgs, err := sp.m.streamed(t, query(sp.capture, nil))
+					errs[i] = parallelRead(i, tc.outcome, msgs, err)
+				})
+				wg.Go(func() {
+					path, _, err := sp.m.srv.buildBundle(t.Context(), newID(t), req, t.TempDir())
+					bundles[i], errs[n+i] = path, parallelExport(i, tc.outcome, path, err)
+				})
+			}
+			wg.Wait()
+			if err := errors.Join(errs...); err != nil {
+				t.Fatal(err)
+			}
+			if tc.outcome == readsWhole {
+				for _, path := range bundles {
+					var man manifest
+					if err := json.Unmarshal(unpacked(t, path)["manifest.json"], &man); err != nil {
+						t.Fatal(err)
+					}
+					if h := man.Captures[0].Hours[0]; len(h.Packs) != 1 || len(h.LeftOut) != 0 {
+						t.Errorf("hour = %+v, want the pack exported", h)
+					}
+				}
+			}
+			if h := sp.f.Heads.Load(); h != 0 {
+				t.Errorf("%d HEADs, want none", h)
+			}
+		})
+	}
+}
+
+// parallelRead is why QueryRecords i of TestSizedOpensInParallel did not come to outcome, or nil.
+func parallelRead(i int, outcome string, msgs []*tkv1.QueryRecordsResponse, err error) error {
+	recs, reasons, _ := readOf(msgs)
+	switch {
+	case outcome == readsWhole && (err != nil || recs != 1 || len(reasons) != 0):
+		return fmt.Errorf("QueryRecords %d = %d records, incomplete %v, %w; want the record", i, recs, reasons, err)
+	case outcome == storeFails && (connect.CodeOf(err) != connect.CodeUnavailable || recs != 0 || len(reasons) != 0):
+		return fmt.Errorf("QueryRecords %d = %d records, incomplete %v, %w; want unavailable, nothing read", i, recs, reasons, err)
+	default:
+		return nil
+	}
+}
+
+// parallelExport is why export attempt i of TestSizedOpensInParallel did not come to outcome, or nil.
+func parallelExport(i int, outcome, path string, err error) error {
+	switch {
+	case outcome == readsWhole && err != nil:
+		return fmt.Errorf("export %d = %w, want the bundle", i, err)
+	case outcome == storeFails && (!errors.Is(err, records.ErrStore) || path != ""):
+		return fmt.Errorf("export %d = %q, %w; want the store's failure, no bundle", i, path, err)
+	default:
+		return nil
 	}
 }
