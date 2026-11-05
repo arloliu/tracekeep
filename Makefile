@@ -74,6 +74,9 @@ test-vault: ## Run the vault key provider's tests against a dev-mode Vault serve
 test-catalog: ## Run the catalog's tests on MariaDB in a container (needs docker); make test runs them on SQLite
 	@scripts/catalog.sh test
 
+test-clustered: ## Run the clustered-bus tests COUNT times (20) with -race, listed by name; MariaDB too with TRACEKEEP_MARIADB_DSN
+	@scripts/test-clustered.sh
+
 bench: ## Run benchmarks in every module
 	@$(call in_module,go test ./... -run=^$$ -bench=. -benchmem)
 
@@ -156,4 +159,4 @@ packaging-standalone: ## The standalone leg: installs the unit on this host; ref
 ci: check docs-check data-check test ## Every gate, plus the service built without the workspace
 	@GOWORK=off go build ./...
 
-.PHONY: help lint fmt vet check docs-check data-check work hooks test test-latest test-s3 test-vault test-catalog migrate-diff migrate-check bench-smoke bench-catalog bench-catalog-smoke proto web web-check build image image-check chart-check alerts-check unit-check packaging-cluster packaging-standalone bench ci
+.PHONY: help lint fmt vet check docs-check data-check work hooks test test-latest test-s3 test-vault test-catalog test-clustered migrate-diff migrate-check bench-smoke bench-catalog bench-catalog-smoke proto web web-check build image image-check chart-check alerts-check unit-check packaging-cluster packaging-standalone bench ci

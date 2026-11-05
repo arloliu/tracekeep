@@ -59,6 +59,7 @@ make test-latest    # the SDK and bustest on a copy with the latest nats.go (nee
 make test-s3        # the s3 store against MinIO and Ceph RGW in containers (needs docker; its own CI job)
 make test-vault     # the vault key provider against a dev-mode Vault server in a container (needs docker; its own CI job)
 make test-catalog   # the catalog's tests on MariaDB in a container (needs docker; with migrate-check, its own CI job)
+make test-clustered # the tests on a three-server bus, COUNT times (20) with -race, each listed with its passes and skips; MariaDB too when TRACEKEEP_MARIADB_DSN names a server
 make migrate-diff NAME=<change>  # both engines' migration from schema.hcl (needs docker and atlas)
 make migrate-check  # validate the migrations and check schema.hcl for drift
 make proto          # regenerate proto/'s Go and web/src/gen's TypeScript after a .proto change (needs protoc and web's npm ci; the Go plugins are pinned and built under tmp/bin); commit the result
