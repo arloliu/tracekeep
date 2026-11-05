@@ -105,10 +105,12 @@ type object struct {
 	endless bool
 }
 
-// objectStore serves one object, counting the bytes read from it and the closes of its retrievals.
+// objectStore serves one object, counting the bytes read from it and the closes of its retrievals;
+// waiting, when set, is told a read waits for an end that never comes.
 type objectStore struct {
 	jetstream.ObjectStore
-	obj object
+	obj     object
+	waiting func()
 
 	mu           sync.Mutex
 	read, closed int
@@ -117,7 +119,7 @@ type objectStore struct {
 func (s *objectStore) Get(ctx context.Context, _ string, _ ...jetstream.GetObjectOpt) (jetstream.ObjectResult, error) {
 	var r io.Reader = bytes.NewReader(s.obj.data)
 	if s.obj.endless {
-		r = io.MultiReader(r, endless{ctx})
+		r = io.MultiReader(r, endless{ctx: ctx, waiting: s.waiting})
 	}
 
 	return &objectResult{s: s, r: r}, nil
@@ -163,10 +165,17 @@ func (o *objectResult) Close() error {
 	return nil
 }
 
-// endless is an object's end that never comes: a read waits for its context, as the bucket's reader does.
-type endless struct{ ctx context.Context }
+// endless is an object's end that never comes: a read waits for its context, as the bucket's reader does,
+// telling waiting, when set, that it waits.
+type endless struct {
+	ctx     context.Context
+	waiting func()
+}
 
 func (e endless) Read([]byte) (int, error) {
+	if e.waiting != nil {
+		e.waiting()
+	}
 	<-e.ctx.Done()
 
 	return 0, e.ctx.Err()
@@ -204,8 +213,13 @@ func TestClaimReadIsBounded(t *testing.T) {
 			t.Run(tc.name, func(t *testing.T) {
 				st := &objectStore{obj: tc.obj}
 				x.Claims = ObjectClaims{Store: st}
-				ctx, cancel := context.WithTimeout(t.Context(), bound)
-				defer cancel()
+				// Only a read with no end has a deadline, passed once the read waits for it,
+				// so the catalog's calls, slower on some engines and runners than any fixed bound, are never what it ends.
+				ctx := t.Context()
+				if tc.obj.endless {
+					exp := newExpiring(ctx)
+					st.waiting, ctx = exp.expire, exp
+				}
 				_, dec, err := x.Dispose(ctx, m)
 				if !errors.Is(err, tc.err) || dec != tc.want {
 					t.Errorf("Dispose = %+v, %v; want %+v, %v", dec, err, tc.want, tc.err)
