@@ -6,18 +6,24 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/arloliu/go-secs/tracepack"
 )
 
-// blockedLog blocks every call until release is closed, and counts the calls that began.
+// blockedLog blocks every call until release is closed, and counts the calls that began;
+// while pass is set, a call returns at once, uncounted.
 type blockedLog struct {
 	calls   atomic.Int64
+	pass    atomic.Bool
 	entered chan struct{}
 	release chan struct{}
 }
 
 func (l *blockedLog) call() {
+	if l.pass.Load() {
+		return
+	}
 	l.calls.Add(1)
 	select {
 	case l.entered <- struct{}{}:
@@ -83,6 +89,8 @@ type gaugeMetrics struct {
 	finalEntered chan struct{}
 	finalRelease chan struct{}
 	finalDone    atomic.Bool
+	// applied, when set, receives the labels of each current_capture series set.
+	applied chan map[string]string
 }
 
 func (m *gaugeMetrics) Add(name string, labels map[string]string, delta float64) {
@@ -122,6 +130,9 @@ func (m *gaugeMetrics) Set(name string, labels map[string]string, _ float64) {
 		m.mu.Lock()
 		defer m.mu.Unlock()
 		m.set[labels["capture_id"]] = true
+		if m.applied != nil {
+			m.applied <- labels
+		}
 	}
 }
 
@@ -140,13 +151,14 @@ func (m *gaugeMetrics) series() []string {
 	return slices.Collect(maps.Keys(m.set))
 }
 
-// The sink is held in the Logger with its queue full when End clears the capture, so the event that would delete
-// current_capture has no room; once the sink is released and the producer closed, the gauge is gone all the same.
+// current_capture is set for the capture Begin opens; then the sink is held in the Logger with its queue full when End clears the capture,
+// so an event that would delete current_capture has no room; once the sink is released and the producer closed, the gauge is gone all the same.
 func TestCurrentCaptureGaugeSurvivesAFullSinkQueue(t *testing.T) {
 	t.Parallel()
 
 	log := &blockedLog{entered: make(chan struct{}, 1), release: make(chan struct{})}
-	m := &gaugeMetrics{set: map[string]bool{}}
+	log.pass.Store(true)
+	m := &gaugeMetrics{set: map[string]bool{}, applied: make(chan map[string]string, 1)}
 	p, err := New(Config{SubjectPrefix: "tpk", ClaimBucket: "b"}, WithBus(newRecBus()), WithLogger(log), WithMetrics(m))
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -154,7 +166,19 @@ func TestCurrentCaptureGaugeSurvivesAFullSinkQueue(t *testing.T) {
 	if err := p.Begin(t.Context(), CaptureDescriptor{ToolID: "T1", DeviceName: "eqp"}); err != nil {
 		t.Fatalf("Begin: %v", err)
 	}
-	<-log.entered // the rotation's log line holds the sink inside the Logger
+	// Unless the gauge is seen set, its absence after Close proves nothing.
+	select {
+	case labels := <-m.applied:
+		if want := p.rec.Current().ID.String(); labels["capture_id"] != want {
+			t.Fatalf("current_capture set for %s, want Begin's capture %s", labels["capture_id"], want)
+		}
+	case <-time.After(10 * time.Second): // a guard only: the sink applies it at once
+		t.Fatal("current_capture never set for Begin's capture")
+	}
+
+	log.pass.Store(false)
+	sinkLogger{p}.Warn("producer: traffic connection lost")
+	<-log.entered // the line holds the sink inside the Logger
 	for range 2 * sinkEvents {
 		sinkLogger{p}.Warn("producer: traffic connection lost")
 	}
