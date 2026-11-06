@@ -57,7 +57,7 @@ Milestones the owner set after seed v21 §12's (T-52).
 
 ## Active plans
 
-- [P3 — host log feed](specs/tracekeep/proposals/p3-host-log-feed.md), a proposal the owner accepted; its tracepack changes come first, in go-secs
+- [P3 — host log feed](specs/tracekeep/proposals/p3-host-log-feed.md), a proposal the owner accepted (T-59); its tracepack changes are done in go-secs (G5-302), and its specs and phase plan come next
 
 Phase 0 is done (#1, #3, #4, #7, #8).
 Phase 1 is done (#9, #11, #13, #14, #16, #17, #18, #19).

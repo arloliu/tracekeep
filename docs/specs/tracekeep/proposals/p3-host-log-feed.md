@@ -296,6 +296,8 @@ and the stream's backlog beside the traffic stream's (`stream_backlog_messages{s
 
 ## Decided by the owner
 
+On 2026-11-06 the owner accepted the proposal and settled its open points, superseding decisions 4 and 9 among others: `tracekeep-decisions.md` T-59.
+
 On 2026-11-02:
 
 1. The machine API's default selection leaves `log` captures out; a reader asks for them by method.
@@ -316,7 +318,8 @@ On 2026-11-03:
 
 ## Changes tracepack needs
 
-To go back to the go-secs session; tracekeep does not edit go-secs.
+Done in go-secs as G5-302 (tracepack spec v2.42, documentation only; no tracepack release cut), covering the four items below and a [FMT §5] `flush_interval_ns` row.
+The feed builds on tracepack v0.14.0: `PackFacts.DurableRecorder` set, `flush_interval_ns` written, records written with `SegmentWriter.Append`.
 
 1. **[STO §7], one paragraph**:
    "A live converter MAY consume an unbounded stream of entries and write generation-0 `segment` packs as they arrive, flushed at an interval with `flush_interval_ns`,
