@@ -59,7 +59,8 @@ type Config struct {
 	// ClaimBucket is the object store large records are put into.
 	ClaimBucket string
 	// Source names the deployment that records, stable across restarts and leader changes, never a host or pod name;
-	// required, valid UTF-8 of 1 to 255 bytes and not whitespace only. Every capture carries it as recorder_instance_name.
+	// required, valid UTF-8 of 1 to 255 bytes and not whitespace only.
+	// Every capture carries it as recorder_instance_name.
 	Source string
 	// Tunables bounds the lanes and the publisher; every zero field takes its default.
 	Tunables Tunables

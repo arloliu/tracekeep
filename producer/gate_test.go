@@ -198,6 +198,49 @@ func TestAbandonedRotationLeavesTheSeries(t *testing.T) {
 	}
 }
 
+// After an abandoned identity-changing rotation, a fault rotation rotates to the committed descriptor:
+// its successor keeps the committed device and names the faulted capture, and no abandoned candidate is published.
+func TestFaultAfterAnAbandonedRotationKeepsTheSeries(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t, producer.Tunables{FaultBackoff: 50 * time.Millisecond})
+	first := h.begin()
+	h.wait(1)
+	release, done := h.observeHeld()
+
+	ctx, cancel := context.WithTimeout(t.Context(), 100*time.Millisecond)
+	defer cancel()
+	if err := h.p.Rotate(ctx, producer.CaptureDescriptor{EquipmentID: "T2", Device: "tlp"}); !errors.Is(err, producer.ErrRotationAbandoned) {
+		t.Fatalf("Rotate under a held capture lock = %v, want ErrRotationAbandoned", err)
+	}
+	close(release)
+	<-done
+
+	first.Fault()
+	deadline := time.Now().Add(10 * time.Second)
+	var msgs []producer.Msg
+	for !successorOf(t, msgs, first.ID) {
+		if time.Now().After(deadline) {
+			t.Fatalf("no successor of the faulted capture")
+		}
+		h.observe(frame(4)) // a callback on the faulted capture signals the fault
+		wait, stop := context.WithTimeout(t.Context(), 50*time.Millisecond)
+		msgs, _ = h.bus.WaitMessages(wait, len(h.bus.Messages())+1)
+		stop()
+	}
+	want := producer.RecorderInstanceID("T1", "eqp", "test-source")
+	for i := range msgs {
+		if br := check(t, &msgs[i]); br.Descriptor != nil {
+			meta, err := tracepack.DecodeDescriptor(br.Descriptor)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if meta.EquipmentID != "T1" || meta.Device == nil || *meta.Device != "eqp" || meta.RecorderInstanceID != want {
+				t.Errorf("a published start names %s/%v (%s), want T1/eqp (%s)", meta.EquipmentID, meta.Device, meta.RecorderInstanceID, want)
+			}
+		}
+	}
+}
+
 // The bus is down while clock steps fill the reserved lane: the capture faults instead of blocking a callback,
 // its fault rotation finds no room and waits, and once the bus is back the successor's start names the faulted capture.
 func TestReservedLaneFullWhileTheBusIsDown(t *testing.T) {

@@ -363,8 +363,29 @@ func TestPreviousCaptureStaysWithinTheSeries(t *testing.T) {
 		t.Errorf("previous_capture_id = %v, want %s", prev, second.ID)
 	}
 
+	// The equipment alone changes, the device kept: another series too.
+	sameDevice := other
+	sameDevice.EquipmentID = "T3"
+	if err := p.Rotate(t.Context(), sameDevice); err != nil {
+		t.Fatalf("Rotate to another equipment: %v", err)
+	}
+	if prev := previousOf(t, p.rec.Current()); prev != nil {
+		t.Errorf("another equipment's capture names previous %s, want none", prev)
+	}
+
+	// After End, the device alone changes, then the equipment alone: each starts its own series.
 	p.End(t.Context())
-	equipment := testDescriptor()
+	sameEquipment := sameDevice
+	sameEquipment.Device = "eqp"
+	if err := p.Begin(t.Context(), sameEquipment); err != nil {
+		t.Fatal(err)
+	}
+	if prev := previousOf(t, p.rec.Current()); prev != nil {
+		t.Errorf("another device's capture after End names previous %s, want none", prev)
+	}
+
+	p.End(t.Context())
+	equipment := sameEquipment
 	equipment.EquipmentID = "T2"
 	if err := p.Begin(t.Context(), equipment); err != nil {
 		t.Fatal(err)
