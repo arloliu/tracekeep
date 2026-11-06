@@ -177,8 +177,12 @@ Offsets only need to increase within a file.
 A converter that takes a group's lease reads the group's open log captures, their files' watermarks and their `highest_seq`,
 then **deletes and re-creates the group's consumer** before it fetches:
 the stream keeps every message no one acknowledged, so the new consumer delivers them from the oldest, the previous holder's unacknowledged deliveries first,
-and the previous holder's fetches, in-progress acknowledgements and acknowledgements no longer reach it (T-62).
+and the previous holder's fetches end with its consumer (T-62).
 No newer entry can therefore move a watermark past an older one still owed a redelivery, and no timed wait is needed.
+The previous holder's late acknowledgements still reach the new consumer, which keeps its name and applies them by stream sequence, and they are harmless:
+it acknowledges only entries registered under its fence, which are stale here;
+its in-progress acknowledgements only extend a delivery the new holder holds;
+and its negative acknowledgements only repeat one, which the new holder joins as a duplicate.
 An acknowledgement the deletion lost belongs to an entry already registered, whose redelivery is stale.
 A converter that gives up a flush (§15.7 *The bound*) or meets an outcome it cannot resolve gives up the lease too:
 it stops, negatively acknowledges everything it holds, drops its state and takes the lease again by this paragraph, never continuing on state a lost flush left behind.
