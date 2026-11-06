@@ -53,6 +53,8 @@ type DevOptions struct {
 	bound func(api, idp string)
 	// catalog, a test seam, replaces dev's SQLite catalog, as the load harness runs dev on MariaDB; nil in production.
 	catalog *config.Catalog
+	// bus, a test seam, is a bus dev uses instead of starting its own, as the feed's load harness shares a cluster with it; empty in production.
+	bus string
 }
 
 // Dev is tracekeep dev: an embedded bus, a SQLite catalog and an fs store under one directory,
@@ -80,12 +82,16 @@ func NewDev(ctx context.Context, o DevOptions) (*Dev, error) {
 			return nil, fmt.Errorf("dev: %w", err)
 		}
 	}
-	srv, err := testbus.Serve(filepath.Join(o.Dir, "bus"), o.Port)
-	if err != nil {
-		return nil, err
+	d := &Dev{opts: o}
+	url := o.bus
+	if url == "" {
+		srv, err := testbus.Serve(filepath.Join(o.Dir, "bus"), o.Port)
+		if err != nil {
+			return nil, err
+		}
+		d.bus, url = srv, srv.ClientURL()
 	}
-	d := &Dev{bus: srv, opts: o}
-	cfg, err := config.Dev(o.Dir, srv.ClientURL(), o.Flush)
+	cfg, err := config.Dev(o.Dir, url, o.Flush)
 	if err != nil {
 		return nil, errors.Join(err, d.Close())
 	}
@@ -211,8 +217,14 @@ func MigrateCatalog(ctx context.Context, c *config.Catalog) error {
 	return errors.Join(err, held.Close())
 }
 
-// URL is the embedded bus's client URL.
-func (d *Dev) URL() string { return d.bus.ClientURL() }
+// URL is the embedded bus's client URL, or the bus dev was given.
+func (d *Dev) URL() string {
+	if d.bus == nil {
+		return d.opts.bus
+	}
+
+	return d.bus.ClientURL()
+}
 
 // Run runs ingest, compact, the machine API and the simulator until ctx ends.
 func (d *Dev) Run(ctx context.Context) error {
@@ -263,8 +275,10 @@ func (d *Dev) Close() error {
 	if d.api != nil {
 		_ = d.api.Close() // closed already when the api role ran
 	}
-	d.bus.Shutdown()
-	d.bus.WaitForShutdown()
+	if d.bus != nil {
+		d.bus.Shutdown()
+		d.bus.WaitForShutdown()
+	}
 
 	return err
 }

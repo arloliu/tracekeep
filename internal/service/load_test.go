@@ -29,7 +29,10 @@ package service
 //   - recovery measures a recovery backlog's drain (loadrecovery_test.go): K = 100 at 800 fwd/s on dev's 10 s flush, max_ack_pending 600,000 on both consumers,
 //     one more equipment's capture rejected by a refused descriptor and its start and M data records parked, then released and drained,
 //     M from TRACEKEEP_LOAD_RECOVERY_M (1000, 10000 or 100000); an unknown condition runs the episode again, at most three episodes;
-//   - ceiling-smoke, claimcheck-smoke, production-smoke and recovery-smoke check those four in a few minutes, at a low rate over short spans,
+//   - feed measures the host log feed's stream (loadfeed_test.go, docs/plans/host-log-feed.md step 1) on a three-node cluster beside production's traffic:
+//     2,000 equipment at 3,200 entries a second through 32 partitioned group consumers at ingest's times scaled by 1/30, then its controls (about 10 minutes);
+//     feed-real runs the same at ingest's own times, for the plan's numbers (about an hour);
+//   - ceiling-smoke, claimcheck-smoke, production-smoke, recovery-smoke and feed-smoke check those five in a few minutes, at a low rate over short spans,
 //     recovery-smoke parking 200 records unless TRACEKEEP_LOAD_RECOVERY_M names M.
 //
 // TRACEKEEP_LOAD_OFFERED, forwards a second, skips the sweep and offers that rate at the largest K, as the gate does with the rate a baseline recorded.
@@ -91,6 +94,8 @@ type loadSpec struct {
 	// replaces the parked consumer's nak delay.
 	recovery   bool
 	redelivery time.Duration
+	// bus, when not empty, is the bus dev uses instead of its own, as the feed mode shares a cluster with it (loadfeed_test.go).
+	bus string
 }
 
 var (
@@ -205,7 +210,7 @@ func newLoadHarness(t *testing.T, spec loadSpec) *loadHarness {
 	t.Helper()
 	ctx := t.Context()
 	dir := t.TempDir()
-	opts := DevOptions{Dir: dir, Flush: spec.flush, API: "127.0.0.1:0", IDP: "127.0.0.1:0", Log: slog.New(slog.DiscardHandler)}
+	opts := DevOptions{Dir: dir, Flush: spec.flush, API: "127.0.0.1:0", IDP: "127.0.0.1:0", Log: slog.New(slog.DiscardHandler), bus: spec.bus}
 	engine := loadEngine(t)
 	if engine == catalog.EngineMariaDB {
 		dsn, _ := catalogtest.MariaDBEmpty(t)
@@ -321,7 +326,7 @@ func TestLoad(t *testing.T) {
 		return
 	}
 	if mode != "baseline" && mode != "gate" && mode != "smoke" {
-		t.Fatalf("TRACEKEEP_LOAD=%q: want baseline, gate, smoke, ceiling, claimcheck, production or recovery, the last four with -smoke or without", mode)
+		t.Fatalf("TRACEKEEP_LOAD=%q: want baseline, gate, smoke, ceiling, claimcheck, production, recovery or feed, the last five with -smoke or without", mode)
 	}
 	spec := fullLoad
 	if mode == "smoke" {
