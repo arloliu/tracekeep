@@ -121,6 +121,21 @@ func ExecSQL(t testing.TB, c *catalog.Catalog, stmt string) {
 // and its drop, which acts once, called early or at the test's end.
 func mariadbDatabase(t testing.TB) (string, func()) {
 	t.Helper()
+	dsn, drop := MariaDBEmpty(t)
+	mc, err := mysql.ParseDSN(dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mc.MultiStatements = true
+	apply(t, "mysql", mc.FormatDSN(), catalog.EngineMariaDB)
+
+	return dsn, drop
+}
+
+// MariaDBEmpty creates an empty database of the test's own on the configured server, as a catalog a test migrates itself starts,
+// and returns its DSN and its drop, which acts once, called early or at the test's end; it skips the test without a server.
+func MariaDBEmpty(t testing.TB) (string, func()) {
+	t.Helper()
 	dsn := os.Getenv(EnvMariaDB)
 	if dsn == "" && os.Getenv(EnvRequireMariaDB) == "1" {
 		t.Fatalf("%s not set, and %s requires MariaDB", EnvMariaDB, EnvRequireMariaDB)
@@ -138,9 +153,6 @@ func mariadbDatabase(t testing.TB) (string, func()) {
 	drop := sync.OnceFunc(func() { exec(t, server, "DROP DATABASE "+name) })
 	t.Cleanup(drop)
 	mc.DBName = name
-	m := mc.Clone()
-	m.MultiStatements = true
-	apply(t, "mysql", m.FormatDSN(), catalog.EngineMariaDB)
 
 	return mc.FormatDSN(), drop
 }

@@ -21,9 +21,11 @@ package service
 //   - claimcheck runs K = 10 with 10% of its records, then all of them, above the inline limit (max_payload − 4096),
 //     so they travel by claim-check, for acknowledgement's share of a flush (about 10 minutes,
 //     writing some 20 GB of claim objects and packs under the test's temporary directory, which must be on a disk, not memory);
-//   - production runs ingest's defaults, flush 5 m and ack_wait 7 m (the heartbeat every ack_wait/3), at 1,600 records a second over K = 100,
-//     with max_ack_pending 600,000 and then the default 50,000 as its control, each after a warm-up of a flush plus ack_wait,
-//     judged over at least six completed drain cycles spanning at least three heartbeat periods (about 1.5 hours both);
+//   - production runs ingest's defaults scaled by 1/30 (T-61): flush 10 s and ack_wait 14 s (the heartbeat every ack_wait/3), at 1,600 records a second over K = 100,
+//     with max_ack_pending 20,000 and then 1,667 as its control, each after a warm-up of a flush plus ack_wait,
+//     judged over at least six completed drain cycles spanning at least three heartbeat periods (a few minutes both);
+//     it fails unless both are judged with their offered rate held, no drop and no failed pass, the first sustained and the control reaching its budget;
+//   - production-real runs the defaults themselves, flush 5 m and ack_wait 7 m, max_ack_pending 600,000 and 50,000 (about 1.5 hours), for a phase gate;
 //   - recovery measures a recovery backlog's drain (loadrecovery_test.go): K = 100 at 800 fwd/s on dev's 10 s flush, max_ack_pending 600,000 on both consumers,
 //     one more equipment's capture rejected by a refused descriptor and its start and M data records parked, then released and drained,
 //     M from TRACEKEEP_LOAD_RECOVERY_M (1000, 10000 or 100000); an unknown condition runs the episode again, at most three episodes;
@@ -31,6 +33,8 @@ package service
 //     recovery-smoke parking 200 records unless TRACEKEEP_LOAD_RECOVERY_M names M.
 //
 // TRACEKEEP_LOAD_OFFERED, forwards a second, skips the sweep and offers that rate at the largest K, as the gate does with the rate a baseline recorded.
+// TRACEKEEP_LOAD_ENGINE, sqlite (the default) or mariadb, is the catalog's engine; mariadb runs dev on a database of its own on the server
+// TRACEKEEP_MARIADB_DSN names, which it then requires, and reports the SQL counts, read on SQLite only, as unavailable.
 // TRACEKEEP_LOAD_PROFILES is the directory the ceiling's and production's profiles are written to, a new temporary one when unset.
 // The harness profiles in-process (runtime/pprof), so it runs without -cpuprofile, and every profile is the whole process's,
 // the embedded bus server, the producers and the loopbacks included: ingest's share is go tool pprof -top -focus 'tracekeep/internal/(ingest|catalog)',
@@ -58,6 +62,8 @@ import (
 
 	"github.com/arloliu/tracekeep/internal/bus"
 	"github.com/arloliu/tracekeep/internal/catalog"
+	"github.com/arloliu/tracekeep/internal/catalog/catalogtest"
+	"github.com/arloliu/tracekeep/internal/config"
 	"github.com/arloliu/tracekeep/internal/sim"
 	"github.com/arloliu/tracekeep/producer"
 	tkv1 "github.com/arloliu/tracekeep/proto/tracekeep/v1"
@@ -182,8 +188,10 @@ type loadHarness struct {
 	// cons is the traffic consumer, read every sample when the spec is probed, parked the parked one; probe gathers the ingester's seams,
 	// and rec, in the recovery mode, releases the rejected capture.
 	cons, parked jetstream.Consumer
-	probe        *loadProbe
-	rec          *recovery
+	// engine is the catalog's engine, TRACEKEEP_LOAD_ENGINE's.
+	engine string
+	probe  *loadProbe
+	rec    *recovery
 	// claimEvery makes every n-th forward a claim-check one of claimItem bytes, 0 none.
 	claimEvery uint32
 	claimItem  []byte
@@ -197,12 +205,21 @@ func newLoadHarness(t *testing.T, spec loadSpec) *loadHarness {
 	t.Helper()
 	ctx := t.Context()
 	dir := t.TempDir()
-	d, err := NewDev(ctx, DevOptions{Dir: dir, Flush: spec.flush, API: "127.0.0.1:0", IDP: "127.0.0.1:0", Log: slog.New(slog.DiscardHandler)})
+	opts := DevOptions{Dir: dir, Flush: spec.flush, API: "127.0.0.1:0", IDP: "127.0.0.1:0", Log: slog.New(slog.DiscardHandler)}
+	engine := loadEngine(t)
+	if engine == catalog.EngineMariaDB {
+		dsn, _ := catalogtest.MariaDBEmpty(t)
+		opts.catalog = &config.Catalog{Engine: engine, DSN: dsn}
+	}
+	d, err := NewDev(ctx, opts)
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = d.Close() })
-	h := &loadHarness{t: t, d: d, spec: spec, put: &putting{ObjectStore: d.Env.Store, put: make(chan string, 64)}}
+	if got := d.Env.Config.Catalog.Engine; got != engine {
+		t.Fatalf("dev's catalog is %s, want %s", got, engine)
+	}
+	h := &loadHarness{t: t, d: d, spec: spec, engine: engine, put: &putting{ObjectStore: d.Env.Store, put: make(chan string, 64)}}
 	d.Env.Store = h.put
 	if spec.ackWait > 0 {
 		d.Env.Config.Ingest.AckWait = spec.ackWait
@@ -779,4 +796,21 @@ func (h *loadHarness) newestPack(ctx context.Context, cl tracekeepv1connect.Mach
 	}
 
 	return out, nil
+}
+
+// loadEngine is TRACEKEEP_LOAD_ENGINE's catalog engine, sqlite when unset; mariadb requires TRACEKEEP_MARIADB_DSN.
+func loadEngine(t *testing.T) string {
+	t.Helper()
+	switch e := os.Getenv("TRACEKEEP_LOAD_ENGINE"); e {
+	case "", catalog.EngineSQLite:
+		return catalog.EngineSQLite
+	case catalog.EngineMariaDB:
+		if os.Getenv(catalogtest.EnvMariaDB) == "" {
+			t.Fatalf("TRACEKEEP_LOAD_ENGINE=mariadb needs %s", catalogtest.EnvMariaDB)
+		}
+		return e
+	default:
+		t.Fatalf("TRACEKEEP_LOAD_ENGINE=%q: want sqlite or mariadb", e)
+		return ""
+	}
 }

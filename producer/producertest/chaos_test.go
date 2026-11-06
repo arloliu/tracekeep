@@ -4,10 +4,13 @@ import (
 	"context"
 	"fmt"
 	"path"
+	"regexp"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/arloliu/go-secs/tracepack"
 	"github.com/arloliu/tracekeep/producer"
@@ -136,17 +139,23 @@ func (d *brokenDevice) Traffic(ctx context.Context, n int) error {
 	return nil
 }
 
-// The harness fails a device whose HotReload or traffic never reaches the SDK.
+// The harness fails a device whose HotReload or traffic never reaches the SDK, each scenario with the error that names the broken wiring,
+// within a short wait for the bus.
 func TestRunChaosFailsBrokenWiring(t *testing.T) {
 	t.Parallel()
 	for _, tt := range []struct {
 		name                        string
 		hotReload, traffic, startup bool
 		failing                     []string
+		// want matches the error a failing scenario reports for this wiring.
+		want *regexp.Regexp
 	}{
-		{"no hot reload", false, true, false, []string{"bus down and up", "hot reload under traffic", "injected faults"}},
-		{"no traffic", true, false, false, []string{"bus down and up", "hot reload under traffic", "stop under a stalled publisher", "injected faults"}},
-		{"only startup traffic", true, false, true, []string{"bus down and up", "hot reload under traffic", "injected faults"}},
+		{"no hot reload", false, true, false, []string{"bus down and up", "hot reload under traffic", "injected faults"},
+			regexp.MustCompile(`^1 captures on the bus, want \d+: one per Start and HotReload$`)},
+		{"no traffic", true, false, false, []string{"bus down and up", "hot reload under traffic", "stop under a stalled publisher", "injected faults"},
+			regexp.MustCompile(`^(Traffic\(20\) put 0 frames on the bus, want at least 20|the traffic never reached the bus: .*)$`)},
+		{"only startup traffic", true, false, true, []string{"bus down and up", "hot reload under traffic", "injected faults"},
+			regexp.MustCompile(`^Traffic\(20\) put [0-9] frames on the bus, want at least 20$`)},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
@@ -154,7 +163,7 @@ func TestRunChaosFailsBrokenWiring(t *testing.T) {
 			got := map[string]*failures{}
 			producertest.RunChaosReporting(t, func(t *testing.T, bus *producertest.Bus, tun producer.Tunables) producertest.Device {
 				return &brokenDevice{Device: newRecDevice(t, bus, tun), hotReload: tt.hotReload, traffic: tt.traffic, startup: tt.startup}
-			}, func(st *testing.T) testing.TB {
+			}, shortSettle, func(st *testing.T) testing.TB {
 				f := &failures{TB: st}
 				mu.Lock()
 				got[path.Base(st.Name())] = f
@@ -162,10 +171,23 @@ func TestRunChaosFailsBrokenWiring(t *testing.T) {
 				return f
 			})
 			for _, sc := range tt.failing {
-				if f := got[strings.ReplaceAll(sc, " ", "_")]; f == nil || len(f.errors) == 0 {
-					t.Errorf("scenario %q passed", sc)
+				var errs []string
+				if f := got[strings.ReplaceAll(sc, " ", "_")]; f != nil {
+					errs = f.errors
+				}
+				if !slices.ContainsFunc(errs, tt.want.MatchString) {
+					t.Errorf("scenario %q reported %q, want an error matching %s", sc, errs, tt.want)
 				}
 			}
 		})
 	}
+}
+
+// shortSettle bounds the harness's waits for the bus in its own tests, where a broken device would otherwise wait out the default.
+const shortSettle = time.Second
+
+// Healthy wiring passes every scenario within the short wait the failure tests use.
+func TestRunChaosWithAShortWait(t *testing.T) {
+	t.Parallel()
+	producertest.RunChaosReporting(t, newRecDevice, shortSettle, func(t *testing.T) testing.TB { return t })
 }
