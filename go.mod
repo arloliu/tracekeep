@@ -9,9 +9,9 @@ require (
 	ariga.io/atlas v1.3.0
 	connectrpc.com/connect v1.21.1
 	github.com/arloliu/fuda v1.7.1
-	github.com/arloliu/go-secs/tracepack v0.14.0
+	github.com/arloliu/go-secs/tracepack v0.15.1
 	github.com/arloliu/go-secs/v2 v2.8.0
-	github.com/arloliu/tracekeep/producer v0.5.0
+	github.com/arloliu/tracekeep/producer v0.6.0
 	github.com/aws/aws-sdk-go-v2 v1.47.4
 	github.com/aws/aws-sdk-go-v2/credentials v1.20.10
 	github.com/aws/aws-sdk-go-v2/service/s3 v1.114.5

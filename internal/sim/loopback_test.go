@@ -78,7 +78,7 @@ func TestWaiterConforms(t *testing.T) {
 }
 
 func testOptions() Options {
-	return Options{ToolID: "SIM-TOOL", DeviceName: "eqp", SessionID: 1, T3: 50 * time.Millisecond, WithholdEvery: 5}
+	return Options{EquipmentID: "SIM-EQP", Device: "eqp", SessionID: 1, T3: 50 * time.Millisecond, WithholdEvery: 5}
 }
 
 func newTestLoopback(t *testing.T, cfg producer.Config, opts ...producer.Option) *Loopback {
@@ -89,6 +89,9 @@ func newTestLoopback(t *testing.T, cfg producer.Config, opts ...producer.Option)
 func newTestLoopbackWith(t *testing.T, cfg producer.Config, lo Options, opts ...producer.Option) *Loopback {
 	t.Helper()
 	cfg.SubjectPrefix, cfg.ClaimBucket = "tpk", "tpk-objects"
+	if cfg.Source == "" {
+		cfg.Source = "test-source"
+	}
 	p, err := producer.New(cfg, opts...)
 	if err != nil {
 		t.Fatalf("New: %v", err)

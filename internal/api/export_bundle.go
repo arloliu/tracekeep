@@ -91,15 +91,16 @@ type exportRequest struct {
 }
 
 type exportSelector struct {
-	ToolID  string   `json:"tool_id"`
-	Devices []string `json:"devices,omitempty"`
-	Capture string   `json:"capture_id,omitempty"`
-	From    int64    `json:"from"`
-	To      int64    `json:"to"`
+	EquipmentID string   `json:"equipment_id"`
+	Devices     []string `json:"devices,omitempty"`
+	Sources     []string `json:"sources,omitempty"`
+	Capture     string   `json:"capture_id,omitempty"`
+	From        int64    `json:"from"`
+	To          int64    `json:"to"`
 }
 
 func (r *exportRequest) selector() (catalog.Selector, error) {
-	sel := catalog.Selector{ToolID: r.Selector.ToolID, Devices: r.Selector.Devices, From: r.Selector.From, To: r.Selector.To}
+	sel := catalog.Selector{EquipmentID: r.Selector.EquipmentID, Devices: r.Selector.Devices, Sources: r.Selector.Sources, From: r.Selector.From, To: r.Selector.To}
 	if r.Selector.Capture != "" {
 		id, err := tracepack.ParseUUID(r.Selector.Capture)
 		if err != nil {

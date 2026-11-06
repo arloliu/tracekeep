@@ -343,7 +343,7 @@ func stage(t *testing.T, c *catalog.Catalog, d *Delivery) {
 	id := newPackID()
 	seq := d.Raw.Version.Seq
 	p := &catalog.Pack{
-		ID: id, Capture: d.Raw.Version.Capture, ToolID: "T1", Hour: HourOf(d.Raw.TS), Role: catalog.RoleSegment, Key: "staging/" + id.String(),
+		ID: id, Capture: d.Raw.Version.Capture, EquipmentID: "T1", Hour: HourOf(d.Raw.TS), Role: catalog.RoleSegment, Key: "staging/" + id.String(),
 		Size: 1, SeqStart: seq, FormatMinor: 1, Ranges: []catalog.Range{{SeqFrom: seq, SeqTo: seq, TSFrom: d.Raw.TS, TSTo: d.Raw.TS}},
 	}
 	ev := &catalog.Evidence{Deliveries: []catalog.Identity{*d.identity()}}

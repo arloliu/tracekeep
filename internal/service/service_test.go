@@ -157,7 +157,7 @@ func TestIngestJoinsBothConsumers(t *testing.T) {
 			t.Fatal(err)
 		}
 		res, err := c.Admit(ctx, &catalog.Identity{Version: catalog.VersionKey{Capture: tracepack.UUID{5}}, Incarnation: 1, StreamSeq: 1},
-			&catalog.Descriptor{Bytes: []byte("d"), ToolID: "T1", RecorderInstanceID: tracepack.UUID{6}, Device: "eqp", OriginNS: 1})
+			&catalog.Descriptor{Bytes: []byte("d"), EquipmentID: "T1", RecorderInstanceID: tracepack.UUID{6}, Device: "eqp", OriginNS: 1})
 		if err != nil || res.ConfigID != newer {
 			t.Errorf("Admit after the stop = %+v, %v; want the newer configuration bound, no member left", res, err)
 		}

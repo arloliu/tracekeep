@@ -220,17 +220,20 @@ func (d *Dev) Run(ctx context.Context) error {
 	return g.Wait()
 }
 
+// devSource is the source of the dev simulator's captures, fixed so its series survive a restart.
+const devSource = "tracekeep-dev"
+
 // simulate runs the loopback simulator on the embedded bus until ctx ends.
 func (d *Dev) simulate(ctx context.Context) error {
 	c := d.Env.Config
 	p, err := producer.New(producer.Config{
-		Servers: []string{d.URL()}, SubjectPrefix: c.Bus.SubjectPrefix, ClaimBucket: c.Bus.ClaimBucket,
+		Servers: []string{d.URL()}, SubjectPrefix: c.Bus.SubjectPrefix, ClaimBucket: c.Bus.ClaimBucket, Source: devSource,
 	}, producer.WithLogger(d.Env.Log.With("role", "sim")))
 	if err != nil {
 		return err
 	}
 	defer p.Close()
-	l, err := sim.NewLoopback(p, sim.Options{ToolID: "SIM-TOOL", DeviceName: "eqp", SessionID: 1, T3: 45 * time.Second})
+	l, err := sim.NewLoopback(p, sim.Options{EquipmentID: "SIM-EQP", Device: "eqp", SessionID: 1, T3: 45 * time.Second})
 	if err != nil {
 		return err
 	}

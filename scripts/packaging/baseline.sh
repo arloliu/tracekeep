@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # baseline: the upgrade's baseline (architecture.md §3.3 *Packaging tests*): the newest strict ancestor of HEAD on main
-# that has the chart and whose packaging run passed, never HEAD itself or a descendant; nothing when none exists.
+# that has the chart, holds the identity reset's migration (catalog.md §7.4) and whose packaging run passed,
+# never HEAD itself or a descendant; nothing when none exists, since no catalog crosses the reset.
 # Needs the full history (a checkout with fetch-depth 0), GITHUB_REPOSITORY and GH_TOKEN, refusing to run without them;
 # a failed lookup fails, so it is never taken for a baseline that does not exist.
 set -euo pipefail
@@ -27,6 +28,7 @@ while read -r sha; do
 	[ "$sha" != "$head" ] || continue
 	git merge-base --is-ancestor "$sha" "$head" 2>/dev/null || continue
 	git cat-file -e "$sha:deploy/helm/tracekeep/Chart.yaml" 2>/dev/null || continue
+	git ls-tree --name-only "$sha" migrations/sqlite/ | grep -q '_equipment_identity\.sql$' || continue
 	echo "$sha"
 	exit 0
 done < "$runs"

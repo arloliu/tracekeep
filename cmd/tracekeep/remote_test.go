@@ -123,9 +123,9 @@ func TestAdminThroughTheRunningService(t *testing.T) {
 	}
 	code, stdout, stderr = tracekeep(t, "status", "--config", cli)
 	var st struct {
-		Tools []any `json:"tools"`
+		Equipment []any `json:"equipment"`
 	}
-	if code != 0 || json.Unmarshal([]byte(stdout), &st) != nil || st.Tools == nil {
+	if code != 0 || json.Unmarshal([]byte(stdout), &st) != nil || st.Equipment == nil {
 		t.Errorf("status through the service = %d, %q, %s", code, stdout, stderr)
 	}
 	if code, _, _ := tracekeep(t, "admin", "--config", cli, "no", "such"); code != 2 {

@@ -90,6 +90,11 @@ the Deployments change only after it succeeds, and a failed one leaves them as t
 It fails fast while the bus or the catalog does not answer and is retried until `migrate.backoffLimit` attempts or `migrate.activeDeadlineSeconds` (default 20, 15 min);
 `--timeout` must exceed the deadline. An install whose dependencies never answer fails then, and is run again once they do.
 
+**Across the identity reset** (equipment, source and device, `docs/specs/tracekeep/catalog.md` §7.4), an upgrade keeps nothing:
+the reset's migration refuses a catalog holding any capture and leaves it as it was.
+Scale every Deployment of the release to zero, so no old `ingest` admits a capture while the Job migrates,
+then install on a fresh catalog, a fresh bucket and fresh traffic and parking streams, and point the gateways at a producer SDK of v0.6.0 or later, which names its source.
+
 **Before the first capture**, stage and activate a masking configuration (`docs/guides/production-admission.md`):
 a capture is admitted only under one, and an `ingest` replica executes the configurations present when it starts.
 On a first install, install with `ingest.replicas: 0`, then
@@ -112,4 +117,4 @@ for a Prometheus that scrapes the gateways too. The rules are in `docs/specs/tra
 
 `make chart-check` lints and renders the chart and validates the manifests; `make alerts-check` tests the alert rules with promtool.
 `make packaging-cluster` installs the chart on kind with every dependency and drives a browser through a troubleshooting session,
-the fresh install and an upgrade from the newest ancestor on `main` whose packaging run passed (`scripts/packaging/cluster.sh`).
+the fresh install and an upgrade from the newest ancestor on `main` past the identity reset whose packaging run passed (`scripts/packaging/cluster.sh`).

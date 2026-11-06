@@ -1,7 +1,7 @@
 package service
 
 // The load harness's recovery mode (load_test.go's header): a recovery backlog's drain beside the offered rate.
-// One more tool's capture is rejected by a refused descriptor and its start and M data records parked capture-rejected;
+// One more equipment's capture is rejected by a refused descriptor and its start and M data records parked capture-rejected;
 // once the cohort is parked by identity, a release switches the descriptor acceptance the ingester consults
 // while the parked consumer is held at a step's start, reads the monotonic clock and lets the consumer go;
 // the drain runs to every version registered and every copy's row acked, read from the catalog by identity.
@@ -32,9 +32,9 @@ import (
 )
 
 const (
-	// blockerTool is the rejected capture's tool; blockerEvery paces its forwards, two records each.
-	blockerTool  = "LOAD-PARKED"
-	blockerEvery = time.Millisecond
+	// blockerEquipment is the rejected capture's equipment; blockerEvery paces its forwards, two records each.
+	blockerEquipment = "LOAD-PARKED"
+	blockerEvery     = time.Millisecond
 	// cohortPoll paces the catalog reads of the cohort, which grow with M, off the sampling;
 	// cohortIdle bounds the time between two reads of the drain's cohort whatever the probe counts.
 	cohortPoll = time.Second
@@ -60,11 +60,21 @@ type recovery struct {
 	parking jetstream.Stream
 }
 
-// newRecovery installs the release's seams on e: the descriptor acceptance, refusing a blank device until the release, and the parked consumer's hold.
+// refusedDevice is the blocker's device, a valid one the release's acceptance refuses until the release.
+const refusedDevice = "refused-until-release"
+
+// newRecovery installs the release's seams on e: the descriptor acceptance, refusing refusedDevice until the release, and the parked consumer's hold.
 // The probe must be e's timed seam.
 func newRecovery(e *Env, probe *loadProbe) *recovery {
 	r := &recovery{e: e, probe: probe}
-	e.accepts = func(d []byte) bool { return r.released.Load() || ingest.AcceptedDescriptor(d) }
+	e.accepts = func(d []byte) bool {
+		if r.released.Load() {
+			return true
+		}
+		m, err := tracepack.DecodeDescriptor(d)
+
+		return err == nil && (m.Device == nil || *m.Device != refusedDevice) && ingest.AcceptedDescriptor(d)
+	}
 	e.stepping = r.step
 
 	return r
@@ -91,7 +101,7 @@ func (r *recovery) step(ctx context.Context) {
 // barrier waits, polling every poll for at most limit, until the blocker's capture is parked by identity (cohortParked):
 // its start, its connection's control frames and events it observed and its m data records, each a version.
 // The originals' acknowledgements the probe counts start each catalog read.
-func (r *recovery) barrier(ctx context.Context, blocker *toolMetrics, m int, poll, limit time.Duration) error {
+func (r *recovery) barrier(ctx context.Context, blocker *equipmentMetrics, m int, poll, limit time.Duration) error {
 	ss, incs, err := r.e.streams(ctx)
 	if err != nil {
 		return err
@@ -283,15 +293,15 @@ func recoveryEpisode(t *testing.T, spec loadSpec, k int, rate float64, m int, li
 	c := h.d.Env.Config
 	h.log(fmt.Sprintf("recovery: flush %s, ack_wait %s, parked redelivery %s, %.0f fwd/s over K = %d, M = %d; warm-up %s",
 		c.Ingest.FlushInterval, c.Ingest.AckWait, c.Parking.RedeliveryDelay, rate, k, m, spec.warmup))
-	tools := h.startTools(k)
-	defer h.stopTools(tools)
-	var blocker *loadTool
-	err := startTool(ctx, h.d.Env, &blocker, blockerTool, " ") // a blank device: refused
-	defer h.stopTools([]*loadTool{blocker})
+	equipment := h.startEquipment(k)
+	defer h.stopEquipment(equipment)
+	var blocker *loadEquipment
+	err := startEquipment(ctx, h.d.Env, &blocker, blockerEquipment, refusedDevice)
+	defer h.stopEquipment([]*loadEquipment{blocker})
 	if err != nil {
 		t.Fatal(err)
 	}
-	stop := h.drive(ctx, tools, rate)
+	stop := h.drive(ctx, equipment, rate)
 	defer stop()
 	wait(t, spec.warmup)
 
@@ -312,9 +322,9 @@ func recoveryEpisode(t *testing.T, spec loadSpec, k int, rate float64, m int, li
 	var from loadMark
 	var auditN, auditSum float64
 	clock, letGo, err := h.rec.release(ctx, time.Minute, func() time.Time {
-		from = h.mark(tools)
+		from = h.mark(equipment)
 		auditN, auditSum = h.histogram("tracekeep_catalog_audit_wait_seconds")
-		samples = append(samples, h.sample(tools))
+		samples = append(samples, h.sample(equipment))
 
 		return samples[0].at
 	})
@@ -326,7 +336,7 @@ func recoveryEpisode(t *testing.T, spec loadSpec, k int, rate float64, m int, li
 	called := make(chan struct{})
 	go func() {
 		defer close(called)
-		h.packURLs(cctx, cl, tools[0].id, &calls)
+		h.packURLs(cctx, cl, equipment[0].id, &calls)
 	}()
 	letGo()
 
@@ -343,7 +353,7 @@ func recoveryEpisode(t *testing.T, spec loadSpec, k int, rate float64, m int, li
 			return loadSample{}, err
 		}
 
-		return h.read(tools)
+		return h.read(equipment)
 	})
 	tick := time.NewTicker(loadTick)
 	defer tick.Stop()
@@ -363,14 +373,14 @@ func recoveryEpisode(t *testing.T, spec loadSpec, k int, rate float64, m int, li
 			t.Fatalf("the drain did not complete within %s: %s", limit, why.Load())
 		case <-tick.C:
 		}
-		samples = append(samples, h.sample(tools))
+		samples = append(samples, h.sample(equipment))
 		if ci, err := h.parked.Info(ctx); err == nil {
 			parkedRedelivered = max(parkedRedelivered, uint64(ci.NumRedelivered)) //nolint:gosec // a count
 		}
 	}
 	// A tick's sample taken while the completion's was under way is past it; the completion's closes the drain.
 	samples = append(slices.DeleteFunc(samples, func(s loadSample) bool { return !s.at.Before(end.at) }), end.sample)
-	to := h.mark(tools) // the stages' running totals and the redeliveries' counters, reported, not judged
+	to := h.mark(equipment) // the stages' running totals and the redeliveries' counters, reported, not judged
 	endCalls()
 	<-called
 
@@ -503,7 +513,7 @@ func (h *loadHarness) gathered(name string) (n, sum float64, err error) {
 }
 
 // park forwards m/2 requests through lt, paced, so its capture publishes m data records, a primary and a reply each.
-func park(ctx context.Context, lt *loadTool, m int) error {
+func park(ctx context.Context, lt *loadEquipment, m int) error {
 	tick := time.NewTicker(blockerEvery)
 	defer tick.Stop()
 	for range m / 2 {
@@ -604,8 +614,8 @@ func parkedCohort(t *testing.T, c *catalog.Catalog, m int, limit time.Duration, 
 	case err := <-done:
 		t.Fatalf("ingest ended before it joined: %v", err)
 	}
-	var blocker *loadTool
-	err := startTool(ctx, e, &blocker, blockerTool, " ")
+	var blocker *loadEquipment
+	err := startEquipment(ctx, e, &blocker, blockerEquipment, refusedDevice)
 	t.Cleanup(func() {
 		sctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), simStop)
 		defer cancel()

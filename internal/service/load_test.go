@@ -1,6 +1,6 @@
 package service
 
-// The load harness of the write-connection case: tracekeep dev without its simulator, under K simulated tools on its bus,
+// The load harness of the write-connection case: tracekeep dev without its simulator, under K simulated equipment on its bus,
 // each its own producer and loopback; it sweeps the rate each K sustains, offers half the highest at the largest K,
 // and measures PackURL under that load. loadjudge_test.go judges what it records.
 //
@@ -13,7 +13,7 @@ package service
 //   - baseline records the numbers: the sweep, the offered rate, and a PackURL measurement of at least 1,000 audited successes,
 //     which must be a valid record; its gate verdict is reported and need not pass;
 //   - gate is the write-connection gate: the same measurement must also pass the gate (1,000 audited successes, p99 within 2 s);
-//   - smoke checks the harness itself in a few minutes: two tools at a low rate over short windows, no call count required;
+//   - smoke checks the harness itself in a few minutes: two equipment at a low rate over short windows, no call count required;
 //   - ceiling profiles where ingest stops keeping up: K = 10 and 100 at 1,600 and 3,200 fwd/s under dev's 50,000 pending slots,
 //     then 3,200 fwd/s with max_ack_pending raised to 200,000, past the records a 10 s flush holds, each point with its CPU,
 //     allocation, block and mutex profiles, each stage's wall time, the catalog's SQL statements a message, the consumer's
@@ -25,7 +25,7 @@ package service
 //     with max_ack_pending 600,000 and then the default 50,000 as its control, each after a warm-up of a flush plus ack_wait,
 //     judged over at least six completed drain cycles spanning at least three heartbeat periods (about 1.5 hours both);
 //   - recovery measures a recovery backlog's drain (loadrecovery_test.go): K = 100 at 800 fwd/s on dev's 10 s flush, max_ack_pending 600,000 on both consumers,
-//     one more tool's capture rejected by a refused descriptor and its start and M data records parked, then released and drained,
+//     one more equipment's capture rejected by a refused descriptor and its start and M data records parked, then released and drained,
 //     M from TRACEKEEP_LOAD_RECOVERY_M (1000, 10000 or 100000); an unknown condition runs the episode again, at most three episodes;
 //   - ceiling-smoke, claimcheck-smoke, production-smoke and recovery-smoke check those four in a few minutes, at a low rate over short spans,
 //     recovery-smoke parking 200 records unless TRACEKEEP_LOAD_RECOVERY_M names M.
@@ -73,8 +73,8 @@ type loadSpec struct {
 	windows, final int
 	// calls are the audited PackURL successes a measurement runs until, its windows extended as needed.
 	calls int
-	// tools are the sweep's K, each swept from start forwards a second, doubling, to at most top.
-	tools      []int
+	// equipment are the sweep's K, each swept from start forwards a second, doubling, to at most top.
+	equipment  []int
 	start, top float64
 	// ackWait and maxAckPending, when not zero, replace dev's consumer configuration, which the harness asserts took effect.
 	ackWait       time.Duration
@@ -91,17 +91,17 @@ var (
 	// fullLoad is point 27's sweep, at dev's default flush interval.
 	fullLoad = loadSpec{
 		flush: 10 * time.Second, warmup: time.Minute, window: 10 * time.Second, windows: 12, final: 60, calls: gateCalls,
-		tools: []int{1, 10, 100}, start: 100, top: 102_400,
+		equipment: []int{1, 10, 100}, start: 100, top: 102_400,
 	}
-	// smokeLoad checks the harness: one point of two tools, then the offered rate and PackURL, over short windows.
+	// smokeLoad checks the harness: one point of two equipment, then the offered rate and PackURL, over short windows.
 	smokeLoad = loadSpec{
 		flush: time.Second, warmup: 5 * time.Second, window: 5 * time.Second, windows: 6, final: 6,
-		tools: []int{2}, start: 20, top: 20,
+		equipment: []int{2}, start: 20, top: 20,
 	}
 )
 
 const (
-	// loadT3 is every simulated tool's T3, as dev's simulator's.
+	// loadT3 is every simulated equipment's T3, as dev's simulator's.
 	loadT3 = 45 * time.Second
 	// quiesceLimit bounds the wait between points for the queues and the backlog to empty.
 	quiesceLimit = 10 * time.Minute
@@ -111,17 +111,17 @@ const (
 	packURLRetries  = 3
 )
 
-// toolMetrics is a producer's Metrics: the gauges, the drops and the claim objects put that the harness reads.
-type toolMetrics struct {
+// equipmentMetrics is a producer's Metrics: the gauges, the drops and the claim objects put that the harness reads.
+type equipmentMetrics struct {
 	mu                              sync.Mutex
 	ring, reserved, dropped, claims float64
 	// data and other are the records observed, data records and the rest (the connection's control frames and events), the start apart.
 	data, other float64
 }
 
-var _ producer.Metrics = (*toolMetrics)(nil)
+var _ producer.Metrics = (*equipmentMetrics)(nil)
 
-func (m *toolMetrics) Add(name string, labels map[string]string, delta float64) {
+func (m *equipmentMetrics) Add(name string, labels map[string]string, delta float64) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	switch {
@@ -137,7 +137,7 @@ func (m *toolMetrics) Add(name string, labels map[string]string, delta float64) 
 	}
 }
 
-func (m *toolMetrics) Set(name string, _ map[string]string, value float64) {
+func (m *equipmentMetrics) Set(name string, _ map[string]string, value float64) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	switch name {
@@ -149,22 +149,22 @@ func (m *toolMetrics) Set(name string, _ map[string]string, value float64) {
 	}
 }
 
-func (*toolMetrics) Observe(string, map[string]string, float64) {}
-func (*toolMetrics) Delete(string, map[string]string)           {}
+func (*equipmentMetrics) Observe(string, map[string]string, float64) {}
+func (*equipmentMetrics) Delete(string, map[string]string)           {}
 
-func (m *toolMetrics) read() (ring, reserved, dropped float64) {
+func (m *equipmentMetrics) read() (ring, reserved, dropped float64) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
 	return m.ring, m.reserved, m.dropped
 }
 
-// loadTool is one simulated tool, the forwards the harness made through it counted.
-type loadTool struct {
+// loadEquipment is one simulated equipment, the forwards the harness made through it counted.
+type loadEquipment struct {
 	id   string
 	p    *producer.Producer
 	l    *sim.Loopback
-	m    *toolMetrics
+	m    *equipmentMetrics
 	made atomic.Uint64
 	// forwards counts the forwards attempted, which choose the claim-check ones; claims, the claim-check forwards' system bytes.
 	forwards, claims atomic.Uint32
@@ -257,19 +257,19 @@ func newLoadHarness(t *testing.T, spec loadSpec) *loadHarness {
 	return h
 }
 
-// Two simulated tools on dev's bus, each its own producer and loopback, are admitted as two captures, one of each tool.
-func TestLoadToolsAdmittedAsTwoCaptures(t *testing.T) {
+// Two simulated equipment on dev's bus, each its own producer and loopback, are admitted as two captures, one of each piece of equipment.
+func TestLoadEquipmentAdmittedAsTwoCaptures(t *testing.T) {
 	t.Parallel()
 	h := newLoadHarness(t, loadSpec{flush: 200 * time.Millisecond})
-	tools := h.startTools(2)
-	defer h.stopTools(tools)
-	for _, lt := range tools {
+	equipment := h.startEquipment(2)
+	defer h.stopEquipment(equipment)
+	for _, lt := range equipment {
 		if err := lt.l.Traffic(t.Context(), 3); err != nil {
 			t.Fatal(err)
 		}
 	}
-	// A segment's key names its tool; each tool's first registered segment admitted its capture.
-	waiting := map[string]bool{tools[0].id: true, tools[1].id: true}
+	// A segment's key names its equipment; each piece of equipment's first registered segment admitted its capture.
+	waiting := map[string]bool{equipment[0].id: true, equipment[1].id: true}
 	for len(waiting) > 0 {
 		key := <-h.put.put
 		for id := range waiting {
@@ -280,14 +280,14 @@ func TestLoadToolsAdmittedAsTwoCaptures(t *testing.T) {
 	}
 	now := time.Now()
 	seen := map[tracepack.UUID]bool{}
-	for _, lt := range tools {
-		cs, err := h.d.Env.Catalog.ListCaptures(t.Context(), catalog.Selector{ToolID: lt.id, From: now.Add(-time.Hour).UnixNano(), To: now.Add(time.Hour).UnixNano()},
+	for _, lt := range equipment {
+		cs, err := h.d.Env.Catalog.ListCaptures(t.Context(), catalog.Selector{EquipmentID: lt.id, From: now.Add(-time.Hour).UnixNano(), To: now.Add(time.Hour).UnixNano()},
 			h.d.Env.Config.Compact.QuietPeriod)
 		if err != nil {
 			t.Fatal(err)
 		}
 		if len(cs) != 1 || seen[cs[0].ID] {
-			t.Fatalf("tool %s's captures %+v, want one of its own", lt.id, cs)
+			t.Fatalf("equipment %s's captures %+v, want one of its own", lt.id, cs)
 		}
 		seen[cs[0].ID] = true
 	}
@@ -323,21 +323,21 @@ func TestLoad(t *testing.T) {
 	h.log(fmt.Sprintf("%s: flush %s, warm-up %s, %d windows of %s a point, %d at the offered rate", mode, spec.flush, spec.warmup, spec.windows, spec.window, spec.final),
 		"", "| K | offered fwd/s | made fwd/s | published rec/s | dropped | backlog slope | ring slope | reserved slope | bound | sustained |",
 		"|---|---|---|---|---|---|---|---|---|---|")
-	var tools []*loadTool
+	var equipment []*loadEquipment
 	if offered == 0 {
-		tools, offered = h.sweep()
-		k := len(tools)
-		v := h.measure(tools, offered, spec.final, nil)
+		equipment, offered = h.sweep()
+		k := len(equipment)
+		v := h.measure(equipment, offered, spec.final, nil)
 		h.log("", fmt.Sprintf("Offered rate: %.0f fwd/s at K = %d over %d windows", offered, k, spec.final))
 		h.row(k, v)
 		if !v.sustained {
 			t.Errorf("the offered rate %.0f at K = %d is not sustained: %s", offered, k, v.why)
 		}
 	} else {
-		tools = h.startTools(spec.tools[len(spec.tools)-1])
+		equipment = h.startEquipment(spec.equipment[len(spec.equipment)-1])
 	}
-	defer h.stopTools(tools)
-	r := h.measurePackURL(tools, offered)
+	defer h.stopEquipment(equipment)
+	r := h.measurePackURL(equipment, offered)
 	gate := r.gate()
 	h.log(fmt.Sprintf("gate (%d audited successes, p99 within %s): %s", gateCalls, gateP99, verdict(gate)))
 	switch err := r.accept(); {
@@ -358,20 +358,20 @@ func verdict(err error) string {
 	return "pass"
 }
 
-// sweep runs each K of the spec at doubling rates while sustained, and returns the largest K's tools, still running,
+// sweep runs each K of the spec at doubling rates while sustained, and returns the largest K's equipment, still running,
 // with the offered rate: half the highest rate sustained there.
-func (h *loadHarness) sweep() ([]*loadTool, float64) {
+func (h *loadHarness) sweep() ([]*loadEquipment, float64) {
 	spec := h.spec
-	var tools []*loadTool
+	var equipment []*loadEquipment
 	var highest float64
-	summary := make([]string, 0, 3+len(spec.tools))
+	summary := make([]string, 0, 3+len(spec.equipment))
 	summary = append(summary, "", "| K | highest sustained fwd/s |", "|---|---|")
-	for _, k := range spec.tools {
-		h.stopTools(tools)
-		tools = h.startTools(k)
+	for _, k := range spec.equipment {
+		h.stopEquipment(equipment)
+		equipment = h.startEquipment(k)
 		highest = 0
 		for rate := spec.start; rate <= spec.top; rate *= 2 {
-			v := h.measure(tools, rate, spec.windows, nil)
+			v := h.measure(equipment, rate, spec.windows, nil)
 			h.row(k, v)
 			if !v.sustained {
 				break
@@ -382,11 +382,11 @@ func (h *loadHarness) sweep() ([]*loadTool, float64) {
 	}
 	h.log(summary...)
 	if highest == 0 {
-		h.stopTools(tools)
-		h.t.Fatalf("no rate sustained at K = %d", len(tools))
+		h.stopEquipment(equipment)
+		h.t.Fatalf("no rate sustained at K = %d", len(equipment))
 	}
 
-	return tools, highest / 2
+	return equipment, highest / 2
 }
 
 func (h *loadHarness) log(lines ...string) { h.report = append(h.report, lines...) }
@@ -396,47 +396,49 @@ func (h *loadHarness) row(k int, v loadVerdict) {
 		k, v.offered, v.made, v.published, v.dropped, v.backlogSlope, v.ringSlope, v.reservedSlope, v.bound, v.sustained, v.why))
 }
 
-// startTools starts k simulated tools, each its own producer and loopback with its own tool id, dev's subject prefix and claim bucket,
+// startEquipment starts k simulated equipment, each its own producer and loopback with its own equipment id, dev's subject prefix and claim bucket,
 // an explicit T3, and plain traffic: no withholding, process program or thinning.
-func (h *loadHarness) startTools(k int) []*loadTool {
+func (h *loadHarness) startEquipment(k int) []*loadEquipment {
 	h.t.Helper()
-	tools := make([]*loadTool, k)
+	equipment := make([]*loadEquipment, k)
 	g, ctx := errgroup.WithContext(h.t.Context())
 	g.SetLimit(8) // a start's admission waits on SQLite's one write connection
-	for i := range tools {
-		g.Go(func() error { return startTool(ctx, h.d.Env, &tools[i], fmt.Sprintf("LOAD-K%d-%03d", k, i), "eqp") })
+	for i := range equipment {
+		g.Go(func() error {
+			return startEquipment(ctx, h.d.Env, &equipment[i], fmt.Sprintf("LOAD-K%d-%03d", k, i), "eqp")
+		})
 	}
 	if err := g.Wait(); err != nil {
-		h.stopTools(tools)
+		h.stopEquipment(equipment)
 		h.t.Fatal(err)
 	}
 
-	return tools
+	return equipment
 }
 
-// startTool starts one simulated tool on e's bus into *lt, set once its producer exists so a failed start is still stopped,
-// its descriptor naming device: one this service refuses when it is blank.
-func startTool(ctx context.Context, e *Env, lt **loadTool, id, device string) error {
+// startEquipment starts one simulated equipment on e's bus into *lt, set once its producer exists so a failed start is still stopped,
+// its descriptor naming device.
+func startEquipment(ctx context.Context, e *Env, lt **loadEquipment, id, device string) error {
 	c := e.Config
-	t := &loadTool{id: id, m: &toolMetrics{}}
-	cfg := producer.Config{Servers: []string{e.NC.ConnectedUrl()}, SubjectPrefix: c.Bus.SubjectPrefix, ClaimBucket: c.Bus.ClaimBucket}
+	t := &loadEquipment{id: id, m: &equipmentMetrics{}}
+	cfg := producer.Config{Servers: []string{e.NC.ConnectedUrl()}, SubjectPrefix: c.Bus.SubjectPrefix, ClaimBucket: c.Bus.ClaimBucket, Source: "test-source"}
 	var err error
 	if t.p, err = producer.New(cfg, producer.WithMetrics(t.m), producer.WithLogger(slog.New(slog.DiscardHandler))); err != nil {
 		return err
 	}
 	*lt = t
-	if t.l, err = sim.NewLoopback(t.p, sim.Options{ToolID: id, DeviceName: device, SessionID: 1, T3: loadT3}); err != nil {
+	if t.l, err = sim.NewLoopback(t.p, sim.Options{EquipmentID: id, Device: device, SessionID: 1, T3: loadT3}); err != nil {
 		return err
 	}
 
 	return t.l.Start(ctx)
 }
 
-// stopTools ends each tool's capture and closes its producer.
-func (h *loadHarness) stopTools(tools []*loadTool) {
+// stopEquipment ends each piece of equipment's capture and closes its producer.
+func (h *loadHarness) stopEquipment(equipment []*loadEquipment) {
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(h.t.Context()), simStop)
 	defer cancel()
-	for _, lt := range tools {
+	for _, lt := range equipment {
 		if lt == nil {
 			continue
 		}
@@ -447,12 +449,12 @@ func (h *loadHarness) stopTools(tools []*loadTool) {
 	}
 }
 
-// drive forwards through each tool at its share of rate until the returned stop, which waits for the forwards in flight.
-func (h *loadHarness) drive(ctx context.Context, tools []*loadTool, rate float64) (stop func()) {
+// drive forwards through each piece of equipment at its share of rate until the returned stop, which waits for the forwards in flight.
+func (h *loadHarness) drive(ctx context.Context, equipment []*loadEquipment, rate float64) (stop func()) {
 	ctx, cancel := context.WithCancel(ctx)
-	every := time.Duration(float64(len(tools)) / rate * float64(time.Second))
+	every := time.Duration(float64(len(equipment)) / rate * float64(time.Second))
 	var wg sync.WaitGroup
-	for _, lt := range tools {
+	for _, lt := range equipment {
 		wg.Go(func() {
 			tick := time.NewTicker(every)
 			defer tick.Stop()
@@ -475,9 +477,9 @@ func (h *loadHarness) drive(ctx context.Context, tools []*loadTool, rate float64
 	}
 }
 
-// sample reads the stream's state, as busState does, and the tools' counters and gauges.
-func (h *loadHarness) sample(tools []*loadTool) loadSample {
-	s, err := h.read(tools)
+// sample reads the stream's state, as busState does, and the simulated equipment's counters and gauges.
+func (h *loadHarness) sample(equipment []*loadEquipment) loadSample {
+	s, err := h.read(equipment)
 	if err != nil {
 		h.t.Fatal(err)
 	}
@@ -486,7 +488,7 @@ func (h *loadHarness) sample(tools []*loadTool) loadSample {
 }
 
 // read is sample returning its error, for a goroutine other than the test's.
-func (h *loadHarness) read(tools []*loadTool) (loadSample, error) {
+func (h *loadHarness) read(equipment []*loadEquipment) (loadSample, error) {
 	info, err := h.stream.Info(h.t.Context())
 	if err != nil {
 		return loadSample{}, err
@@ -499,7 +501,7 @@ func (h *loadHarness) read(tools []*loadTool) (loadSample, error) {
 		}
 		s.ackPending, s.redelivered = uint64(ci.NumAckPending), uint64(ci.NumRedelivered) //nolint:gosec // counts
 	}
-	for _, lt := range tools {
+	for _, lt := range equipment {
 		ring, reserved, dropped := lt.m.read()
 		s.made += lt.made.Load()
 		s.ring, s.reserved, s.dropped = s.ring+ring, s.reserved+reserved, s.dropped+uint64(dropped)
@@ -508,14 +510,14 @@ func (h *loadHarness) read(tools []*loadTool) (loadSample, error) {
 	return s, nil
 }
 
-// measure runs one point: rate forwards a second through tools, a warm-up, then at least windows of samples.
+// measure runs one point: rate forwards a second through equipment, a warm-up, then at least windows of samples.
 // during, when not nil, runs from the first sample; its context ends once the least windows have passed,
 // and sampling goes on, by whole windows, past its last attempt's end (collectFor), so the judged span holds every attempt.
 // Then the forwards stop and the queues and the backlog empty.
-func (h *loadHarness) measure(tools []*loadTool, rate float64, windows int, during func(context.Context)) loadVerdict {
+func (h *loadHarness) measure(equipment []*loadEquipment, rate float64, windows int, during func(context.Context)) loadVerdict {
 	ctx := h.t.Context()
-	origin := h.sample(tools)
-	stop := h.drive(ctx, tools, rate)
+	origin := h.sample(equipment)
+	stop := h.drive(ctx, equipment, rate)
 	select {
 	case <-ctx.Done():
 		h.t.Fatal(ctx.Err())
@@ -523,7 +525,7 @@ func (h *loadHarness) measure(tools []*loadTool, rate float64, windows int, duri
 	}
 	tick := time.NewTicker(loadTick)
 	defer tick.Stop()
-	samples := []loadSample{h.sample(tools)}
+	samples := []loadSample{h.sample(equipment)}
 	if h.begin != nil {
 		h.begin()
 	}
@@ -545,7 +547,7 @@ func (h *loadHarness) measure(tools []*loadTool, rate float64, windows int, duri
 	var last time.Time
 	for need == 0 || samples[len(samples)-1].at.Sub(t0) < need {
 		<-tick.C
-		s := h.sample(tools)
+		s := h.sample(equipment)
 		samples = append(samples, s)
 		if s.at.Sub(t0) >= least {
 			end()
@@ -561,18 +563,18 @@ func (h *loadHarness) measure(tools []*loadTool, rate float64, windows int, duri
 	}
 	h.samples = samples
 	stop()
-	h.quiesce(tools)
+	h.quiesce(equipment)
 
 	return judgeLoad(rate, origin, samples, h.spec.window, last)
 }
 
 // quiesce waits for every producer's queues, then the stream's backlog, to empty.
-func (h *loadHarness) quiesce(tools []*loadTool) {
+func (h *loadHarness) quiesce(equipment []*loadEquipment) {
 	tick := time.NewTicker(time.Second)
 	defer tick.Stop()
 	limit := time.After(quiesceLimit)
 	for {
-		s := h.sample(tools)
+		s := h.sample(equipment)
 		if s.ring == 0 && s.reserved == 0 && s.backlog == 0 {
 			return
 		}
@@ -584,23 +586,23 @@ func (h *loadHarness) quiesce(tools []*loadTool) {
 	}
 }
 
-// measurePackURL runs a point at rate with the PackURL calls on the first tool's newest pack, over its windows extended until the spec's audited successes,
-// counting the flushes they spanned from that tool's segments: a flush registers one segment of a capture an hour.
-func (h *loadHarness) measurePackURL(tools []*loadTool, rate float64) packURLResult {
+// measurePackURL runs a point at rate with the PackURL calls on the first equipment's newest pack, over its windows extended until the spec's audited successes,
+// counting the flushes they spanned from that equipment's segments: a flush registers one segment of a capture an hour.
+func (h *loadHarness) measurePackURL(equipment []*loadEquipment, rate float64) packURLResult {
 	var r packURLResult
-	tool := tools[0].id
+	eq := equipment[0].id
 	cl := tracekeepv1connect.NewMachineServiceClient(trusting(h.t, filepath.Join(h.d.opts.Dir, DevCertFile)), h.d.Env.Config.API.PublicURL)
-	r.ingest = h.measure(tools, rate, h.spec.windows, func(ctx context.Context) {
-		began, before := time.Now(), h.segments(tool)
-		h.packURLs(ctx, cl, tool, &r)
+	r.ingest = h.measure(equipment, rate, h.spec.windows, func(ctx context.Context) {
+		began, before := time.Now(), h.segments(eq)
+		h.packURLs(ctx, cl, eq, &r)
 		hours := int(time.Now().Truncate(time.Hour).Sub(began.Truncate(time.Hour)) / time.Hour)
-		r.flushes = int(h.segments(tool)-before) - hours
+		r.flushes = int(h.segments(eq)-before) - hours
 	})
 	minima := make([]string, len(r.ingest.backlogMinima))
 	for i, m := range r.ingest.backlogMinima {
 		minima[i] = fmt.Sprintf("%.0f", m)
 	}
-	h.log("", fmt.Sprintf("PackURL at %.0f fwd/s, K = %d:", rate, len(tools)), "",
+	h.log("", fmt.Sprintf("PackURL at %.0f fwd/s, K = %d:", rate, len(equipment)), "",
 		"| p50 | p99 | made | succeeded | superseded | failed | flushes | made fwd/s | published rec/s | backlog minima | sustained |",
 		"|---|---|---|---|---|---|---|---|---|---|---|",
 		fmt.Sprintf("| %s | %s | %d | %d | %d | %d | %d | %.1f | %.1f | %s | %v %s |",
@@ -613,8 +615,8 @@ func (h *loadHarness) measurePackURL(tools []*loadTool, rate float64) packURLRes
 	return r
 }
 
-// segments is the ingester's count of tool's registered segments.
-func (h *loadHarness) segments(tool string) float64 {
+// segments is the ingester's count of equipment's registered segments.
+func (h *loadHarness) segments(equipment string) float64 {
 	mfs, err := h.d.Env.Metrics.Registry().Gather()
 	if err != nil {
 		h.t.Error(err) // called off the test's goroutine
@@ -625,7 +627,7 @@ func (h *loadHarness) segments(tool string) float64 {
 		}
 		for _, m := range mf.GetMetric() {
 			for _, l := range m.GetLabel() {
-				if l.GetName() == "tool_id" && l.GetValue() == tool {
+				if l.GetName() == "equipment_id" && l.GetValue() == equipment {
 					return m.GetCounter().GetValue()
 				}
 			}
@@ -638,9 +640,9 @@ func (h *loadHarness) segments(tool string) float64 {
 // newestPack is a pack and its capture.
 type newestPack struct{ id, capture string }
 
-// packURLs calls PackURL until ctx ends, one call at a time, ten a second, on tool's newest pack listed at most a second earlier:
+// packURLs calls PackURL until ctx ends, one call at a time, ten a second, on equipment's newest pack listed at most a second earlier:
 // a superseded attempt lists again and retries, at most three times.
-func (h *loadHarness) packURLs(ctx context.Context, cl tracekeepv1connect.MachineServiceClient, tool string, r *packURLResult) {
+func (h *loadHarness) packURLs(ctx context.Context, cl tracekeepv1connect.MachineServiceClient, equipment string, r *packURLResult) {
 	tick := time.NewTicker(packURLPace)
 	defer tick.Stop()
 	audited := map[string]int{}
@@ -656,7 +658,7 @@ func (h *loadHarness) packURLs(ctx context.Context, cl tracekeepv1connect.Machin
 			if attempt > 0 || time.Since(listed) >= time.Second {
 				var err error
 				began := time.Now()
-				if pack, err = h.newestPack(ctx, cl, tool); err != nil {
+				if pack, err = h.newestPack(ctx, cl, equipment); err != nil {
 					r.record(packAttempt{began: began, listing: true, why: "listing: " + err.Error()})
 					return
 				}
@@ -753,11 +755,11 @@ func (h *loadHarness) auditRows(ctx context.Context, pack newestPack, suffix str
 	return n, nil
 }
 
-// newestPack lists tool's packs and returns the one whose last range ends latest, empty for none.
-func (h *loadHarness) newestPack(ctx context.Context, cl tracekeepv1connect.MachineServiceClient, tool string) (newestPack, error) {
+// newestPack lists equipment's packs and returns the one whose last range ends latest, empty for none.
+func (h *loadHarness) newestPack(ctx context.Context, cl tracekeepv1connect.MachineServiceClient, equipment string) (newestPack, error) {
 	now := time.Now()
 	req := connectrpc.NewRequest(&tkv1.ListPacksRequest{Selector: &tkv1.Selector{
-		ToolId: tool, From: timestamppb.New(now.Add(-2 * time.Hour)), To: timestamppb.New(now.Add(time.Hour)),
+		EquipmentId: equipment, From: timestamppb.New(now.Add(-2 * time.Hour)), To: timestamppb.New(now.Add(time.Hour)),
 	}})
 	req.Header().Set("Authorization", "Bearer "+h.token)
 	resp, err := cl.ListPacks(context.WithoutCancel(ctx), req)

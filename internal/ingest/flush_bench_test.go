@@ -50,7 +50,7 @@ func newBenchFlush(tb testing.TB, x *Executor, capture tracepack.UUID, payload [
 	for i := range uint64(seededRanges) {
 		from := i * seedSeqs
 		p := &catalog.Pack{
-			ID: newPackID(), Capture: capture, ToolID: "T1", Hour: HourOf(now), Role: catalog.RoleSegment, Key: "seed/" + fmt.Sprint(i),
+			ID: newPackID(), Capture: capture, EquipmentID: "T1", Hour: HourOf(now), Role: catalog.RoleSegment, Key: "seed/" + fmt.Sprint(i),
 			Size: 1, SeqStart: from, FormatMinor: 2,
 			Ranges: []catalog.Range{{SeqFrom: from, SeqTo: from + seedSeqs - 1, TSFrom: now + int64(from), TSTo: now + int64(from+seedSeqs-1)}}, //nolint:gosec // small seqs
 		}

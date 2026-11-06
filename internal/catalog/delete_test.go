@@ -102,7 +102,7 @@ func TestDeletePackGuards(t *testing.T) {
 		capture, inputs, archive := mergedScope(t, c, l, 0)
 		now := deleteAt(t, c, archive)
 		shared := inputs[0]
-		lapse(t, c, `INSERT INTO packs (pack_id, capture_id, tool_id, hour, role, object_key, size, seq_start, format_minor, state, registered_at)
+		lapse(t, c, `INSERT INTO packs (pack_id, capture_id, equipment_id, hour, role, object_key, size, seq_start, format_minor, state, registered_at)
 			VALUES (X'`+hexOf(newID(t))+`', X'`+hexOf(capture)+`', 'T1', 1, 'segment', '`+shared.Key+`', 1, 0, 1, 'staged', 0)`)
 		d := Deletable{Pack: shared.ID, Capture: capture, Key: shared.Key}
 		if ok, err := c.DeletePack(t.Context(), l, d, now, time.Hour); err != nil || ok {
@@ -195,7 +195,7 @@ func TestDeletePackAlongAChainOfMerges(t *testing.T) {
 		if ok, err := c.DeletePack(t.Context(), l, Deletable{Pack: x.ID, Capture: capture, Key: x.Key}, now, time.Hour); err != nil || !ok {
 			t.Fatalf("DeletePack of the intermediate archive = %v, %v", ok, err)
 		}
-		lapse(t, c, `INSERT INTO packs (pack_id, capture_id, tool_id, hour, role, object_key, size, seq_start, format_minor, state, registered_at)
+		lapse(t, c, `INSERT INTO packs (pack_id, capture_id, equipment_id, hour, role, object_key, size, seq_start, format_minor, state, registered_at)
 			VALUES (X'`+hexOf(newID(t))+`', X'`+hexOf(capture)+`', 'T1', 7, 'segment', '`+inputs[0].Key+`', 1, 0, 1, 'staged', 0)`)
 		for cycle := range 2 {
 			got := deleteCandidates(t, c, now)

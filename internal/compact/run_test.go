@@ -232,7 +232,7 @@ func TestLongCycleKeepsTheLease(t *testing.T) {
 func tombstone(t *testing.T, c *catalog.Catalog, capture tracepack.UUID, p built) {
 	t.Helper()
 	pk := &catalog.Pack{
-		ID: p.id, Capture: capture, ToolID: tool, Hour: hour, Role: catalog.RoleSegment, Key: p.key, Size: int64(len(p.data)),
+		ID: p.id, Capture: capture, EquipmentID: equipment, Hour: hour, Role: catalog.RoleSegment, Key: p.key, Size: int64(len(p.data)),
 		SeqStart: 2, FormatMinor: 1, Ranges: []catalog.Range{{SeqFrom: 2, SeqTo: 2}},
 	}
 	ev := &catalog.Evidence{Deliveries: []catalog.Identity{{Version: catalog.VersionKey{Capture: capture, Seq: 2}, Incarnation: 1, StreamSeq: 3}}}

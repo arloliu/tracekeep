@@ -2,7 +2,7 @@
 // one per engine, so their catalog-touching cases run on SQLite and on MariaDB (.agents/rules/300-testing.md *Catalog*).
 // MariaDB runs when TRACEKEEP_MARIADB_DSN names a server (make test-catalog starts one) and is skipped otherwise,
 // or fails when TRACEKEEP_REQUIRE_MARIADB is 1.
-// SeedFleet seeds a fleet of tools' open captures for other packages' benchmarks, and BenchEngines runs a benchmark on each engine.
+// SeedFleet seeds a fleet of equipment's open captures for other packages' benchmarks, and BenchEngines runs a benchmark on each engine.
 package catalogtest
 
 import (

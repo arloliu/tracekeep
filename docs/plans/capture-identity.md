@@ -1,6 +1,6 @@
 # Capture identity — equipment, source and device
 
-Status: active (2026-11-06) — phase 1, the specs
+Status: active (2026-11-06) — phase 3, the service
 
 The work that delivers T-59 (`docs/specs/tracekeep/tracekeep-decisions.md`) before the host log feed (T-60):
 `tool_id` becomes `equipment_id` throughout tracekeep,
@@ -17,9 +17,9 @@ v0.15.1 fixes v0.15.0's text and tests with no API or format change, so it is th
 
 | Phase | Work | State |
 |---|---|---|
-| 1 — specs and rules | amend the specs and rules to T-59's identity and term, one docs pull request | in-progress |
-| 2 — SDK | `producer/` on tracepack v0.15.1 with `Config.Source` and the descriptor's `Device`; its own pull request (T-46), then `producer/v0.6.0` tagged on `main` | pending |
-| 3 — service | the service on `producer/v0.6.0` and tracepack v0.15.1: catalog migration, admission, reads and selector, proto, metrics, alerts and runbook, web, simulators | pending |
+| 1 — specs and rules | amend the specs and rules to T-59's identity and term, one docs pull request | done (#91) |
+| 2 — SDK | `producer/` on tracepack v0.15.1 with `Config.Source` and the descriptor's `Device`; its own pull request (T-46), then `producer/v0.6.0` tagged on `main` | done (#92, `producer/v0.6.0` at c4d40c5) |
+| 3 — service | the service on `producer/v0.6.0` and tracepack v0.15.1: catalog migration, admission, reads and selector, proto, metrics, alerts and runbook, web, simulators | in-progress |
 | 4 — gate and close | the gate cases below on both engines; the eqp-hub session told of v0.6.0; this plan closed | pending |
 
 The service cannot raise tracepack before the SDK is tagged:

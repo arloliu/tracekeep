@@ -203,7 +203,7 @@ func TestAdoptionAfterIngestRegistered(t *testing.T) {
 		f.put(t, b.key, b.data)
 		f.pass(t)
 		p := &catalog.Pack{
-			ID: b.id, Capture: capture, ToolID: tool, Hour: hour, Role: catalog.RoleSegment, Key: b.key, Size: int64(len(b.data)),
+			ID: b.id, Capture: capture, EquipmentID: equipment, Hour: hour, Role: catalog.RoleSegment, Key: b.key, Size: int64(len(b.data)),
 			SeqStart: 1, FormatMinor: 1, Ranges: []catalog.Range{{SeqFrom: 1, SeqTo: 2}},
 		}
 		ev := &catalog.Evidence{Deliveries: []catalog.Identity{{Version: catalog.VersionKey{Capture: capture, Seq: 1}, Incarnation: 1, StreamSeq: 2}}}

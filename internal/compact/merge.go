@@ -298,7 +298,7 @@ func (r *Compactor) describeArchive(ctx context.Context, w *os.File, snap *catal
 	if err != nil {
 		return nil, err
 	}
-	key, err := tracepack.ArchiveKey(r.KeyPrefix, snap.ToolID, snap.Capture, snap.Hour, id)
+	key, err := tracepack.ArchiveKey(r.KeyPrefix, snap.EquipmentID, snap.Capture, snap.Hour, id)
 	if err != nil {
 		return nil, err
 	}

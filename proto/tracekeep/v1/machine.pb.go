@@ -26,13 +26,15 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
-// Selector names the connections a read wants (api.md §10.1 *Selector*).
+// Selector names the series a read wants (api.md §10.1 *Selector*): devices, sources and the capture intersect.
 type Selector struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// tool_id is required.
-	ToolId string `protobuf:"bytes,1,opt,name=tool_id,json=toolId,proto3" json:"tool_id,omitempty"`
-	// devices are the eqp-hsms device names; none selects every device of the tool.
+	// equipment_id is required.
+	EquipmentId string `protobuf:"bytes,1,opt,name=equipment_id,json=equipmentId,proto3" json:"equipment_id,omitempty"`
+	// devices are the equipment's device names; none selects every device.
 	Devices []string `protobuf:"bytes,2,rep,name=devices,proto3" json:"devices,omitempty"`
+	// sources are the recording deployments; none selects every source.
+	Sources []string `protobuf:"bytes,6,rep,name=sources,proto3" json:"sources,omitempty"`
 	// capture_id, when set, selects that one capture.
 	CaptureId *string `protobuf:"bytes,3,opt,name=capture_id,json=captureId,proto3,oneof" json:"capture_id,omitempty"`
 	// The window [from, to), nonempty.
@@ -72,9 +74,9 @@ func (*Selector) Descriptor() ([]byte, []int) {
 	return file_tracekeep_v1_machine_proto_rawDescGZIP(), []int{0}
 }
 
-func (x *Selector) GetToolId() string {
+func (x *Selector) GetEquipmentId() string {
 	if x != nil {
-		return x.ToolId
+		return x.EquipmentId
 	}
 	return ""
 }
@@ -82,6 +84,13 @@ func (x *Selector) GetToolId() string {
 func (x *Selector) GetDevices() []string {
 	if x != nil {
 		return x.Devices
+	}
+	return nil
+}
+
+func (x *Selector) GetSources() []string {
+	if x != nil {
+		return x.Sources
 	}
 	return nil
 }
@@ -195,10 +204,11 @@ func (x *ListDevicesResponse) GetDevices() []*Device {
 	return nil
 }
 
-// Device is one device of the tool.
+// Device is one series: a device of the equipment as one source recorded it.
 type Device struct {
-	state protoimpl.MessageState `protogen:"open.v1"`
-	Name  string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	state  protoimpl.MessageState `protogen:"open.v1"`
+	Name   string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	Source string                 `protobuf:"bytes,8,opt,name=source,proto3" json:"source,omitempty"`
 	// equipment_endpoint and device_id are the latest selected capture's.
 	EquipmentEndpoint *string                `protobuf:"bytes,2,opt,name=equipment_endpoint,json=equipmentEndpoint,proto3,oneof" json:"equipment_endpoint,omitempty"`
 	DeviceId          *uint64                `protobuf:"varint,3,opt,name=device_id,json=deviceId,proto3,oneof" json:"device_id,omitempty"`
@@ -244,6 +254,13 @@ func (*Device) Descriptor() ([]byte, []int) {
 func (x *Device) GetName() string {
 	if x != nil {
 		return x.Name
+	}
+	return ""
+}
+
+func (x *Device) GetSource() string {
+	if x != nil {
+		return x.Source
 	}
 	return ""
 }
@@ -384,6 +401,7 @@ type Capture struct {
 	CaptureId          string                  `protobuf:"bytes,1,opt,name=capture_id,json=captureId,proto3" json:"capture_id,omitempty"`
 	State              string                  `protobuf:"bytes,2,opt,name=state,proto3" json:"state,omitempty"`
 	Device             string                  `protobuf:"bytes,3,opt,name=device,proto3" json:"device,omitempty"`
+	Source             string                  `protobuf:"bytes,14,opt,name=source,proto3" json:"source,omitempty"`
 	RecorderInstanceId string                  `protobuf:"bytes,4,opt,name=recorder_instance_id,json=recorderInstanceId,proto3" json:"recorder_instance_id,omitempty"`
 	PreviousCaptureId  *string                 `protobuf:"bytes,5,opt,name=previous_capture_id,json=previousCaptureId,proto3,oneof" json:"previous_capture_id,omitempty"`
 	Origin             *timestamppb.Timestamp  `protobuf:"bytes,6,opt,name=origin,proto3" json:"origin,omitempty"`
@@ -445,6 +463,13 @@ func (x *Capture) GetState() string {
 func (x *Capture) GetDevice() string {
 	if x != nil {
 		return x.Device
+	}
+	return ""
+}
+
+func (x *Capture) GetSource() string {
+	if x != nil {
+		return x.Source
 	}
 	return ""
 }
@@ -4316,10 +4341,11 @@ var File_tracekeep_v1_machine_proto protoreflect.FileDescriptor
 
 const file_tracekeep_v1_machine_proto_rawDesc = "" +
 	"\n" +
-	"\x1atracekeep/v1/machine.proto\x12\ftracekeep.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\xcc\x01\n" +
-	"\bSelector\x12\x17\n" +
-	"\atool_id\x18\x01 \x01(\tR\x06toolId\x12\x18\n" +
-	"\adevices\x18\x02 \x03(\tR\adevices\x12\"\n" +
+	"\x1atracekeep/v1/machine.proto\x12\ftracekeep.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\xf0\x01\n" +
+	"\bSelector\x12!\n" +
+	"\fequipment_id\x18\x01 \x01(\tR\vequipmentId\x12\x18\n" +
+	"\adevices\x18\x02 \x03(\tR\adevices\x12\x18\n" +
+	"\asources\x18\x06 \x03(\tR\asources\x12\"\n" +
 	"\n" +
 	"capture_id\x18\x03 \x01(\tH\x00R\tcaptureId\x88\x01\x01\x12.\n" +
 	"\x04from\x18\x04 \x01(\v2\x1a.google.protobuf.TimestampR\x04from\x12*\n" +
@@ -4328,9 +4354,10 @@ const file_tracekeep_v1_machine_proto_rawDesc = "" +
 	"\x12ListDevicesRequest\x122\n" +
 	"\bselector\x18\x01 \x01(\v2\x16.tracekeep.v1.SelectorR\bselector\"E\n" +
 	"\x13ListDevicesResponse\x12.\n" +
-	"\adevices\x18\x01 \x03(\v2\x14.tracekeep.v1.DeviceR\adevices\"\xba\x02\n" +
+	"\adevices\x18\x01 \x03(\v2\x14.tracekeep.v1.DeviceR\adevices\"\xd2\x02\n" +
 	"\x06Device\x12\x12\n" +
-	"\x04name\x18\x01 \x01(\tR\x04name\x122\n" +
+	"\x04name\x18\x01 \x01(\tR\x04name\x12\x16\n" +
+	"\x06source\x18\b \x01(\tR\x06source\x122\n" +
 	"\x12equipment_endpoint\x18\x02 \x01(\tH\x00R\x11equipmentEndpoint\x88\x01\x01\x12 \n" +
 	"\tdevice_id\x18\x03 \x01(\x04H\x01R\bdeviceId\x88\x01\x01\x12#\n" +
 	"\ropen_captures\x18\x04 \x01(\x03R\fopenCaptures\x12\x18\n" +
@@ -4345,12 +4372,13 @@ const file_tracekeep_v1_machine_proto_rawDesc = "" +
 	"\x13ListCapturesRequest\x122\n" +
 	"\bselector\x18\x01 \x01(\v2\x16.tracekeep.v1.SelectorR\bselector\"I\n" +
 	"\x14ListCapturesResponse\x121\n" +
-	"\bcaptures\x18\x01 \x03(\v2\x15.tracekeep.v1.CaptureR\bcaptures\"\x9c\x05\n" +
+	"\bcaptures\x18\x01 \x03(\v2\x15.tracekeep.v1.CaptureR\bcaptures\"\xb4\x05\n" +
 	"\aCapture\x12\x1d\n" +
 	"\n" +
 	"capture_id\x18\x01 \x01(\tR\tcaptureId\x12\x14\n" +
 	"\x05state\x18\x02 \x01(\tR\x05state\x12\x16\n" +
-	"\x06device\x18\x03 \x01(\tR\x06device\x120\n" +
+	"\x06device\x18\x03 \x01(\tR\x06device\x12\x16\n" +
+	"\x06source\x18\x0e \x01(\tR\x06source\x120\n" +
 	"\x14recorder_instance_id\x18\x04 \x01(\tR\x12recorderInstanceId\x123\n" +
 	"\x13previous_capture_id\x18\x05 \x01(\tH\x00R\x11previousCaptureId\x88\x01\x01\x122\n" +
 	"\x06origin\x18\x06 \x01(\v2\x1a.google.protobuf.TimestampR\x06origin\x12@\n" +

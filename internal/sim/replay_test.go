@@ -43,7 +43,7 @@ func writePack(t *testing.T, frames []tracepack.Dir, payloads [][]byte) string {
 	origin := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	w, err := tracepack.NewSegmentWriter(ctx, tracepack.SegmentWriterOptions{
 		Capture: tracepack.CaptureDescriptor{
-			ToolID: "SYN-TOOL", Transport: tracepack.TransportHSMSSS, CaptureMethod: tracepack.CaptureMethodRawStream,
+			EquipmentID: "SYN-EQP", Transport: tracepack.TransportHSMSSS, CaptureMethod: tracepack.CaptureMethodRawStream,
 			Vantage: tracepack.VantageHost, Recorder: "synthetic/1", RecorderInstanceID: tracepack.UUID{1},
 			TimeSource: tracepack.TimeSourceCaptureClock, CaptureOrigin: origin,
 			LifecycleCoverage: tracepack.LifecycleCoverageSubscribed, QualityEvaluated: true,

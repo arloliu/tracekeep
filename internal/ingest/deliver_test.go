@@ -147,8 +147,8 @@ func TestDisposeExpiredStart(t *testing.T) {
 		if dec.Action != ActTerminate || dec.Reason != ReasonBeyondRetention || !dec.Audit || state(t, c, capture) != catalog.StateOpen {
 			t.Fatalf("an expired start = %+v, capture %s; want admitted, then terminated with an audit row", dec, state(t, c, capture))
 		}
-		if d.ToolID != "T1" {
-			t.Errorf("the tool of an admitted start = %q, want T1 for the loss it counts", d.ToolID)
+		if d.EquipmentID != "T1" {
+			t.Errorf("the equipment of an admitted start = %q, want T1 for the loss it counts", d.EquipmentID)
 		}
 		if err := x.AuditTermination(t.Context(), d, dec.Reason); err != nil {
 			t.Fatal(err)
@@ -278,7 +278,7 @@ func TestApplyOrderFindsTheVersionStaged(t *testing.T) {
 		}
 		id := tracepack.UUID{0x70, 14}
 		p := &catalog.Pack{
-			ID: id, Capture: capture, ToolID: "T1", Hour: HourOf(now), Role: catalog.RoleSegment, Key: "staging/" + id.String(), Size: 1,
+			ID: id, Capture: capture, EquipmentID: "T1", Hour: HourOf(now), Role: catalog.RoleSegment, Key: "staging/" + id.String(), Size: 1,
 			SeqStart: 1, FormatMinor: 1, Ranges: []catalog.Range{{SeqFrom: 1, SeqTo: 1, TSFrom: now, TSTo: now}},
 		}
 		ev := &catalog.Evidence{Deliveries: []catalog.Identity{*late.identity()}}

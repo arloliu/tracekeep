@@ -43,7 +43,7 @@ func (f *fixture) describedUnder(t *testing.T, instance tracepack.UUID, origin i
 	name := "eqp"
 	mono, tolerance := int64(0), uint64(time.Second)
 	m := &tracepack.PackMeta{
-		ToolID: tool, Transport: tracepack.TransportHSMSSS, CaptureMethod: tracepack.CaptureMethodRawStream,
+		EquipmentID: equipment, Transport: tracepack.TransportHSMSSS, CaptureMethod: tracepack.CaptureMethodRawStream,
 		Vantage: tracepack.VantageHost, Recorder: "test", TimeSource: tracepack.TimeSourceCaptureClock,
 		CaptureOriginUTCNs: &origin, CaptureOriginMonoNs: &mono, ClockStepToleranceNs: &tolerance,
 		LifecycleCoverage: tracepack.LifecycleCoverageSubscribed, QualityEvaluated: true,
@@ -55,7 +55,7 @@ func (f *fixture) describedUnder(t *testing.T, instance tracepack.UUID, origin i
 	}
 	id := newID(t)
 	d := &catalog.Identity{Version: catalog.VersionKey{Capture: id}, Incarnation: 1, StreamSeq: 1, Hour: hour}
-	desc := &catalog.Descriptor{Bytes: b, ToolID: tool, RecorderInstanceID: instance, Device: name, OriginNS: origin}
+	desc := &catalog.Descriptor{Bytes: b, EquipmentID: equipment, RecorderInstanceID: instance, Device: name, OriginNS: origin}
 	if _, err := f.c.Admit(ctx, d, desc); err != nil {
 		t.Fatal(err)
 	}

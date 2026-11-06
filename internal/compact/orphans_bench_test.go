@@ -43,13 +43,13 @@ func BenchmarkOrphans(b *testing.B) {
 			capture := f.admit(b)
 			for seq := range uint64(n) { //nolint:gosec // a benchmark's small count
 				id := newID(b)
-				key, err := tracepack.SegmentKey("", tool, capture, seq, id)
+				key, err := tracepack.SegmentKey("", equipment, capture, seq, id)
 				if err != nil {
 					b.Fatal(err)
 				}
 				at := hour*nsPerHour + int64(seq) //nolint:gosec // a benchmark's small seq
 				p := &catalog.Pack{
-					ID: id, Capture: capture, ToolID: tool, Hour: hour, Role: catalog.RoleSegment, Key: key, Size: 1, SeqStart: seq, FormatMinor: 2,
+					ID: id, Capture: capture, EquipmentID: equipment, Hour: hour, Role: catalog.RoleSegment, Key: key, Size: 1, SeqStart: seq, FormatMinor: 2,
 					Ranges: []catalog.Range{{SeqFrom: seq, SeqTo: seq, TSFrom: at, TSTo: at}},
 				}
 				if out, err := f.c.RegisterPack(b.Context(), p, catalog.Registration{Evidence: &catalog.Evidence{}, HorizonHour: f.horizon}); err != nil || out != catalog.Registered {

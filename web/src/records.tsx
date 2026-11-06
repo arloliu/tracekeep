@@ -26,12 +26,12 @@ export function Records() {
   // A preset's window is fixed when the page opens: a cursor continues only the selector that issued it.
   const [now] = useState(() => Date.now());
   const w = useMemo(() => windowOf(search, now), [search, now]);
-  const req = useMemo(() => (search.tool === undefined ? undefined : requestOf(search, w)), [search, w]);
+  const req = useMemo(() => (search.equipment === undefined ? undefined : requestOf(search, w)), [search, w]);
   return (
     <div className="space-y-4">
       <FilterBar key={`${JSON.stringify(search)}|${zone}`} search={search} w={w} />
       {req === undefined ? (
-        <p className="text-muted-foreground">Choose a tool to read its records.</p>
+        <p className="text-muted-foreground">Choose equipment to read its records.</p>
       ) : (
         <>
           <ExportLink search={search} from={w.from} to={w.to} />
@@ -65,8 +65,9 @@ function FilterBar({ search, w }: { search: RecordsSearch; w: Window }) {
   const { zone } = useZone();
   const navigate = useNavigate({ from: "/records" });
   const [f, setF] = useState({
-    tool: search.tool ?? "",
+    equipment: search.equipment ?? "",
     devices: (search.devices ?? []).join(", "),
+    sources: (search.sources ?? []).join(", "),
     capture: search.capture ?? "",
     from: inputValue(w.from, zone),
     to: inputValue(w.to, zone),
@@ -87,7 +88,7 @@ function FilterBar({ search, w }: { search: RecordsSearch; w: Window }) {
     const from = fromInput(f.from, zone);
     const to = fromInput(f.to, zone);
     const problems = [
-      f.tool.trim() === "" && "Type a tool id.",
+      f.equipment.trim() === "" && "Type an equipment ID.",
       (from === undefined || to === undefined || from >= to) && "From must be a time before to.",
       (f.seqFrom !== "" || f.seqTo !== "") && f.capture.trim() === "" && "A seq range needs a capture.",
       [f.seqFrom, f.seqTo].some((s) => s !== "" && !/^\d+$/.test(s)) && "A seq is a whole number.",
@@ -98,11 +99,13 @@ function FilterBar({ search, w }: { search: RecordsSearch; w: Window }) {
       return;
     }
     const devices = split(f.devices);
+    const sources = split(f.sources);
     const messages = split(f.messages).map((m) => m.toUpperCase());
     void navigate({
       search: {
-        tool: f.tool.trim(),
+        equipment: f.equipment.trim(),
         devices: devices.length > 0 ? devices : undefined,
+        sources: sources.length > 0 ? sources : undefined,
         capture: f.capture.trim() || undefined,
         from: from.toISOString(),
         to: to.toISOString(),
@@ -125,8 +128,9 @@ function FilterBar({ search, w }: { search: RecordsSearch; w: Window }) {
   return (
     <form onSubmit={submit} className="space-y-2" aria-label="Filters">
       <div className="flex flex-wrap items-end gap-3">
-        {field("Tool id", <Input className="w-40" value={f.tool} onChange={set("tool")} />)}
+        {field("Equipment ID", <Input className="w-40" value={f.equipment} onChange={set("equipment")} />)}
         {field("Devices", <Input className="w-48" placeholder="every device" value={f.devices} onChange={set("devices")} />)}
+        {field("Sources", <Input className="w-48" placeholder="every source" value={f.sources} onChange={set("sources")} />)}
         {field("Capture", <Input className="w-80 font-mono text-xs" value={f.capture} onChange={set("capture")} />)}
         {field("From", <Input type="datetime-local" className="w-52" value={f.from} onChange={set("from")} />)}
         {field("To", <Input type="datetime-local" className="w-52" value={f.to} onChange={set("to")} />)}
@@ -274,7 +278,7 @@ function RowView({ row, w, search, selected, onSelect }: { row: Row; w: Window; 
         <div className="flex h-full items-center border-y bg-secondary/60">
           {pick(
             <span className="min-w-0 truncate">
-              Capture <span className="font-mono text-xs">{it.value.capture?.captureId}</span> · {it.value.capture?.device} · {it.value.capture?.state} — {summary(it.value.completeness)}
+              Capture <span className="font-mono text-xs">{it.value.capture?.captureId}</span> · {it.value.capture?.device} · {it.value.capture?.source} · {it.value.capture?.state} — {summary(it.value.completeness)}
             </span>,
           )}
           {it.value.completenessTruncated && <TruncatedNote start={it.value} w={w} search={search} />}
@@ -300,7 +304,13 @@ function TruncatedNote({ start, w, search }: { start: CaptureStart; w: Window; s
       Completeness cut to fit;{" "}
       <Link
         to="/"
-        search={{ tool: search.tool, devices: start.capture ? [start.capture.device] : search.devices, from: w.from.toISOString(), to: w.to.toISOString() }}
+        search={{
+          equipment: search.equipment,
+          devices: start.capture ? [start.capture.device] : search.devices,
+          sources: start.capture ? [start.capture.source] : search.sources,
+          from: w.from.toISOString(),
+          to: w.to.toISOString(),
+        }}
         className="text-primary underline-offset-4 hover:underline"
       >
         the browser has it whole
@@ -353,6 +363,7 @@ function Panel({ row }: { row: Row }) {
           <h3 className="font-semibold">Capture {c?.captureId}</h3>
           <dl className="grid grid-cols-[max-content_1fr] gap-x-4 gap-y-1">
             <Field label="Device">{c?.device}</Field>
+            <Field label="Source">{c?.source}</Field>
             <Field label="State">{c?.state}</Field>
             <Field label="Origin"><Time ts={c?.origin} /></Field>
             <Field label="Last record"><Time ts={c?.lastRecord} /></Field>

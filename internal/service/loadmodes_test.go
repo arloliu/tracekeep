@@ -53,10 +53,10 @@ var stages = []string{"dispose", "batch", "write", "put", "register", "acknowled
 // each budget on a dev of its own, since a consumer's budget is set when ingest starts.
 func loadCeiling(t *testing.T, smoke bool) {
 	spec := loadSpec{flush: 10 * time.Second, warmup: time.Minute, window: 10 * time.Second, windows: 12, probed: true}
-	tools, rates, raised := []int{10, 100}, []float64{1600, 3200}, 200_000
+	equipment, rates, raised := []int{10, 100}, []float64{1600, 3200}, 200_000
 	if smoke {
 		spec = loadSpec{flush: time.Second, warmup: 5 * time.Second, window: 5 * time.Second, windows: 2, probed: true}
-		tools, rates, raised = []int{2}, []float64{20, 40}, 2_000
+		equipment, rates, raised = []int{2}, []float64{20, 40}, 2_000
 	}
 	dir := profileDir(t)
 	countSQL(t)
@@ -77,12 +77,12 @@ func loadCeiling(t *testing.T, smoke bool) {
 			spec.maxAckPending = budget
 			h := newReportingHarness(t, spec)
 			h.log(fmt.Sprintf("ceiling: flush %s, warm-up %s, %d windows of %s a point; profiles in %s", spec.flush, spec.warmup, spec.windows, spec.window, dir))
-			for _, k := range tools {
-				ts := h.startTools(k)
+			for _, k := range equipment {
+				ts := h.startEquipment(k)
 				for _, rate := range points {
 					h.point(ts, rate, dir)
 				}
-				h.stopTools(ts)
+				h.stopEquipment(ts)
 			}
 		})
 	}
@@ -108,11 +108,11 @@ func loadClaimCheck(t *testing.T, smoke bool) {
 	_, _ = rand.Read(h.claimItem)
 	h.log(fmt.Sprintf("claimcheck: flush %s, warm-up %s, %d windows of %s a point, claim-check items of %d bytes",
 		spec.flush, spec.warmup, spec.windows, spec.window, len(h.claimItem)))
-	tools := h.startTools(k)
-	defer h.stopTools(tools)
+	equipment := h.startEquipment(k)
+	defer h.stopEquipment(equipment)
 	for _, p := range points {
 		h.claimEvery = p.every
-		h.point(tools, p.rate, "")
+		h.point(equipment, p.rate, "")
 	}
 }
 
@@ -132,9 +132,9 @@ func loadProduction(t *testing.T, smoke bool) {
 			spec.maxAckPending = budget
 			h := newReportingHarness(t, spec)
 			h.log(fmt.Sprintf("production: flush %s, ack_wait %s, %.0f fwd/s over K = %d; profiles in %s", spec.flush, spec.ackWait, rate, k, dir))
-			tools := h.startTools(k)
-			defer h.stopTools(tools)
-			h.cycles(tools, rate, dir)
+			equipment := h.startEquipment(k)
+			defer h.stopEquipment(equipment)
+			h.cycles(equipment, rate, dir)
 		})
 	}
 }
@@ -206,7 +206,7 @@ func (h *loadHarness) effective(s jetstream.Stream, prefix string) jetstream.Con
 }
 
 // forward relays one request through lt: every claimEvery-th a claim-check one, the rest as the loopback's Forward does.
-func (h *loadHarness) forward(ctx context.Context, lt *loadTool) error {
+func (h *loadHarness) forward(ctx context.Context, lt *loadEquipment) error {
 	if h.claimEvery == 0 || lt.forwards.Add(1)%h.claimEvery != 0 {
 		return lt.l.Forward(ctx)
 	}
@@ -216,7 +216,7 @@ func (h *loadHarness) forward(ctx context.Context, lt *loadTool) error {
 
 // forwardClaim relays an S1F3 holding item through the replay path, whose equipment echoes it,
 // so its primary and its reply each travel by claim-check; its system bytes, the high bit set, never meet Forward's.
-func (lt *loadTool) forwardClaim(ctx context.Context, item []byte) error {
+func (lt *loadEquipment) forwardClaim(ctx context.Context, item []byte) error {
 	var sys [4]byte
 	binary.BigEndian.PutUint32(sys[:], 1<<31|lt.claims.Add(1))
 	msg, err := hsms.NewDataMessage(1, 3, true, 1, sys, secs2.B(item))
@@ -444,7 +444,7 @@ func countSQL(t *testing.T) {
 }
 
 // loadMark is what a measured span is reckoned from: the probe's stages, the catalog's statements, the process's CPU,
-// ingest's counters and the claim objects the tools put, and when.
+// ingest's counters and the claim objects the equipment put, and when.
 type loadMark struct {
 	at                                time.Time
 	stages                            map[string]stageTotal
@@ -454,7 +454,7 @@ type loadMark struct {
 	claims                            float64
 }
 
-func (h *loadHarness) mark(tools []*loadTool) loadMark {
+func (h *loadHarness) mark(equipment []*loadEquipment) loadMark {
 	m := loadMark{
 		at: time.Now(), cpu: processCPU(h.t),
 		reads: sqlStatements.reads.Load(), writes: sqlStatements.writes.Load(), trans: sqlStatements.trans.Load(),
@@ -462,7 +462,7 @@ func (h *loadHarness) mark(tools []*loadTool) loadMark {
 		inProgress: h.counter("tracekeep_ingest_in_progress_acks_total"),
 	}
 	m.stages = h.probe.readStages()
-	for _, lt := range tools {
+	for _, lt := range equipment {
 		lt.m.mu.Lock()
 		m.claims += lt.m.claims
 		lt.m.mu.Unlock()
@@ -547,33 +547,33 @@ func (p *profiler) write(t *testing.T, when string) {
 	}
 }
 
-// point measures rate through tools as a sweep point is measured and judged, reporting beside its verdict, over its windows,
+// point measures rate through equipment as a sweep point is measured and judged, reporting beside its verdict, over its windows,
 // each stage's wall time, the catalog's statements, the consumer's pending and redelivered counts, the process's CPU,
 // the share of its records that travelled by claim-check and acknowledgement's share of a flush, its profiles written under dir.
-func (h *loadHarness) point(tools []*loadTool, rate float64, dir string) {
+func (h *loadHarness) point(equipment []*loadEquipment, rate float64, dir string) {
 	budget := h.d.Env.Config.Ingest.MaxAckPending
-	prof := &profiler{dir: dir, name: fmt.Sprintf("ceiling-K%d-%.0f-pending%d", len(tools), rate, budget)}
+	prof := &profiler{dir: dir, name: fmt.Sprintf("ceiling-K%d-%.0f-pending%d", len(equipment), rate, budget)}
 	var from, to loadMark
 	h.begin = func() {
-		from = h.mark(tools)
+		from = h.mark(equipment)
 		prof.start(h.t)
 	}
 	h.end = func() {
 		prof.stop(h.t)
-		to = h.mark(tools)
+		to = h.mark(equipment)
 	}
 	defer func() { h.begin, h.end = nil, nil }()
-	v := h.measure(tools, rate, h.spec.windows, nil)
+	v := h.measure(equipment, rate, h.spec.windows, nil)
 	first, last := h.samples[0], h.samples[len(h.samples)-1]
 	published := float64(last.published - first.published)
-	label := fmt.Sprintf("K = %d at %.0f fwd/s, max_ack_pending %d", len(tools), rate, budget)
+	label := fmt.Sprintf("K = %d at %.0f fwd/s, max_ack_pending %d", len(equipment), rate, budget)
 	if h.claimEvery > 0 {
 		label += fmt.Sprintf(", one forward in %d by claim-check", h.claimEvery)
 	}
 	h.log("", label+":", "",
 		"| K | offered fwd/s | made fwd/s | published rec/s | dropped | backlog slope | ring slope | reserved slope | bound | sustained |",
 		"|---|---|---|---|---|---|---|---|---|---|")
-	h.row(len(tools), v)
+	h.row(len(equipment), v)
 	h.spanRows(from, to, h.samples)
 	st := stageDelta(from, to)
 	h.log("", "| claim-check share of records | acknowledge share of flush |", "|---|---|",
@@ -619,14 +619,14 @@ func stageDelta(from, to loadMark) map[string]stageTotal {
 	return out
 }
 
-// cycles runs rate through tools at ingest's own flush and ack_wait: a warm-up of a flush plus ack_wait,
+// cycles runs rate through equipment at ingest's own flush and ack_wait: a warm-up of a flush plus ack_wait,
 // then samples every second until at least leastCycles completed drain cycles span at least three heartbeat periods,
 // or a pass fails, or the span reaches leastCycles+2 flushes plus ack_waits; it judges them and reports the run's counts.
-func (h *loadHarness) cycles(tools []*loadTool, rate float64, dir string) {
+func (h *loadHarness) cycles(equipment []*loadEquipment, rate float64, dir string) {
 	ctx := h.t.Context()
 	c := h.d.Env.Config.Ingest
-	origin := h.sample(tools)
-	stop := h.drive(ctx, tools, rate)
+	origin := h.sample(equipment)
+	stop := h.drive(ctx, equipment, rate)
 	defer stop()
 	select {
 	case <-ctx.Done():
@@ -634,10 +634,10 @@ func (h *loadHarness) cycles(tools []*loadTool, rate float64, dir string) {
 	case <-time.After(c.FlushInterval + c.AckWait):
 	}
 	prof := &profiler{dir: dir, name: fmt.Sprintf("production-pending%d", c.MaxAckPending)}
-	from := h.mark(tools)
+	from := h.mark(equipment)
 	prof.start(h.t)
 	h.probe.age(true)
-	samples := []loadSample{h.sample(tools)}
+	samples := []loadSample{h.sample(equipment)}
 	limit := time.Duration(leastCycles+2) * (c.FlushInterval + c.AckWait)
 	tick := time.NewTicker(loadTick)
 	defer tick.Stop()
@@ -645,7 +645,7 @@ func (h *loadHarness) cycles(tools []*loadTool, rate float64, dir string) {
 	failed := 0
 	for failed == 0 {
 		<-tick.C
-		samples = append(samples, h.sample(tools))
+		samples = append(samples, h.sample(equipment))
 		passes := h.probe.readPasses()
 		for _, p := range passes {
 			if p.failed {
@@ -659,7 +659,7 @@ func (h *loadHarness) cycles(tools []*loadTool, rate float64, dir string) {
 	}
 	h.probe.age(false)
 	prof.stop(h.t)
-	to := h.mark(tools)
+	to := h.mark(equipment)
 	passes, ages := h.probe.readPasses(), h.probe.readAges()
 	if failed > 0 {
 		h.t.Errorf("%d flush passes failed", failed)

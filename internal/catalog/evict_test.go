@@ -232,7 +232,7 @@ func TestEvictHourGuards(t *testing.T) {
 		if ev := evict(t, c, l, Scope{rejected, 1}, hourEvictedNow); ev.Evicted {
 			t.Error("evicted an hour of a rejected capture")
 		}
-		lapse(t, c, `INSERT INTO packs (pack_id, capture_id, tool_id, hour, role, object_key, size, seq_start, format_minor, state, registered_at)
+		lapse(t, c, `INSERT INTO packs (pack_id, capture_id, equipment_id, hour, role, object_key, size, seq_start, format_minor, state, registered_at)
 			VALUES (X'`+hexOf(newID(t))+`', X'`+hexOf(capture)+`', 'T1', 7, 'segment', '`+p.Key+`', 1, 0, 1, 'staged', 0)`)
 		if ev := evict(t, c, l, Scope{capture, 1}, hourEvictedNow); ev.Evicted {
 			t.Error("evicted a pack whose key another row names")

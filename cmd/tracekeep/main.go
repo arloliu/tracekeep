@@ -42,7 +42,7 @@ commands:
   compact    run the compact role
   api        run the api role: the machine API and its downloads
   all        run every role in one process
-  status     print the pending captures, then per tool its last record, open captures, deferred messages and backlog
+  status     print the pending captures, then per equipment its last record, open captures, deferred messages and backlog
   dev        run a single-process development loop
   admin      run an operator command:
                parked list [capture] | parked terminate <capture> [seq]

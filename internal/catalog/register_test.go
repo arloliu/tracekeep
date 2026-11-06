@@ -27,7 +27,7 @@ func segment(t testing.TB, capture tracepack.UUID, hour int64, from, to uint64) 
 	id := newID(t)
 
 	return &Pack{
-		ID: id, Capture: capture, ToolID: "T1", Hour: hour, Role: RoleSegment, Key: "staging/" + id.String(), Size: 100,
+		ID: id, Capture: capture, EquipmentID: "T1", Hour: hour, Role: RoleSegment, Key: "staging/" + id.String(), Size: 100,
 		SeqStart: from, FormatMinor: 1, Ranges: []Range{{SeqFrom: from, SeqTo: to, TSFrom: int64(from), TSTo: int64(to)}},
 	}
 }

@@ -20,8 +20,8 @@ const noBus = "nats://127.0.0.1:1"
 
 func simConfig(mode string) *config {
 	return &config{
-		mode: mode, servers: noBus, prefix: "tpk", bucket: "tpk-objects", speed: 1, rate: 10,
-		opts: sim.Options{ToolID: "SIM-TOOL", DeviceName: "eqp", SessionID: 1, T3: time.Second},
+		mode: mode, servers: noBus, prefix: "tpk", bucket: "tpk-objects", source: "test-source", speed: 1, rate: 10,
+		opts: sim.Options{EquipmentID: "SIM-EQP", Device: "eqp", SessionID: 1, T3: time.Second},
 	}
 }
 
@@ -70,7 +70,7 @@ func writePack(t *testing.T) string {
 	origin := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	w, err := tracepack.NewSegmentWriter(ctx, tracepack.SegmentWriterOptions{
 		Capture: tracepack.CaptureDescriptor{
-			ToolID: "SYN-TOOL", Transport: tracepack.TransportHSMSSS, CaptureMethod: tracepack.CaptureMethodRawStream,
+			EquipmentID: "SYN-EQP", Transport: tracepack.TransportHSMSSS, CaptureMethod: tracepack.CaptureMethodRawStream,
 			Vantage: tracepack.VantageHost, Recorder: "synthetic/1", RecorderInstanceID: tracepack.UUID{1},
 			TimeSource: tracepack.TimeSourceCaptureClock, CaptureOrigin: origin,
 			LifecycleCoverage: tracepack.LifecycleCoverageSubscribed, QualityEvaluated: true,

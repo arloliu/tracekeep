@@ -21,7 +21,7 @@ func admittedAs(t *testing.T, c *Catalog, instance tracepack.UUID, origin int64)
 	t.Helper()
 	gate(t, c)
 	id := newID(t)
-	d := &Descriptor{Bytes: []byte("d"), ToolID: "T1", RecorderInstanceID: instance, Device: "eqp", OriginNS: origin}
+	d := &Descriptor{Bytes: []byte("d"), EquipmentID: "T1", RecorderInstanceID: instance, Device: "eqp", OriginNS: origin}
 	if _, err := c.Admit(t.Context(), start(id), d); err != nil {
 		t.Fatal(err)
 	}
@@ -152,7 +152,7 @@ func TestCloseIntent(t *testing.T) {
 		got := closes[0]
 		if got.Capture != capture || got.Trigger != CloseInactivity || got.PackID != in.PackID || got.WriterTime != now ||
 			string(got.Meta) != "meta" || got.HighestSeq == nil || *got.HighestSeq != 100 || got.HighestSeqTS == nil || *got.HighestSeqTS != 100 ||
-			got.ToolID != "T1" || got.TriggeredAt != now {
+			got.EquipmentID != "T1" || got.TriggeredAt != now {
 			t.Errorf("pending close = %+v", got)
 		}
 		gap := count(t, c, `SELECT COUNT(*) FROM capture_closes WHERE capture_id = ? AND gap_start = ? AND gap_end = ?`, capture[:], 100-1000, now+1000)
@@ -250,7 +250,7 @@ func closePack(t *testing.T, capture tracepack.UUID, id tracepack.UUID) *Pack {
 	t.Helper()
 
 	return &Pack{
-		ID: id, Capture: capture, ToolID: "T1", Hour: 2, Role: RoleClose, Key: "staging/close-" + id.String(), Size: 50,
+		ID: id, Capture: capture, EquipmentID: "T1", Hour: 2, Role: RoleClose, Key: "staging/close-" + id.String(), Size: 50,
 		SeqStart: closeSentinel, FormatMinor: 2,
 	}
 }

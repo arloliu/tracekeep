@@ -28,7 +28,7 @@ func waiting(t *testing.T, c *Catalog) (open, pending tracepack.UUID) {
 	return open, pending
 }
 
-// Status lists the pending captures by id outside any tool, then each tool's last record, open captures and deferred versions.
+// Status lists the pending captures by id outside any equipment, then each piece of equipment's last record, open captures and deferred versions.
 func TestStatus(t *testing.T) {
 	t.Parallel()
 	engines(t, func(t *testing.T, c *Catalog) {
@@ -40,9 +40,9 @@ func TestStatus(t *testing.T) {
 		if len(st.Pending) != 1 || st.Pending[0].Capture != pending || st.Pending[0].SinceNS == 0 {
 			t.Errorf("pending = %+v, want the parked unknown capture", st.Pending)
 		}
-		if len(st.Tools) != 1 || st.Tools[0].ToolID != "T1" || st.Tools[0].OpenCaptures != 1 || st.Tools[0].Deferred != 1 ||
-			st.Tools[0].LastRecordNS == nil || *st.Tools[0].LastRecordNS != 9 {
-			t.Errorf("tools = %+v, want T1 with one open capture, one deferred version and its last record at 9", st.Tools)
+		if len(st.Equipment) != 1 || st.Equipment[0].EquipmentID != "T1" || st.Equipment[0].OpenCaptures != 1 || st.Equipment[0].Deferred != 1 ||
+			st.Equipment[0].LastRecordNS == nil || *st.Equipment[0].LastRecordNS != 9 {
+			t.Errorf("equipment = %+v, want T1 with one open capture, one deferred version and its last record at 9", st.Equipment)
 		}
 	})
 }
@@ -60,11 +60,11 @@ func TestDeferred(t *testing.T) {
 		for _, g := range groups {
 			switch g.Capture {
 			case pending:
-				if g.Reason != "unknown-capture" || g.Count != 2 || g.ToolID != "" || g.OldestNS == 0 {
+				if g.Reason != "unknown-capture" || g.Count != 2 || g.EquipmentID != "" || g.OldestNS == 0 {
 					t.Errorf("the pending capture's group = %+v", g)
 				}
 			case open:
-				if g.Reason != "awaiting-config" || g.Count != 1 || g.ToolID != "T1" {
+				if g.Reason != "awaiting-config" || g.Count != 1 || g.EquipmentID != "T1" {
 					t.Errorf("the open capture's group = %+v", g)
 				}
 			default:

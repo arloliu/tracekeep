@@ -193,7 +193,7 @@ func TestMigrateAndAdmin(t *testing.T) {
 	}
 }
 
-// tracekeep status prints the pending captures and the tools as JSON, and takes no arguments.
+// tracekeep status prints the pending captures and the equipment as JSON, and takes no arguments.
 func TestStatusCommand(t *testing.T) {
 	t.Parallel()
 	path := setup(t)
@@ -202,10 +202,10 @@ func TestStatusCommand(t *testing.T) {
 	}
 	code, stdout, stderr := tracekeep(t, "status", "--config", path)
 	var st struct {
-		Pending []any `json:"pending"`
-		Tools   []any `json:"tools"`
+		Pending   []any `json:"pending"`
+		Equipment []any `json:"equipment"`
 	}
-	if code != 0 || json.Unmarshal([]byte(stdout), &st) != nil || st.Pending == nil || st.Tools == nil {
+	if code != 0 || json.Unmarshal([]byte(stdout), &st) != nil || st.Pending == nil || st.Equipment == nil {
 		t.Errorf("status = %d, %q, %s; want its JSON", code, stdout, stderr)
 	}
 	if code, _, _ := tracekeep(t, "status", "--config", path, "extra"); code != 2 {

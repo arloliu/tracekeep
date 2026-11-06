@@ -242,7 +242,7 @@ func newMergeChain(tb testing.TB, capture tracepack.UUID, hour int64) *mergeChai
 func (ch *mergeChain) insert(tb testing.TB, c *Catalog) {
 	tb.Helper()
 	cols := map[string][]string{
-		"packs":        {"pack_id", "capture_id", "tool_id", "hour", "role", "object_key", "size", "seq_start", "format_minor", "state", "adopted", "registered_at"},
+		"packs":        {"pack_id", "capture_id", "equipment_id", "hour", "role", "object_key", "size", "seq_start", "format_minor", "state", "adopted", "registered_at"},
 		"pack_ranges":  {"pack_id", "capture_id", "seq_from", "seq_to", "ts_from", "ts_to"},
 		"merges":       {"merge_id", "capture_id", "hour", "output_pack_id", "outcome", "at", "delete_at"},
 		"merge_inputs": {"merge_id", "pack_id"},

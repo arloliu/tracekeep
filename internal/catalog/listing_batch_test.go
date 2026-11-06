@@ -63,7 +63,7 @@ func varyListing(t *testing.T, c *Catalog, pop *listingPop) {
 	seedRows(t, c, "conflicts", []string{"capture_id", "seq_from", "seq_to", "pack_id", "other_pack_id", "state"}, conflicts)
 	seedRows(t, c, "pack_losses", []string{"pack_id", "ord", "seq_from", "seq_to", "ts_from", "ts_to"}, losses)
 	last, prev := pop.captures[len(pop.captures)-1], pop.captures[len(pop.captures)-2]
-	s := spec{instance: prev.RecorderInstanceID, device: last.Device, origin: last.OriginNS, endpoint: "192.0.2.1:5000", deviceID: 7, toolID: "T1"}
+	s := spec{instance: prev.RecorderInstanceID, device: last.Device, origin: last.OriginNS, endpoint: "192.0.2.1:5000", deviceID: 7, equipmentID: "T1"}
 	exec(t, c, `UPDATE captures SET descriptor = ?, recorder_instance_id = ?, highest_seq_ts = ? WHERE capture_id = ?`,
 		descriptorBytes(t, s), prev.RecorderInstanceID[:], hourNS(pop.hours)+50, last.ID[:])
 }

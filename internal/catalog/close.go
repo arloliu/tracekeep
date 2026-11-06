@@ -35,7 +35,7 @@ type CloseCandidate struct {
 const registeredOrSeen = `COALESCE(c.last_registered_at, c.created_at)`
 
 // successorOf joins to c every later capture n of its recorder instance with a registration made at or before the bound given.
-const successorOf = `JOIN captures n ON n.tool_id = c.tool_id AND n.recorder_instance_id = c.recorder_instance_id AND n.origin_ns > c.origin_ns
+const successorOf = `JOIN captures n ON n.equipment_id = c.equipment_id AND n.recorder_instance_id = c.recorder_instance_id AND n.origin_ns > c.origin_ns
 	AND EXISTS (SELECT 1 FROM packs p WHERE p.capture_id = n.capture_id AND p.registered_at <= ?)`
 
 // CloseCandidates lists the captures a close may end at now (compactor.md §8.2): open, without a stop,
@@ -214,7 +214,7 @@ func checkedAdd(a, b int64) *int64 {
 // Close is a pending close intent: every input its bytes are written from.
 type Close struct {
 	Capture     tracepack.UUID
-	ToolID      string
+	EquipmentID string
 	Trigger     string
 	TriggeredAt int64
 	// HighestSeq and HighestSeqTS are the capture's highest producer seq and its record's time at the intent; nil when none was staged.
@@ -228,7 +228,7 @@ type Close struct {
 func (c *Catalog) PendingCloses(ctx context.Context) ([]Close, error) {
 	var rows []struct {
 		Capture      []byte         `db:"capture_id"`
-		ToolID       sql.NullString `db:"tool_id"`
+		EquipmentID  sql.NullString `db:"equipment_id"`
 		Trigger      string         `db:"trigger_kind"`
 		TriggeredAt  int64          `db:"triggered_at"`
 		HighestSeq   sql.NullInt64  `db:"highest_seq"`
@@ -237,7 +237,7 @@ func (c *Catalog) PendingCloses(ctx context.Context) ([]Close, error) {
 		WriterTime   int64          `db:"writer_time"`
 		Meta         []byte         `db:"pack_meta"`
 	}
-	err := c.read.SelectContext(ctx, &rows, `SELECT k.capture_id, c.tool_id, k.trigger_kind, k.triggered_at, k.highest_seq, k.highest_seq_ts,
+	err := c.read.SelectContext(ctx, &rows, `SELECT k.capture_id, c.equipment_id, k.trigger_kind, k.triggered_at, k.highest_seq, k.highest_seq_ts,
 		k.pack_id, k.writer_time, k.pack_meta FROM capture_closes k JOIN captures c ON c.capture_id = k.capture_id
 		WHERE k.state = 'pending' ORDER BY k.triggered_at, k.capture_id`)
 	if err != nil {
@@ -246,7 +246,7 @@ func (c *Catalog) PendingCloses(ctx context.Context) ([]Close, error) {
 	out := make([]Close, len(rows))
 	for i, r := range rows {
 		out[i] = Close{
-			Capture: tracepack.UUID(r.Capture), ToolID: r.ToolID.String, Trigger: r.Trigger, TriggeredAt: r.TriggeredAt,
+			Capture: tracepack.UUID(r.Capture), EquipmentID: r.EquipmentID.String, Trigger: r.Trigger, TriggeredAt: r.TriggeredAt,
 			HighestSeq: nullable(r.HighestSeq), HighestSeqTS: nullable(r.HighestSeqTS), PackID: tracepack.UUID(r.PackID),
 			WriterTime: r.WriterTime, Meta: r.Meta,
 		}

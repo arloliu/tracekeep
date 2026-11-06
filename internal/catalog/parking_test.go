@@ -593,7 +593,7 @@ func TestTerminationRightAfterParkingBegins(t *testing.T) {
 	})
 }
 
-// The metrics' reads: unresolved parked versions by reason, and the open captures with their tools.
+// The metrics' reads: unresolved parked versions by reason, and the open captures with their equipment.
 func TestParkedCountsAndOpenCaptures(t *testing.T) {
 	t.Parallel()
 	engines(t, func(t *testing.T, c *Catalog) {
@@ -608,7 +608,7 @@ func TestParkedCountsAndOpenCaptures(t *testing.T) {
 			t.Errorf("ParkedCounts = %v, %v; want the two unresolved versions by their reason", got, err)
 		}
 		cs, err := c.OpenCaptures(ctx)
-		if err != nil || len(cs) != 1 || cs[0].ID != open || cs[0].ToolID != "T1" {
+		if err != nil || len(cs) != 1 || cs[0].ID != open || cs[0].EquipmentID != "T1" {
 			t.Errorf("OpenCaptures = %+v, %v; want the admitted capture of T1", cs, err)
 		}
 	})

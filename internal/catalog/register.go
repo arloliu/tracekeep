@@ -94,7 +94,7 @@ type Evidence struct {
 type Pack struct {
 	ID          tracepack.UUID
 	Capture     tracepack.UUID
-	ToolID      string
+	EquipmentID string
 	Hour        int64
 	Role        string
 	Key         string
@@ -548,9 +548,9 @@ func versionStates(ctx context.Context, tx *sqlx.Tx, capture tracepack.UUID, ds 
 }
 
 func (c *Catalog) insertPack(ctx context.Context, tx *sqlx.Tx, p *Pack, r Registration) error {
-	_, err := tx.ExecContext(ctx, `INSERT INTO packs (pack_id, capture_id, tool_id, hour, role, object_key, size, seq_start, format_minor,
+	_, err := tx.ExecContext(ctx, `INSERT INTO packs (pack_id, capture_id, equipment_id, hour, role, object_key, size, seq_start, format_minor,
 		state, adopted, registered_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'staged', ?, ?)`,
-		p.ID[:], p.Capture[:], p.ToolID, p.Hour, p.Role, p.Key, p.Size, int64(p.SeqStart), p.FormatMinor, r.Adopted, c.now())
+		p.ID[:], p.Capture[:], p.EquipmentID, p.Hour, p.Role, p.Key, p.Size, int64(p.SeqStart), p.FormatMinor, r.Adopted, c.now())
 	if err != nil {
 		return err
 	}

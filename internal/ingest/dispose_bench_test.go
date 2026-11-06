@@ -75,7 +75,7 @@ const fetchDeliveries = 500
 // BenchmarkDisposeFetch is one fetch's dispositions, Executor.Dispose of each of its deliveries in turn on the SQLite catalog (P7):
 // a fetch of fetchDeliveries inline data records spread over k captures, ordinary or covered by a termination order.
 //   - Starting state: k captures admitted by their starts, once, outside the timer;
-//     fetchDeliveries messages built once, the captures taking turns as a fetch from many tools interleaves them,
+//     fetchDeliveries messages built once, the captures taking turns as a fetch from many equipment interleaves them,
 //     seqs from 1 within a capture and each message its own stream seq on incarnation 1.
 //     Order-covered: each capture also holds an active termination order whose cut-off covers every message.
 //   - Ordinary: each delivery is unresolved and admitted, three catalog reads a message on this path

@@ -46,7 +46,7 @@ func (s trafficState) State(ctx context.Context) (metrics.BusState, error) {
 }
 
 // The ingest role's metrics recorded by a real flow: dispositions, a segment registered with its put and registration,
-// a deferral with its reason, a loss labelled by the tool of a start admitted then, and on a refresh the open captures, their gaps, the parked versions and the bus's backlog.
+// a deferral with its reason, a loss labelled by the equipment of a start admitted then, and on a refresh the open captures, their gaps, the parked versions and the bus's backlog.
 func TestIngestMetrics(t *testing.T) {
 	t.Parallel()
 	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
@@ -63,7 +63,7 @@ func TestIngestMetrics(t *testing.T) {
 			r.publish(t, msg, nil)
 		}
 		r.publish(t, inline(t, tracepack.UUID{71}, dataRecord(1, now), nil), nil) // an unknown capture's record: nak'd
-		// A new capture's start beyond retention: admitted, then terminated, a loss of its tool.
+		// A new capture's start beyond retention: admitted, then terminated, a loss of its equipment.
 		r.publish(t, inline(t, tracepack.UUID{72}, startRecord(t, now-int64(48*time.Hour)), descriptorOf(t, "eqp")), nil)
 		r.step(t)
 		r.clk.flushInterval()
@@ -92,23 +92,23 @@ func TestIngestMetrics(t *testing.T) {
 			`tracekeep_ingest_messages_total{disposition="batch"} 4`,
 			`tracekeep_ingest_messages_total{disposition="nak"} 1`,
 			`tracekeep_ingest_messages_total{disposition="terminate"} 1`,
-			`tracekeep_ingest_declared_losses_total{tool_id="T1"} 1`,
-			`tracekeep_ingest_segments_total{tool_id="T1"} 1`,
+			`tracekeep_ingest_declared_losses_total{equipment_id="T1"} 1`,
+			`tracekeep_ingest_segments_total{equipment_id="T1"} 1`,
 			`tracekeep_ingest_put_seconds_count 1`,
 			`tracekeep_ingest_registration_seconds_count 1`,
 			`tracekeep_ingest_deferred_messages{reason="unknown-capture"} 1`,
-			`tracekeep_ingest_captures_open{tool_id="T1"} 2`, // the expired start's capture is admitted too
-			`tracekeep_ingest_open_gaps{tool_id="T1"} 0`,
-			`tracekeep_ingest_gap_observations_total{tool_id="T1"} 0`,
+			`tracekeep_ingest_captures_open{equipment_id="T1"} 2`, // the expired start's capture is admitted too
+			`tracekeep_ingest_open_gaps{equipment_id="T1"} 0`,
+			`tracekeep_ingest_gap_observations_total{equipment_id="T1"} 0`,
 			// One of the two open captures, the one with records, has seqs above its frontier unknown.
-			`tracekeep_ingest_captures_with_unknown_tail{tool_id="T1"} 1`,
+			`tracekeep_ingest_captures_with_unknown_tail{equipment_id="T1"} 1`,
 			`tracekeep_ingest_stream_backlog_messages 1`,
 		} {
 			if !strings.Contains(body, want) {
 				t.Errorf("/metrics lacks %s", want)
 			}
 		}
-		if !strings.Contains(body, `tracekeep_ingest_segment_bytes_total{tool_id="T1"}`) || strings.Contains(body, `tracekeep_ingest_segment_bytes_total{tool_id="T1"} 0`) {
+		if !strings.Contains(body, `tracekeep_ingest_segment_bytes_total{equipment_id="T1"}`) || strings.Contains(body, `tracekeep_ingest_segment_bytes_total{equipment_id="T1"} 0`) {
 			t.Error("segment bytes not counted")
 		}
 	})
@@ -171,7 +171,7 @@ func TestGapObservationsCounted(t *testing.T) {
 		r.step(t)
 		r.clk.flushInterval()
 		r.step(t)
-		if body := scrape(t, s); !strings.Contains(body, `tracekeep_ingest_gap_observations_total{tool_id="T1"} 1`) {
+		if body := scrape(t, s); !strings.Contains(body, `tracekeep_ingest_gap_observations_total{equipment_id="T1"} 1`) {
 			t.Errorf("gap_observations_total after a registration with one hole:\n%s", body)
 		}
 	})
@@ -194,7 +194,7 @@ func TestGapObservationsNotCountedForACopy(t *testing.T) {
 		p.flushAll(t)
 		p.feed(t, inline(t, capture, dataRecord(2, now+2), nil)) // a redelivered copy
 		p.flushAll(t)
-		if body := scrape(t, s); !strings.Contains(body, `tracekeep_ingest_gap_observations_total{tool_id="T1"} 1`) {
+		if body := scrape(t, s); !strings.Contains(body, `tracekeep_ingest_gap_observations_total{equipment_id="T1"} 1`) {
 			t.Errorf("gap_observations_total after a hole and a copy:\n%s", body)
 		}
 	})
@@ -234,7 +234,7 @@ func TestGapObservationsNotCountedForAFailedRegistration(t *testing.T) {
 				t.Fatal("a flush whose registration was cancelled succeeded")
 			}
 		}
-		if body := scrape(t, s); strings.Contains(body, `tracekeep_ingest_gap_observations_total{tool_id="T1"} 1`) {
+		if body := scrape(t, s); strings.Contains(body, `tracekeep_ingest_gap_observations_total{equipment_id="T1"} 1`) {
 			t.Errorf("a failed registration counted its gap:\n%s", body)
 		}
 	})

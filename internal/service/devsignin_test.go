@@ -114,7 +114,7 @@ func TestDevSignsPeopleIn(t *testing.T) {
 	cl := tracekeepv1connect.NewMachineServiceClient(browser, public, connectrpc.WithProtoJSON())
 	now := time.Now()
 	req := connectrpc.NewRequest(&tkv1.ListDevicesRequest{Selector: &tkv1.Selector{
-		ToolId: "SIM-TOOL", From: timestamppb.New(now.Add(-time.Hour)), To: timestamppb.New(now),
+		EquipmentId: "SIM-EQP", From: timestamppb.New(now.Add(-time.Hour)), To: timestamppb.New(now),
 	}})
 	req.Header().Set("Origin", public)
 	if _, err := cl.ListDevices(t.Context(), req); err != nil {

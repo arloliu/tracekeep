@@ -20,7 +20,7 @@ import (
 )
 
 const (
-	tool = "T1"
+	equipment = "T1"
 	// hour is the hour the tests' records fall in.
 	hour = int64(495_000)
 )
@@ -66,6 +66,9 @@ func (w *world) admit(t testing.TB) tracepack.UUID {
 }
 
 // admitActive is admit under the configurations already active, the capture binding the newest.
+// testSource is the source of every capture a world admits.
+const testSource = "test-source"
+
 func (w *world) admitActive(t testing.TB) tracepack.UUID {
 	t.Helper()
 	origin := hour * nsPerHour
@@ -83,14 +86,14 @@ func (w *world) admitActive(t testing.TB) tracepack.UUID {
 	if _, err := w.c.Register(ctx, "r", active, time.Hour); err != nil {
 		t.Fatal(err)
 	}
-	name, instance := "eqp", newID(t)
+	name, source, instance := "eqp", testSource, newID(t)
 	mono, tolerance := int64(0), uint64(time.Second)
 	m := &tracepack.PackMeta{
-		ToolID: tool, Transport: tracepack.TransportHSMSSS, CaptureMethod: tracepack.CaptureMethodRawStream,
+		EquipmentID: equipment, Transport: tracepack.TransportHSMSSS, CaptureMethod: tracepack.CaptureMethodRawStream,
 		Vantage: tracepack.VantageHost, Recorder: "test", TimeSource: tracepack.TimeSourceCaptureClock,
 		CaptureOriginUTCNs: &origin, CaptureOriginMonoNs: &mono, ClockStepToleranceNs: &tolerance,
 		LifecycleCoverage: tracepack.LifecycleCoverageSubscribed, QualityEvaluated: true,
-		RecorderInstanceID: instance, RecorderInstanceName: &name,
+		RecorderInstanceID: instance, RecorderInstanceName: &source, Device: &name,
 	}
 	b, err := tracepack.EncodeDescriptor(m)
 	if err != nil {
@@ -98,7 +101,7 @@ func (w *world) admitActive(t testing.TB) tracepack.UUID {
 	}
 	id := newID(t)
 	d := &catalog.Identity{Version: catalog.VersionKey{Capture: id}, Incarnation: 1, StreamSeq: 1, Hour: hour}
-	if _, err := w.c.Admit(ctx, d, &catalog.Descriptor{Bytes: b, ToolID: tool, RecorderInstanceID: instance, Device: name, OriginNS: origin}); err != nil {
+	if _, err := w.c.Admit(ctx, d, &catalog.Descriptor{Bytes: b, EquipmentID: equipment, RecorderInstanceID: instance, Device: name, Source: source, OriginNS: origin}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -112,7 +115,7 @@ func (w *world) stage(t testing.TB, capture tracepack.UUID) *catalog.Pack {
 	id := newID(t)
 	base := hour * nsPerHour
 	p := &catalog.Pack{
-		ID: id, Capture: capture, ToolID: tool, Hour: hour, Role: catalog.RoleSegment, Key: "staging/" + id.String(), Size: 100,
+		ID: id, Capture: capture, EquipmentID: equipment, Hour: hour, Role: catalog.RoleSegment, Key: "staging/" + id.String(), Size: 100,
 		SeqStart: from, FormatMinor: 1,
 		Ranges: []catalog.Range{{SeqFrom: from, SeqTo: to, TSFrom: base + int64(from), TSTo: base + int64(to)}}, //nolint:gosec // small seqs
 	}
@@ -124,7 +127,7 @@ func (w *world) stage(t testing.TB, capture tracepack.UUID) *catalog.Pack {
 }
 
 func sel(from, to int64) *tkv1.Selector {
-	return &tkv1.Selector{ToolId: tool, From: timestamppb.New(time.Unix(0, from)), To: timestamppb.New(time.Unix(0, to))}
+	return &tkv1.Selector{EquipmentId: equipment, From: timestamppb.New(time.Unix(0, from)), To: timestamppb.New(time.Unix(0, to))}
 }
 
 func reader[T any](msg *T) *connect.Request[T] { return withToken(msg, readerToken) }
@@ -161,7 +164,7 @@ func TestReads(t *testing.T) {
 	})
 }
 
-// ListScopeChanges pages the selected tool's events, its window filtering none, and reports a cursor of another epoch stale.
+// ListScopeChanges pages the selected equipment's events, its window filtering none, and reports a cursor of another epoch stale.
 func TestListScopeChanges(t *testing.T) {
 	t.Parallel()
 	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
@@ -213,7 +216,7 @@ func TestSettledHourReopenedThroughTheAPI(t *testing.T) {
 		}
 		id := newID(t)
 		archive := &catalog.Pack{
-			ID: id, Capture: capture, ToolID: tool, Hour: hour, Role: catalog.RoleArchive, Key: "archive/" + id.String(), Size: 200,
+			ID: id, Capture: capture, EquipmentID: equipment, Hour: hour, Role: catalog.RoleArchive, Key: "archive/" + id.String(), Size: 200,
 			SeqStart: in.SeqStart, FormatMinor: 1, Ranges: in.Ranges,
 		}
 		m := &catalog.Merge{Scope: scope, Revision: snap.Revision, Inputs: []tracepack.UUID{in.ID}, Archive: archive, DeleteDelay: time.Hour}
@@ -228,7 +231,7 @@ func TestSettledHourReopenedThroughTheAPI(t *testing.T) {
 		}
 		settled := listing.Msg.Hours[0].Scopes[0]
 		late := &catalog.Pack{
-			ID: newID(t), Capture: capture, ToolID: tool, Hour: hour, Role: catalog.RoleSegment, Size: 100, SeqStart: 10, FormatMinor: 1,
+			ID: newID(t), Capture: capture, EquipmentID: equipment, Hour: hour, Role: catalog.RoleSegment, Size: 100, SeqStart: 10, FormatMinor: 1,
 			Ranges: []catalog.Range{{SeqFrom: 10, SeqTo: 19, TSFrom: base + 10, TSTo: base + 19}},
 		}
 		late.Key = "staging/" + late.ID.String()
@@ -282,7 +285,7 @@ func TestSelectorRefused(t *testing.T) {
 	bad := "not-a-uuid"
 	for name, s := range map[string]*tkv1.Selector{
 		"none":            nil,
-		"no tool":         with(func(s *tkv1.Selector) { s.ToolId = "" }),
+		"no equipment":    with(func(s *tkv1.Selector) { s.EquipmentId = "" }),
 		"no from":         with(func(s *tkv1.Selector) { s.From = nil }),
 		"an empty window": with(func(s *tkv1.Selector) { s.To = s.From }),
 		"1,001 devices":   with(func(s *tkv1.Selector) { s.Devices = many }),

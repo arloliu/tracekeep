@@ -33,7 +33,7 @@ table "captures" {
     type = sql(var.bytes)
     null = true
   }
-  column "tool_id" {
+  column "equipment_id" {
     type = varchar(255)
     null = true
   }
@@ -41,7 +41,7 @@ table "captures" {
     type = sql(var.uuid)
     null = true
   }
-  # The descriptor's recorder_instance_name, decoded at admission.
+  # The descriptor's device, decoded at admission.
   column "device" {
     type = varchar(255)
     null = true
@@ -83,14 +83,19 @@ table "captures" {
   column "created_at" {
     type = bigint
   }
+  # The descriptor's recorder_instance_name, the source, decoded at admission; last, where adding a column puts it.
+  column "source" {
+    type = varchar(255)
+    null = true
+  }
   primary_key {
     columns = [column.capture_id]
   }
   index "captures_successor" {
-    columns = [column.tool_id, column.recorder_instance_id, column.origin_ns]
+    columns = [column.equipment_id, column.recorder_instance_id, column.origin_ns]
   }
   index "captures_device" {
-    columns = [column.tool_id, column.device, column.origin_ns]
+    columns = [column.equipment_id, column.device, column.origin_ns]
   }
   # The captures bound to a configuration, which a retirement reads under the membership sentinel.
   index "captures_config" {
@@ -162,7 +167,7 @@ table "packs" {
   column "capture_id" {
     type = sql(var.uuid)
   }
-  column "tool_id" {
+  column "equipment_id" {
     type = varchar(255)
   }
   column "hour" {
@@ -197,8 +202,8 @@ table "packs" {
   primary_key {
     columns = [column.pack_id]
   }
-  index "packs_tool_hour" {
-    columns = [column.tool_id, column.hour]
+  index "packs_equipment_hour" {
+    columns = [column.equipment_id, column.hour]
   }
   index "packs_capture_hour_state" {
     columns = [column.capture_id, column.hour, column.state]

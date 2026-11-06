@@ -21,8 +21,8 @@ import (
 )
 
 const (
-	tool = "T1"
-	hour = int64(490000) // an hour of 2025
+	equipment = "T1"
+	hour      = int64(490000) // an hour of 2025
 )
 
 type fixture struct {
@@ -70,7 +70,7 @@ func (f *fixture) admit(t testing.TB) tracepack.UUID {
 	}
 	id := newID(t)
 	d := &catalog.Identity{Version: catalog.VersionKey{Capture: id}, Incarnation: 1, StreamSeq: 1, Hour: hour}
-	if _, err := f.c.Admit(ctx, d, &catalog.Descriptor{Bytes: []byte("d"), ToolID: tool, RecorderInstanceID: newID(t), Device: "eqp", OriginNS: 1}); err != nil {
+	if _, err := f.c.Admit(ctx, d, &catalog.Descriptor{Bytes: []byte("d"), EquipmentID: equipment, RecorderInstanceID: newID(t), Device: "eqp", OriginNS: 1}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -116,7 +116,7 @@ type built struct {
 func segment(t *testing.T, capture tracepack.UUID, seqs []uint64, stop bool) built {
 	t.Helper()
 	b := write(t, capture, tracepack.PackRoleSegment, seqs, stop)
-	key, err := tracepack.SegmentKey("", tool, capture, seqs[0], b.id)
+	key, err := tracepack.SegmentKey("", equipment, capture, seqs[0], b.id)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -151,7 +151,7 @@ func writeRecords(t testing.TB, capture tracepack.UUID, role tracepack.PackRole,
 	name := "eqp"
 	origin, mono, tolerance, interval := int64(1000), int64(0), uint64(time.Second), uint64(5*time.Minute)
 	m := &tracepack.PackMeta{
-		ToolID: tool, Transport: tracepack.TransportHSMSSS, CaptureMethod: tracepack.CaptureMethodRawStream,
+		EquipmentID: equipment, Transport: tracepack.TransportHSMSSS, CaptureMethod: tracepack.CaptureMethodRawStream,
 		Vantage: tracepack.VantageHost, Recorder: "test", Writer: "test", TimeSource: tracepack.TimeSourceCaptureClock,
 		CaptureOriginUTCNs: &origin, CaptureOriginMonoNs: &mono, ClockStepToleranceNs: &tolerance,
 		LifecycleCoverage: tracepack.LifecycleCoverageSubscribed, QualityEvaluated: true,
@@ -237,7 +237,7 @@ func TestOrphanAdopted(t *testing.T) {
 			t.Errorf("capture = %+v, %v; want highest seq 6 and stopped", got, err)
 		}
 		p := &catalog.Pack{
-			ID: b.id, Capture: capture, ToolID: tool, Hour: hour, Role: catalog.RoleSegment, Key: b.key, Size: int64(len(b.data)),
+			ID: b.id, Capture: capture, EquipmentID: equipment, Hour: hour, Role: catalog.RoleSegment, Key: b.key, Size: int64(len(b.data)),
 			SeqStart: 1, FormatMinor: 1, Ranges: []catalog.Range{{SeqFrom: 1, SeqTo: 6}},
 		}
 		ev := &catalog.Evidence{Deliveries: []catalog.Identity{{Version: catalog.VersionKey{Capture: capture, Seq: 1}, Incarnation: 1, StreamSeq: 2}}}
@@ -302,7 +302,7 @@ func TestReadDerivesThePack(t *testing.T) {
 	b := writeWith(t, capture, tracepack.PackRoleSegment, []uint64{1, 2, 3, 5, 6}, true, func(m *tracepack.PackMeta) {
 		m.Coverage = []tracepack.Coverage{{CaptureID: &capture, SeqFirst: &four, SeqLast: &four, TimeStart: &ts, TimeEnd: &ts}}
 	})
-	key, err := tracepack.SegmentKey("", tool, capture, 1, b.id)
+	key, err := tracepack.SegmentKey("", equipment, capture, 1, b.id)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -316,7 +316,7 @@ func TestReadDerivesThePack(t *testing.T) {
 	if !slices.Equal(p.Ranges, want) {
 		t.Errorf("ranges %+v, want %+v", p.Ranges, want)
 	}
-	if !p.Stop || p.ID != b.id || p.Capture != capture || p.Hour != hour || p.SeqStart != 1 || p.Role != catalog.RoleSegment || p.ToolID != tool {
+	if !p.Stop || p.ID != b.id || p.Capture != capture || p.Hour != hour || p.SeqStart != 1 || p.Role != catalog.RoleSegment || p.EquipmentID != equipment {
 		t.Errorf("pack %+v, want the header's identity and a stop", p)
 	}
 	if len(p.Losses) != 1 || *p.Losses[0].SeqFrom != 4 || *p.Losses[0].SeqTo != 4 || *p.Losses[0].TSFrom != ts || *p.Losses[0].TSTo != ts {
@@ -353,9 +353,9 @@ func TestOrphanQuarantined(t *testing.T) {
 		corrupt.data = corrupt.data[:len(corrupt.data)-1]
 		misnamed := segment(t, capture, []uint64{3}, false)
 		other := newID(t)
-		misnamed.key, _ = tracepack.SegmentKey("", tool, capture, 3, other)
+		misnamed.key, _ = tracepack.SegmentKey("", equipment, capture, 3, other)
 		// Verify fails on an object that is no pack at all (ErrNotTracepack): evidence of its bytes, quarantined too.
-		junk, _ := tracepack.SegmentKey("", tool, capture, 4, newID(t))
+		junk, _ := tracepack.SegmentKey("", equipment, capture, 4, newID(t))
 		f.put(t, corrupt.key, corrupt.data)
 		f.put(t, misnamed.key, misnamed.data)
 		f.put(t, junk, bytes.Repeat([]byte("not a pack "), 64))
@@ -429,7 +429,7 @@ func TestOrphanArchiveAdopted(t *testing.T) {
 		f.r.KeyPrefix = "tk"
 		capture := f.admit(t)
 		b := write(t, capture, tracepack.PackRoleArchive, []uint64{0, 1, 2}, false)
-		key, err := tracepack.ArchiveKey("tk", tool, capture, hour, b.id)
+		key, err := tracepack.ArchiveKey("tk", equipment, capture, hour, b.id)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -555,7 +555,7 @@ func TestCloseOrphanAdopted(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		key, err := tracepack.SegmentKey("", tool, capture, math.MaxInt64, id)
+		key, err := tracepack.SegmentKey("", equipment, capture, math.MaxInt64, id)
 		if err != nil {
 			t.Fatal(err)
 		}

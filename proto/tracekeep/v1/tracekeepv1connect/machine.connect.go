@@ -77,7 +77,7 @@ const (
 
 // MachineServiceClient is a client for the tracekeep.v1.MachineService service.
 type MachineServiceClient interface {
-	// ListDevices answers, per device of the tool, its latest endpoint, open captures, overlap, last record and whether the window holds a gap.
+	// ListDevices answers, per series (a device as one source recorded it), its latest endpoint, open captures, overlap, last record and whether the window holds a gap.
 	ListDevices(context.Context, *connect.Request[v1.ListDevicesRequest]) (*connect.Response[v1.ListDevicesResponse], error)
 	// ListCaptures answers the captures the selector selects, each with its unregistered intervals and overlap.
 	ListCaptures(context.Context, *connect.Request[v1.ListCapturesRequest]) (*connect.Response[v1.ListCapturesResponse], error)
@@ -281,7 +281,7 @@ func (c *machineServiceClient) CancelExport(ctx context.Context, req *connect.Re
 
 // MachineServiceHandler is an implementation of the tracekeep.v1.MachineService service.
 type MachineServiceHandler interface {
-	// ListDevices answers, per device of the tool, its latest endpoint, open captures, overlap, last record and whether the window holds a gap.
+	// ListDevices answers, per series (a device as one source recorded it), its latest endpoint, open captures, overlap, last record and whether the window holds a gap.
 	ListDevices(context.Context, *connect.Request[v1.ListDevicesRequest]) (*connect.Response[v1.ListDevicesResponse], error)
 	// ListCaptures answers the captures the selector selects, each with its unregistered intervals and overlap.
 	ListCaptures(context.Context, *connect.Request[v1.ListCapturesRequest]) (*connect.Response[v1.ListCapturesResponse], error)

@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/nats-io/nats.go"
 
@@ -19,6 +20,7 @@ import (
 	"github.com/arloliu/tracekeep/internal/keys"
 	"github.com/arloliu/tracekeep/internal/metrics"
 	"github.com/arloliu/tracekeep/internal/policy"
+	"github.com/arloliu/tracekeep/producer"
 )
 
 // maxSteps bounds one delivery's steps; Decide finishes far sooner.
@@ -74,8 +76,8 @@ type Delivery struct {
 	// cannot-screen, key-binding-mismatch, key-refused or key-unavailable. The error names keys and seqs, never material or content.
 	MaskErr  error
 	Incident string
-	// ToolID is the capture's tool once the capture is looked up and admitted, or its start admitted, for the metrics labelled by tool.
-	ToolID string
+	// EquipmentID is the capture's equipment once the capture is looked up and admitted, or its start admitted, for the metrics labelled by equipment.
+	EquipmentID string
 }
 
 // Config is a processing configuration this replica executes (rollouts.md §6.4):
@@ -253,7 +255,7 @@ func (x *Executor) lookupCapture(ctx context.Context, d *Delivery) error {
 	case c.State == catalog.StateRejected:
 		d.Facts.Capture = CaptureRejected
 	default:
-		d.Facts.Capture, d.ConfigID, d.ToolID = CaptureAdmitted, c.ConfigID, c.ToolID
+		d.Facts.Capture, d.ConfigID, d.EquipmentID = CaptureAdmitted, c.ConfigID, c.EquipmentID
 	}
 
 	return nil
@@ -301,16 +303,17 @@ func (x *Executor) admit(ctx context.Context, d *Delivery) error {
 		return err // validated by framing; a failure now is an invariant failure
 	}
 	desc := &catalog.Descriptor{
-		Bytes: d.Record.Descriptor, ToolID: meta.ToolID, RecorderInstanceID: meta.RecorderInstanceID,
+		Bytes: d.Record.Descriptor, EquipmentID: meta.EquipmentID, RecorderInstanceID: meta.RecorderInstanceID,
 		PreviousCaptureID: meta.PreviousCaptureID,
 	}
-	if meta.RecorderInstanceName != nil {
-		desc.Device = *meta.RecorderInstanceName
+	// AcceptedDescriptor has checked both, so neither is nil here.
+	if meta.Device != nil && meta.RecorderInstanceName != nil {
+		desc.Device, desc.Source = *meta.Device, *meta.RecorderInstanceName
 	}
 	if meta.CaptureOriginUTCNs != nil {
 		desc.OriginNS = *meta.CaptureOriginUTCNs
 	}
-	d.ToolID = meta.ToolID
+	d.EquipmentID = meta.EquipmentID
 	res, err := x.Catalog.AdmitWhere(ctx, d.identity(), desc, x.Bindable)
 	if errors.Is(err, catalog.ErrNoBindableConfig) {
 		d.Facts.Admitted, d.Facts.Unbindable = true, true
@@ -467,12 +470,23 @@ func (d *Delivery) descriptorBytes() []byte {
 }
 
 // AcceptedDescriptor reports whether this service accepts a start's descriptor:
-// a raw-stream capture of an HSMS-SS connection that names its device (architecture.md §3.4).
+// a raw-stream capture of an HSMS-SS connection that names its series (architecture.md §3.4):
+// a device and a source, each valid UTF-8 of 1 to 255 bytes and not whitespace only,
+// and the recorder_instance_id the SDK derives from them with equipment_id (producer.md §4.5).
 func AcceptedDescriptor(descriptor []byte) bool {
 	m, err := tracepack.DecodeDescriptor(descriptor)
 
 	return err == nil && m.Transport == tracepack.TransportHSMSSS && m.CaptureMethod == tracepack.CaptureMethodRawStream &&
-		m.RecorderInstanceName != nil && strings.TrimSpace(*m.RecorderInstanceName) != ""
+		validName(m.Device) && validName(m.RecorderInstanceName) &&
+		m.RecorderInstanceID == producer.RecorderInstanceID(m.EquipmentID, *m.Device, *m.RecorderInstanceName)
+}
+
+// maxNameBytes bounds a device and a source, the catalog's column width, which SQLite does not enforce.
+const maxNameBytes = 255
+
+// validName reports whether s names a device or a source: present, valid UTF-8 of 1 to maxNameBytes bytes, not whitespace only.
+func validName(s *string) bool {
+	return s != nil && len(*s) <= maxNameBytes && utf8.ValidString(*s) && strings.TrimSpace(*s) != ""
 }
 
 // AuditTermination writes the audit row of a beyond-retention termination: intentional, and visible (ingest.md §6.1).

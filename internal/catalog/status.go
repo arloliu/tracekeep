@@ -13,27 +13,27 @@ import (
 // unresolvedStates are the parked versions' states that still defer their messages (parking.md).
 const unresolvedStates = `('parking', 'parked', 'evicted-hour')`
 
-// PendingCapture is a capture parking created before its start was seen, by capture id: it has no tool yet.
+// PendingCapture is a capture parking created before its start was seen, by capture id: it has no equipment yet.
 type PendingCapture struct {
 	Capture tracepack.UUID
 	// SinceNS is when the catalog first saw it.
 	SinceNS int64
 }
 
-// ToolStatus is one tool's line of tracekeep status (operations.md §10.4).
-type ToolStatus struct {
-	ToolID string
-	// LastRecordNS is the time of the latest record registered of the tool's admitted captures, nil before any.
+// EquipmentStatus is one piece of equipment's line of tracekeep status (operations.md §10.4).
+type EquipmentStatus struct {
+	EquipmentID string
+	// LastRecordNS is the time of the latest record registered of the equipment's admitted captures, nil before any.
 	LastRecordNS *int64
 	OpenCaptures int
-	// Deferred counts the unresolved parked versions of the tool's captures.
+	// Deferred counts the unresolved parked versions of the equipment's captures.
 	Deferred int
 }
 
-// Status is what tracekeep status reads of the catalog: the pending captures by id, then each tool by id.
+// Status is what tracekeep status reads of the catalog: the pending captures by id, then each piece of equipment by id.
 type Status struct {
-	Pending []PendingCapture
-	Tools   []ToolStatus
+	Pending   []PendingCapture
+	Equipment []EquipmentStatus
 }
 
 // Status reads the catalog's part of tracekeep status from one snapshot.
@@ -50,37 +50,37 @@ func (c *Catalog) Status(ctx context.Context) (Status, error) {
 		for _, p := range pending {
 			out.Pending = append(out.Pending, PendingCapture{Capture: tracepack.UUID(p.Capture), SinceNS: p.Since})
 		}
-		var tools []struct {
-			Tool string        `db:"tool_id"`
-			Last sql.NullInt64 `db:"last_record"`
-			Open int           `db:"open_captures"`
+		var equipment []struct {
+			Equipment string        `db:"equipment_id"`
+			Last      sql.NullInt64 `db:"last_record"`
+			Open      int           `db:"open_captures"`
 		}
-		err := tx.SelectContext(ctx, &tools, `SELECT tool_id,
+		err := tx.SelectContext(ctx, &equipment, `SELECT equipment_id,
 				MAX(CASE WHEN state IN `+admittedStates+` THEN highest_seq_ts END) AS last_record,
 				SUM(CASE WHEN state = 'open' THEN 1 ELSE 0 END) AS open_captures
-			FROM captures WHERE tool_id IS NOT NULL GROUP BY tool_id ORDER BY tool_id`)
+			FROM captures WHERE equipment_id IS NOT NULL GROUP BY equipment_id ORDER BY equipment_id`)
 		if err != nil {
 			return err
 		}
 		var deferred []struct {
-			Tool string `db:"tool_id"`
-			N    int    `db:"n"`
+			Equipment string `db:"equipment_id"`
+			N         int    `db:"n"`
 		}
-		err = tx.SelectContext(ctx, &deferred, `SELECT k.tool_id, COUNT(*) AS n FROM parked p JOIN captures k ON k.capture_id = p.capture_id
-			WHERE p.state IN `+unresolvedStates+` AND k.tool_id IS NOT NULL GROUP BY k.tool_id`)
+		err = tx.SelectContext(ctx, &deferred, `SELECT k.equipment_id, COUNT(*) AS n FROM parked p JOIN captures k ON k.capture_id = p.capture_id
+			WHERE p.state IN `+unresolvedStates+` AND k.equipment_id IS NOT NULL GROUP BY k.equipment_id`)
 		if err != nil {
 			return err
 		}
-		byTool := map[string]int{}
+		byEquipment := map[string]int{}
 		for _, d := range deferred {
-			byTool[d.Tool] = d.N
+			byEquipment[d.Equipment] = d.N
 		}
-		for _, t := range tools {
-			ts := ToolStatus{ToolID: t.Tool, OpenCaptures: t.Open, Deferred: byTool[t.Tool]}
+		for _, t := range equipment {
+			ts := EquipmentStatus{EquipmentID: t.Equipment, OpenCaptures: t.Open, Deferred: byEquipment[t.Equipment]}
 			if t.Last.Valid {
 				ts.LastRecordNS = &t.Last.Int64
 			}
-			out.Tools = append(out.Tools, ts)
+			out.Equipment = append(out.Equipment, ts)
 		}
 
 		return nil
@@ -95,10 +95,10 @@ func (c *Catalog) Status(ctx context.Context) (Status, error) {
 // DeferredGroup is the unresolved parked versions of one capture and reason: what waits, why, and since when.
 type DeferredGroup struct {
 	Capture tracepack.UUID
-	// ToolID is the capture's tool, empty for a pending capture.
-	ToolID string
-	Reason string
-	Count  int
+	// EquipmentID is the capture's equipment, empty for a pending capture.
+	EquipmentID string
+	Reason      string
+	Count       int
 	// OldestNS is when the group's oldest version was parked.
 	OldestNS int64
 }
@@ -110,21 +110,21 @@ func (c *Catalog) Deferred(ctx context.Context, capture *tracepack.UUID) ([]Defe
 		where, args = " AND p.capture_id = ?", []any{capture[:]}
 	}
 	var rows []struct {
-		Capture []byte         `db:"capture_id"`
-		Tool    sql.NullString `db:"tool_id"`
-		Reason  string         `db:"reason"`
-		N       int            `db:"n"`
-		Oldest  int64          `db:"oldest"`
+		Capture   []byte         `db:"capture_id"`
+		Equipment sql.NullString `db:"equipment_id"`
+		Reason    string         `db:"reason"`
+		N         int            `db:"n"`
+		Oldest    int64          `db:"oldest"`
 	}
-	err := c.read.SelectContext(ctx, &rows, `SELECT p.capture_id, k.tool_id, p.reason, COUNT(*) AS n, MIN(p.parked_at) AS oldest
+	err := c.read.SelectContext(ctx, &rows, `SELECT p.capture_id, k.equipment_id, p.reason, COUNT(*) AS n, MIN(p.parked_at) AS oldest
 		FROM parked p JOIN captures k ON k.capture_id = p.capture_id
-		WHERE p.state IN `+unresolvedStates+where+` GROUP BY p.capture_id, k.tool_id, p.reason ORDER BY p.capture_id, p.reason`, args...)
+		WHERE p.state IN `+unresolvedStates+where+` GROUP BY p.capture_id, k.equipment_id, p.reason ORDER BY p.capture_id, p.reason`, args...)
 	if err != nil {
 		return nil, fmt.Errorf("catalog: deferred: %w", err)
 	}
 	out := make([]DeferredGroup, 0, len(rows))
 	for _, r := range rows {
-		out = append(out, DeferredGroup{Capture: tracepack.UUID(r.Capture), ToolID: r.Tool.String, Reason: r.Reason, Count: r.N, OldestNS: r.Oldest})
+		out = append(out, DeferredGroup{Capture: tracepack.UUID(r.Capture), EquipmentID: r.Equipment.String, Reason: r.Reason, Count: r.N, OldestNS: r.Oldest})
 	}
 
 	return out, nil

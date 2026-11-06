@@ -30,7 +30,7 @@ func failed(err error) error {
 }
 
 // selector parses sel, refusing a missing selector or window bound and an id that does not parse;
-// the catalog refuses the rest (no tool, an empty window, too many devices or hours).
+// the catalog refuses the rest (no equipment, an empty window, too many devices or hours).
 func selector(sel *tkv1.Selector) (catalog.Selector, error) {
 	if sel == nil {
 		return catalog.Selector{}, invalid("no selector")
@@ -38,7 +38,7 @@ func selector(sel *tkv1.Selector) (catalog.Selector, error) {
 	if !sel.GetFrom().IsValid() || !sel.GetTo().IsValid() {
 		return catalog.Selector{}, invalid("a selector needs a valid from and to")
 	}
-	out := catalog.Selector{ToolID: sel.GetToolId(), Devices: sel.GetDevices(), From: nanos(sel.GetFrom()), To: nanos(sel.GetTo())}
+	out := catalog.Selector{EquipmentID: sel.GetEquipmentId(), Devices: sel.GetDevices(), Sources: sel.GetSources(), From: nanos(sel.GetFrom()), To: nanos(sel.GetTo())}
 	if sel.CaptureId != nil {
 		id, err := tracepack.ParseUUID(sel.GetCaptureId())
 		if err != nil {
@@ -101,7 +101,7 @@ func ids(in []tracepack.UUID) []string {
 
 func captureOf(c *catalog.CaptureInfo) *tkv1.Capture {
 	out := &tkv1.Capture{
-		CaptureId: c.ID.String(), State: c.State, Device: c.Device, RecorderInstanceId: c.RecorderInstanceID.String(),
+		CaptureId: c.ID.String(), State: c.State, Device: c.Device, Source: c.Source, RecorderInstanceId: c.RecorderInstanceID.String(),
 		PreviousCaptureId: optID(c.PreviousCaptureID), Origin: ts(c.OriginNS), LastRecord: optTS(c.LastRecordNS),
 		ConfigId: c.ConfigID, EquipmentEndpoint: c.EquipmentEndpoint, DeviceId: c.DeviceID, Overlap: c.Overlap,
 	}
@@ -119,7 +119,7 @@ func captureOf(c *catalog.CaptureInfo) *tkv1.Capture {
 
 func deviceOf(d *catalog.DeviceInfo) *tkv1.Device {
 	return &tkv1.Device{
-		Name: d.Name, EquipmentEndpoint: d.EquipmentEndpoint, DeviceId: d.DeviceID, OpenCaptures: int64(d.OpenCaptures),
+		Name: d.Name, Source: d.Source, EquipmentEndpoint: d.EquipmentEndpoint, DeviceId: d.DeviceID, OpenCaptures: int64(d.OpenCaptures),
 		Overlap: d.Overlap, LastRecord: optTS(d.LastRecordNS), Gap: d.Gap,
 	}
 }

@@ -68,7 +68,7 @@ type Input struct {
 // Snapshot is a scope as a merge reads it (compactor.md §8.1 step 3).
 type Snapshot struct {
 	Scope
-	ToolID string
+	EquipmentID string
 	// State is the scope's state, empty for a scope the catalog does not hold.
 	State string
 	// Revision is the scope's revision, read before everything else:
@@ -97,19 +97,19 @@ func (c *Catalog) MergeSnapshot(ctx context.Context, s Scope) (Snapshot, error) 
 	}
 	snap.State, snap.Revision = head.State, head.Revision
 	var rows []struct {
-		ID     []byte `db:"pack_id"`
-		ToolID string `db:"tool_id"`
-		Role   string `db:"role"`
-		Key    string `db:"object_key"`
-		Size   int64  `db:"size"`
+		ID          []byte `db:"pack_id"`
+		EquipmentID string `db:"equipment_id"`
+		Role        string `db:"role"`
+		Key         string `db:"object_key"`
+		Size        int64  `db:"size"`
 	}
-	err = c.read.SelectContext(ctx, &rows, `SELECT pack_id, tool_id, role, object_key, size FROM packs
+	err = c.read.SelectContext(ctx, &rows, `SELECT pack_id, equipment_id, role, object_key, size FROM packs
 		WHERE capture_id = ? AND hour = ? AND state = 'staged' ORDER BY seq_start, pack_id`, s.Capture[:], s.Hour)
 	if err != nil {
 		return snap, fmt.Errorf("catalog: merge snapshot: %w", err)
 	}
 	for _, r := range rows {
-		snap.ToolID = r.ToolID
+		snap.EquipmentID = r.EquipmentID
 		snap.Inputs = append(snap.Inputs, Input{ID: tracepack.UUID(r.ID), Role: r.Role, Key: r.Key, Size: r.Size})
 	}
 	var touched bool

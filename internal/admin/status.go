@@ -20,23 +20,23 @@ type Pending struct {
 	Since   time.Time `json:"since"`
 }
 
-// Tool is one tool's line of tracekeep status (operations.md §10.4).
-type Tool struct {
-	ToolID       string     `json:"tool_id"`
+// Equipment is one piece of equipment's line of tracekeep status (operations.md §10.4).
+type Equipment struct {
+	EquipmentID  string     `json:"equipment_id"`
 	LastRecord   *time.Time `json:"last_record,omitempty"`
 	OpenCaptures int        `json:"open_captures"`
 	Deferred     int        `json:"deferred_messages"`
-	// Backlog is the traffic stream's messages on the tool's subjects.
+	// Backlog is the traffic stream's messages on the equipment's subjects.
 	Backlog uint64 `json:"backlog_messages"`
 }
 
-// Status is tracekeep status: the pending captures by id first, then each tool, and the traffic stream's whole backlog,
+// Status is tracekeep status: the pending captures by id first, then each piece of equipment, and the traffic stream's whole backlog,
 // whose bytes no subject divides.
 type Status struct {
-	Pending         []Pending `json:"pending"`
-	Tools           []Tool    `json:"tools"`
-	BacklogMessages uint64    `json:"backlog_messages"`
-	BacklogBytes    uint64    `json:"backlog_bytes"`
+	Pending         []Pending   `json:"pending"`
+	Equipment       []Equipment `json:"equipment"`
+	BacklogMessages uint64      `json:"backlog_messages"`
+	BacklogBytes    uint64      `json:"backlog_bytes"`
 }
 
 // Status is tracekeep status.
@@ -54,25 +54,25 @@ func (a *Admin) Status(ctx context.Context) (Status, error) {
 	if err != nil {
 		return Status{}, fmt.Errorf("admin: status: the traffic stream: %w", err)
 	}
-	out := Status{Pending: []Pending{}, Tools: []Tool{}, BacklogMessages: info.State.Msgs, BacklogBytes: info.State.Bytes}
+	out := Status{Pending: []Pending{}, Equipment: []Equipment{}, BacklogMessages: info.State.Msgs, BacklogBytes: info.State.Bytes}
 	for _, p := range st.Pending {
 		out.Pending = append(out.Pending, Pending{Capture: p.Capture.String(), Since: time.Unix(0, p.SinceNS).UTC()})
 	}
-	for _, t := range st.Tools {
-		line := Tool{ToolID: t.ToolID, OpenCaptures: t.OpenCaptures, Deferred: t.Deferred}
+	for _, t := range st.Equipment {
+		line := Equipment{EquipmentID: t.EquipmentID, OpenCaptures: t.OpenCaptures, Deferred: t.Deferred}
 		if t.LastRecordNS != nil {
 			at := time.Unix(0, *t.LastRecordNS).UTC()
 			line.LastRecord = &at
 		}
-		// A subject is <prefix>.<tool token>.<capture> (tracepack's BusSubject).
-		if token, err := tpbus.ToolToken(t.ToolID); err == nil {
+		// A subject is <prefix>.<equipment token>.<capture> (tracepack's BusSubject).
+		if token, err := tpbus.EquipmentToken(t.EquipmentID); err == nil {
 			for subject, n := range info.State.Subjects {
 				if strings.HasPrefix(subject, prefix+token+".") {
 					line.Backlog += n
 				}
 			}
 		}
-		out.Tools = append(out.Tools, line)
+		out.Equipment = append(out.Equipment, line)
 	}
 
 	return out, nil
@@ -80,11 +80,11 @@ func (a *Admin) Status(ctx context.Context) (Status, error) {
 
 // Deferred is one group of deferred list.
 type Deferred struct {
-	Capture string    `json:"capture_id"`
-	ToolID  string    `json:"tool_id,omitempty"`
-	Reason  string    `json:"reason"`
-	Count   int       `json:"count"`
-	Since   time.Time `json:"since"`
+	Capture     string    `json:"capture_id"`
+	EquipmentID string    `json:"equipment_id,omitempty"`
+	Reason      string    `json:"reason"`
+	Count       int       `json:"count"`
+	Since       time.Time `json:"since"`
 }
 
 // DeferredList is deferred list: what waits, why and since when, by capture and reason; of capture alone when it is not nil.
@@ -95,7 +95,7 @@ func (a *Admin) DeferredList(ctx context.Context, capture *tracepack.UUID) ([]De
 	}
 	out := make([]Deferred, 0, len(groups))
 	for _, g := range groups {
-		out = append(out, Deferred{Capture: g.Capture.String(), ToolID: g.ToolID, Reason: g.Reason, Count: g.Count, Since: time.Unix(0, g.OldestNS).UTC()})
+		out = append(out, Deferred{Capture: g.Capture.String(), EquipmentID: g.EquipmentID, Reason: g.Reason, Count: g.Count, Since: time.Unix(0, g.OldestNS).UTC()})
 	}
 
 	return out, nil

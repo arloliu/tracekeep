@@ -226,7 +226,7 @@ func TestExportOpensByTheStoredSize(t *testing.T) {
 			sp := sized(t, &tc)
 			m, capture, p, f := sp.m, sp.capture, sp.p, sp.f
 			if tc.outcome == storeFails {
-				req := &exportRequest{Kind: "canonical", Selector: exportSelector{ToolID: tool, Capture: capture.String(), From: hour * nsPerHour, To: (hour + 1) * nsPerHour}}
+				req := &exportRequest{Kind: "canonical", Selector: exportSelector{EquipmentID: equipment, Capture: capture.String(), From: hour * nsPerHour, To: (hour + 1) * nsPerHour}}
 				if _, _, err := m.srv.buildBundle(t.Context(), newID(t), req, t.TempDir()); !errors.Is(err, records.ErrStore) || errors.Is(err, store.ErrNotFound) {
 					t.Errorf("the attempt = %v, want the store's failure", err)
 				}
@@ -396,7 +396,7 @@ func TestSizedOpensInParallel(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			sp := sized(t, &tc)
-			req := &exportRequest{Kind: "canonical", Selector: exportSelector{ToolID: tool, Capture: sp.capture.String(), From: hour * nsPerHour, To: (hour + 1) * nsPerHour}}
+			req := &exportRequest{Kind: "canonical", Selector: exportSelector{EquipmentID: equipment, Capture: sp.capture.String(), From: hour * nsPerHour, To: (hour + 1) * nsPerHour}}
 			const n = 4
 			st, ok := sp.m.srv.Store.(*s3store.Store)
 			if !ok {

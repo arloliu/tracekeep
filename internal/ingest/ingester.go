@@ -468,7 +468,7 @@ func (g *Ingester) act(ctx context.Context, e Entry, dec Decision, delivered uin
 		}
 		_ = e.Msg.Term()
 		if dec.Reason == ReasonBeyondRetention {
-			g.Metrics.Lost(e.D.ToolID)
+			g.Metrics.Lost(e.D.EquipmentID)
 		}
 	case ActNak:
 		g.deferMsg(e, dec.Reason, g.delay(delivered))

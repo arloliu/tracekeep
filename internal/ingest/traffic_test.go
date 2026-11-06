@@ -9,6 +9,8 @@ import (
 
 	"github.com/arloliu/go-secs/tracepack"
 	tpbus "github.com/arloliu/go-secs/tracepack/bus"
+
+	"github.com/arloliu/tracekeep/producer"
 )
 
 // The test traffic: bus messages built as a producer publishes them (the tracepack storage specification §4).
@@ -51,16 +53,19 @@ func (c *claims) put(name string, b []byte) {
 	c.mu.Unlock()
 }
 
-// descriptorOf is a start descriptor this service accepts.
+// testSource is the source of every test capture.
+const testSource = "test-source"
+
+// descriptorOf is a start descriptor this service accepts, of device name.
 func descriptorOf(t testing.TB, name string) []byte {
 	t.Helper()
-	origin, mono, tolerance := int64(1000), int64(0), uint64(time.Second)
+	origin, mono, tolerance, source := int64(1000), int64(0), uint64(time.Second), testSource
 	m := &tracepack.PackMeta{
-		ToolID: "T1", Transport: tracepack.TransportHSMSSS, CaptureMethod: tracepack.CaptureMethodRawStream,
+		EquipmentID: "T1", Transport: tracepack.TransportHSMSSS, CaptureMethod: tracepack.CaptureMethodRawStream,
 		Vantage: tracepack.VantageHost, Recorder: "test", TimeSource: tracepack.TimeSourceCaptureClock,
 		CaptureOriginUTCNs: &origin, CaptureOriginMonoNs: &mono, ClockStepToleranceNs: &tolerance,
 		LifecycleCoverage: tracepack.LifecycleCoverageSubscribed, QualityEvaluated: true,
-		RecorderInstanceID: tracepack.UUID{9}, RecorderInstanceName: &name,
+		RecorderInstanceID: producer.RecorderInstanceID("T1", name, source), RecorderInstanceName: &source, Device: &name,
 	}
 	b, err := tracepack.EncodeDescriptor(m)
 	if err != nil {

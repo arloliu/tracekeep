@@ -43,12 +43,12 @@ func TestClaimCheckStartAtTheMinimumMaxPayload(t *testing.T) {
 		put := &putting{ObjectStore: e.Store, put: make(chan string, 16)}
 		e.Store = put
 
-		p, err := producer.New(producer.Config{Servers: []string{srv.URL()}, SubjectPrefix: e.Config.Bus.SubjectPrefix, ClaimBucket: e.Config.Bus.ClaimBucket})
+		p, err := producer.New(producer.Config{Servers: []string{srv.URL()}, SubjectPrefix: e.Config.Bus.SubjectPrefix, ClaimBucket: e.Config.Bus.ClaimBucket, Source: "test-source"})
 		if err != nil {
 			t.Fatal(err)
 		}
 		t.Cleanup(func() { _ = p.Close() })
-		l, err := sim.NewLoopback(p, sim.Options{ToolID: "SIM-TOOL", DeviceName: "eqp", SessionID: 1, T3: 45 * time.Second})
+		l, err := sim.NewLoopback(p, sim.Options{EquipmentID: "SIM-EQP", Device: "eqp", SessionID: 1, T3: 45 * time.Second})
 		if err != nil {
 			t.Fatal(err)
 		}

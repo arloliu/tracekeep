@@ -35,7 +35,7 @@ func TestKeys(t *testing.T) {
 }
 
 // The events an alert reads are stamped with their time, whatever their counters' history (operations.md §10.4):
-// a key refused or unavailable, a merge refused, and a tool's declared loss, which can come before any of its segments.
+// a key refused or unavailable, a merge refused, and a piece of equipment's declared loss, which can come before any of its segments.
 func TestAlertedEventsStamped(t *testing.T) {
 	t.Parallel()
 	at := time.Unix(1_800_000_000, 0)
@@ -65,7 +65,7 @@ func TestAlertedEventsStamped(t *testing.T) {
 		`tracekeep_key_last_problem_timestamp_seconds{kind="digest",outcome="refused"} 1.8e+09`,
 		`tracekeep_key_last_problem_timestamp_seconds{kind="session",outcome="unavailable"} 1.8e+09`,
 		`tracekeep_compact_last_merge_timestamp_seconds{outcome="refused"} 1.8e+09`,
-		`tracekeep_ingest_last_declared_loss_timestamp_seconds{tool_id="T-1"} 1.8e+09`,
+		`tracekeep_ingest_last_declared_loss_timestamp_seconds{equipment_id="T-1"} 1.8e+09`,
 	} {
 		if !strings.Contains(b, want) {
 			t.Errorf("no %s in\n%s", want, b)

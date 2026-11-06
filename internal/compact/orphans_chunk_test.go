@@ -96,7 +96,7 @@ func (f *fixture) orphans(t *testing.T, capture tracepack.UUID, seq0 uint64, n i
 func registered(t *testing.T, c *catalog.Catalog, capture tracepack.UUID, b built, seq uint64) {
 	t.Helper()
 	p := &catalog.Pack{
-		ID: b.id, Capture: capture, ToolID: tool, Hour: hour, Role: catalog.RoleSegment, Key: b.key, Size: int64(len(b.data)),
+		ID: b.id, Capture: capture, EquipmentID: equipment, Hour: hour, Role: catalog.RoleSegment, Key: b.key, Size: int64(len(b.data)),
 		SeqStart: seq, FormatMinor: 1, Ranges: []catalog.Range{{SeqFrom: seq, SeqTo: seq}},
 	}
 	ev := &catalog.Evidence{Deliveries: []catalog.Identity{{Version: catalog.VersionKey{Capture: capture, Seq: seq}, Incarnation: 1, StreamSeq: int64(seq) + 1}}}

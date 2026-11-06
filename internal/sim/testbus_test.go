@@ -52,9 +52,9 @@ func startBus(t *testing.T) (*testbus.Server, jetstream.JetStream) {
 	return srv, js
 }
 
-// The traffic bus goes down and comes back while the tool runs:
+// The traffic bus goes down and comes back while the equipment runs:
 // forwarding never slows, and the stream afterwards holds a consistent capture whose drops show as seq holes.
-func TestBusDownAndUpWhileTheToolRuns(t *testing.T) {
+func TestBusDownAndUpWhileTheEquipmentRuns(t *testing.T) {
 	t.Parallel()
 	srv, js := startBus(t)
 	// A small lane and horizon make the outage drop records, which must show as seq holes.

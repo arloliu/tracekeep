@@ -8,7 +8,7 @@ Tool-specific entry points (`CLAUDE.md`) import this file.
 **tracekeep** (`github.com/arloliu/tracekeep`) is the traffic-log service of the Virtual Equipment project:
 it consumes the SECS/HSMS traffic records an equipment gateway publishes on NATS JetStream,
 writes them as tracepack captures into S3-compatible storage,
-and serves them to the VE generation service and to people troubleshooting tools.
+and serves them to the VE generation service and to people troubleshooting equipment.
 
 Two Go modules live here, joined for local development by a gitignored `go.work` that `make work` creates:
 
@@ -26,7 +26,7 @@ The design is in `docs/specs/tracekeep/`; start with its `README.md`.
 ## Working principles
 
 - No sensitive data in the repository:
-  no company, site, tool-ID, service or person names, no local paths, no real traffic.
+  no company, site, equipment-ID, service or person names, no local paths, no real traffic.
 - Surface uncertainty before coding; minimum change that solves the problem; verify, do not guess.
 - The payload format lives in `go-secs/tracepack`, never here.
 

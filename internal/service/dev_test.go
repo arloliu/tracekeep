@@ -73,7 +73,7 @@ func TestDevLoopbackCapture(t *testing.T) {
 		t.Errorf("registered packs %v hold %d captures, %d starts and %d data records; want one capture with its start and traffic", got.keys, len(got.captures), got.start, got.data)
 	}
 	for id := range got.captures {
-		if c, err := d.Env.Catalog.Capture(ctx, id); err != nil || c.State != catalog.StateOpen || c.ToolID != "SIM-TOOL" {
+		if c, err := d.Env.Catalog.Capture(ctx, id); err != nil || c.State != catalog.StateOpen || c.EquipmentID != "SIM-EQP" {
 			t.Errorf("capture %s = %+v, %v; want it admitted", id, c, err)
 		}
 	}
@@ -107,8 +107,8 @@ func registered(t *testing.T, e *Env) reading {
 			t.Fatalf("%s: %v", k, err)
 		}
 		g.captures[r.Header().CaptureID] = true
-		if r.Header().Meta.ToolID != "SIM-TOOL" {
-			t.Errorf("%s: tool %q, want the simulator's", k, r.Header().Meta.ToolID)
+		if r.Header().Meta.EquipmentID != "SIM-EQP" {
+			t.Errorf("%s: equipment %q, want the simulator's", k, r.Header().Meta.EquipmentID)
 		}
 		_, err = r.Iterate(ctx, tracepack.Query{}, func(it *tracepack.Item) error {
 			switch {

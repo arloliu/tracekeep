@@ -142,17 +142,17 @@ stop_unit() {
 	die "the stopped unit is $state (result $result, exit status $status), want inactive, success and exit status 0"
 }
 
-# traffic: the simulator until the tool's capture is admitted (tracekeep status, over the API while the unit holds the catalog).
+# traffic: the simulator until the equipment's capture is admitted (tracekeep status, over the API while the unit holds the catalog).
 traffic() {
 	[ -x "$WORK/tracekeep-sim" ] || go build -o "$WORK/tracekeep-sim" ./cmd/tracekeep-sim
-	"$WORK/tracekeep-sim" -servers nats://127.0.0.1:4222 -tool $TOOL -device $DEVICE -rate 10 -process-program "$PROCESS_PROGRAM" > "$WORK/sim.log" 2>&1 &
+	"$WORK/tracekeep-sim" -servers nats://127.0.0.1:4222 -equipment $EQUIPMENT -device $DEVICE -rate 10 -process-program "$PROCESS_PROGRAM" > "$WORK/sim.log" 2>&1 &
 	pids+=($!)
 	for _ in $(seq 90); do
 		if tk status 2>/dev/null | python3 -c '
 import json,sys
 s=json.load(sys.stdin)
-ok=[t for t in s.get("tools") or [] if t["tool_id"]==sys.argv[1] and t["open_captures"]>0 and t["deferred_messages"]==0 and t.get("last_record")]
-sys.exit(0 if ok and not s.get("pending") else 1)' $TOOL; then
+ok=[t for t in s.get("equipment") or [] if t["equipment_id"]==sys.argv[1] and t["open_captures"]>0 and t["deferred_messages"]==0 and t.get("last_record")]
+sys.exit(0 if ok and not s.get("pending") else 1)' $EQUIPMENT; then
 			sleep 30
 			return 0
 		fi
@@ -188,7 +188,7 @@ TRACEKEEP_ISSUER=$ISSUER TRACEKEEP_IDP_STOP="docker stop -t 10 tracekeep-dex >/d
 stop_unit
 
 if [ -z "${TRACEKEEP_BASELINE:-}" ]; then
-	log "upgrade skipped: no baseline (no strict ancestor on main with the chart whose packaging run passed)"
+	log "upgrade skipped: no baseline (no strict ancestor on main past the identity reset with the chart whose packaging run passed)"
 	exit 0
 fi
 log "upgrade from $TRACEKEEP_BASELINE to $(git rev-parse --short HEAD)"

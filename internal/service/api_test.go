@@ -99,7 +99,7 @@ func TestDevServesTheMachineAPI(t *testing.T) {
 		r.Header().Set("Authorization", "Bearer "+string(token))
 	}
 	now := time.Now()
-	sel := &tkv1.Selector{ToolId: "SIM-TOOL", From: timestamppb.New(now.Add(-2 * time.Hour)), To: timestamppb.New(now.Add(time.Hour))}
+	sel := &tkv1.Selector{EquipmentId: "SIM-EQP", From: timestamppb.New(now.Add(-2 * time.Hour)), To: timestamppb.New(now.Add(time.Hour))}
 	// Flushes run one after another, put, registration, acknowledgements, and a flush holds one segment per hour,
 	// so of three puts the last comes from a later flush than the first, whose segment is then registered (TestDevLoopbackCapture).
 	for range 3 {
@@ -417,7 +417,7 @@ func TestAPIRoleOverTLSWithAClientCertificate(t *testing.T) {
 		return tracekeepv1connect.NewMachineServiceClient(&http.Client{Transport: tr}, "https://"+e.APIAddr())
 	}
 	now := time.Now()
-	sel := &tkv1.Selector{ToolId: "SIM-TOOL", From: timestamppb.New(now.Add(-time.Hour)), To: timestamppb.New(now)}
+	sel := &tkv1.Selector{EquipmentId: "SIM-EQP", From: timestamppb.New(now.Add(-time.Hour)), To: timestamppb.New(now)}
 	withCert := client(ca.issue(t))
 	if _, err := withCert.ListPacks(t.Context(), connectrpc.NewRequest(&tkv1.ListPacksRequest{Selector: sel})); err != nil {
 		t.Fatalf("ListPacks with the client certificate = %v", err)
@@ -845,7 +845,7 @@ func TestAPIRoleReloadsItsTLSFiles(t *testing.T) {
 		defer tr.CloseIdleConnections()
 		client := tracekeepv1connect.NewMachineServiceClient(&http.Client{Transport: tr}, "https://"+e.APIAddr())
 		now := time.Now()
-		sel := &tkv1.Selector{ToolId: "SIM-TOOL", From: timestamppb.New(now.Add(-time.Hour)), To: timestamppb.New(now)}
+		sel := &tkv1.Selector{EquipmentId: "SIM-EQP", From: timestamppb.New(now.Add(-time.Hour)), To: timestamppb.New(now)}
 		_, err = client.ListPacks(t.Context(), connectrpc.NewRequest(&tkv1.ListPacksRequest{Selector: sel}))
 
 		return err

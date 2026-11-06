@@ -308,7 +308,7 @@ func TestRetainKeepsAnUnknownCapturesObject(t *testing.T) {
 		if _, err := f.c.ActivateConfig(t.Context(), []byte(`{"classifier":"go-secs/v2.8.0","max_frame_len":0}`)); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := c.Admit(t.Context(), d, &catalog.Descriptor{Bytes: []byte("d"), ToolID: tool, RecorderInstanceID: newID(t), Device: "eqp", OriginNS: 1}); err != nil {
+		if _, err := c.Admit(t.Context(), d, &catalog.Descriptor{Bytes: []byte("d"), EquipmentID: equipment, RecorderInstanceID: newID(t), Device: "eqp", OriginNS: 1}); err != nil {
 			t.Fatal(err)
 		}
 		if rep := f.retain(t); rep.Evicted != 1 || len(b.names()) != 0 {
@@ -573,7 +573,7 @@ func TestRetainPrunesEvents(t *testing.T) {
 		if rep := f.retain(t); rep.Pruned != 2 {
 			t.Fatalf("Retain = %+v, want seqs 1 and 2 pruned", rep)
 		}
-		sel := catalog.Selector{ToolID: tool}
+		sel := catalog.Selector{EquipmentID: equipment}
 		for after, stale := range map[int64]bool{1: true, 2: false} {
 			got, err := c.ListScopeChanges(t.Context(), catalog.Cursor{Seq: after}, sel, 10)
 			if err != nil || got.Stale != stale {

@@ -16,33 +16,39 @@ import (
 )
 
 // Selector names what a read covers (catalog.md §7.3 *Selection*):
-// a tool, optionally its devices (none means every device) or one capture, and the window [From, To) in UTC nanoseconds.
+// a piece of equipment, optionally its devices and its sources (none means all of them) or one capture, which intersect,
+// and the window [From, To) in UTC nanoseconds.
 type Selector struct {
-	ToolID   string
-	Devices  []string
-	Capture  *tracepack.UUID
-	From, To int64
+	EquipmentID string
+	Devices     []string
+	Sources     []string
+	Capture     *tracepack.UUID
+	From, To    int64
 }
 
 // maxHours bounds the hours one listing reports: a leap year.
 const maxHours = 24 * 366
 
-// maxDevices bounds the devices a selector names, each one bound parameter.
+// maxDevices bounds the devices a selector names, and the sources, each one bound parameter.
 const maxDevices = 1000
 
 // ErrInvalidSelector marks a selector or a listing request a read refuses: a caller's error, not the catalog's.
 var ErrInvalidSelector = errors.New("catalog: invalid selector")
 
-// check refuses a selector without a tool, an empty or reversed window, which selects nothing, and more devices than maxDevices.
+// check refuses a selector without a piece of equipment, an empty or reversed window, which selects nothing,
+// and more devices or more sources than maxDevices.
 func (sel Selector) check() error {
-	if sel.ToolID == "" {
-		return fmt.Errorf("%w: no tool", ErrInvalidSelector)
+	if sel.EquipmentID == "" {
+		return fmt.Errorf("%w: no equipment", ErrInvalidSelector)
 	}
 	if sel.To <= sel.From {
 		return fmt.Errorf("%w: the window [%d, %d) is empty", ErrInvalidSelector, sel.From, sel.To)
 	}
 	if len(sel.Devices) > maxDevices {
 		return fmt.Errorf("%w: %d devices, at most %d", ErrInvalidSelector, len(sel.Devices), maxDevices)
+	}
+	if len(sel.Sources) > maxDevices {
+		return fmt.Errorf("%w: %d sources, at most %d", ErrInvalidSelector, len(sel.Sources), maxDevices)
 	}
 
 	return nil
@@ -51,20 +57,26 @@ func (sel Selector) check() error {
 // where is the SQL condition on the captures table selecting sel's captures (catalog.md §7.3 *Selection*), and its args;
 // a statement uses it as a subquery instead of binding the selected captures, whose number has no bound.
 func (sel Selector) where() (string, []any) {
-	filter, args := sel.filter("", sel.ToolID, sel.To, sel.From)
+	filter, args := sel.filter("", sel.EquipmentID, sel.To, sel.From)
 
-	return `tool_id = ? AND state IN ` + admittedStates + `
+	return `equipment_id = ? AND state IN ` + admittedStates + `
 		AND COALESCE(origin_ns, 0) < ? AND (state = 'open' OR COALESCE(highest_seq_ts, origin_ns, 0) >= ?)` + filter, args
 }
 
-// filter is the SQL condition on sel's devices and capture for the captures table under prefix, and its args after lead.
+// filter is the SQL condition on sel's devices, sources and capture for the captures table under prefix, and its args after lead.
 func (sel Selector) filter(prefix string, lead ...any) (string, []any) {
 	var cond string
 	args := lead
-	if len(sel.Devices) > 0 {
-		cond += ` AND ` + prefix + `device IN (` + strings.TrimSuffix(strings.Repeat("?, ", len(sel.Devices)), ", ") + `)`
-		for _, d := range sel.Devices {
-			args = append(args, d)
+	for _, in := range []struct {
+		column string
+		values []string
+	}{{"device", sel.Devices}, {"source", sel.Sources}} {
+		if len(in.values) == 0 {
+			continue
+		}
+		cond += ` AND ` + prefix + in.column + ` IN (` + strings.TrimSuffix(strings.Repeat("?, ", len(in.values)), ", ") + `)`
+		for _, v := range in.values {
+			args = append(args, v)
 		}
 	}
 	if sel.Capture != nil {
@@ -80,6 +92,7 @@ type CaptureInfo struct {
 	ID                 tracepack.UUID
 	State              string
 	Device             string
+	Source             string
 	RecorderInstanceID tracepack.UUID
 	PreviousCaptureID  *tracepack.UUID
 	// OriginNS is the capture's capture_origin_utc_ns, and LastRecordNS the time of its highest seq's record, nil before any.
@@ -91,28 +104,29 @@ type CaptureInfo struct {
 	Thinning          []Thinning
 	EquipmentEndpoint *string
 	DeviceID          *uint64
-	// Overlap is set when the span of another capture of the same tool and recorder instance meets this one's.
+	// Overlap is set when the span of another capture of the same series meets this one's.
 	Overlap bool
 	// Unregistered are the capture's unregistered intervals.
 	Unregistered []UnregisteredInterval
 }
 
-// UnregisteredInterval is time before a capture's origin that no capture of its recorder instance accounts for:
-// from the latest span end of the earlier captures, or from an unknown start when its predecessor was never admitted.
+// UnregisteredInterval is time before a capture's origin that no capture of its series accounts for:
+// from the latest span end of the earlier captures, or from an unknown start when no admitted capture of its series is its predecessor.
 type UnregisteredInterval struct {
 	Start *int64
 	End   int64
 }
 
-// DeviceInfo is one device as ListDevices reports it (api.md §10.1).
+// DeviceInfo is one series, a device as one source recorded it, as ListDevices reports it (api.md §10.1).
 type DeviceInfo struct {
-	Name string
+	Name   string
+	Source string
 	// EquipmentEndpoint and DeviceID are the latest selected capture's.
 	EquipmentEndpoint *string
 	DeviceID          *uint64
 	// OpenCaptures counts the selected captures still open.
 	OpenCaptures int
-	// Overlap is set when any selected capture of the device overlaps another.
+	// Overlap is set when any selected capture of the series overlaps another.
 	Overlap bool
 	// LastRecordNS is the latest record time of the selected captures, nil before any.
 	LastRecordNS *int64
@@ -157,7 +171,7 @@ func (c *Catalog) ListCaptures(ctx context.Context, sel Selector, q time.Duratio
 	return out, nil
 }
 
-// ListDevices lists per device what the captures sel selects report (catalog.md §7.3), from one snapshot.
+// ListDevices lists per series, a (device, source), what the captures sel selects report (catalog.md §7.3), from one snapshot.
 func (c *Catalog) ListDevices(ctx context.Context, sel Selector, q time.Duration) ([]DeviceInfo, error) {
 	if err := sel.check(); err != nil {
 		return nil, fmt.Errorf("catalog: list devices: %w", err)
@@ -168,16 +182,17 @@ func (c *Catalog) ListDevices(ctx context.Context, sel Selector, q time.Duration
 		if err != nil {
 			return err
 		}
-		byName := map[string]*DeviceInfo{}
-		latest := map[string]CaptureInfo{}
+		byName := map[seriesKey]*DeviceInfo{}
+		latest := map[seriesKey]CaptureInfo{}
 		for _, ci := range caps {
-			d := byName[ci.Device]
+			k := keyOf(ci)
+			d := byName[k]
 			if d == nil {
-				d = &DeviceInfo{Name: ci.Device}
-				byName[ci.Device] = d
+				d = &DeviceInfo{Name: ci.Device, Source: ci.Source}
+				byName[k] = d
 			}
-			if l, ok := latest[ci.Device]; !ok || ci.OriginNS > l.OriginNS {
-				latest[ci.Device] = ci
+			if l, ok := latest[k]; !ok || ci.OriginNS > l.OriginNS {
+				latest[k] = ci
 				d.EquipmentEndpoint, d.DeviceID = ci.EquipmentEndpoint, ci.DeviceID
 			}
 			if ci.State == StateOpen {
@@ -200,15 +215,20 @@ func (c *Catalog) ListDevices(ctx context.Context, sel Selector, q time.Duration
 	if err != nil {
 		return nil, fmt.Errorf("catalog: list devices: %w", err)
 	}
-	slices.SortFunc(out, func(a, b DeviceInfo) int { return cmp.Compare(a.Name, b.Name) })
+	slices.SortFunc(out, func(a, b DeviceInfo) int { return cmp.Or(cmp.Compare(a.Name, b.Name), cmp.Compare(a.Source, b.Source)) })
 
 	return out, nil
 }
 
-// deviceGaps sets each device's gap from its captures' completeness, ordered by device, read a chunk at a time:
-// first every device's first capture, then the others of the devices still without a gap meeting sel's window,
-// so a device whose first capture has one costs that capture's reads alone, as when each capture was read apart.
-func (c *Catalog) deviceGaps(ctx context.Context, tx *sqlx.Tx, sel Selector, caps []CaptureInfo, byName map[string]*DeviceInfo) error {
+// seriesKey is a series of the selected equipment as ListDevices groups it.
+type seriesKey struct{ device, source string }
+
+func keyOf(ci CaptureInfo) seriesKey { return seriesKey{ci.Device, ci.Source} }
+
+// deviceGaps sets each series' gap from its captures' completeness, ordered by series, read a chunk at a time:
+// first every series' first capture, then the others of the series still without a gap meeting sel's window,
+// so a series whose first capture has one costs that capture's reads alone, as when each capture was read apart.
+func (c *Catalog) deviceGaps(ctx context.Context, tx *sqlx.Tx, sel Selector, caps []CaptureInfo, byName map[seriesKey]*DeviceInfo) error {
 	ids := make([]tracepack.UUID, 0, min(len(caps), completenessChunk))
 	devs := make([]*DeviceInfo, 0, cap(ids))
 	flush := func() error {
@@ -228,7 +248,7 @@ func (c *Catalog) deviceGaps(ctx context.Context, tx *sqlx.Tx, sel Selector, cap
 	}
 	for _, firsts := range []bool{true, false} {
 		for i, ci := range caps {
-			if d := byName[ci.Device]; (i == 0 || caps[i-1].Device != ci.Device) == firsts && !d.Gap {
+			if d := byName[keyOf(ci)]; (i == 0 || keyOf(caps[i-1]) != keyOf(ci)) == firsts && !d.Gap {
 				ids, devs = append(ids, ci.ID), append(devs, d)
 			}
 			if len(ids) == completenessChunk {
@@ -259,15 +279,16 @@ func (g Gap) meets(from, to int64) bool {
 // admittedStates are the states of an admitted capture, as SQL.
 const admittedStates = `('open', 'stopped', 'closed')`
 
-// selectCaptures reads the captures sel selects, ordered by device, origin and id, with their recorders' other captures.
+// selectCaptures reads the captures sel selects, ordered by device, source, origin and id, with their series' other captures.
 func (c *Catalog) selectCaptures(ctx context.Context, tx *sqlx.Tx, sel Selector, q time.Duration) ([]CaptureInfo, error) {
 	cond, args := sel.where()
-	query := `SELECT capture_id, state, device, recorder_instance_id, previous_capture_id, origin_ns, highest_seq_ts, config_id, descriptor
+	query := `SELECT capture_id, state, device, source, recorder_instance_id, previous_capture_id, origin_ns, highest_seq_ts, config_id, descriptor
 		FROM captures WHERE ` + cond
 	var rows []struct {
 		ID         []byte         `db:"capture_id"`
 		State      string         `db:"state"`
 		Device     sql.NullString `db:"device"`
+		Source     sql.NullString `db:"source"`
 		Instance   []byte         `db:"recorder_instance_id"`
 		Previous   []byte         `db:"previous_capture_id"`
 		Origin     sql.NullInt64  `db:"origin_ns"`
@@ -275,7 +296,7 @@ func (c *Catalog) selectCaptures(ctx context.Context, tx *sqlx.Tx, sel Selector,
 		Config     sql.NullInt64  `db:"config_id"`
 		Descriptor []byte         `db:"descriptor"`
 	}
-	if err := tx.SelectContext(ctx, &rows, query+` ORDER BY device, origin_ns, capture_id`, args...); err != nil {
+	if err := tx.SelectContext(ctx, &rows, query+` ORDER BY device, source, origin_ns, capture_id`, args...); err != nil {
 		return nil, err
 	}
 	if len(rows) == 0 {
@@ -285,7 +306,7 @@ func (c *Catalog) selectCaptures(ctx context.Context, tx *sqlx.Tx, sel Selector,
 	spans := make([]span, 0, len(rows))
 	for _, r := range rows {
 		ci := CaptureInfo{
-			ID: tracepack.UUID(r.ID), State: r.State, Device: r.Device.String, RecorderInstanceID: tracepack.UUID(r.Instance),
+			ID: tracepack.UUID(r.ID), State: r.State, Device: r.Device.String, Source: r.Source.String, RecorderInstanceID: tracepack.UUID(r.Instance),
 			OriginNS: r.Origin.Int64, LastRecordNS: nullable(r.Last), ConfigID: nullable(r.Config),
 		}
 		if r.Previous != nil {
@@ -313,7 +334,7 @@ func (c *Catalog) selectCaptures(ctx context.Context, tx *sqlx.Tx, sel Selector,
 	for i := range out {
 		ci := &out[i]
 		ci.Overlap, ci.Unregistered = relate(spans[i], peers[ci.RecorderInstanceID], int64(q))
-		if p := ci.PreviousCaptureID; p != nil && !known[*p] {
+		if p := ci.PreviousCaptureID; p != nil && known[*p] != ci.RecorderInstanceID {
 			ci.Unregistered = append(ci.Unregistered, UnregisteredInterval{End: ci.OriginNS})
 		}
 	}
@@ -346,18 +367,18 @@ func relate(self span, peers []span, q int64) (bool, []UnregisteredInterval) {
 	return overlap, nil
 }
 
-// recorderSpans reads the spans of every admitted capture of sel's tool and of a recorder instance of a selected capture, keyed by instance.
+// recorderSpans reads the spans of every admitted capture of sel's equipment and of a recorder instance of a selected capture, keyed by instance.
 func recorderSpans(ctx context.Context, tx *sqlx.Tx, sel Selector) (map[tracepack.UUID][]span, error) {
 	cond, args := sel.where()
 	query := `SELECT capture_id, recorder_instance_id, origin_ns, highest_seq_ts FROM captures
-		WHERE tool_id = ? AND state IN ` + admittedStates + ` AND recorder_instance_id IN (SELECT recorder_instance_id FROM captures WHERE ` + cond + `)`
+		WHERE equipment_id = ? AND state IN ` + admittedStates + ` AND recorder_instance_id IN (SELECT recorder_instance_id FROM captures WHERE ` + cond + `)`
 	var rows []struct {
 		ID       []byte        `db:"capture_id"`
 		Instance []byte        `db:"recorder_instance_id"`
 		Origin   sql.NullInt64 `db:"origin_ns"`
 		Last     sql.NullInt64 `db:"highest_seq_ts"`
 	}
-	if err := tx.SelectContext(ctx, &rows, query, append([]any{sel.ToolID}, args...)...); err != nil {
+	if err := tx.SelectContext(ctx, &rows, query, append([]any{sel.EquipmentID}, args...)...); err != nil {
 		return nil, err
 	}
 	out := map[tracepack.UUID][]span{}
@@ -369,18 +390,22 @@ func recorderSpans(ctx context.Context, tx *sqlx.Tx, sel Selector) (map[tracepac
 	return out, nil
 }
 
-// admittedPredecessors reports which predecessors the selected captures name are admitted.
-func admittedPredecessors(ctx context.Context, tx *sqlx.Tx, sel Selector) (map[tracepack.UUID]bool, error) {
+// admittedPredecessors reports the series of each admitted predecessor the selected captures name,
+// so a predecessor of another series is no evidence (catalog.md §7.3).
+func admittedPredecessors(ctx context.Context, tx *sqlx.Tx, sel Selector) (map[tracepack.UUID]tracepack.UUID, error) {
 	cond, args := sel.where()
-	query := `SELECT capture_id FROM captures WHERE state IN ` + admittedStates + `
+	query := `SELECT capture_id, recorder_instance_id FROM captures WHERE state IN ` + admittedStates + `
 		AND capture_id IN (SELECT previous_capture_id FROM captures WHERE previous_capture_id IS NOT NULL AND ` + cond + `)`
-	var rows [][]byte
+	var rows []struct {
+		ID       []byte `db:"capture_id"`
+		Instance []byte `db:"recorder_instance_id"`
+	}
 	if err := tx.SelectContext(ctx, &rows, query, args...); err != nil {
 		return nil, err
 	}
-	out := make(map[tracepack.UUID]bool, len(rows))
+	out := make(map[tracepack.UUID]tracepack.UUID, len(rows))
 	for _, r := range rows {
-		out[tracepack.UUID(r)] = true
+		out[tracepack.UUID(r.ID)] = tracepack.UUID(r.Instance)
 	}
 
 	return out, nil
@@ -632,14 +657,14 @@ type Changes struct {
 	Stale bool
 }
 
-// ListScopeChanges returns up to limit events above after whose capture sel's tool and devices select, in seq order (catalog.md §7.3),
+// ListScopeChanges returns up to limit events above after whose capture sel's equipment, devices and sources select, in seq order (catalog.md §7.3),
 // from one snapshot whose first statement reads the watermark;
-// the next cursor is the last event's seq for a full page, else the watermark, so other tools' events never hold it back.
+// the next cursor is the last event's seq for a full page, else the watermark, so other equipment's events never hold it back.
 func (c *Catalog) ListScopeChanges(ctx context.Context, after Cursor, sel Selector, limit int) (Changes, error) {
-	if limit <= 0 || len(sel.Devices) > maxDevices || sel.ToolID == "" {
-		// The tool is the caller's text, never quoted.
-		return Changes{}, fmt.Errorf("%w: limit %d, %d devices: want a positive limit, at most %d devices and a tool",
-			ErrInvalidSelector, limit, len(sel.Devices), maxDevices)
+	if limit <= 0 || len(sel.Devices) > maxDevices || len(sel.Sources) > maxDevices || sel.EquipmentID == "" {
+		// The equipment is the caller's text, never quoted.
+		return Changes{}, fmt.Errorf("%w: limit %d, %d devices, %d sources: want a positive limit, at most %d devices and sources and a piece of equipment",
+			ErrInvalidSelector, limit, len(sel.Devices), len(sel.Sources), maxDevices)
 	}
 	var out Changes
 	err := c.snapshot(ctx, func(tx *sqlx.Tx) error {
@@ -656,8 +681,8 @@ func (c *Catalog) ListScopeChanges(ctx context.Context, after Cursor, sel Select
 			return nil
 		}
 		query := `SELECT e.seq, e.capture_id, e.hour, e.event, e.revision, e.at FROM scope_events e JOIN captures k ON k.capture_id = e.capture_id
-			WHERE e.seq > ? AND e.seq <= ? AND k.tool_id = ?`
-		filter, args := sel.filter("k.", after.Seq, w.Seq, sel.ToolID)
+			WHERE e.seq > ? AND e.seq <= ? AND k.equipment_id = ?`
+		filter, args := sel.filter("k.", after.Seq, w.Seq, sel.EquipmentID)
 		query += filter
 		var rows []struct {
 			Seq      int64  `db:"seq"`
