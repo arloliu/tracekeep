@@ -709,7 +709,7 @@ a failed fetch is logged by fields, never its text (`api.md` §10.2).
 Considered and not taken: fixed messages on `AdminService`, whose reader is the operator; a panic alert, the runbook reading the counter instead; a service metric for bus events;
 warning of the catalog's DSN, of `admin` and `status`, or at a reconnect; a retry bound that cuts a run in flight; `Last-Modified` on downloads, which the store's interface cannot give; maxima on the older durations.
 
-### T-54 — what the phase 5 plan's measurement settled (2026-11-02)
+### T-54 — what the phase 5 plan's measurement settled (2026-11-02) (count superseded by T-61)
 
 Nine points the phase 5 plan raised before its measurement sub-phase, read from the code and settled on the plan's recommendations under the owner's standing instruction, amended by the plan's external review.
 **Where a baseline comes from**: one local machine for every package and the catalog on SQLite; the catalog on MariaDB in CI, by a workflow started by hand that measures a base twice and a head once in one job.
@@ -866,3 +866,22 @@ a host capture for an unmapped connection; a `leg` field, which nothing in the l
 the time converted in the pipeline, which would resolve an ambiguous hour silently;
 an `ack_wait` of 2 × F without in-progress acks; adopting a log capture's orphan; a separate cluster for the feed.
 Not verified: whether the device-number assignment is the same on every equipment, from one equipment's log; the rule table's overrides cover one where it differs.
+
+### T-61 — test efficiency (2026-11-06)
+
+The owner chose, on 2026-11-06, to cut the tests' and CI's time before P3, by three means, without dropping an engine or the race detector from any test.
+**Catalog setup**: a SQLite test catalog is a copy of a template each test process migrates once, since SQLite's migration stays slow with its syncs off (229 ms, 620 ms or more under `-race`, 403 ms with `synchronous(OFF)`) and a copy takes 76 µs;
+the test MariaDB server keeps its data on tmpfs, where a database's creation, migration and drop take 63 ms against 1.5 s on disk, and each test keeps a database migrated for it alone;
+the benchmarks' server keeps the disk, whose durability a baseline records.
+**The catalog job**: CI's MariaDB job skips the engine loops' SQLite runs, which the `ci` job runs,
+and its packages run on parallel runners.
+**Harness time**: the chaos harness's waits are parameters its own failure tests shorten.
+The load harness's production mode runs at ratio-scaled time, F : `ack_wait` : heartbeat = 10 s : 14 s : 4.7 s, keeping ingest's defaults' proportions,
+its pending budgets scaled by the same factor so its control stays constrained;
+the real 5 m and 7 m, and what depends on a flush's absolute size such as a large batch's drain, run only for a phase gate.
+The load harness runs on either engine, as T-60's gate needs: 2,000 equipment beside traffic at K = 100 on SQLite and then MariaDB, from per-operation benchmarks and one short real run.
+**Benchmarks** run at `-count 5` at their small size by default, superseding T-54's `-count 10`:
+the bootstrap interval may widen, so more rows may land in "measure again", which T-54's rule already handles.
+Considered and not taken: running `-race` only on some packages or jobs, though it is most of the tests' CPU (68 s wall and 15 min 44 s CPU against 14 s and 67 s for the service module);
+a pool of MariaDB databases reset between tests, whose isolation a trigger or a connection a test leaves behind breaks;
+cloning a MariaDB database for every test (0.8 s); keeping `-count 10`.
