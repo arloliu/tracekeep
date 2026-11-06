@@ -101,7 +101,7 @@ func TestHotReloadBlockedOnACaptureLockWhenStopArrives(t *testing.T) {
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), rotateDeadline)
 		defer cancel()
-		rotated <- h.p.Rotate(ctx, producer.CaptureDescriptor{ToolID: "T1", DeviceName: "eqp-reloaded"})
+		rotated <- h.p.Rotate(ctx, producer.CaptureDescriptor{EquipmentID: "T1", Device: "eqp-reloaded"})
 	}()
 	<-trying // the rotation holds the lifecycle lock and loops on the capture lock
 	ended := make(chan producer.Report, 1)
@@ -139,7 +139,7 @@ func TestDiscardedStartIsNotCountedDropped(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(t.Context(), 100*time.Millisecond)
 	defer cancel()
-	if err := h.p.Rotate(ctx, producer.CaptureDescriptor{ToolID: "T1", DeviceName: "eqp-reloaded"}); !errors.Is(err, producer.ErrRotationAbandoned) {
+	if err := h.p.Rotate(ctx, producer.CaptureDescriptor{EquipmentID: "T1", Device: "eqp-reloaded"}); !errors.Is(err, producer.ErrRotationAbandoned) {
 		t.Fatalf("Rotate under a held capture lock = %v, want ErrRotationAbandoned", err)
 	}
 	close(release)
@@ -157,6 +157,44 @@ func TestDiscardedStartIsNotCountedDropped(t *testing.T) {
 	}
 	if n := len(h.bus.Messages()); n != 3 {
 		t.Errorf("%d messages on the bus, want the start, the record and the stop", n)
+	}
+}
+
+// An identity-changing rotation abandoned before its commit point leaves the series as it was:
+// the next rotation keeps the committed device and names the committed capture, never the abandoned candidate.
+func TestAbandonedRotationLeavesTheSeries(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t, producer.Tunables{})
+	first := h.begin()
+	h.wait(1)
+	release, done := h.observeHeld()
+
+	ctx, cancel := context.WithTimeout(t.Context(), 100*time.Millisecond)
+	defer cancel()
+	if err := h.p.Rotate(ctx, producer.CaptureDescriptor{EquipmentID: "T1", Device: "eqp-reloaded"}); !errors.Is(err, producer.ErrRotationAbandoned) {
+		t.Fatalf("Rotate under a held capture lock = %v, want ErrRotationAbandoned", err)
+	}
+	close(release)
+	<-done
+
+	sw := "eqp-hub 1.2.3"
+	if err := h.p.Rotate(t.Context(), producer.CaptureDescriptor{EquipmentID: "T1", Device: "eqp", HostSoftware: &sw}); err != nil {
+		t.Fatalf("Rotate within the series: %v", err)
+	}
+	msgs := h.wait(4) // first's start, the observed record, the successor's start, first's stop
+	if !successorOf(t, msgs, first.ID) {
+		t.Errorf("no start names the committed capture %s as its previous", first.ID)
+	}
+	for i := range msgs {
+		if br := check(t, &msgs[i]); br.Descriptor != nil {
+			meta, err := tracepack.DecodeDescriptor(br.Descriptor)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if meta.Device == nil || *meta.Device != "eqp" {
+				t.Errorf("a published start names device %v, want eqp", meta.Device)
+			}
+		}
 	}
 }
 

@@ -29,12 +29,12 @@ type harness struct {
 func newHarness(t testing.TB) *harness {
 	t.Helper()
 	bus := producertest.NewBus()
-	p, err := producer.New(producer.Config{SubjectPrefix: "tpk", ClaimBucket: "tpk-objects"}, producer.WithBus(bus))
+	p, err := producer.New(producer.Config{SubjectPrefix: "tpk", ClaimBucket: "tpk-objects", Source: "test-source"}, producer.WithBus(bus))
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
 	t.Cleanup(func() { _ = p.Close() })
-	if err := p.Begin(t.Context(), producer.CaptureDescriptor{ToolID: "T1", DeviceName: "eqp"}); err != nil {
+	if err := p.Begin(t.Context(), producer.CaptureDescriptor{EquipmentID: "T1", Device: "eqp"}); err != nil {
 		t.Fatalf("Begin: %v", err)
 	}
 
@@ -428,12 +428,12 @@ func (panicError) Is(error) bool { panic("broken Is") }
 func TestPanicBeforeObserveFaultsTheCapture(t *testing.T) {
 	t.Parallel()
 	bus := producertest.NewBus()
-	p, err := producer.New(producer.Config{SubjectPrefix: "tpk", ClaimBucket: "tpk-objects"}, producer.WithBus(bus))
+	p, err := producer.New(producer.Config{SubjectPrefix: "tpk", ClaimBucket: "tpk-objects", Source: "test-source"}, producer.WithBus(bus))
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
 	t.Cleanup(func() { _ = p.Close() })
-	if err := p.Begin(t.Context(), producer.CaptureDescriptor{ToolID: "T1", DeviceName: "eqp"}); err != nil {
+	if err := p.Begin(t.Context(), producer.CaptureDescriptor{EquipmentID: "T1", Device: "eqp"}); err != nil {
 		t.Fatalf("Begin: %v", err)
 	}
 	obs := New(p)

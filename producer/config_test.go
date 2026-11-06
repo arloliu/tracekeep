@@ -2,6 +2,7 @@ package producer
 
 import (
 	"errors"
+	"strings"
 	"testing"
 	"time"
 )
@@ -46,7 +47,7 @@ func TestTunablesDefaults(t *testing.T) {
 func TestConfigValidate(t *testing.T) {
 	t.Parallel()
 
-	valid := Config{Servers: []string{"nats://127.0.0.1:4222"}, SubjectPrefix: "tpk", ClaimBucket: "tpk-objects"}
+	valid := Config{Servers: []string{"nats://127.0.0.1:4222"}, SubjectPrefix: "tpk", ClaimBucket: "tpk-objects", Source: "test-source"}
 	if err := valid.validate(); err != nil {
 		t.Fatalf("valid config: %v", err)
 	}
@@ -54,6 +55,10 @@ func TestConfigValidate(t *testing.T) {
 	cases := map[string]func(*Config){
 		"bad prefix":       func(c *Config) { c.SubjectPrefix = "tpk.>" },
 		"no bucket":        func(c *Config) { c.ClaimBucket = "" },
+		"no source":        func(c *Config) { c.Source = "" },
+		"blank source":     func(c *Config) { c.Source = " \t" },
+		"invalid source":   func(c *Config) { c.Source = "s\xff" },
+		"256-byte source":  func(c *Config) { c.Source = strings.Repeat("s", 256) },
 		"negative tunable": func(c *Config) { c.Tunables.OrdinaryLaneBytes = -1 },
 		"two auth methods": func(c *Config) { c.Auth = AuthConfig{Token: "x", CredsFile: "f"} },
 		"user alone":       func(c *Config) { c.Auth = AuthConfig{User: "u"} },

@@ -139,14 +139,14 @@ func TestDefaultConnectionPublishes(t *testing.T) {
 	t.Parallel()
 
 	b := newBus(t)
-	p, err := producer.New(producer.Config{Servers: []string{b.url}, SubjectPrefix: prefix, ClaimBucket: bucket})
+	p, err := producer.New(producer.Config{Servers: []string{b.url}, SubjectPrefix: prefix, ClaimBucket: bucket, Source: "test-source"})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
 	t.Cleanup(func() { _ = p.Close() })
 	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 	defer cancel()
-	if err := p.Begin(ctx, producer.CaptureDescriptor{ToolID: "T1", DeviceName: "eqp"}); err != nil {
+	if err := p.Begin(ctx, producer.CaptureDescriptor{EquipmentID: "T1", Device: "eqp"}); err != nil {
 		t.Fatalf("Begin: %v", err)
 	}
 	rec := link.Recorder(p)

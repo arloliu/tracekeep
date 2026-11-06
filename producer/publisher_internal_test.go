@@ -104,7 +104,7 @@ func TestLateReservationHoldsBackLaterRecords(t *testing.T) {
 		},
 	}
 	var err error
-	p, err = New(Config{SubjectPrefix: "tpk", ClaimBucket: "b"}, WithBus(bus), func(o *options) { o.hooks = hooks })
+	p, err = New(Config{SubjectPrefix: "tpk", ClaimBucket: "b", Source: "test-source"}, WithBus(bus), func(o *options) { o.hooks = hooks })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -150,7 +150,7 @@ func TestLateReservationHoldsBackLaterRecords(t *testing.T) {
 func TestIdleUnqueuedReservationFaults(t *testing.T) {
 	t.Parallel()
 	bus := newRecBus()
-	p, err := New(Config{SubjectPrefix: "tpk", ClaimBucket: "b", Tunables: Tunables{ReservationTimeout: 50 * time.Millisecond}}, WithBus(bus))
+	p, err := New(Config{SubjectPrefix: "tpk", ClaimBucket: "b", Source: "test-source", Tunables: Tunables{ReservationTimeout: 50 * time.Millisecond}}, WithBus(bus))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -178,7 +178,7 @@ func TestIdleUnqueuedReservationFaults(t *testing.T) {
 
 func TestSeqLimitRotates(t *testing.T) {
 	t.Parallel()
-	p, err := New(Config{SubjectPrefix: "tpk", ClaimBucket: "b"}, func(o *options) { o.noPublisher, o.rotateAt = true, 2 })
+	p, err := New(Config{SubjectPrefix: "tpk", ClaimBucket: "b", Source: "test-source"}, func(o *options) { o.noPublisher, o.rotateAt = true, 2 })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -209,7 +209,7 @@ func TestSeqLimitRotates(t *testing.T) {
 func TestLateEnqueueAfterDrainIsDropped(t *testing.T) {
 	t.Parallel()
 	bus := newRecBus()
-	p, err := New(Config{SubjectPrefix: "tpk", ClaimBucket: "b"}, WithBus(bus))
+	p, err := New(Config{SubjectPrefix: "tpk", ClaimBucket: "b", Source: "test-source"}, WithBus(bus))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -242,7 +242,7 @@ func TestLateEnqueueAfterDrainIsDropped(t *testing.T) {
 func TestSendOrdinaryUsesThePresent(t *testing.T) {
 	t.Parallel()
 	bus := newRecBus()
-	p, err := New(Config{SubjectPrefix: "tpk", ClaimBucket: "b", Tunables: Tunables{RetryHorizon: 50 * time.Millisecond}},
+	p, err := New(Config{SubjectPrefix: "tpk", ClaimBucket: "b", Source: "test-source", Tunables: Tunables{RetryHorizon: 50 * time.Millisecond}},
 		func(o *options) { o.noPublisher = true })
 	if err != nil {
 		t.Fatal(err)
@@ -270,7 +270,7 @@ func TestSendOrdinaryUsesThePresent(t *testing.T) {
 func TestSendOrdinaryStopsAtEndDeadline(t *testing.T) {
 	t.Parallel()
 	bus := newRecBus()
-	p, err := New(Config{SubjectPrefix: "tpk", ClaimBucket: "b"}, func(o *options) { o.noPublisher = true })
+	p, err := New(Config{SubjectPrefix: "tpk", ClaimBucket: "b", Source: "test-source"}, func(o *options) { o.noPublisher = true })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -315,7 +315,7 @@ func (b slowBus) MaxPayload() int {
 func TestDeadlineCrossedWhileBuilding(t *testing.T) {
 	t.Parallel()
 	bus := slowBus{recBus: newRecBus(), delay: 50 * time.Millisecond}
-	p, err := New(Config{SubjectPrefix: "tpk", ClaimBucket: "b"}, func(o *options) { o.noPublisher = true })
+	p, err := New(Config{SubjectPrefix: "tpk", ClaimBucket: "b", Source: "test-source"}, func(o *options) { o.noPublisher = true })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -339,7 +339,7 @@ func TestDeadlineCrossedWhileBuilding(t *testing.T) {
 func TestAllocatedButUnsentCaptureStaysOnEndsList(t *testing.T) {
 	t.Parallel()
 	bus := newRecBus()
-	p, err := New(Config{SubjectPrefix: "tpk", ClaimBucket: "b"}, WithBus(bus))
+	p, err := New(Config{SubjectPrefix: "tpk", ClaimBucket: "b", Source: "test-source"}, WithBus(bus))
 	if err != nil {
 		t.Fatal(err)
 	}

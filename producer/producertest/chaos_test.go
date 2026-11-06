@@ -25,7 +25,7 @@ type recDevice struct {
 
 func newRecDevice(t *testing.T, bus *producertest.Bus, tun producer.Tunables) producertest.Device {
 	t.Helper()
-	p, err := producer.New(producer.Config{SubjectPrefix: "tpk", ClaimBucket: "tpk-objects", Tunables: tun}, producer.WithBus(bus))
+	p, err := producer.New(producer.Config{SubjectPrefix: "tpk", ClaimBucket: "tpk-objects", Source: "test-source", Tunables: tun}, producer.WithBus(bus))
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -36,7 +36,7 @@ func newRecDevice(t *testing.T, bus *producertest.Bus, tun producer.Tunables) pr
 
 func (d *recDevice) descriptor() producer.CaptureDescriptor {
 	id := d.reload.Load()
-	return producer.CaptureDescriptor{ToolID: "T1", DeviceName: "eqp", DeviceID: &id}
+	return producer.CaptureDescriptor{EquipmentID: "T1", Device: "eqp", DeviceID: &id}
 }
 
 func (d *recDevice) Start(ctx context.Context) error { return d.p.Begin(ctx, d.descriptor()) }

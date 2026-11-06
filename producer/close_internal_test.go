@@ -94,7 +94,7 @@ func closeCancels(t *testing.T, p *Producer, ended <-chan error) {
 func TestCloseCancelsAPublish(t *testing.T) {
 	t.Parallel()
 	bus := newWaitBus(true)
-	p, err := New(Config{SubjectPrefix: "tpk", ClaimBucket: "b"}, WithBus(bus))
+	p, err := New(Config{SubjectPrefix: "tpk", ClaimBucket: "b", Source: "test-source"}, WithBus(bus))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -112,7 +112,7 @@ func TestCloseCancelsAPublish(t *testing.T) {
 func TestCloseCancelsAClaimPut(t *testing.T) {
 	t.Parallel()
 	bus := newWaitBus(false)
-	p, err := New(Config{SubjectPrefix: "tpk", ClaimBucket: "b"}, WithBus(bus))
+	p, err := New(Config{SubjectPrefix: "tpk", ClaimBucket: "b", Source: "test-source"}, WithBus(bus))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -162,7 +162,7 @@ func TestCloseCancelsAFaultRotationsLockWait(t *testing.T) {
 // the rotation abandons before its commit point, so it installs nothing.
 func TestCloseCancelsARotationsCaptureLockWait(t *testing.T) {
 	t.Parallel()
-	p, err := New(Config{SubjectPrefix: "tpk", ClaimBucket: "b"}, func(o *options) { o.noPublisher, o.rotateAt = true, 1 })
+	p, err := New(Config{SubjectPrefix: "tpk", ClaimBucket: "b", Source: "test-source"}, func(o *options) { o.noPublisher, o.rotateAt = true, 1 })
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -45,7 +45,7 @@ func TestPendingTokenReportsAndCounts(t *testing.T) {
 func TestThinningMetrics(t *testing.T) {
 	t.Parallel()
 	h := newHarness(t, producer.Tunables{})
-	d := producer.CaptureDescriptor{ToolID: "T1", DeviceName: "eqp", Thinning: &producer.SamplingRule{KeepEveryN: 1000}}
+	d := producer.CaptureDescriptor{EquipmentID: "T1", Device: "eqp", Thinning: &producer.SamplingRule{KeepEveryN: 1000}}
 	if err := h.p.Begin(t.Context(), d); err != nil {
 		t.Fatal(err)
 	}

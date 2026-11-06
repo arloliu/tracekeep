@@ -59,7 +59,8 @@ func TestFaultRotationRacingAHotReload(t *testing.T) {
 	nextReserved(t, p)
 	c.Fault()
 	reloaded := testDescriptor()
-	reloaded.DeviceName = "eqp-reloaded"
+	sw := "eqp-hub 1.2.3"
+	reloaded.HostSoftware = &sw
 	p.faultGap = func() {
 		if err := p.Rotate(t.Context(), reloaded); err != nil {
 			t.Errorf("HotReload: %v", err)
@@ -134,7 +135,7 @@ func TestOpposingStepsHoldBackTheReservedLane(t *testing.T) {
 		default:
 		}
 	}}
-	p, err := New(Config{SubjectPrefix: "tpk", ClaimBucket: "b"}, WithBus(bus), func(o *options) { o.hooks = hooks })
+	p, err := New(Config{SubjectPrefix: "tpk", ClaimBucket: "b", Source: "test-source"}, WithBus(bus), func(o *options) { o.hooks = hooks })
 	if err != nil {
 		t.Fatal(err)
 	}
