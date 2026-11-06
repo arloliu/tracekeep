@@ -3,7 +3,7 @@
 Status: draft (2026-10-25) — split from seed v21
 
 Covers the gateway producer:
-where it runs, the capture/seq/clock algorithm, the rules that keep it off the tool's critical path, transport events, the capture descriptor and FDC thinning.
+where it runs, the capture/seq/clock algorithm, the rules that keep it off the equipment's critical path, transport events, the capture descriptor and FDC thinning.
 From seed v21 §4.1–§4.6; section numbers are the seed's, and [README.md](README.md) maps each to its file.
 Read before touching `producer/` (with `.agents/rules/600-invariants.md`) or the eqp-hub integration.
 
@@ -14,7 +14,7 @@ The sections below are authoritative; a disagreement is a defect in this summary
 Contract changes go through proposals, which the subject [README.md](README.md) lists.
 
 - **Placement and inputs**: the producer runs inside the `eqp-hsms` plugin process;
-  its inputs are go-secs observers on the tool's connection: wire, socket and lifecycle, and transaction (§4.1).
+  its inputs are go-secs observers on the equipment's connection: wire, socket and lifecycle, and transaction (§4.1).
 - **Seq before loss**: every observation of an open capture gets a seq before any decision that can lose it,
   so every loss inside a capture is a seq gap (§4.2 *Observer callback*).
 - **Callback contract**: a callback never blocks on anything external;
@@ -30,9 +30,9 @@ Contract changes go through proposals, which the subject [README.md](README.md) 
 - **Dependency barrier**: a record of seq s is published only when every reserved seq below s is accepted (§4.2 *Dependency barrier*).
 - **Off the critical path**: bus, bucket and consumer faults become counted drops, never a stalled send;
   the producer never creates or alters the stream or bucket and never touches device health (§4.3).
-- **Descriptor**: `tool_id` is the hub's `toolID`;
-  `recorder_instance_name` is the `eqp-hsms` device name, and `recorder_instance_id` is derived from the two;
-  one capture series per device, which a reader selects by (`tool_id`, device) (§4.5).
+- **Descriptor**: `equipment_id` is the hub's `toolID`, `device` the unit the recorded link serves, and `recorder_instance_name` the source, the gateway deployment's name;
+  `recorder_instance_id` is derived from the three;
+  one capture series per (equipment, device, source), which a reader selects by `equipment_id`, devices and sources (§4.5).
 - **Send path**: every forwarded W-bit primary is registered as a pending request before it is sent (§4.6 *Association protocol*);
   T3 of a forwarded request comes from eqp-hub's waiter through `TimeoutSource` (§4.4);
   eqp-hub reports each request's fate on its token:
@@ -50,7 +50,7 @@ and this section is the contract between them.
 
 ### 4.1 Where it lives
 
-- The `eqp-hsms` device runs as a go-plugin child process (`devices/eqp_hsms/plugin/main.go`) and owns the tool's `hsms.Connection`.
+- The `eqp-hsms` device runs as a go-plugin child process (`devices/eqp_hsms/plugin/main.go`) and owns the equipment's `hsms.Connection`.
   The producer runs **inside that process**:
   the device constructs the SDK from the traffic bus configuration (§4.7),
   the SDK owns the dedicated connection to the traffic cluster by default (injection through `WithConn` is an optional integration choice),
@@ -61,10 +61,10 @@ and this section is the contract between them.
   and `hsms.WithTransactionObserver` for the outcomes of sends go-secs itself awaits (tracepack-go.md §5).
   With the wire observer the capture is `raw-stream`, records `wire-exact` (tracepack-go.md §2, §8 Q1);
   choosing wire observation decides that, and LS-1's `decoded-message` wording is amended with it (§13).
-- The frames it sees are the tool's side of the connection, session ID as the tool sees it,
+- The frames it sees are the equipment's side of the connection, session ID as the equipment sees it,
   because the gateway rewrites the session ID before it forwards to the EAP (V-8);
-  so LS-2 is answered as "the tool's side", and a record carries one header.
-  The gateway's own traffic toward the tool (its `S1F1`, `S1F13`, `S6F23`, auto-replies, FDC polls and health pings) crosses the same connection and is observed (LS-5).
+  so LS-2 is answered as "the equipment's side", and a record carries one header.
+  The gateway's own traffic toward the equipment (its `S1F1`, `S1F13`, `S6F23`, auto-replies, FDC polls and health pings) crosses the same connection and is observed (LS-5).
 
 ### 4.2 Capture, seq and clock: one algorithm
 
@@ -231,7 +231,7 @@ and this section is the contract between them.
   A capture whose `start` the bus never accepted is never admitted by tracekeep (§6.1);
   a `start` the bus accepted but whose ack the producer lost is admitted like any other,
   and its retries are duplicates;
-  it becomes visible only through the next capture of the same tool and recorder instance,
+  it becomes visible only through the next capture of the same series,
   which `ListCaptures` reports as an unregistered interval (§7.3).
   The loss-visibility guarantee is therefore stated for **durably admitted captures**;
   this qualifies LS-15 and needs the owner's acceptance (§13).
@@ -274,10 +274,13 @@ and this section is the contract between them.
   so a late reference within retention, and a conflicting one from an SDK producer, always finds its payload
   (a non-SDK producer's conflicting version in another hour is outside the guarantee, §13).
   The traffic cluster raises `max_payload` toward 8 MiB so that few records take this path.
-- `recorder_instance_id` is derived from configuration (`toolID` and the device name, §4.5), never from a hostname or pod name,
+- `recorder_instance_id` is derived from configuration (the equipment ID, the device and the source, §4.5), never from a hostname or pod name,
   so it is stable across restarts and leadership changes ([FMT I-7]).
   `previous_capture_id` is known within one process lifetime and absent after a restart,
   since the gateway keeps no durable state (G5-200).
+  It names the previous capture of the same series only:
+  a rotation, or a `Start` after `Stop`, whose descriptor changes the equipment or the device starts a new series with no `previous_capture_id`,
+  and a rotation abandoned before its commit point changes nothing, so the next capture's predecessor is the last installed one.
 
 ### 4.3 Rules that keep it off the critical path
 
@@ -329,17 +332,27 @@ A request is awaited by exactly one of the two mechanisms, so no timeout is reco
 
 ### 4.5 Capture descriptor (LS-6)
 
-`tool_id` = the hub's configured **`toolID`** (top-level config, the identity FDC also receives), passed to the plugin as a device property;
-**not** the device name, which the templates set to `eqp` for every tool;
-`recorder_instance_name` = the `eqp-hsms` device name (`devices[].name`), unchanged and never empty
-(tracepack G5-270, tag 0x0034; it counts toward the 4096-byte header block of the `start` message);
+A capture's identity has three layers (T-59):
+`equipment_id` names the equipment and is the key of every read;
+the device is a unit attached to the equipment, its main machine, a sensor or a load port;
+the source is the deployment that records, named by the deployment and stable across restarts and leader changes, never a host or pod name.
+A **series** is one source's recording of one device of one equipment (G5-305).
+
+`equipment_id` = the hub's configured **`toolID`** (top-level config, the identity FDC also receives), passed to the plugin as a device property and mapped at the integrator's boundary,
+since eqp-hub keeps its own term;
+**not** the device name, which the templates set to `eqp` for every piece of equipment;
+`device` = the `eqp-hsms` device name (`devices[].name`) of a unit's connection, unchanged (tracepack G5-304, tag 0x0035, optional in the format and required by tracekeep);
+`recorder_instance_name` = the source, `Config.Source` (G5-270, tag 0x0034);
+both count toward the 4096-byte header block of the `start` message,
+and each is valid UTF-8 of 1 to 255 bytes, not whitespace only, kept and hashed byte for byte;
 `recorder_instance_id` = UUIDv5 (RFC 9562), under one fixed namespace UUID the SDK defines,
-of `tool_id` and the device name, each prefixed by its byte length as a 4-byte big-endian integer, so no choice of characters can make two pairs collide;
-the SDK derives it from each descriptor it starts or rotates to and refuses a descriptor that sets it;
-the gateway's `AppID` is not part of it, so a deployment rename does not break a device's series;
-nothing in eqp-hub stops two hubs, under one `AppID` or two, from serving one `toolID` at once
+of `equipment_id`, the device and the source, each prefixed by its byte length as a 4-byte big-endian integer, so no choice of characters can make two triples collide;
+the SDK derives it from each descriptor it starts or rotates to and refuses a descriptor that sets it,
+and admission refuses a `start` whose `recorder_instance_id` is not that derivation (§6.1);
+two sources recording one device are two series, never an overlap;
+nothing in eqp-hub stops two hubs configured with one source name from serving one `toolID` at once
 (leader election is off by default and `AppID` only names its lease, `develop` at fc67e5f),
-so such hubs write overlapping captures of one device, which `catalog.md` §7.3 *Overlap* reports;
+so such hubs write overlapping captures of one series, which `catalog.md` §7.3 *Overlap* reports;
 `device_id` from `deviceID`;
 `hsms_timers` from the go-secs properties (a timer HotReload therefore rotates the capture, §4.2);
 `equipment_connect_mode` from `mode`; `equipment_endpoint` from `hostPort`; `host_software` = eqp-hub version;
@@ -355,15 +368,14 @@ and never direction-inferred, since the wire observer reports the direction;
 and `clock_step_tolerance_ns` is ε, an operator tunable (T-29) the SDK writes into every descriptor.
 One hub has one `toolID` and several `eqp-hsms` devices
 (fourteen in eqp-hub's `examples/tfdc_common_parallel.yaml`:
-`eqp`, `tlp`, the sensor connections `dpm`, `fac`, `lsc`, `sgs`, each with its own `hostPort`, and in parallel mode the `pdf_*` connections to the legacy host system),
-so a tool has **one capture series per device**, told apart by `recorder_instance_name` and the `recorder_instance_id` derived from it;
-`device_id` (which two connections may share) and `equipment_endpoint` (which an address change alters) do not identify a device;
-the producer is enabled **per device**,
-so a connection whose peer is a host-side system is captured only if its operators want it,
+`eqp`, `tlp`, the sensor connections `dpm`, `fac`, `lsc`, `sgs`, each with its own `hostPort`, and in parallel mode the `pdf_*` connections to the legacy host system).
+A unit's connection (`eqp`, `tlp`, a sensor's) is a device, and the producer records it,
+so one source has **one capture series per device**, told apart by `device` and the `recorder_instance_id` derived with it;
+`device_id` (which two connections may share) and `equipment_endpoint` (which an address change alters) do not identify a device.
+A link that is no unit, a host-facing shadow connection or a parallel-mode `pdf_*` connection, belongs to the unit it serves and is **not recorded**:
+one source records one link per device, the traffic in and out of that device's HSMS link, and the traffic of a parallel or shadow run is not recorded (T-59).
+The producer is enabled **per device**, on a unit's connection only,
 and the VE's reader selects the device it plays.
-A `pdf_*` device keeps vantage host too:
-the legacy host system's `pdf` endpoint is the passive side, and eqp-hub's `eqp-hsms` device plays the host role toward it,
-so no device needs another vantage and every `dir` the SDK writes stays right (T-37).
 
 ### 4.6 FDC polling: thin only what is positively identified (requirement 1)
 
@@ -376,14 +388,14 @@ Thinning anything the gateway cannot positively identify as the FDC service's in
 
 **Provenance in eqp-hub today** (eqp-hub-analysis and source, `develop` fc67e5f):
 
-- In **pure mode** every `fdc_grpc` request to the tool travels on one request-response channel (`fdc-eqp`, built by `SecsCommand.BuildChannelName`),
+- In **pure mode** every `fdc_grpc` request to the equipment travels on one request-response channel (`fdc-eqp`, built by `SecsCommand.BuildChannelName`),
   and `device.Message` carries no marker.
 - The aggregator's `buildRequest` consolidates every **due context** into one `S1F3`,
   and `RouteProxyRequest` merges a matching proxy request into the active plan,
   so one request can carry interval and non-interval purposes.
   Moving `buildRequest` to another channel is therefore **not** positive provenance.
 - In **parallel mode** `fdc_grpc` sends nothing;
-  the polls the tool sees come from the legacy host device (`pdf`) on its own channel,
+  the polls the equipment sees come from the legacy host device (`pdf`) on its own channel,
   and the gateway cannot tell that device's interval polls from its other queries.
 - The hub's channel validation counts request-response channels per source
   and `fdc_grpc` advertises support for several,

@@ -18,8 +18,8 @@ Contract changes go through proposals, which the subject [README.md](README.md) 
 - **Packages**: `producer` (the algorithm of §4.2–§4.6, `Metrics` and `Logger` interfaces), `producer/secsobs` (go-secs events to records), `producer/busconfig` (the one definition of the stream, bucket and consumer settings), `producer/producertest` (§4.7 *Packages*, *Producer-side API*).
 - **Construction**: `New(cfg Config, opts ...Option)`; `Config` names the bus and nothing about driving it;
   every tunable has a default (§4.7 *The SDK owns the NATS client*).
-- **Identity**: carried by each capture's descriptor, never by `Config`:
-  the SDK derives `recorder_instance_id` from the descriptor's `tool_id` and `recorder_instance_name` (`producer.md` §4.5).
+- **Identity**: `Config.Source` names the source, the deployment that records, and each capture's descriptor names its equipment and its device:
+  the SDK derives `recorder_instance_id` from the three and writes the source as `recorder_instance_name` (`producer.md` §4.5).
 - **Connection**: by default the SDK dials a dedicated connection with every correctness-bearing option applied;
   `WithConn` brings a producer's own connection, which `New` refuses with the reconnect buffer enabled, and on which `Preflight` reports a missing TLS (T-35);
   `WithBus` brings any `Bus`, which is how `producertest` injects its in-memory bus;
@@ -86,6 +86,7 @@ type Config struct {
     Stream             string            // the traffic stream every publish expects; empty takes busconfig's default
     ParkedStream       string            // the parking stream Preflight checks; empty takes busconfig's default
     ClaimBucket        string
+    Source             string            // the deployment that records, never a host or pod name; required
     Tunables           Tunables          // lanes, H, τ, ε, the send path's bounds; every field has a default
 }
 
@@ -94,11 +95,14 @@ func New(cfg Config, opts ...Option) (*Producer, error)
 // WithBus(Bus) brings any implementation, which is how producertest injects its in-memory bus.
 ```
 
-`Config` holds no identity:
-it is fixed at `New`, while `toolID` can change through a configuration update,
-and every capture's descriptor already carries `tool_id`.
-The SDK derives `recorder_instance_id` from the descriptor of each capture it starts or rotates to (`producer.md` §4.5),
+`Config` holds the one part of the identity a deployment fixes, its source (T-59):
+the deployment's name, stable across restarts and leader changes, never a host or pod name;
+`New` refuses a source that is not valid UTF-8 of 1 to 255 bytes or that is whitespace only.
+The equipment ID and the device come from configuration and can change through a configuration update,
+so each capture's descriptor carries them as `EquipmentID` and `Device`,
+and the SDK derives `recorder_instance_id` from the three for each capture it starts or rotates to (`producer.md` §4.5),
 so the identity follows whichever lifecycle call starts or rotates a capture.
+A capture's `previous_capture_id` names the previous capture of its series only (`producer.md` §4.2).
 
 By default `New` dials a **dedicated connection** to the traffic cluster with every correctness-bearing option applied by the SDK itself:
 the reconnect buffer disabled (§4.2), unlimited reconnects, TLS, the publish deadline τ, `WithPublishAsyncMaxPending` and `WithPublishAsyncTimeout` on the JetStream context, the synchronous and asynchronous publish option sets,
@@ -184,7 +188,9 @@ which the device's `Start`, `HotReload` and `Stop` map onto (`producer.md` §4.2
 
   ```go
   type CaptureDescriptor struct {
-      // ... the values of producer.md §4.5 ...
+      EquipmentID string // equipment_id; the gateway maps its own term to it
+      Device      string // the unit the recorded link serves; required
+      // ... the other values of producer.md §4.5 ...
       Thinning *SamplingRule // nil: the capture thins nothing and declares nothing
   }
 
@@ -273,7 +279,7 @@ which the device's `Start`, `HotReload` and `Stop` map onto (`producer.md` §4.2
   the parking stream with the traffic stream's retention, storage and limits, no subject either stream's filter could share with the other's and no fewer replicas, `parking.md` *Parking*;
   encryption at rest is a deployment assurance no client can see, so it is left out rather than reported on every run), `max_payload ≥ 4140`, TLS, the reconnect buffer disabled,
   the capture's `start` message within the header-block and `max_payload` limits
-  (through `bus.CheckStart` with the real header block), `tool_id` and `recorder_instance_name` set in the descriptor;
+  (through `bus.CheckStart` with the real header block), `equipment_id`, `device` and `recorder_instance_name` set in the descriptor;
   it returns a readable list of what is wrong.
   At startup it runs in the background after the connection is up and never delays the device's `Start` (§4.3);
   it is also an admin-triggered check.
@@ -285,7 +291,7 @@ which the device's `Start`, `HotReload` and `Stop` map onto (`producer.md` §4.2
 
 **What the producer must guarantee**, the whole list (everything else is the SDK's):
 (1) the traffic cluster's address, credentials and TLS material in `Config`, or a dedicated connection through `WithConn`;
-(2) every descriptor carries the configured `toolID` and the configured device name;
+(2) `Config.Source` names the deployment, and every descriptor carries the configured equipment ID and the device of a unit's connection, the only connections the producer is enabled on (`producer.md` §4.5);
 (3) `secsobs`'s connection options and lifecycle attachment installed on the device's connection before it opens;
 (4) `End` called on an orderly stop and never allowed to fail the device;
 (5) `Rotate` called on every descriptor change;

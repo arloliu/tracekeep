@@ -3,7 +3,7 @@
 tracekeep (`github.com/arloliu/tracekeep`) is the traffic-log service of the Virtual Equipment (VE) project:
 it consumes the SECS/HSMS traffic records an equipment gateway publishes on NATS JetStream,
 writes them as tracepack captures into S3-compatible storage,
-and serves them to the VE generation service and to people troubleshooting tools.
+and serves them to the VE generation service and to people troubleshooting equipment.
 The design is in `docs/specs/tracekeep/`; the roadmap is `docs/ROADMAP.md`.
 
 ## Modules
@@ -77,12 +77,12 @@ Create a directory when its first code lands, not before.
 ## Prime Directives
 
 1. **No sensitive data in the repository.**
-   No company, site, tool-ID, internal-service or person names, no local paths,
+   No company, site, equipment-ID, internal-service or person names, no local paths,
    no quoted vendor-manual content, no real traffic.
    Real inputs live only in `data/`; tests and examples use synthetic data.
 2. **Neutral terms.**
    The host-side automation program is the EAP;
-   the gateway between tools and EAPs is the equipment gateway.
+   the gateway between equipment and EAPs is the equipment gateway.
    eqp-hub, the repository that implements it, may be named.
 3. **Evidence over assumption.**
    A design claim about the bus, the gateway or a library cites the evidence it rests on (a version and a source location),

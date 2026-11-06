@@ -18,8 +18,8 @@ Contract changes go through proposals, which the subject [README.md](README.md) 
 - **Tunables**: one table in `docs/guides/configuration.md`, with defaults and the consequence of moving each;
   the defaults are T-12 in `tracekeep-decisions.md`.
 - **Metrics**: `tracekeep_` and `tracepub_` prefixes;
-  `tool_id` is a label, `capture_id` never is, except on one info gauge per producer.
-- **Health**: `/healthz`, `/readyz`, and `tracekeep status` per tool.
+  `equipment_id` is a label, `capture_id` never is, except on one info gauge per producer.
+- **Health**: `/healthz`, `/readyz`, and `tracekeep status` per equipment.
 - **Alerts**: the Helm chart's rules, each linked to its runbook section (§10.4).
 - **Logs**: one structured line per state change, never one per record.
 
@@ -63,14 +63,14 @@ how soon a termination or a cleared blocker takes effect follows from it only wh
 and the completion signal is `parked list`, §6.1) (§13 lists the defaults).
 
 **Metrics** (Prometheus names, `tracekeep_` and `tracepub_` prefixes;
-`tool_id` is a label where it is bounded, about 1,500 values;
+`equipment_id` is a label where it is bounded, about 1,500 values, never a device or a source, which would multiply its series;
 `capture_id` is never a label except on one info gauge per producer;
 everything per capture is served by `tracekeep status` and the admin commands, not by metrics):
 
 | Component | Metrics |
 |---|---|
-| producer (SDK, through the `Metrics` interface the producer wires to its own registry; every counter and label value it can emit is reported at zero when the publisher starts; `current_capture` is one series per producer: the SDK deletes the previous label set when it rotates) | `records_observed_total{kind,dir}`, `records_published_total`, `records_dropped_total{reason=lane_full,bus_down,publish_failed,claim_failed,capture_fault,after_stop,abandoned}`, `dropped_bytes_total`, `ring_depth`, `ring_bytes`, `reserved_lane_depth`, `publish_ack_seconds` (histogram), `bus_connected`, `capture_rotations_total{reason=start,hotreload,fault,stop,seq_limit}`, `clock_steps_total`, `claim_puts_total{outcome=put,reused,conflict,error}`, `observer_panics_total` (a panic recovered at a callback's entry, `producer.md` §4.3), `log_lines_dropped_total` (a log line the SDK's sink had no room for, or still queued when it stopped), `pending_requests`, `pending_reports_ignored_total{reason=duplicate_progress,duplicate_awaiting,sealed,removed,expired}`, `pending_timeouts_dropped_total{reason=unbound,ambiguous,unattributed}`, `thinned_total`, `thinning_header_mismatches_total` (a registration whose sent frame had another stream or function, `producer.md` §4.6 *Header check*), `ambiguous_total`, `thinning_enabled` (1 while the current capture has a sampling rule and no registration has found the ambiguity set full), `current_capture` (info gauge: `capture_id`, `tool_id`, `recorder_instance_id`), `preflight_ok` |
-| ingest | `messages_total{disposition}`, `deferred_messages{reason}`, `deferred_oldest_age_seconds{reason}`, `quarantined_total`, `segments_total{tool_id}`, `segment_bytes_total{tool_id}`, `put_seconds`, `registration_seconds`, `mask_seconds`, `in_progress_acks_total`, `flush_stalls_total` (local file work past its bound, `ingest.md` §6.2), `captures_open{tool_id}`, `conflicts_total{tool_id}`, `gap_observations_total{tool_id}` (a hole first seen at registration; it may be filled later, so it is an event count, not a loss count), `open_gaps{tool_id}` (gauge: holes currently unfilled), `declared_losses_total{tool_id}`, `last_declared_loss_timestamp_seconds{tool_id}`, `captures_with_unknown_tail{tool_id}` (gauge), `parked_messages{reason}`, `key_binding_mismatches_total`, `cannot_screen_total`, `damaged_inputs`, `stream_backlog_messages`, `stream_backlog_bytes`, `consumer_ack_pending`, `redelivered_total` |
+| producer (SDK, through the `Metrics` interface the producer wires to its own registry; every counter and label value it can emit is reported at zero when the publisher starts; `current_capture` is one series per producer: the SDK deletes the previous label set when it rotates) | `records_observed_total{kind,dir}`, `records_published_total`, `records_dropped_total{reason=lane_full,bus_down,publish_failed,claim_failed,capture_fault,after_stop,abandoned}`, `dropped_bytes_total`, `ring_depth`, `ring_bytes`, `reserved_lane_depth`, `publish_ack_seconds` (histogram), `bus_connected`, `capture_rotations_total{reason=start,hotreload,fault,stop,seq_limit}`, `clock_steps_total`, `claim_puts_total{outcome=put,reused,conflict,error}`, `observer_panics_total` (a panic recovered at a callback's entry, `producer.md` §4.3), `log_lines_dropped_total` (a log line the SDK's sink had no room for, or still queued when it stopped), `pending_requests`, `pending_reports_ignored_total{reason=duplicate_progress,duplicate_awaiting,sealed,removed,expired}`, `pending_timeouts_dropped_total{reason=unbound,ambiguous,unattributed}`, `thinned_total`, `thinning_header_mismatches_total` (a registration whose sent frame had another stream or function, `producer.md` §4.6 *Header check*), `ambiguous_total`, `thinning_enabled` (1 while the current capture has a sampling rule and no registration has found the ambiguity set full), `current_capture` (info gauge: `capture_id`, `equipment_id`, `recorder_instance_id`), `preflight_ok` |
+| ingest | `messages_total{disposition}`, `deferred_messages{reason}`, `deferred_oldest_age_seconds{reason}`, `quarantined_total`, `segments_total{equipment_id}`, `segment_bytes_total{equipment_id}`, `put_seconds`, `registration_seconds`, `mask_seconds`, `in_progress_acks_total`, `flush_stalls_total` (local file work past its bound, `ingest.md` §6.2), `captures_open{equipment_id}`, `conflicts_total{equipment_id}`, `gap_observations_total{equipment_id}` (a hole first seen at registration; it may be filled later, so it is an event count, not a loss count), `open_gaps{equipment_id}` (gauge: holes currently unfilled), `declared_losses_total{equipment_id}`, `last_declared_loss_timestamp_seconds{equipment_id}`, `captures_with_unknown_tail{equipment_id}` (gauge), `parked_messages{reason}`, `key_binding_mismatches_total`, `cannot_screen_total`, `damaged_inputs`, `stream_backlog_messages`, `stream_backlog_bytes`, `consumer_ack_pending`, `redelivered_total` |
 | compact | `cycle_seconds{task=merge,close,delete,retention,reconcile,exports}`, `last_success_timestamp{task}`, `lease_held`, `scopes{state}`, `merges_total{outcome=merged,stale,conflicted,failed,refused}` (`refused` a merge over the reader's metadata budget, which withholds no task's success), `last_merge_timestamp_seconds{outcome}`, `closes_total{trigger}`, `deletions_total`, `tombstones_total`, `orphans_adopted_total`, `orphans_quarantined_total`, `claim_objects`, `claim_object_bytes`, `conflicts_open`, `oldest_unmerged_scope_age_seconds` (of `open` and `reopened` scopes), `retirement_blockers`, `export_jobs{state}`, `export_objects_deleted_total`, `export_cleanup_failures_total` |
 | api | request rate, errors and duration per operation, a stream's counted at its end with its code, a download's by its HTTP status, 499 for a client gone (`api.md` §10.1 *Downloads*); `record_reads_in_flight`, `record_reads_refused_total` (`resource_exhausted`), `records_streamed_total`, `record_reads_incomplete_total{reason=gone,corrupt,crash-gap,footer,read-limit,too-many-packs,evicted}`; `exports_total{outcome=done,failed,cancelled}`, `export_bytes_total`; `restores_total{outcome}`, `digests_total{outcome}` (`cancelled` for a client gone, `api.md` §10.1 *A client gone*), `digest_inputs_total`; `auth_failures_total{reason}`, `logins_total{step=start,callback,outcome=ok,refused,unavailable}`; `download_urls_total{kind=presigned,api}`, `download_urls_refused_total` (`pack-superseded`) |
 | keys (every role that resolves a key; `kind` the only per-key label, never a key id, a reference or a credential) | `key_resolutions_total{kind,outcome=cached,resolved,unavailable,refused,cancelled}`, `key_last_problem_timestamp_seconds{kind,outcome=refused,unavailable}`, `key_provider_seconds{provider,op=login,renew,read}`, `key_provider_errors_total{provider,reason=unreachable,deadline,auth,missing,malformed,server}`, `key_credential_expiry_timestamp{provider}` (the current token's expiry, for a provider with credentials) |
@@ -79,11 +79,12 @@ everything per capture is served by `tracekeep status` and the admin commands, n
 Health: `/healthz` (process) and `/readyz` (catalog reachable, lease state for `compact`, consumer bound for `ingest`; for `api` failing once it starts to stop, before it stops accepting);
 `/readyz` names each check that fails, never its error's text, since the metrics listener is unauthenticated;
 a role stopped by a signal that drains within its bound exits 0.
-`tracekeep status` lists `pending` captures by capture id first, outside any per-tool grouping
-(they have no tool yet), then prints per tool the last record time, open captures, deferred messages and backlog.
-Deferred messages are the tool's unresolved parked versions, as `deferred list` counts them;
-backlog is the traffic stream's messages on the tool's subjects, whose token after the prefix is the tool's (tracepack's `bus.Subject`),
-and the stream's bytes, which no subject divides, once for all tools.
+`tracekeep status` lists `pending` captures by capture id first, outside any per-equipment grouping
+(they have no equipment yet), then prints per equipment the last record time, open captures, deferred messages and backlog;
+its JSON names them `equipment`, each with its `equipment_id`.
+Deferred messages are the equipment's unresolved parked versions, as `deferred list` counts them;
+backlog is the traffic stream's messages on the equipment's subjects, whose token after the prefix is the equipment's (tracepack's `bus.Subject`),
+and the stream's bytes, which no subject divides, once for all equipment.
 The probes of the Helm chart and the systemd unit's checks read these on the metrics listener (`metrics.listen`, default `:9090`), never on the API's port.
 With `metrics.pprof` on (default off) the same listener also serves Go's profiles under `/debug/pprof/`; it is refused with an empty `metrics.listen`,
 and since the listener is unauthenticated and a profile shows the heap and the command line, it is on only while the listener is reachable by its operators alone (T-54).
@@ -91,7 +92,7 @@ and since the listener is unauthenticated and a profile shows the heap and the c
 The Helm chart ships alert rules (`architecture.md` §3.3), each with its runbook section in `docs/guides/runbook.md` as its `runbook_url` and the metric it reads;
 the thresholds are the chart's values, the defaults below.
 The ingest gauges of shared state are observed by every ingest replica alike from a snapshot it refreshes:
-the stream's backlog from the bus (`source="bus"`), a tool's open gaps and the parked messages from the catalog (`source="catalog"`);
+the stream's backlog from the bus (`source="bus"`), an equipment's open gaps and the parked messages from the catalog (`source="catalog"`);
 a rule reads their maximum, never their sum, over the replicas whose own `tracekeep_ingest_refreshed_timestamp_seconds` of that source is less than ten minutes old,
 so one replica's stale snapshot neither fires a rule nor is vouched for by another's fresh one.
 The deferred messages (`deferred_messages`, `deferred_oldest_age_seconds`) are each replica's own, computed at each scrape from the deliveries it holds,
@@ -111,7 +112,7 @@ the chart's gateway rules keep their fallback for a gateway on an older SDK, whi
 | `TracekeepCompactLeaseLost` | no `compact` replica holds the lease (`tracekeep_compact_lease_held`) for 5 min | `lease-lost` |
 | `TracekeepMergeStalled` | the lease holder's merge task (`tracekeep_compact_last_success_timestamp{task="merge"}` of the replica whose `tracekeep_compact_lease_held` is 1, never a standby's) has completed no cycle for two hours, or none since it took the lease two hours ago, each its own rule labelled by `cause`; a cycle that merged nothing counts as completed, and a scope left unmerged shows as `tracekeep_compact_oldest_unmerged_scope_age_seconds` instead | `merge-stalled` |
 | `TracekeepMergeRefused` | a merge refused over the metadata budget within the hour (`tracekeep_compact_last_merge_timestamp_seconds{outcome="refused"}`) | `merge-over-budget` |
-| `TracekeepGapsGrowing` | `tracekeep_ingest_open_gaps` increasing on a tool over 30 min, or a seq of the tool declared lost within them (`tracekeep_ingest_last_declared_loss_timestamp_seconds`) | `gaps-and-losses` |
+| `TracekeepGapsGrowing` | `tracekeep_ingest_open_gaps` increasing on an equipment over 30 min, or a seq of it declared lost within them (`tracekeep_ingest_last_declared_loss_timestamp_seconds`) | `gaps-and-losses` |
 | `TracekeepKeyRefused` | a key resolution refused within ten minutes (`tracekeep_key_last_problem_timestamp_seconds{outcome="refused"}`) | `key-refused` |
 | `TracekeepKeysUnavailable` | key resolutions unavailable through five minutes, each two minutes of them holding one (`tracekeep_key_last_problem_timestamp_seconds{outcome="unavailable"}`) | `keys-unavailable` |
 
@@ -120,12 +121,12 @@ the chart ships them in a group of their own, off unless the values enable it fo
 
 | Alert | Fires when | Runbook section |
 |---|---|---|
-| `TracepubToolSilent` | a producer connected to the bus (`bus_connected` 1) through the last ten minutes with no record published in them (`records_published_total` unchanged, or absent for a producer that never published) | `tool-silent` |
+| `TracepubEquipmentSilent` | a producer connected to the bus (`bus_connected` 1) through the last ten minutes with no record published in them (`records_published_total` unchanged, or absent for a producer that never published) | `equipment-silent` |
 | `TracepubDropping` | a producer dropping records (`records_dropped_total`, any reason) | `producer-drops` |
 
 The Metrics table's `preflight_ok` is not reported by the SDK yet, so no rule reads it; its alert joins when the SDK reports it.
 
-Logs are structured, one line per state change with `capture_id`, `tool_id` and `seq` where they apply, never one line per record.
+Logs are structured, one line per state change with `capture_id`, `equipment_id` and `seq` where they apply, never one line per record.
 The operator's log may carry a catalog's cause (a driver's text, a host), a bus error's text and a key provider's error with its reference (`masking-keys.md` §9 *Failures*);
 it never carries an object key, a store's error text (made keyless by `Keyless`), a URL's query or user information, a token, a password, a secret, a cookie, an authorization code or a clear payload,
 whichever error's text would carry it:

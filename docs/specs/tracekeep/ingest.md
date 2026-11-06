@@ -50,6 +50,7 @@ the capture's row is untouched, a later `start` of another version admits normal
 `bus.CheckMessage` and its `bus.ErrNotAccepted` (a `start` whose descriptor does not decode) are reached only by an **unresolved** message,
 so a terminated `start` with a missing or invalid descriptor is acknowledged, as [STO §4] allows, instead of deferred → framing (`bus.CheckMessage`) → **admission before any age decision**:
 a delivery that may be a `start` (an inline `start`, or any claim-check delivery of a capture that is unknown or `rejected`, whose object is fetched and checked first, G5-257) completes start recognition and descriptor validation now;
+a descriptor is accepted as `architecture.md` §3.4 states, its series named and its `recorder_instance_id` derived from it;
 an accepted descriptor runs the **admission transaction**:
 no row or `pending` → `open` (the prologue of §6.3 inserts the `pending` row if none exists and locks it; then `pending → open`, bind the processing configuration), `rejected` → `open` when a fixed consumer now accepts the retained descriptor bytes (re-validated against the delivery's), equal bytes on an already admitted capture → nothing, different bytes → `descriptor-conflict`;
 a descriptor that is not accepted writes `captures.state = rejected` with its bytes **durably**, raises the alert,
@@ -57,7 +58,7 @@ and the `start` is deferred whatever its age, as G5-251 requires.
 A capture with no row, or with a **`pending`** row (a placeholder without descriptor that the first consumer to park any of its messages inserts, *Parking* below), is **unknown** throughout this document;
 admission and rejection update a `pending` row in place,
 so from its first sighting every transaction of a capture serializes on one row.
-A `pending` row has no descriptor, `tool_id` or `recorder_instance_id`:
+A `pending` row has no descriptor, `equipment_id`, device, source or `recorder_instance_id`:
 it is **not a registered capture** for `ListCaptures`, for §7.3's unregistered-interval test or for its "`previous_capture_id` names no registered capture" rule,
 and it appears only in `deferred list`, `parked list` and `tracekeep status`.
 Only then is age applied:
