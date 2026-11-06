@@ -57,8 +57,7 @@ Milestones the owner set after seed v21 §12's (T-52).
 
 ## Active plans
 
-- [Capture identity](plans/capture-identity.md): equipment, source and device (T-59), before P3
-- [P3 — host log feed](specs/tracekeep/proposals/p3-host-log-feed.md), a proposal the owner accepted (T-60) on a new capture identity (T-59); its tracepack text is done in go-secs (G5-302), and the identity change comes first
+- [P3 — host log feed](specs/tracekeep/proposals/p3-host-log-feed.md), a proposal the owner accepted (T-60) on a new capture identity (T-59); its tracepack text is done in go-secs (G5-302), and the identity it rests on is done
 
 Phase 0 is done (#1, #3, #4, #7, #8).
 Phase 1 is done (#9, #11, #13, #14, #16, #17, #18, #19).
@@ -69,6 +68,7 @@ Phase 3 is done (#33, #34, #35, #36, #39, #41, #43); its closed plan's last text
 Phase 4 is done (#46, #48, #49, #52, #53, #55, #58); its closed plan's last text is at e95dee5.
 Phase 5 is done (#64, #67, #70, #74, #78, #82, #83); its closed plan's last text, with its measurements and the gate's evidence, is at 89a01d8.
 Like phase 2's, the commits its step tables and measurements name are the branches' before their rebase merge, each among the commits of the pull request its sub-phase names.
+The capture identity (T-59: equipment, source and device) is done (#91, #92, #93; `producer/v0.6.0`); its closed plan's last text is at ab976c3.
 
 ## Open items
 
