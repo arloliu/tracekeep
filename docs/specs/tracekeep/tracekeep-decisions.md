@@ -910,3 +910,11 @@ Considered and not taken: a 5 s window, which loses every entry a retry delays p
 one publish in flight per forwarder, which caps an instance near 1,000 entries a second;
 a consumer per replica dropping the groups it does not hold; a binary codec, about 20% fewer bytes for a descriptor file shipped with the pipeline.
 **P3 closed**: P3 (host log feed) applied as `logfeed.md` (§15) and the amendments to `ingest.md`, `catalog.md`, `compactor.md`, `storage.md`, `rollouts.md`, `api.md`, `operations.md`, `architecture.md` and `glossary.md`; last text at 4e385a1.
+
+### T-63 — the host log feed's load measured first (2026-11-07)
+
+The owner chose, on 2026-11-07, to measure the host log feed's two largest unmeasured costs before its converter is built, ahead of T-60's gate:
+the feed stream's load on a three-node cluster at the fleet's rate, held and acknowledged as the converter will, with a consumer's re-creation;
+and the catalog writer's cost of the feed's registration on both engines.
+`logfeed.md` §15.10 rests both on estimates: the bus's from message counts and phase 5's in-progress acknowledgements, the writer's from `RegisterPack`'s baselines, with no MariaDB figure.
+A number past its budget stops the plan for the owner's decision, before the converter's cost is spent.
