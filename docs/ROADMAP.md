@@ -57,6 +57,7 @@ Milestones the owner set after seed v21 §12's (T-52).
 
 ## Active plans
 
+- [Test efficiency](plans/test-efficiency.md), the tests' and CI's time cut before P3 (T-61)
 - [P3 — host log feed](specs/tracekeep/proposals/p3-host-log-feed.md), a proposal the owner accepted (T-60) on a new capture identity (T-59); its tracepack text is done in go-secs (G5-302), and the identity it rests on is done
 
 Phase 0 is done (#1, #3, #4, #7, #8).
