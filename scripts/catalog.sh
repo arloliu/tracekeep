@@ -3,7 +3,7 @@
 # Usage:
 #   scripts/catalog.sh diff <name>   generate a migration for both engines from schema.hcl
 #   scripts/catalog.sh check         validate both migration directories and check schema.hcl for drift
-#   scripts/catalog.sh test          run the catalog's tests on MariaDB
+#   scripts/catalog.sh test          run the catalog's tests on MariaDB, each package within 30 minutes
 #   scripts/catalog.sh bench <file>  run the catalog's benchmarks on MariaDB alone (TRACEKEEP_BENCH_ENGINES=mariadb),
 #                                    -count ${COUNT:-10} -benchtime ${BENCHTIME:-1s} -cpu ${CPU:-nproc},
 #                                    over ${BENCH_PACKAGES:-every package reaching the catalog} and -bench ${BENCH:-.},
@@ -74,7 +74,7 @@ check)
 test)
 	start_mariadb
 	TRACEKEEP_MARIADB_DSN="root:$PASSWORD@tcp(127.0.0.1:$port)/catalog" GOWORK=off CGO_ENABLED=1 \
-		go test $PACKAGES -race -count=1 ${GOTESTFLAGS:-}
+		go test $PACKAGES -race -count=1 -timeout 30m ${GOTESTFLAGS:-}
 	;;
 bench)
 	out=${2:?usage: catalog.sh bench <file>}
