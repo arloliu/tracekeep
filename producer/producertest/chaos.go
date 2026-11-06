@@ -24,7 +24,7 @@ const (
 	stalledStop = 300 * time.Millisecond
 	// slack is how far past its deadline a device verb may return before it counts as blocked.
 	slack = time.Second
-	// settleTimeout bounds the wait for the last capture's stop on the bus.
+	// settleTimeout bounds each wait for what the device put on the bus: its traffic, the last capture's stop, a held publish.
 	settleTimeout = 10 * time.Second
 )
 
@@ -55,10 +55,11 @@ type NewDevice func(t *testing.T, bus *Bus, tun producer.Tunables) Device
 // and what reaches the bus must pass CheckCaptures.
 func RunChaos(t *testing.T, newDevice NewDevice) {
 	t.Helper()
-	runScenarios(t, newDevice, func(t *testing.T) testing.TB { return t })
+	runScenarios(t, newDevice, settleTimeout, func(t *testing.T) testing.TB { return t })
 }
 
-func runScenarios(t *testing.T, newDevice NewDevice, report func(t *testing.T) testing.TB) {
+// runScenarios runs the scenarios with settle bounding each wait for the bus, which the harness's own failure tests shorten.
+func runScenarios(t *testing.T, newDevice NewDevice, settle time.Duration, report func(t *testing.T) testing.TB) {
 	t.Helper()
 	scenarios := []struct {
 		name string
@@ -74,7 +75,7 @@ func runScenarios(t *testing.T, newDevice NewDevice, report func(t *testing.T) t
 	for _, sc := range scenarios {
 		t.Run(sc.name, func(t *testing.T) {
 			bus := NewBus()
-			sc.run(&chaos{t: report(t), bus: bus, d: newDevice(t, bus, sc.tun)})
+			sc.run(&chaos{t: report(t), bus: bus, d: newDevice(t, bus, sc.tun), busWait: settle})
 		})
 	}
 }
@@ -118,6 +119,8 @@ type chaos struct {
 	t   testing.TB
 	bus *Bus
 	d   Device
+	// busWait bounds each wait for the bus.
+	busWait time.Duration
 }
 
 // capture is what the bus holds of one capture.
@@ -180,7 +183,7 @@ func stopUnderAStalledPublisher(c *chaos) {
 	c.verb("Start", verbTimeout, c.d.Start)
 	c.traffic(20)
 	// Records go out asynchronously, so the publisher is stalled once one is held.
-	ctx, cancel := context.WithTimeout(c.t.Context(), settleTimeout)
+	ctx, cancel := context.WithTimeout(c.t.Context(), c.busWait)
 	defer cancel()
 	if err := c.bus.waitHeld(ctx); err != nil {
 		c.t.Errorf("the traffic never reached the bus: %v", err)
@@ -242,7 +245,7 @@ func (c *chaos) traffic(n int) {
 // can stand in for a Traffic that does nothing.
 func (c *chaos) trafficSeen(n int) {
 	c.t.Helper()
-	ctx, cancel := context.WithTimeout(c.t.Context(), settleTimeout)
+	ctx, cancel := context.WithTimeout(c.t.Context(), c.busWait)
 	defer cancel()
 	msgs := c.bus.Messages()
 	before := frames(msgs)
@@ -259,7 +262,7 @@ func (c *chaos) trafficSeen(n int) {
 // wait waits for done, reporting what if it does not come.
 func (c *chaos) wait(done <-chan struct{}, what string) {
 	c.t.Helper()
-	ctx, cancel := context.WithTimeout(c.t.Context(), settleTimeout)
+	ctx, cancel := context.WithTimeout(c.t.Context(), c.busWait)
 	defer cancel()
 	select {
 	case <-done:
@@ -295,7 +298,7 @@ func (c *chaos) stop(d time.Duration) {
 // It returns what the bus holds of each capture.
 func (c *chaos) settle(captures int) map[tracepack.UUID]*capture {
 	c.t.Helper()
-	ctx, cancel := context.WithTimeout(c.t.Context(), settleTimeout)
+	ctx, cancel := context.WithTimeout(c.t.Context(), c.busWait)
 	defer cancel()
 	msgs := c.bus.Messages()
 	var caps map[tracepack.UUID]*capture

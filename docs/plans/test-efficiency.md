@@ -1,6 +1,6 @@
 # Test efficiency
 
-Status: active (2026-11-06) — phase 2, the catalog job
+Status: active (2026-11-06) — phase 3, harness time
 
 The work that delivers T-61 (`docs/specs/tracekeep/tracekeep-decisions.md`) before P3's phase plan (T-60):
 a catalog test stops paying for twelve migrations on SQLite and for a disk's syncs on MariaDB,
@@ -16,8 +16,8 @@ Tests that open only SQLite though the catalog's two engines would serve them ar
 | Phase | Work | State |
 |---|---|---|
 | 1 — catalog setup | SQLite catalogs copied from one migrated template per test process; the test MariaDB server's data on tmpfs | done (#96) |
-| 2 — the catalog job | the engine loops' SQLite runs left to `ci`; the job's packages split into matrix legs; the two timing flakes fixed | in-progress |
-| 3 — harness time | the chaos harness's settle wait shortened for its failure tests; the load harness's production mode ratio-scaled and on either engine | pending |
+| 2 — the catalog job | the engine loops' SQLite runs left to `ci`; the job's packages split into matrix legs; the two timing flakes fixed | done (#97) |
+| 3 — harness time | the chaos harness's settle wait shortened for its failure tests; the load harness's production mode ratio-scaled and on either engine | in-progress |
 | 4 — benchmarks and close | benchmarks at `-count 5`; the rules and guides that name the old behaviour; the measurements after; this plan closed | pending |
 
 Each phase is one pull request.
@@ -59,6 +59,9 @@ After phase 1, on the same machine, under `-race`:
 CI's `catalog` job after phase 1 (#96): `make test-catalog` 7 min 2 s of its 9 min 11 s on a four-core runner, CPU-bound where the local machine has 32 cores;
 `internal/catalog` 326 s, `internal/compact` 173 s, `internal/ingest` 170 s, `internal/api` 126 s, `internal/service` 98 s, the rest 12 s or less, run side by side.
 
+After phase 2 (#97), CI's `catalog` legs took 104 s (`catalog`), 175 s (`compact-api`), 151 s (`ingest-service`) and 212 s (`rest`, with `migrate-check` and the benchmarks' smoke run), after 13 s listing them:
+the job about 3 min 45 s from 9 min 11 s; the `ci` job 8 min 38 s.
+
 Two tests failed once each during a full MariaDB run and passed when run alone:
 `TestLeaseLostDuringACycle` (`internal/compact/run_test.go`) and `TestExportWorkerCountsTheLeaseFromItsClaim` (`internal/api/export_worker_test.go`).
 Neither failed again in four runs of their packages on tmpfs nor in two on a disk.
@@ -71,26 +74,27 @@ Its cause is not proven, and this plan leaves it open.
 `TestRunChaosFailsBrokenWiring`'s `no_traffic` and `only_startup_traffic` take 40 s and 30 s under `-race`, `TestRunChaos` 0.5 s:
 each failing scenario waits out the 10 s `settleTimeout`.
 
-## Phase 2 — the catalog job
+After phase 3, locally: `producertest` 5 s under `-race`, its broken-wiring test 4 s;
+`TRACEKEEP_LOAD=production` 160 s on SQLite, its main case sustained and its control's backlog minima rising under its budget, where the real times took about 1.5 hours;
+`production-smoke` 102 s on SQLite and on MariaDB.
+
+## Phase 3 — harness time
 
 ### Work
 
-- Every two-engine test loop (`catalogtest.Engines`, `internal/catalog`'s `engines` and `fenceEngines`, `TestLiveRoleMigration`, `migrations`' `engines`) runs the engines `TRACEKEEP_BENCH_ENGINES` names, as the benchmark loops do;
-  `scripts/catalog.sh test` and `bench-smoke` set it to `mariadb`.
-  `./migrations/migrationstest/...`, `./internal/auth/...` and `./cmd/tracekeep/...` stay out of the list: none of their tests reaches MariaDB.
-- `scripts/catalog.sh` names its packages in legs, `PACKAGES` being every leg's; `legs` prints them for CI and fails when two share a package or one has none;
-  `test <leg>` and `make test-catalog LEG=<leg>` run one.
-- `ci.yaml`'s `catalog` job is a matrix of those legs, `migrate-check` and `bench-catalog-smoke` in the `rest` leg.
-- The lease test runs its first cycle under the default lease and only the lost cycle under a short one;
-  the export test's lease and claim delay grow to 2 s and 1.6 s, and it bounds the put's cancellation from when the claim was asked for, at 2 to 2.8 s, where a lease counted from the answer gives 3.6 s.
+- `producertest`'s wait for the bus (`settleTimeout`, every wait for traffic, the last capture's stop and a held publish) is a parameter of the unexported `runScenarios`;
+  `RunChaos` keeps 10 s and the SDK's exported API is unchanged, and `export_test.go`'s `RunChaosReporting` takes the wait.
+  `TestRunChaosFailsBrokenWiring` passes 1 s and matches each broken wiring's own error; `TestRunChaosWithAShortWait` runs healthy wiring under the same 1 s.
+- `TRACEKEEP_LOAD=production` runs flush 10 s, `ack_wait` 14 s and `max_ack_pending` 20,000 and 1,667 at the rate it had;
+  `production-real` runs the 5 m, 7 m, 600,000 and 50,000 it had.
+  A run fails unless both cases are judged with their offered rate held, no drop and no failed pass, the main case sustained and the control's ack pending reaching its budget (`productionVerdict`, with a test of its own).
+- `TRACEKEEP_LOAD_ENGINE=mariadb` runs every load mode's dev on a database of its own on the server `TRACEKEEP_MARIADB_DSN` names, through an unexported `DevOptions` field, failing without that server;
+  `catalogtest.MariaDBEmpty` creates the database, and the SQL counts, a SQLite authorizer's, print as unavailable.
 
 ### Done when
 
-- With `TRACEKEEP_BENCH_ENGINES=mariadb`, `go test -json` of `internal/catalog` and `migrations` passes or skips no `sqlite` subtest; without it, 262 pass.
-- `scripts/catalog.sh legs` rejects a package in two legs and a leg with none.
-- Each fixed test passes `-count 50` under `-race` on one MariaDB server while its packages' tests run `-count 3` on it,
-  and fails with the mechanism it asserts removed: the lease counted from the answer, or the keeper's cancellation on a lost lease.
-- CI's `catalog` legs pass, and the measurements gain their times.
+- `producertest` passes under `-race` in seconds, its broken-wiring test matching each wiring's error, and `go doc` of `producertest` shows `RunChaos` unchanged.
+- `TRACEKEEP_LOAD=production` passes on SQLite, `production-smoke` on SQLite and on MariaDB, and the measurements record their times.
 
 ## Gate cases
 

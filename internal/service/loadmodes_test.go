@@ -9,6 +9,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -34,7 +35,9 @@ import (
 
 // loadModes are TRACEKEEP_LOAD's measuring modes, each run at full size or, smoke, as a few minutes' check of itself.
 var loadModes = map[string]func(t *testing.T, smoke bool){
-	"ceiling": loadCeiling, "claimcheck": loadClaimCheck, "production": loadProduction, "recovery": loadRecovery,
+	"ceiling": loadCeiling, "claimcheck": loadClaimCheck, "recovery": loadRecovery,
+	"production":      func(t *testing.T, smoke bool) { loadProduction(t, smoke, false) },
+	"production-real": func(t *testing.T, smoke bool) { loadProduction(t, smoke, true) },
 }
 
 const (
@@ -117,25 +120,54 @@ func loadClaimCheck(t *testing.T, smoke bool) {
 }
 
 // loadProduction runs ingest's flush and ack_wait defaults at 1,600 records a second over K = 100, with max_ack_pending sized past the held records
-// and then dev's 50,000 as its control, each on a dev of its own, judged over completed drain cycles.
-func loadProduction(t *testing.T, smoke bool) {
-	spec := loadSpec{flush: 5 * time.Minute, ackWait: 7 * time.Minute, probed: true}
-	k, rate, budgets := 100, 800.0, []int{600_000, 50_000}
+// and then dev's 50,000 as its control, each on a dev of its own, judged over completed drain cycles;
+// unless realTime, the times and budgets are scaled by 1/30 (T-61), the rate kept, so a flush holds a thirtieth of the records against a thirtieth of the budget.
+// It fails unless both are judged with their offered rate held, no drop and no failed pass, the first sustained and the control reaching its budget.
+func loadProduction(t *testing.T, smoke, realTime bool) {
+	spec := loadSpec{flush: 10 * time.Second, ackWait: 14 * time.Second, probed: true}
+	k, rate, budgets := 100, 800.0, []int{20_000, 1_667}
+	if realTime {
+		spec.flush, spec.ackWait, budgets = 5*time.Minute, 7*time.Minute, []int{600_000, 50_000}
+	}
 	if smoke {
 		spec.flush, spec.ackWait = 5*time.Second, 9*time.Second
 		k, rate, budgets = 2, 20, []int{2_000, 50}
 	}
 	dir := profileDir(t)
 	countSQL(t)
-	for _, budget := range budgets {
+	for i, budget := range budgets {
 		t.Run(fmt.Sprintf("max_ack_pending=%d", budget), func(t *testing.T) {
 			spec.maxAckPending = budget
 			h := newReportingHarness(t, spec)
-			h.log(fmt.Sprintf("production: flush %s, ack_wait %s, %.0f fwd/s over K = %d; profiles in %s", spec.flush, spec.ackWait, rate, k, dir))
+			h.log(fmt.Sprintf("production on %s: flush %s, ack_wait %s, %.0f fwd/s over K = %d; profiles in %s", h.engine, spec.flush, spec.ackWait, rate, k, dir))
 			equipment := h.startEquipment(k)
 			defer h.stopEquipment(equipment)
-			h.cycles(equipment, rate, dir)
+			v, failed, ackPending := h.cycles(equipment, rate, dir)
+			if why := productionVerdict(v, failed, ackPending, budget, i == len(budgets)-1); why != "" {
+				t.Error(why)
+			}
 		})
+	}
+}
+
+// productionVerdict names why a production case fails, empty when it passes: it must be judged with its offered rate held, no drop and no failed pass;
+// the control must then reach its budget, the main case be sustained.
+func productionVerdict(v cycleVerdict, failed int, ackPending uint64, budget int, control bool) string {
+	switch {
+	case !v.judged:
+		return "not judged: " + v.why
+	case math.Abs(v.made-v.offered) > 0.02*v.offered:
+		return fmt.Sprintf("made %.1f/s against %.1f/s offered", v.made, v.offered)
+	case v.dropped > 0:
+		return fmt.Sprintf("%d records dropped", v.dropped)
+	case failed > 0:
+		return fmt.Sprintf("%d flush passes failed", failed)
+	case control && ackPending < uint64(budget): //nolint:gosec // a positive budget
+		return fmt.Sprintf("the control's ack pending reached %d, never its budget %d", ackPending, budget)
+	case !control && !v.sustained:
+		return "not sustained: " + v.why
+	default:
+		return ""
 	}
 }
 
@@ -590,10 +622,13 @@ func (h *loadHarness) spanRows(from, to loadMark, samples []loadSample) {
 	for _, s := range samples {
 		ackPending, redelivered = max(ackPending, s.ackPending), max(redelivered, s.redelivered)
 	}
-	per := func(n uint64) float64 { return float64(n) / msgs }
+	per := func(n uint64) string { return fmt.Sprintf("%.3f", float64(n)/msgs) }
+	if h.engine != catalog.EngineSQLite {
+		per = func(uint64) string { return "unavailable" } // the counts are a SQLite authorizer's
+	}
 	h.log("", "| messages | SQL reads/msg | SQL writes/msg | SQL BEGIN/COMMIT/msg | max ack pending | max redelivered pending | redeliveries | in-progress acks | process CPU cores |",
 		"|---|---|---|---|---|---|---|---|---|",
-		fmt.Sprintf("| %.0f | %.3f | %.3f | %.3f | %d | %d | %.0f | %.0f | %.2f |", msgs,
+		fmt.Sprintf("| %.0f | %s | %s | %s | %d | %d | %.0f | %.0f | %.2f |", msgs,
 			per(to.reads-from.reads), per(to.writes-from.writes), per(to.trans-from.trans), ackPending, redelivered,
 			to.redelivered-from.redelivered, to.inProgress-from.inProgress, (to.cpu-from.cpu).Seconds()/to.at.Sub(from.at).Seconds()))
 	st := stageDelta(from, to)
@@ -622,7 +657,8 @@ func stageDelta(from, to loadMark) map[string]stageTotal {
 // cycles runs rate through equipment at ingest's own flush and ack_wait: a warm-up of a flush plus ack_wait,
 // then samples every second until at least leastCycles completed drain cycles span at least three heartbeat periods,
 // or a pass fails, or the span reaches leastCycles+2 flushes plus ack_waits; it judges them and reports the run's counts.
-func (h *loadHarness) cycles(equipment []*loadEquipment, rate float64, dir string) {
+// It returns the verdict, the flush passes that failed and the most messages the consumer held unacknowledged.
+func (h *loadHarness) cycles(equipment []*loadEquipment, rate float64, dir string) (cycleVerdict, int, uint64) {
 	ctx := h.t.Context()
 	c := h.d.Env.Config.Ingest
 	origin := h.sample(equipment)
@@ -682,5 +718,41 @@ func (h *loadHarness) cycles(equipment []*loadEquipment, rate float64, dir strin
 			percentile(ages, 0.99).Round(time.Millisecond), percentile(ages, 1).Round(time.Millisecond)))
 	if prof.cpu != nil {
 		h.log("", "the bus server's CPU: go tool pprof -top -focus 'nats-server/v2/server' "+filepath.Join(dir, prof.name+"-cpu.pprof"))
+	}
+	var ackPending uint64
+	for _, s := range samples {
+		ackPending = max(ackPending, s.ackPending)
+	}
+
+	return v, failed, ackPending
+}
+
+// A production case passes only judged, at its offered rate, without a drop or a failed pass,
+// the main case sustained and the control at its budget: a control at its budget passes nothing else.
+func TestProductionVerdict(t *testing.T) {
+	t.Parallel()
+	ok := cycleVerdict{offered: 800, made: 800, judged: true, sustained: true}
+	short, dropped, unjudged, unsustained := ok, ok, ok, ok
+	short.made, dropped.dropped, unjudged.judged, unsustained.sustained = 700, 3, false, false
+	for _, tt := range []struct {
+		name       string
+		v          cycleVerdict
+		failed     int
+		ackPending uint64
+		control    bool
+		pass       bool
+	}{
+		{"main sustained", ok, 0, 10, false, true},
+		{"main not sustained", unsustained, 0, 10, false, false},
+		{"control at its budget", unsustained, 0, 100, true, true},
+		{"control below its budget", ok, 0, 99, true, false},
+		{"control at its budget, rate short", short, 0, 100, true, false},
+		{"control at its budget, a drop", dropped, 0, 100, true, false},
+		{"control at its budget, a failed pass", ok, 1, 100, true, false},
+		{"control at its budget, not judged", unjudged, 0, 100, true, false},
+	} {
+		if why := productionVerdict(tt.v, tt.failed, tt.ackPending, 100, tt.control); (why == "") != tt.pass {
+			t.Errorf("%s: verdict %q, want pass %v", tt.name, why, tt.pass)
+		}
 	}
 }

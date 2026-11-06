@@ -51,6 +51,8 @@ type DevOptions struct {
 
 	// bound, a test seam, is told the addresses the API and the IdP listen at once both are bound; nil in production.
 	bound func(api, idp string)
+	// catalog, a test seam, replaces dev's SQLite catalog, as the load harness runs dev on MariaDB; nil in production.
+	catalog *config.Catalog
 }
 
 // Dev is tracekeep dev: an embedded bus, a SQLite catalog and an fs store under one directory,
@@ -89,6 +91,9 @@ func NewDev(ctx context.Context, o DevOptions) (*Dev, error) {
 	}
 	if err := d.devAPI(cfg); err != nil {
 		return nil, errors.Join(err, d.Close())
+	}
+	if o.catalog != nil {
+		cfg.Catalog = *o.catalog
 	}
 	if err := MigrateCatalog(ctx, &cfg.Catalog); err != nil {
 		return nil, errors.Join(err, d.Close())
