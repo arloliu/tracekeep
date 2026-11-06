@@ -885,3 +885,28 @@ the bootstrap interval may widen, so more rows may land in "measure again", whic
 Considered and not taken: running `-race` only on some packages or jobs, though it is most of the tests' CPU (68 s wall and 15 min 44 s CPU against 14 s and 67 s for the service module);
 a pool of MariaDB databases reset between tests, whose isolation a trigger or a connection a test leaves behind breaks;
 cloning a MariaDB database for every test (0.8 s); keeping `-count 10`.
+
+### T-62 — the host log feed's performance and payload (2026-11-07)
+
+The owner settled, on 2026-11-07, how the host log feed bears its load, from measured payload costs and the forwarder's sink as its documentation and source state it (`logfeed.md` §15.10).
+**Measured**: entries generated from go-secs messages, sized to the sample's 570 B, encode in JSON at 1.31 times the log text, about 750 B an entry, and 880 B in the stream's accounting with its subject, message-id header and record;
+decoding takes 3 µs an entry and `sml.Parse` with the frame's build 4.6 µs a body, about 2% of one core at 2,000 pieces of equipment;
+a built frame is 282 B against 893 B of SML; S2 compresses the stream's blocks four times and one message 1.7 times.
+So the feed's limits are the catalog writer, the bus's message count and the held entries, not tracekeep's decoding.
+**The forwarder's sink** publishes one event a message, cannot batch or compress, retries every failed publish and holds one request in flight unless configured;
+its concurrency must be raised to reach the fleet's 3,200 entries a second, which reorders a file's entries by its retries.
+**Decided**:
+the reorder window defaults to 30 s, and the pipeline's in-flight time, retries included, is bounded below it, an entry arriving later being counted late (`TracekeepLogEntriesLate`);
+the lease groups are the stream's partitions, a subject transform `{{partition(G,1)}}` mapping `tklog.<equipment token>` to `tklog.<n>.<equipment token>` and group n's consumer filtering `tklog.<n>.>`, since tracekeep keeps no list of equipment, G changed only by `migrate` on a drained stream;
+the stream is compressed with S2, its `max_bytes` still counting logical bytes;
+each message carries a message id, `<source>/<equipment token>/<file>/<offset>`, under a duplicate window longer than the pipeline's retry cap;
+the payload stays one JSON entry a message.
+Also carried into `logfeed.md` from the owner's 2026-11-06 answers:
+a host program's log and the gateway's capture of one device are two series, never chained or overlapping;
+the host program's leg to an FDC system is filed under the main device, sharing its capture where the log does not separate them, and its records claim no HSMS header;
+and the gateway's `Source` is an operator-set, required key of its own configuration, never its application id.
+A converted entry keeps only its acknowledgement handle, since its payload held for F would take about 800 MB more across the replicas.
+Considered and not taken: a 5 s window, which loses every entry a retry delays past it;
+one publish in flight per forwarder, which caps an instance near 1,000 entries a second;
+a consumer per replica dropping the groups it does not hold; a binary codec, about 20% fewer bytes for a descriptor file shipped with the pipeline.
+**P3 closed**: P3 (host log feed) applied as `logfeed.md` (§15) and the amendments to `ingest.md`, `catalog.md`, `compactor.md`, `storage.md`, `rollouts.md`, `api.md`, `operations.md`, `architecture.md` and `glossary.md`; last text at 4e385a1.

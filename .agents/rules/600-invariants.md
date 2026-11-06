@@ -59,7 +59,8 @@ Section numbers are those of the specs in `docs/specs/tracekeep/`, whose `README
 
 - **Lock order is capture row → `leases` row → `counters('membership')` row → `counters('scope_events')` row**, each step optional, and nothing else is locked,
   except by the export transactions, which touch no capture: the export job row, then its `export_objects` row, the compactor's cleanup taking the `leases` row first (`catalog.md` §7.2 *Export transactions*);
-  the `leases` row is taken only by a transaction the compactor commits under its lease, which every compactor transaction that changes domain state is;
+  the `leases` row is taken only by a transaction the compactor commits under its lease, which every compactor transaction that changes domain state is,
+  or by the log stage's transactions, whose order is capture rows in ascending `capture_id` → their lease group's `leases` row → `logfeed_files` rows in ascending key → the counters (`logfeed.md` §15.7);
   the `membership` row by admission and every membership change, renewals included.
   One unexported helper of the catalog runs the prologue, so every transaction that admits, parks, registers, deletes, tombstones or evicts a pack of a capture,
   merges a scope of it, publishes its close, or terminates, advances or acknowledges a parked version of it starts with the update of the capture's row by construction;

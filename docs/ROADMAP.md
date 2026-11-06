@@ -57,7 +57,8 @@ Milestones the owner set after seed v21 §12's (T-52).
 
 ## Active plans
 
-- [P3 — host log feed](specs/tracekeep/proposals/p3-host-log-feed.md), a proposal the owner accepted (T-60) on a new capture identity (T-59); its tracepack text is done in go-secs (G5-302), and the identity it rests on is done
+None.
+P3 (host log feed) is closed into `specs/tracekeep/logfeed.md` (T-62); its phase plan comes next.
 
 Phase 0 is done (#1, #3, #4, #7, #8).
 Phase 1 is done (#9, #11, #13, #14, #16, #17, #18, #19).

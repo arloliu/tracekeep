@@ -111,6 +111,8 @@ The refusal is counted apart from a failure, so it neither withholds the merge t
 
 ### 8.2 Close a capture left open
 
+A log capture is never closed here: its converter writes its stop (`logfeed.md` §15.6, T-60), and the trigger scan leaves out every capture whose `capture_method` is `log`.
+
 Trigger: a later capture of the same series (`equipment_id`, `recorder_instance_id`) has been registered for at least Q (a handover's orderly `stop` has had time to be flushed)
 **and** the capture itself has had no registration for Q;
 or no registration for an inactivity period I (default 2 hours).

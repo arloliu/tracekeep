@@ -84,6 +84,7 @@ so a message absent from the traffic stream at the first observation and from th
 parking first could read zero, miss a transfer, and read zero again;
 a close by inactivity I alone is **not** quiescent, nor is a successor capture,
 since the old producer may be partitioned and publish again ([STO §4] allows records after a close).
+A log capture (`logfeed.md` §15.8) is quiescent once its row is `stopped`, by its converter's stop or by `capture stop` written directly, since no producer publishes to it again; neither stream is observed for it (T-60).
 The processing configuration **records** the masker as well
 (`tracepack-redact/<major>` with the tracepack module version that produced it), beside the classifier, the policy and the keys,
 so which code masked a capture is never implicit;

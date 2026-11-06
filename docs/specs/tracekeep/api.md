@@ -42,8 +42,8 @@ gRPC for Go clients, JSON over HTTP for the browser, one definition.
 
 | Operation | Answers |
 |---|---|
-| `ListDevices(selector)` | per series: its device and its source, `equipment_endpoint`, `device_id`, how many captures are open, whether any captures overlap (§7.3 *Overlap*), the last record time, whether the window holds a gap |
-| `ListCaptures(selector)` | captures with state, device, source, `recorder_instance_id`, `previous_capture_id`, unregistered intervals and the `overlap` flag (§7.3), thinning parameters (each entry's stream, function and `source`, with `keep_every_n` and `keep_interval_ms` when its `source` parses as `producer.md` §4.6's convention, T-47), processing configuration ids |
+| `ListDevices(selector)` | per series: its device and its source, its captures' `capture_method`, `equipment_endpoint`, `device_id`, how many captures are open, whether any captures overlap (§7.3 *Overlap*), the last record time, whether the window holds a gap |
+| `ListCaptures(selector)` | captures with state, device, source, `capture_method`, `vantage` and `source_dialect` (a log capture's, `logfeed.md` §15.8), `recorder_instance_id`, `previous_capture_id`, unregistered intervals and the `overlap` flag (§7.3), thinning parameters (each entry's stream, function and `source`, with `keep_every_n` and `keep_interval_ms` when its `source` parses as `producer.md` §4.6's convention, T-47), processing configuration ids |
 | `ListPacks(selector)` | per hour and scope: state, revision, packs with their ranges, gaps with time intervals, deferred seqs, declared losses with their action ids, crash gaps, conflicts, unknown tail, `no-data` hours (§7.3) — LS-10 |
 | `ListScopeChanges(after seq, selector)` | `scope_events` (`created`, `settled`, `reopened`, `conflict`, `terminated`, `excluded`, `unmergeable`) after a cursor, paginated, with the epoch — LS-11; one global cursor, returning only the selected equipment's, devices' and sources' events |
 | `PackURL(pack_id)` | a download URL (expiry clamped to the object's deadline, or `pack-superseded`, *Downloads* below) so the VE reads packs with tracepack's own reader; this makes the VE service a privileged reader of packs that hold ciphertext in place (§13) |
@@ -85,6 +85,7 @@ a device is a unit of the equipment, the gateway's configured `eqp-hsms` device 
 - `equipment_id` is required; `devices` omitted means every device of the equipment, `sources` omitted every source;
   `capture_id` remains for an exact choice; devices, sources and the capture intersect.
 - Every result that names a capture names its device and its source, so two sources recording one device are told apart.
+  A host log feed's captures are read like any other, their source telling them apart; no `capture_method` is left out by default (T-60).
 - A window that spans several captures of a series is answered across all of them;
   results mark each capture boundary, gap and unknown tail where it falls,
   so a reader can tell "no traffic" from "data missing".
