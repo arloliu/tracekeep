@@ -100,7 +100,7 @@ jobs:
           echo "filesystem of the tests' temporary directory: $(stat -f -c %T "${TMPDIR:-/tmp}")"
           echo "filesystem of MariaDB's data: $(sudo stat -f -c %T "$(docker info -f '{{.DockerRootDir}}')")"
           echo "packages: $BENCH_PACKAGES; -bench $BENCH; MariaDB's rows only (TRACEKEEP_BENCH_ENGINES=mariadb)"
-          echo "-cpu $(nproc) -count 10 -benchtime $BENCHTIME, scale $TRACEKEEP_BENCH_SCALE"
+          echo "-cpu $(nproc) -count 5 -benchtime $BENCHTIME, scale $TRACEKEEP_BENCH_SCALE"
           if [ "${{ matrix.group }}" = registration ]; then
             echo "BenchmarkRegisterPack at 100x, its ranges cells at 1x"
           fi

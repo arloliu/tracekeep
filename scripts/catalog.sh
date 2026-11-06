@@ -7,7 +7,7 @@
 #                                    over one leg's packages or every leg's
 #   scripts/catalog.sh legs          print the legs as a JSON array, failing if two share a package or one has none
 #   scripts/catalog.sh bench <file>  run the catalog's benchmarks on MariaDB alone (TRACEKEEP_BENCH_ENGINES=mariadb),
-#                                    -count ${COUNT:-10} -benchtime ${BENCHTIME:-1s} -cpu ${CPU:-nproc},
+#                                    -count ${COUNT:-5} -benchtime ${BENCHTIME:-1s} -cpu ${CPU:-nproc},
 #                                    over ${BENCH_PACKAGES:-every package reaching the catalog} and -bench ${BENCH:-.},
 #                                    then registration at its fixed N when BENCH is . or names RegisterPack, into file without Go's cpu: line
 #   scripts/catalog.sh bench-smoke   run them once each, failing rather than skipping without MariaDB
@@ -118,8 +118,8 @@ bench)
 	# No race detector: it would measure itself. Go's cpu: line names the vendor's model, which a baseline never records.
 	run() {
 		local bench=$1 benchtime=$2
-		printf 'benchtime: %s\ncount: %s\ncpus: %s\nscale: %s\n' "$benchtime" "${COUNT:-10}" "$cpu" "${TRACEKEEP_BENCH_SCALE:-small}"
-		go test $packages -run '^$' -bench "$bench" -benchtime "$benchtime" -benchmem -cpu "$cpu" -count "${COUNT:-10}" -timeout 0 | sed '/^cpu:/d'
+		printf 'benchtime: %s\ncount: %s\ncpus: %s\nscale: %s\n' "$benchtime" "${COUNT:-5}" "$cpu" "${TRACEKEEP_BENCH_SCALE:-small}"
+		go test $packages -run '^$' -bench "$bench" -benchtime "$benchtime" -benchmem -cpu "$cpu" -count "${COUNT:-5}" -timeout 0 | sed '/^cpu:/d'
 	}
 	# BenchmarkRegisterPack skips unless -benchtime is Nx with N times a pack's ranges at most a tenth of the seeded ranges (its godoc):
 	# its one-range cells (evidence, parked, miss, hit) run at 100x, which every size's 1,000 or more seeded ranges allow,

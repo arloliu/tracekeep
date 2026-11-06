@@ -57,7 +57,6 @@ Milestones the owner set after seed v21 §12's (T-52).
 
 ## Active plans
 
-- [Test efficiency](plans/test-efficiency.md), the tests' and CI's time cut before P3 (T-61)
 - [P3 — host log feed](specs/tracekeep/proposals/p3-host-log-feed.md), a proposal the owner accepted (T-60) on a new capture identity (T-59); its tracepack text is done in go-secs (G5-302), and the identity it rests on is done
 
 Phase 0 is done (#1, #3, #4, #7, #8).
@@ -70,9 +69,14 @@ Phase 4 is done (#46, #48, #49, #52, #53, #55, #58); its closed plan's last text
 Phase 5 is done (#64, #67, #70, #74, #78, #82, #83); its closed plan's last text, with its measurements and the gate's evidence, is at 89a01d8.
 Like phase 2's, the commits its step tables and measurements name are the branches' before their rebase merge, each among the commits of the pull request its sub-phase names.
 The capture identity (T-59: equipment, source and device) is done (#91, #92, #93; `producer/v0.6.0`); its closed plan's last text is at ab976c3.
+The test efficiency (T-61) is done (#96, #97, #98 and the pull request that closed its plan); its closed plan's last text, with its measurements, is at 10803c8.
+CI's `ci` job went from 9–14 min to about 8.5 min and its `catalog` job from 10–14 min to about 4 min, its packages in four legs.
 
 ## Open items
 
+- `TestRecordListingLeaseLostBetweenTransactions`'s `sweep pages` failed once on MariaDB on a loaded disk, its second page deleted after the lease lapsed;
+  its barrier sees the lapse's statement in the process list, not that it waits for the lease row.
+  The cause is not proven (the test efficiency plan's last text, 10803c8).
 - The SDK sometimes marks a capture's first S1F3 ordering-uncertain, observed before its predecessor (`producer.md` §4.2);
   tracepack's lookup then does not match it, and the packaging browser test accepts that only with the gap shown.
   Why the first request is observed before the records allocated ahead of it is still open.
