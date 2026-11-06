@@ -49,6 +49,13 @@ SQLite's migration stays slow with its syncs off, and a copy of a migrated file 
 MariaDB's setup is fast on tmpfs.
 846 SQLite migrations at 620–667 ms are about 9 minutes of setup run one at a time, beside the module's 15 min 44 s of CPU under `-race`.
 
+After phase 1, on the same machine, under `-race`:
+
+| What | Before | After |
+|---|---|---|
+| the service module's `go test ./... -short -race` | 83 s wall, 19 min 38 s CPU | 29 s wall, 5 min 24 s CPU |
+| a full `make test-catalog` | about 11 min wall | 36 s wall: `internal/catalog` 31 s, `internal/compact` 28 s, `internal/ingest` 19 s, `internal/api` 18 s, `internal/service` 13 s, the rest 4 s or less |
+
 Two tests failed once each during a full MariaDB run and passed when run alone:
 `TestLeaseLostDuringACycle` (`internal/compact/run_test.go`) and `TestExportWorkerCountsTheLeaseFromItsClaim` (`internal/api/export_worker_test.go`).
 Their causes are not yet known.
@@ -66,15 +73,14 @@ Tests that test migrations or a historical schema (`migrations`' own, `internal/
 
 ### Work
 
-- **The SQLite template**: the first catalog a process asks for migrates a template file under a process-wide temporary directory, once;
+- **The SQLite template**: the first catalog a process asks for migrates a template file in a temporary directory, once;
   it is set to `journal_mode=DELETE` and closed, any error failing every catalog that asks for it, and no `-wal` or `-shm` file may remain.
-  Every catalog is then a byte copy of that one file into the test's own `t.TempDir()`, which `catalog.Open` opens in WAL mode as today.
-  The template is never opened again, so no test can change it.
-  Its directory outlives the process, since no package has a `TestMain` to remove it: a `shortcut:` comment says so.
+  The process keeps its bytes and removes the directory, so no test can change the template and nothing outlives the process.
+  Every catalog is then a copy of those bytes in the test's own `t.TempDir()`, which `catalog.Open` opens in WAL mode as today.
 - **The test MariaDB server**: `scripts/catalog.sh test` starts its container with the data directory on tmpfs;
   `bench` and `bench-smoke` keep the disk, whose durability a baseline records (T-54).
   Every MariaDB catalog stays a database created and migrated for its test alone, as today.
-- `300-testing.md` *Catalog* states what the tests rely on: a test's SQLite catalog is a copy of a template migrated once per process, never opened after it is published, its directory outliving the process;
+- `300-testing.md` *Catalog* states what the tests rely on: a test's SQLite catalog is a copy of a template migrated once per process and kept in memory;
   a test's MariaDB catalog is a database created and migrated for it alone, on a test server whose data is on tmpfs.
 
 ### Done when

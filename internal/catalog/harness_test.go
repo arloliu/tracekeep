@@ -15,6 +15,7 @@ import (
 
 	"github.com/arloliu/tracekeep/internal/benchscale"
 	"github.com/arloliu/tracekeep/migrations"
+	"github.com/arloliu/tracekeep/migrations/migrationstest"
 )
 
 // envMariaDB names a MariaDB DSN; make test-catalog starts a server and sets it, and without it the MariaDB runs skip.
@@ -50,7 +51,7 @@ func newCatalog(t testing.TB, engine string) *Catalog {
 	switch engine {
 	case EngineSQLite:
 		cfg.DSN = filepath.Join(t.TempDir(), "catalog.db")
-		migrate(t, "sqlite", SQLiteURI(cfg.DSN), engine)
+		migrationstest.SQLite(t, cfg.DSN)
 	case EngineMariaDB:
 		cfg.DSN = mariadbDatabase(t)
 	default:

@@ -21,11 +21,12 @@ container=
 cleanup() { [ -z "$container" ] || docker rm -f "$container" >/dev/null; }
 trap cleanup EXIT
 
-# start_mariadb starts a server with the databases dev (Atlas's scratch database) and catalog (the tests'), and sets port.
+# start_mariadb starts a server with the databases dev (Atlas's scratch database) and catalog (the tests'), and sets port;
+# its arguments go to docker run.
 start_mariadb() {
 	# Byte-exact strings, as on SQLite: the generated tables carry the server's default collation.
 	# Every test package runs at once, each test with catalogs of its own, beyond the default 151 connections.
-	container=$(docker run -d -p 127.0.0.1::3306 -e MARIADB_ROOT_PASSWORD=$PASSWORD -e MARIADB_DATABASE=dev "$MARIADB_IMAGE" \
+	container=$(docker run -d "$@" -p 127.0.0.1::3306 -e MARIADB_ROOT_PASSWORD=$PASSWORD -e MARIADB_DATABASE=dev "$MARIADB_IMAGE" \
 		--character-set-server=utf8mb4 --collation-server=utf8mb4_nopad_bin --max-connections=1000)
 	port=$(docker port "$container" 3306 | head -1 | cut -d: -f2)
 	for _ in $(seq 120); do
@@ -72,7 +73,9 @@ check)
 	done
 	;;
 test)
-	start_mariadb
+	# The data on tmpfs: a test's database is created, migrated and dropped in 63 ms there, 1.5 s on a disk's syncs (T-61).
+	# The benchmarks keep the disk, whose durability a baseline records.
+	start_mariadb --tmpfs /var/lib/mysql:rw
 	TRACEKEEP_MARIADB_DSN="root:$PASSWORD@tcp(127.0.0.1:$port)/catalog" GOWORK=off CGO_ENABLED=1 \
 		go test $PACKAGES -race -count=1 -timeout 30m ${GOTESTFLAGS:-}
 	;;

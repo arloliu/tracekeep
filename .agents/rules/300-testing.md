@@ -31,6 +31,9 @@
 
 Every catalog test runs on SQLite and on MariaDB:
 the two engines serialize differently, and the design's proofs cover both.
+A test's SQLite catalog is a copy of a template `migrations/migrationstest` migrates once per test process and keeps in memory;
+a test's MariaDB catalog is a database created and migrated for it alone, on a test server whose data is on tmpfs (`make test-catalog`).
+A test of migrations or of a historical schema migrates its own.
 
 ## Bus
 
