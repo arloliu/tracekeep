@@ -57,7 +57,7 @@ Such a message is therefore **parked**:
 body unchanged, the tracepack headers (`Tpk-*`) unchanged, **`Nats-Msg-Id` unchanged**
 (`<capture_id>.<seq>` is the logical identity `bus.CheckMessage` parses and the name a claim reference must equal;
 the parking stream has its own duplicate window,
-so the same id is legal there), on the **version's own subject** `<park prefix>.<tool token>.<capture_id>.<seq>.<version token>`
+so the same id is legal there), on the **version's own subject** `<park prefix>.<equipment token>.<capture_id>.<seq>.<version token>`
 (a **version** is what [STO §4] *Termination* and G5-269 define:
 `capture_id`, `seq`, the 44 record-header bytes **as the message's body carries them, before `bus.DeriveRecord`**, and one payload digest, the `Tpk-Payload-Digest` value of a claim-check record or the SHA-256 of an inline payload;
 the version token is the full lowercase hex, 64 characters, of SHA-256 over those 44 bytes followed by the 32 digest bytes,

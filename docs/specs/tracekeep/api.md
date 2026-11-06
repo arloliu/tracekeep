@@ -14,8 +14,8 @@ Contract changes go through proposals, which the subject [README.md](README.md) 
 
 - **Contract**: protobuf served by connect-go, gRPC for Go clients and JSON over HTTP for the browser, from one definition (§10.1).
 - **Operations**: `ListDevices`, `ListCaptures`, `ListPacks`, `ListScopeChanges`, `PackURL`, `QueryRecords`, `FindTransaction`, `StartExport` with `GetExport`, `ListExports` and `CancelExport`, `Restore`, `Digest`, admin (§10.1 table).
-- **Selector**: reads name (`tool_id`, devices, window), the device being the gateway's `eqp-hsms` device name;
-  omitting the devices selects every device of the tool (§10.1 *Selector*).
+- **Selector**: reads name (`equipment_id`, devices, sources, window), a device being a unit of the equipment and a source the deployment that recorded it;
+  omitting the devices or the sources selects all of them (§10.1 *Selector*).
 - **`PackURL`**: a download URL that expires before its object can be deleted, or `pack-superseded`; it makes the VE service a privileged reader of packs (T-5).
 - **Downloads**: a presigned URL where the store presigns, otherwise a URL on the API carrying a signed download token;
   either is issued only after the role check, expires before its object's deletion deadline minus a margin, and serves ranged reads (§10.1 *Downloads*).
@@ -26,7 +26,7 @@ Contract changes go through proposals, which the subject [README.md](README.md) 
 - **Services**: OAuth2 client credentials validated against the IdP's JWKS, or mTLS in the cluster;
   startup never blocks on the IdP (§10.2).
 - **Roles**: `pack-reader`, `scorer`, `viewer`, `exporter`, `restorer`, `admin`, granted separately (§10.2).
-- **Frontend**: `web/`, a Vite, React and TypeScript application built into the binary and served at `/`; the first pages are the tool and time browser, the record viewer and export;
+- **Frontend**: `web/`, a Vite, React and TypeScript application built into the binary and served at `/`; the first pages are the equipment and time browser, the record viewer and export;
   `tracekeep dev` runs a test IdP so people sign in under it too (§10.3).
 - **Records**: `QueryRecords` streams masked records with their SML, capture by capture and hour by hour, each capture with its completeness, unknown tail, withholding and unreadable parts,
   in batches capped in encoded bytes, up to a limit, resumable by a cursor;
@@ -42,10 +42,10 @@ gRPC for Go clients, JSON over HTTP for the browser, one definition.
 
 | Operation | Answers |
 |---|---|
-| `ListDevices(tool, from, to)` | per device: name, `equipment_endpoint`, `device_id`, how many captures are open, whether any captures overlap (§7.3 *Overlap*), the last record time, whether the window holds a gap |
-| `ListCaptures(selector)` | captures with state, device, `recorder_instance_id`, `previous_capture_id`, unregistered intervals and the `overlap` flag (§7.3), thinning parameters (each entry's stream, function and `source`, with `keep_every_n` and `keep_interval_ms` when its `source` parses as `producer.md` §4.6's convention, T-47), processing configuration ids |
+| `ListDevices(selector)` | per series: its device and its source, `equipment_endpoint`, `device_id`, how many captures are open, whether any captures overlap (§7.3 *Overlap*), the last record time, whether the window holds a gap |
+| `ListCaptures(selector)` | captures with state, device, source, `recorder_instance_id`, `previous_capture_id`, unregistered intervals and the `overlap` flag (§7.3), thinning parameters (each entry's stream, function and `source`, with `keep_every_n` and `keep_interval_ms` when its `source` parses as `producer.md` §4.6's convention, T-47), processing configuration ids |
 | `ListPacks(selector)` | per hour and scope: state, revision, packs with their ranges, gaps with time intervals, deferred seqs, declared losses with their action ids, crash gaps, conflicts, unknown tail, `no-data` hours (§7.3) — LS-10 |
-| `ListScopeChanges(after seq, selector)` | `scope_events` (`created`, `settled`, `reopened`, `conflict`, `terminated`, `excluded`, `unmergeable`) after a cursor, paginated, with the epoch — LS-11; one global cursor, returning only the selected tool's and devices' events |
+| `ListScopeChanges(after seq, selector)` | `scope_events` (`created`, `settled`, `reopened`, `conflict`, `terminated`, `excluded`, `unmergeable`) after a cursor, paginated, with the epoch — LS-11; one global cursor, returning only the selected equipment's, devices' and sources' events |
 | `PackURL(pack_id)` | a download URL (expiry clamped to the object's deadline, or `pack-superseded`, *Downloads* below) so the VE reads packs with tracepack's own reader; this makes the VE service a privileged reader of packs that hold ciphertext in place (§13) |
 | `QueryRecords(selector, predicates)` | streamed masked records with their SML, capture by capture and hour by hour, each capture opened with its completeness in the window and closed with its unknown tail, withheld captures and unreadable parts in the stream where they fall; the predicates below (*Records* below) |
 | `FindTransaction(capture, seq, hour)` | tracepack's lookup of the transaction of the record at (capture, seq) in hour, over the read set of each hour it reads: its outcome, its records with their roles and SML, and what it could not read (*Records* below) |
@@ -68,29 +68,31 @@ without such a token it refuses and says so.
 The typed admin operations of the table above wait for a later phase, with the admin page (T-48).
 
 **Selector.**
-A reader names the connection it wants by (`tool_id`, device),
-the device being the gateway's configured `eqp-hsms` device name (`producer.md` §4.5).
-`ListCaptures`, `ListPacks`, `QueryRecords`, `StartExport` and `ListScopeChanges` take one selector:
+A reader names the series it wants by `equipment_id`, devices and sources (`producer.md` §4.5):
+a device is a unit of the equipment, the gateway's configured `eqp-hsms` device name, and a source the deployment that recorded it.
+`ListDevices`, `ListCaptures`, `ListPacks`, `QueryRecords`, `StartExport` and `ListScopeChanges` take one selector:
 
 ```json
 {
-  "tool_id": "T1",
+  "equipment_id": "T1",
   "devices": ["eqp"],
+  "sources": ["gateway-a"],
   "from": "2026-10-25T08:00:00Z",
   "to": "2026-10-25T10:00:00Z"
 }
 ```
 
-- `tool_id` is required; `devices` omitted means every device of the tool;
-  `capture_id` remains for an exact choice.
-- A window that spans several captures of a device is answered across all of them;
+- `equipment_id` is required; `devices` omitted means every device of the equipment, `sources` omitted every source;
+  `capture_id` remains for an exact choice; devices, sources and the capture intersect.
+- Every result that names a capture names its device and its source, so two sources recording one device are told apart.
+- A window that spans several captures of a series is answered across all of them;
   results mark each capture boundary, gap and unknown tail where it falls,
   so a reader can tell "no traffic" from "data missing".
-  Overlapping captures of one device are returned side by side, each with its own completeness, never interleaved (§7.3 *Overlap*).
-- The selector is refused as invalid without a `tool_id`, with an empty or reversed window, or naming more than 1,000 devices;
+  Overlapping captures of one series are returned side by side, each with its own completeness, never interleaved (§7.3 *Overlap*).
+- The selector is refused as invalid without an `equipment_id`, with an empty or reversed window, or naming more than 1,000 devices or more than 1,000 sources;
   `ListPacks` also refuses a window of more than 8,784 hours, a leap year (§7.3).
-- `ListScopeChanges` filters its events by the tool, the devices and the capture, not by the window:
-  a cursor follows every change of the selected connections, whatever hour it lands in.
+- `ListScopeChanges` filters its events by the equipment, the devices, the sources and the capture, not by the window:
+  a cursor follows every change of the selected series, whatever hour it lands in.
 
 **Wire.**
 The service is `tracekeep.v1.MachineService` in `proto/tracekeep/v1`, its messages the catalog's read results field for field (§7.3):
@@ -144,7 +146,7 @@ so a writer held by ingest delays the answer by at most that; past it the reques
 
 ```json
 {
-  "selector": { "tool_id": "T1", "capture_id": "0192f7a4-5c1e-7d3a-9b2e-4f6a8c0d1e2f", "from": "...", "to": "..." },
+  "selector": { "equipment_id": "T1", "capture_id": "0192f7a4-5c1e-7d3a-9b2e-4f6a8c0d1e2f", "from": "...", "to": "..." },
   "messages": ["S6F11", "S5F1", "S2F*"],
   "direction": "to_host",
   "kinds": ["data"],
@@ -159,7 +161,7 @@ so a writer held by ingest delays the answer by at most that; past it the reques
 - `messages` takes `SxFy`, with `*` for any function, instead of separate stream and function fields;
   a stream or function above 255, or any other form, is refused as invalid.
 - `direction` is `to_host` (sent by the equipment) or `to_equipment`,
-  named for the tool's side the records are observed on (`producer.md` §4.1).
+  named for the equipment's side the records are observed on (`producer.md` §4.1).
 - `kinds` selects among data, control, transport-event and annotation records ([FMT] record header `kind`);
   transport events are excluded unless asked for, by `include_transport_events` or by naming the kind.
 - `seq_from` and `seq_to`, inclusive, require the selector's `capture_id`, since seqs are a capture's, and select producer seqs, so the close record is outside any range;
@@ -224,7 +226,7 @@ a decode that failed or was cancelled is never remembered, and nothing is rememb
   The limit stops the stream only between seqs, so the versions of its last seq may take it past the limit.
   A stream that stops without `end` was cut short:
   an error after partial output ends it with its code, and the client continues from the last cursor it received.
-- **The cursor** names the selector's and predicates' digest, the capture, and either its start or the hour and the last seq streamed, all its versions included;
+- **The cursor** names the digest of the selector, its sources included, and of the predicates, the capture, and either its start or the hour and the last seq streamed, all its versions included;
   it resumes after that seq, or at the capture's start, its markers again, so a merge, which keeps every seq, never moves it.
   On resumption a registration of a later hour, or above the cursor's seq in its hour, is read;
   one at or below it, a new version of the cursor's own seq included, is not, and a client re-queries for it.
@@ -285,7 +287,7 @@ only the owner reads, lists or cancels a job, and another's answers `not_found`.
   The bounds hold over what is read: the packs and object bytes the attempt actually exports, an hour read again included, are counted, and passing `exports.max_packs` or `exports.max_bytes` fails the job;
   so does a work directory past `exports.max_bundle_bytes` (default 32 GiB), the JSONL being larger than its packs.
   `manifest.json` comes last: the kind, `canonical`; the job and the selector; `bundle_built_at`, the time it was written;
-  each capture with its completeness in the window as `QueryRecords` opens a capture, read when the bundle reached the capture, its conflicts (`suspect`, `confirmed`, `acknowledged`) included whichever hour holds the other version;
+  each capture with its device, its source and its completeness in the window as `QueryRecords` opens a capture, read when the bundle reached the capture, its conflicts (`suspect`, `confirmed`, `acknowledged`) included whichever hour holds the other version;
   each capture's hours the bundle holds, and those it does not, evicted or left out;
   the withheld captures; each pack with its capture, hour, role, state, `format_minor`, schema, file and its read's incompleteness (tracepack's defects and footer errors); and the packs left out, with their reason.
   The packs are exported whole, so a pack's file holds records outside the window, which the manifest says.
@@ -334,7 +336,7 @@ only the owner reads, lists or cancels a job, and another's answers `not_found`.
 | retention shortened after completion | the fixed deadline | the cleanup at that deadline | the bundle until its deadline |
 | a replica restarting | its attempts' leases | their expiry; the replica's workers remove its stale work directories | `running`, then the next attempt's state |
 
-The VE service's configuration names (`tool_id`, device) pairs;
+The VE service's configuration names (`equipment_id`, device) pairs, and sources where several record one device;
 it lists packs, follows scope changes and fetches `PackURL`s through the selector,
 and needs no knowledge of capture ids beyond what `ListPacks` returns.
 
@@ -569,9 +571,9 @@ an export's bundle is the one download they offer.
 **Pages.**
 Every page keeps its state in its URL's search parameters, so a link names what it shows,
 and shows times in the browser's zone with their offset, or in UTC by a switch the browser remembers; it sends them as timestamps.
-- **Browser** (`/`): a tool id, typed (the tools recently opened are remembered by the browser; no operation lists tools), and a window, by preset (last hour, 6 h, 24 h, 7 days) or from and to.
-  `ListDevices` lists the tool's devices with their open captures, overlap, last record and gap;
-  selecting devices lists their captures (`ListCaptures`: state, origin, last record, overlap, thinning, unregistered intervals)
+- **Browser** (`/`): an equipment ID, typed (the equipment IDs recently opened are remembered by the browser; no operation lists them), and a window, by preset (last hour, 6 h, 24 h, 7 days) or from and to.
+  `ListDevices` lists the equipment's series, one row per (device, source), with their open captures, overlap, last record and gap;
+  devices and sources are filtered independently, as the selector's lists are, and selecting them lists their captures (`ListCaptures`: state, origin, last record, overlap, thinning, unregistered intervals)
   and each capture's completeness hour by hour (`ListPacks`: retained, evicted, deferred, gaps, declared losses, crash gaps, conflicts, the unknown tail, hours with no data).
   A capture opens its records in the window, and an hour its records in that hour.
 - **Records** (`/records`): the selector, the window and `QueryRecords`' predicates (messages, direction, kinds, transport events, a capture's seq range) as a filter bar.

@@ -36,7 +36,7 @@ A capture binds, at registration, one immutable **processing configuration**:
 `classifier` = implementation name and version (the go-secs classifier the binary links) and every setting
 that changes its result, `max_frame_len` included (G5-250);
 `policy` = id, version and content hash; `digest_key_id` and `enc_key_id` with their material fingerprints (§9);
-and the **format features** the capture needs (`format_minor` 1 for masking or thinning, 2 for a descriptor carrying `recorder_instance_name`, G5-270).
+and the **format features** the capture needs (`format_minor` 1 for masking or thinning, 2 for a descriptor carrying `recorder_instance_name` or `device`, G5-270, G5-304).
 A consumer advertises the configurations it can execute at start;
 a record of a capture bound to one it cannot execute is deferred (§6.1), never processed with a fallback.
 
@@ -74,7 +74,7 @@ and a partitioned old leader drops its `stop` if the bus is unreachable when it 
 A configuration is therefore **retired** only when every capture bound to it is **producer-quiescent** by one of two tests:
 `stop_seen` (set only by a genuine `stop` boundary), or no registration for the **retirement inactivity bound** L (default 7 days) and **neither stream holding a message of the capture**, observed **in this order**:
 first the traffic stream on the capture's traffic subject, then the parking stream on the capture's parking subjects
-(the filter `<park prefix>.<tool token>.<capture_id>.>`, §6.1, every per-subject count summed),
+(the filter `<park prefix>.<equipment token>.<capture_id>.>`, §6.1, every per-subject count summed),
 each by a fresh `StreamInfo` (`Info`, never `CachedInfo`) filtered to that subject and read from `StreamState.Subjects`;
 a failed observation is not emptiness.
 Traffic first closes the only transfer there is:
@@ -140,7 +140,7 @@ so the current binary runs against the current schema with the current keys and 
 The admin command of §10.4 lists the captures and members that hold a configuration active.
 The `stop_seen` test also requires both streams drained, by the same ordered observation,
 so earlier records another consumer has not staged yet are not left behind.
-A tool connection can hold one capture for months, so retiring a configuration may require **rotating the gateway's captures**;
+A device's connection can hold one capture for months, so retiring a configuration may require **rotating the gateway's captures**;
 a descriptor HotReload is the lever (§4.2), and `ListCaptures` names the captures that block a retirement.
 Deferred messages reach a compatible consumer by redelivery:
 the work-queue stream redelivers a naked message to any pull consumer,

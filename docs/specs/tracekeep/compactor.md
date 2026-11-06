@@ -111,7 +111,7 @@ The refusal is counted apart from a failure, so it neither withholds the merge t
 
 ### 8.2 Close a capture left open
 
-Trigger: a later capture of the same (`tool_id`, `recorder_instance_id`) has been registered for at least Q (a handover's orderly `stop` has had time to be flushed)
+Trigger: a later capture of the same series (`equipment_id`, `recorder_instance_id`) has been registered for at least Q (a handover's orderly `stop` has had time to be flushed)
 **and** the capture itself has had no registration for Q;
 or no registration for an inactivity period I (default 2 hours).
 `previous_capture_id` is absent after a gateway restart (§4.2), so adjacency, not that field, is the trigger.

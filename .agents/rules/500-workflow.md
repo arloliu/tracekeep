@@ -38,7 +38,7 @@ See `550-git-conventions.md` for branch, commit-message, and pull-request conven
 ## Review checklist
 
 - [ ] Correctness
-- [ ] No sensitive data: names, tool IDs, paths, real traffic
+- [ ] No sensitive data: names, equipment IDs, paths, real traffic
 - [ ] Tests use synthetic data and fail when the behaviour they guard changes
 - [ ] The rules of `600-invariants.md` still hold
 - [ ] Docs updated under `450-doc-lifecycle.md`; Status lines and subject READMEs in step

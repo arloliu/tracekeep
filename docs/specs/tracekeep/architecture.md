@@ -17,7 +17,7 @@ A second module, the producer SDK, is published for producers (§4.7).
 | Role | Does | Scaling |
 |---|---|---|
 | `ingest` | pull consumer of the traffic stream; registers descriptors; batches records per (capture, UTC hour); masks; writes segments; registers packs; acks per message | stateless, N replicas; the work-queue stream balances them |
-| `compact` | merges scopes; closes captures left open; deletes merged segments after a delay; applies retention, claim objects included; reconciles `staging/` and `archive/` against the catalog | one active instance under a catalog lease with a fence token (§8); shard by tool later if needed |
+| `compact` | merges scopes; closes captures left open; deletes merged segments after a delay; applies retention, claim objects included; reconciles `staging/` and `archive/` against the catalog | one active instance under a catalog lease with a fence token (§8); shard by equipment later if needed |
 | `api` | machine API for the VE service, human API and embedded web UI, exports, restore, admin | stateless, N replicas |
 | `migrate` | applies the catalog's versioned migrations; ensures the traffic stream and claim bucket, the bucket's stream with `AllowDirect` off (T-28) | once per release |
 
@@ -58,7 +58,7 @@ tracekeep api                                                        §10
 - **Traffic cluster connections**: every producer holds one dedicated connection (`producer-sdk.md` §4.7),
   and a gateway runs one producer per recorded `eqp-hsms` device process,
   so the cluster serves up to the devices per gateway (fourteen in eqp-hub's `examples/tfdc_common_parallel.yaml`) times the gateways, plus tracekeep's own consumers;
-  the cluster's connection limits and file descriptors are sized for that count, not for the number of tools.
+  the cluster's connection limits and file descriptors are sized for that count, not for the number of pieces of equipment.
 
 **The image** (T-48 point 11, T-50).
 `deploy/image/Dockerfile` builds the one binary as `make build` does, the frontend embedded (`api.md` §10.3),
@@ -142,10 +142,10 @@ on a push to `main`, on a daily schedule and when dispatched, never on a pull re
   The simulator (`cmd/tracekeep-sim`) is the producer, started only after a masking configuration is staged and active with no ingest member running,
   so every ingest member starts executing it and the simulator's first capture is admitted (`docs/guides/production-admission.md`);
   Every tenth request the simulator sends is an S7F3 whose process program body the baseline policy masks (`-process-program`).
-  The leg checks that `tracekeep status` lists the tool's open capture and no deferred message, has the browser look a transaction up while the simulator still sends,
+  The leg checks that `tracekeep status` lists the equipment's open capture and no deferred message, has the browser look a transaction up while the simulator still sends,
   then stops the simulator and lets its last records flush before the browser's session.
-  Playwright (`web/e2e/`) then signs in, browses the simulator's tool and an hour's scope, reads its records to a complete end, a record's SML and one transaction matched with its roles,
-  finds the process program on no page, and runs an export to its `/download/` URL, whose manifest it reads (the tool, device and window, each hour's packs, none left out)
+  Playwright (`web/e2e/`) then signs in, browses the simulator's equipment and an hour's scope, reads its records to a complete end, a record's SML and one transaction matched with its roles,
+  finds the process program on no page, and runs an export to its `/download/` URL, whose manifest it reads (the equipment, device, source and window, each hour's packs, none left out)
   and in whose manifest and JSONL it finds no process program, as it is or in base64;
   a person the mock connector signs in without a mapped group is denied by the page and by the API.
   The leg then stops Dex and starts it again, each bounded: down, a signed-in page keeps reading with its session,
@@ -159,9 +159,10 @@ on a push to `main`, on a daily schedule and when dispatched, never on a pull re
   the Service selects the first replica for the login; with the callback request held, the first is deleted and the Service selects the second,
   whose log then records the sign-in.
   It runs a fresh install of the commit under test; then an upgrade from a baseline:
-  the newest strict ancestor of the commit under test, on `main`, that has `deploy/helm/` and whose packaging run passed, never the commit itself or a descendant,
+  the newest strict ancestor of the commit under test, on `main`, that has `deploy/helm/`, holds the identity reset's migration (`migrations/*/*_equipment_identity.sql`, `catalog.md` §7.4)
+  and whose packaging run passed, never the commit itself or a descendant,
   its chart and image installed fresh and upgraded to the commit under test, the browser run again on its data;
-  while no such commit exists, as for the first run after this phase merges, the upgrade step is skipped and the job says so, never replaced by a same-version upgrade.
+  while no such commit exists, as for the first run after this phase merges and after the identity reset, the upgrade step is skipped and the job says so, never replaced by a same-version upgrade.
   The job records both commits.
 - **Standalone** (`standalone.sh`, CI only): it refuses to run unless `GITHUB_ACTIONS` is `true` and `RUNNER_ENVIRONMENT` is `github-hosted`,
   and refuses a host that has any of the `tracekeep` user, the unit, `/etc/tracekeep`, `/var/lib/tracekeep` or `/usr/local/bin/tracekeep`,
@@ -176,5 +177,9 @@ on a push to `main`, on a daily schedule and when dispatched, never on a pull re
 Phase 0 records **HSMS-SS connections only**:
 go-secs's wire and socket observers report HSMS-SS,
 and `eqp-hsms` wraps SECS-I into an HSMS connection whose wire the observers do not see.
-A SECS-I tool gets no capture and the producer logs that once at `Start`;
-the SECS-I path is designed when a SECS-I tool needs one.
+A SECS-I piece of equipment gets no capture and the producer logs that once at `Start`;
+the SECS-I path is designed when SECS-I equipment needs one.
+The service accepts the descriptor of a raw-stream capture of an HSMS-SS connection that names its series (T-59):
+a `device` and a `recorder_instance_name` (the source), each valid UTF-8 of 1 to 255 bytes and not whitespace only,
+and a `recorder_instance_id` that is their derivation with `equipment_id` (`producer.md` §4.5);
+any other descriptor is not accepted (`ingest.md` §6.1).

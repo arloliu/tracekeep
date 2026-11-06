@@ -14,16 +14,16 @@ and serves it back for VE learning and for troubleshooting.
 
 ## 1. Positioning (requirement 6)
 
-- **Collects** every record the gateway publishes, one capture per tool connection and gateway leadership term (G5-200).
+- **Collects** every record the gateway publishes, one capture per series, a device's connection as one source records it, and gateway leadership term (G5-200, T-59).
 - **Keeps** them as tracepack segments and hourly archives under [STO §3] keys, one month by default (G5-200), masked at write under a policy (G5-207).
 - **Serves** two readers:
-  the VE generation service, which reads the packs of a tool and a time window with their completeness (LS-10, LS-11),
-  and people troubleshooting a tool,
+  the VE generation service, which reads the packs of an equipment and a time window with their completeness (LS-10, LS-11),
+  and people troubleshooting equipment,
   who query, filter and export records and, with privilege, restore an encrypted original.
 - **Provides** the producer side as a Go module,
   so eqp-hub and any later producer publish correctly without reimplementing the bus (§4.7).
-- **Is not** on any tool's critical path:
-  a dead tracekeep or a dead traffic bus costs records, never a tool's conversation (LS-14, §4).
+- **Is not** on any equipment's critical path:
+  a dead tracekeep or a dead traffic bus costs records, never the equipment's conversation (LS-14, §4).
 - **Is designed to four operational goals**, checked in every section:
   *producer-friendly* (one SDK, a short list of guarantees the producer keeps, a preflight that says what is wrong before traffic flows, §4.7);
   *operation-friendly* (one binary, named incidents each with a runbook and an admin command, few tunables in one table, §10.4);
@@ -45,7 +45,7 @@ and serves it back for VE learning and for troubleshooting.
 | Thinning: only polls the gateway positively identifies as FDC interval polling, by a means other than stream and function; everything else in full | V-27, G5-208, G5-224, G5-225 | store as received; a merge refuses an unobserved record the descriptor does not declare |
 | Scope = UTC hour; segments interleave; merge per scope; deletion only after a verified merge whose output is retained; conflicting copies of one seq are reported, never resolved by a writer | [STO §4] *Scope and order*, *Merge*, *Deletion*, [FMT I-12] | catalog records every merge with its inputs; deletion reads that relation; conflicts are kept, both versions |
 | Closing a capture left open: one `stop-unclean` at seq 2^63 − 1, recorded before written, byte-identical on retry; seqs after the last producer record stay an unknown tail | [STO §4] *Closing a capture left open*, `tracepack.WriteClose` | durable close intent with every byte-affecting input fixed |
-| Catalog is the service's database; tracepack defines no view | G5-201, [STO §5] | catalog answers "packs of a tool and window" and completeness |
+| Catalog is the service's database; tracepack defines no view | G5-201, [STO §5] | catalog answers "packs of an equipment and window" and completeness |
 | Export schema follows the pack's `format_minor`: `tracepack-jsonl/1` for 0, `/2` for 1, `/3` for 2; the canonical exporter takes one pack; extracts are a v1.0 non-goal | G5-233, G5-270, G5-198, tracepack-go.md §3 | pack-granular export bundles (§10.1) |
 | Traffic bus is a separate NATS cluster | V-30 | tracekeep never touches the gateway's own bus |
 | The standalone recorder's spool is gone; a bus consumer writes with `tracepack.Writer` directly | G5-227, tracepack-go.md §3 *Masking preparation* | §5.1 |
@@ -53,6 +53,6 @@ and serves it back for VE learning and for troubleshooting.
 
 ## 14. Rows of `ve-log-service.md` this design settles once agreed
 
-LS-2 (the tool's side, one header), LS-3 (§4.4), LS-4 and LS-5 (observers see every frame and socket, rejected and self-originated included),
+LS-2 (the equipment's side, one header), LS-3 (§4.4), LS-4 and LS-5 (observers see every frame and socket, rejected and self-originated included),
 LS-6 (§4.5), LS-7 (the rule of §4.6, pending the interval-only request origin, T-42), LS-10 and LS-11 (§7.3, §10.1), LS-14 (§4.3), LS-15 as qualified in §13 item 2, LS-13 as (b), no holds (T-4).
 Still open there: LS-8's fields beyond recipe bodies.

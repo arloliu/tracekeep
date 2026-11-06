@@ -10,7 +10,7 @@
 
 - Test data is synthetic.
   The only recorded input a test may use is a masked or synthetic tracepack pack;
-  never copy real traffic, tool IDs, variable IDs or vendor values from `data/` into a test, fixture or golden file.
+  never copy real traffic, equipment IDs, variable IDs or vendor values from `data/` into a test, fixture or golden file.
 - No emojis in test output.
 - `t.Context()` for contexts, `t.Setenv()` for env.
 - `for b.Loop()` for benchmarks.

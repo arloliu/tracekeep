@@ -15,7 +15,7 @@ Contract changes go through proposals, which the subject [README.md](README.md) 
 - **Policy**: a `redact.Policy`, versioned with a content hash, compiled once and bound to each capture;
   the default is every row of the baseline table of [SEM §8];
   identifiers stay in clear (§9).
-- **Production admission**: a tool type is admitted only after its recipe carriers are checked against the policy (§9; T-6).
+- **Production admission**: an equipment type is admitted only after its recipe carriers are checked against the policy (§9; T-6).
 - **`redact.Keys` over a `KeyProvider`**: `DigestKey(keyID)` is one key across captures, rotated by declaration;
   `EncryptionKey(capture, keyID)` is derived by the HKDF recipe of §9, so nothing per capture is stored.
 - **Bindings**: before a consumer derives or writes with a key it resolves the material and runs an insert-or-compare of its fingerprint;
@@ -47,11 +47,11 @@ Contract changes go through proposals, which the subject [README.md](README.md) 
   The **default policy is every row of the baseline table of [SEM §8]** (process-program bodies in S7, data sets in S13, recipes in S15 and S16, S6F25, and the rest of that table), with the paths and domains it gives;
   the table is the normative list and is not repeated here;
   identifiers stay in clear (G5-207).
-  A tool type is **admitted to production** only after its manual's recipe carriers are checked against the policy;
+  An equipment type is **admitted to production** only after its manual's recipe carriers are checked against the policy;
   `Mask` leaves an unlisted message unchanged, so the list is the protection.
   Fields beyond recipe bodies are the owner's (LS-8).
 - `redact.Keys` is implemented over a `KeyProvider`:
-  - `DigestKey(keyID)`: one digest key across captures, tools and message types (G5-220, V-26).
+  - `DigestKey(keyID)`: one digest key across captures, equipment and message types (G5-220, V-26).
     Rotation is rare and by declaration:
     a new `digest_key_id` applies to new captures, every pack names its digest domain, the old key stays available,
     and digests of two domains are never compared.

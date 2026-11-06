@@ -9,7 +9,7 @@ Section numbers are those of the specs in `docs/specs/tracekeep/`, whose `README
 
 - **The producer's six guarantees** are the whole of what an integrator owes; everything else is the SDK's:
   the bus address, credentials and TLS in `Config` (or a connection through `WithConn`);
-  every descriptor carrying the configured `toolID` and the configured device name;
+  `Config.Source` naming the deployment, and every descriptor carrying the configured equipment ID and the device of a unit's connection;
   `secsobs`'s connection options and lifecycle attachment installed on the device's connection before it opens;
   `End` called on an orderly stop and never allowed to fail the device;
   `Rotate` called on every descriptor change;
