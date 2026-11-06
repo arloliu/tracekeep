@@ -107,6 +107,8 @@ func seedCaptureInfos(tb testing.TB, c *Catalog, devices, n int) []CaptureInfo {
 	for i := range n {
 		id := newID(tb)
 		// Each device is recorded by two sources, so a listing groups series, not devices.
+		// Each capture keeps a recorder instance of its own: the catalog never checks the derivation, which admission does,
+		// and distinct instances spare the listings' oracles every overlap but the one varyListing makes.
 		s := spec{instance: newID(tb), device: fmt.Sprintf("eqp-%d", i%devices), source: fmt.Sprintf("gw-%d", i/devices%2), origin: 1 + int64(i), equipmentID: equipment}
 		rows[i] = []any{id[:], "open", descriptorBytes(tb, s), equipment, s.instance[:], s.device, s.source, s.origin, cfg, 1, 0}
 		infos[i] = CaptureInfo{ID: id, State: StateOpen, Device: s.device, Source: s.source, RecorderInstanceID: s.instance, OriginNS: s.origin, ConfigID: &cfg}
