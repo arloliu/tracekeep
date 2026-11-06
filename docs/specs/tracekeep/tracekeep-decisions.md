@@ -20,7 +20,7 @@ the log service holds the keys (G5-207); the digest key spans captures and rotat
 export schema by `format_minor` (G5-233); conflicts are kept, never resolved by a writer ([FMT I-12]); seq starts at 0.
 
 The tracepack rulings the specs cite, by number (go-secs `docs/specs/tracepack/tracepack-decisions.md`):
-G5-198, G5-200, G5-201, G5-207, G5-208, G5-211, G5-213, G5-214, G5-216, G5-217, G5-218, G5-220, G5-222, G5-224, G5-225, G5-227, G5-231, G5-233, G5-236, G5-250, G5-251, G5-252, G5-257, G5-258, G5-262, G5-267, G5-268, G5-269, G5-270.
+G5-198, G5-200, G5-201, G5-207, G5-208, G5-211, G5-213, G5-214, G5-216, G5-217, G5-218, G5-220, G5-222, G5-224, G5-225, G5-227, G5-231, G5-233, G5-236, G5-249, G5-250, G5-251, G5-252, G5-257, G5-258, G5-262, G5-267, G5-268, G5-269, G5-270, G5-302, G5-303, G5-304, G5-305.
 The VE decisions they cite are V-8, V-12, V-26, V-27, V-29 and V-30 (veq `docs/specs/ve/`).
 
 ## Owner decisions
@@ -253,7 +253,7 @@ Taken before any `go.mod` exists, so nothing is built against v0.7.1.
 
 Taken by the owner after the repository bootstrap began, each dated.
 
-### T-24 — device selection (2026-10-25)
+### T-24 — device selection (2026-10-25) (identity superseded by T-59)
 
 P2 (device selection) is accepted and applied; its last text is at commit 024516d.
 A reader selects traffic by (`tool_id`, device), the device being the gateway's configured `eqp-hsms` device name,
@@ -781,3 +781,88 @@ the traffic sustained over 50 flush cycles, `PackURL`'s p99 4.75 ms over 1,121 c
 **Why closed**: every condition T-57 set is false: the traffic kept up, the p99 stayed below 2 s, and the acknowledgement's share counts only in a drain longer than a compactor cycle (5 min), which this one was not.
 **What reopens it**: a drain at a larger backlog or on a slower bus that passes a compactor cycle with the acknowledgement a fifth of it, or traffic falling behind during one; the measurement is `TRACEKEEP_LOAD=recovery`.
 Considered and not taken: batching for the acknowledgement's share alone (a new protocol for confirmations stopped halfway and lost bookkeeping, which the thresholds admit only when a condition is true).
+
+### T-59 — equipment, source and device (2026-11-06)
+
+A capture's identity is rebuilt on three layers, superseding T-24's identity; T-24's selection by device stays.
+**The term**: `tool_id` becomes `equipment_id`, and "tool" becomes "equipment", in tracekeep's documents, code, wire, catalog and SDK, as in tracepack (G5-303);
+the gateway and the VE keep their own term and map it to `equipment_id` at the SDK's boundary.
+**Three layers**:
+`equipment_id` names the equipment and is the key of every read.
+A source is the deployment of a program or service that records traffic, a gateway's or a log feed's,
+named by the deployment and stable across restarts and leader changes, never a host or pod name.
+A device is a unit attached to the equipment: the main machine, a sensor, a load port.
+A link that is no unit, a host-facing shadow link or a peer such as an FDC system, belongs to the unit it serves.
+A source records one link per device, the traffic actually in and out of that device's HSMS link;
+the traffic of a parallel or shadow run is not recorded.
+**A series** is one source's recording of one device of one equipment (G5-305):
+`recorder_instance_id` is a UUIDv5 of (`equipment_id`, device, source) under the SDK's namespace,
+`recorder_instance_name` the source's name, and `device` the descriptor's own field (G5-304), which tracekeep requires on every capture.
+Chaining, unregistered intervals and overlap are per series, as before;
+two sources recording one device are two series, never an overlap.
+**Reads**: a selector names `equipment_id` and, optionally, devices and sources, with its window; every result names its source.
+**The gateway**: the SDK's `Config` requires `Source`, reversing T-24's `Config` that holds no identity;
+the equipment id and the device come from configuration as before.
+**No compatibility**: with no deployed producer and no data to keep, the change is breaking throughout:
+one catalog migration, producer v0.6.0, and tracepack v0.15.0 required, which rewrites its formats 1.0–1.2 in place (G5-303); nothing reads the old descriptor.
+It is delivered by its own plan, before the host log feed's phase.
+Considered and not taken: the device kept in `recorder_instance_name`, a field tracepack gives the deployment (G5-270);
+a `recorder_instance_id` naming the source alone, since chaining, unregistered intervals and overlap are per device;
+a connection layer below the device, since one link per device is recorded;
+sources of fixed kinds, which would not tell two deployments of one kind apart.
+
+### T-60 — the host log feed accepted (2026-11-06)
+
+P3 (host log feed) is accepted on T-59's identity, with the open points the owner settled on 2026-11-06.
+Its design goes into a new living spec, `logfeed.md`, and the specs it amends, in a later change; the proposal stays active until they carry it.
+The proposal's decisions 2, 3, 5–8 and 10 stand as it states them;
+1, 4 and 9 are superseded below, and so are its per-source configuration, its consumer settings and its capture key.
+The proposal's source, the host a file was tailed on, reads here as the equipment, and its connection as the device;
+a source is T-59's recording deployment, so decision 7's lease groups hash the equipment and decision 10's registration is per equipment's flush.
+**Ownership**: tracekeep owns the feed's message (stream, subjects, message id and the versioned field schema), the pairing, `sml.Parse` and the building of frames;
+go-secs owns the tracepack text for a live converter, G5-302 (tracepack spec v2.42, documentation only).
+**Positioning**: the host program's log is the legacy route, converted best effort; the gateway's capture stays the preferred record of an equipment.
+A log capture is read by T-59's selector like any other, its source telling it apart, so the reads leave out no method by default (supersedes decision 1).
+Its vantage is `host`, its directions the host program's own.
+**No per-equipment configuration** (supersedes decisions 4 and 9):
+the pipeline gives every entry its `equipment_id`, its source (the feed deployment's name) and an IANA `tz`; tracekeep learns the equipment from the feed.
+One global rule table maps the header's device-number token where the host logs one, else its session ID, to a device's name, with per-equipment overrides for exceptions;
+an entry no rule matches belongs to the main device, `eqp` by default, so there is no host capture and no unmapped-connection alert,
+and a body without a header or an unclassified entry is an annotation in that capture.
+A reply takes its primary's device through pairing.
+Where the host logs no device number, the main machine and a peer on stream 99 share a session and are not separated.
+**Keys**: subjects `tklog.<equipment_id>`; the capture key (source, `equipment_id`, device, file); the file offset per (source, `equipment_id`, file);
+the lease groups hashed by `equipment_id`.
+A file is the host program's dated log file: its offsets deduplicate, it bounds a capture, and it is the capture's `source_ref`.
+**Time**: tracekeep converts each entry's logged local `ts` in its `tz` to UTC and stores `ts_utc_ns` as traffic does;
+a local time that occurs twice or never takes the earlier reading and is `ordering-uncertain`.
+An entry without a valid `tz` is one tracekeep cannot read; tracekeep has no time-zone setting.
+**Consumption**: the feed consumer takes ingest's `ack_wait` and its in-progress-ack heartbeat (`architecture.md` §3.1), not an `ack_wait` of 2 × F without in-progress acks:
+phase 5 measured the heartbeat at 1.02 in-progress acknowledgements a message and its removal at 1.5% of the bus server's CPU,
+and reverted the protocol that removed it (`git show 89a01d8:docs/plans/phase-5-hardening.md`, P10).
+F defaults to ingest's (T-25).
+The feed shares the traffic cluster only.
+Its stream has no incarnation row: `migrate` ensures it, and preflight checks its subjects against both existing streams,
+the log prefix checked in the service, never in the SDK's `busconfig`.
+**Catalog**: the flush registration of a lease group's converter checks the group's fence in its transaction.
+The reconciler deletes a log capture's orphan segment and never adopts it:
+an adoption would raise `highest_seq` without the file offsets, and the redelivered entries would be converted again under new seqs.
+The capture-key and file-offset rows are deleted with their captures, a file's offset row with its last capture.
+Admission waits for a masking configuration as traffic's does: until one holding the baseline is active, nothing is admitted or acknowledged,
+and the entries wait in the stream within its `max_bytes`.
+**Operations**: `capture stop` on a log capture records a stop request, which the converter holding the equipment's lease group writes at its next flush, a later entry of the file being late;
+with no converter running, the stop is written to the catalog row directly.
+`capture close` and `capture terminate` refuse a log capture, and a retirement's quiescence check for one asks only for its stop.
+`tracekeep status` shows the feed's backlog and the number of equipment silent for 15 minutes.
+The web UI shows a capture's source and method and marks a log capture as reconstructed, claiming no coverage.
+**Delivery**: one phase of five steps: the catalog's operations on both engines; the stream, configuration and preflight;
+the converter, in a new package `internal/logfeed` sharing with `internal/ingest` only what holds no delivery;
+the reads, the web UI, alerts, metrics and runbook; and a gate.
+A pipeline guide ships with placeholder patterns only.
+Test entries are generated from go-secs messages, beside hand-written synthetic edge cases.
+The gate runs 2,000 simulated equipment beside traffic at K = 100, on SQLite and then MariaDB, from measured per-operation costs and one short real run.
+Considered and not taken: per-source configuration of equipment, time zone and connections (2,000 entries kept in step by hand);
+a host capture for an unmapped connection; a `leg` field, which nothing in the logs fills today;
+the time converted in the pipeline, which would resolve an ambiguous hour silently;
+an `ack_wait` of 2 × F without in-progress acks; adopting a log capture's orphan; a separate cluster for the feed.
+Not verified: whether the device-number assignment is the same on every equipment, from one equipment's log; the rule table's overrides cover one where it differs.
