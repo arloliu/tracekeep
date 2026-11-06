@@ -38,6 +38,8 @@ var loadModes = map[string]func(t *testing.T, smoke bool){
 	"ceiling": loadCeiling, "claimcheck": loadClaimCheck, "recovery": loadRecovery,
 	"production":      func(t *testing.T, smoke bool) { loadProduction(t, smoke, false) },
 	"production-real": func(t *testing.T, smoke bool) { loadProduction(t, smoke, true) },
+	"feed":            func(t *testing.T, smoke bool) { loadFeed(t, smoke, false) },
+	"feed-real":       func(t *testing.T, smoke bool) { loadFeed(t, smoke, true) },
 }
 
 const (

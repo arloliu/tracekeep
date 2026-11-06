@@ -163,6 +163,21 @@ func (s *Server) start() {
 //   - string: a comma-separated nats:// URL list to connect to
 func StartCluster(t testing.TB, n int) string {
 	t.Helper()
+	srvs := StartClusterServers(t, n)
+	urls := make([]string, n)
+	for i, srv := range srvs {
+		urls[i] = srv.ClientURL()
+	}
+
+	return strings.Join(urls, ",")
+}
+
+// StartClusterServers is StartCluster returning the servers, for a test that reads their state or their stores.
+//
+// Returns:
+//   - []*server.Server: the n servers, routed, with a meta leader, shut down when t ends
+func StartClusterServers(t testing.TB, n int) []*server.Server {
+	t.Helper()
 	var srvs []*server.Server
 	for attempt := 1; ; attempt++ {
 		var err error
@@ -172,17 +187,13 @@ func StartCluster(t testing.TB, n int) string {
 			t.Fatalf("testbus: %v, %d times", err, attempt)
 		}
 	}
-	urls := make([]string, n)
-	for i, srv := range srvs {
-		urls[i] = srv.ClientURL()
-	}
 	// A stream is placed only once the meta leader knows every peer and each server is current with it.
 	await(t, "meta leader of the cluster", func() bool {
 		return slices.ContainsFunc(srvs, func(s *server.Server) bool { return s.JetStreamIsLeader() && len(s.JetStreamClusterPeers()) == n }) &&
 			!slices.ContainsFunc(srvs, func(s *server.Server) bool { return !s.JetStreamIsCurrent() })
 	}, func() string { return clusterState(srvs) })
 
-	return strings.Join(urls, ",")
+	return srvs
 }
 
 // clusterAttempts bounds StartCluster's tries: a route port is chosen, released, then bound by its server,
