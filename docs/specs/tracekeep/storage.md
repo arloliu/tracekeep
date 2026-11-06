@@ -167,6 +167,7 @@ For a key the catalog does not know and that has no **tombstone** (§8.3):
    a `pending` row (§6.1) lets the transaction's prologue succeed but is not admission,
    so such a pack stays unregistered, reported with its capture id, until a `start` admits the capture;
    adoption never turns a placeholder into an apparently registered capture.
+   An orphan of a log capture is never adopted: its key is tombstoned and the object deleted after the commit, since an adoption would raise `highest_seq` without the file offsets (`logfeed.md` §15.8, T-60).
    An orphan holding a seq whose `parked` row is `terminated`, or of a capture with a termination order, is never adopted:
    the transaction tombstones its key and the object is deleted after the commit (T-32),
    which loses nothing, since an orphan's messages were never acknowledged and are decided again at their redelivery.

@@ -198,6 +198,7 @@ the cases prove the decision, the schedules prove the re-reads under the capture
   an object the flush may have put is left to reconciliation and the orphan pass (`storage.md` §5.4), never deleted by the flush, and acknowledgement still follows registration.
   The local file work (the working file's writes, sync and reopen, and the `fs` store) is not interrupted:
   a flush waits for it, so nothing outlives the flush that owns its batch's memory and files, and work that outlasts its bound is logged and counted in `flush_stalls_total`.
+- The log stage's flushes (`logfeed.md` §15.7) batch, mask and are bounded as this section states; they register one equipment's segments in one transaction and pass no delivery evidence.
 
 ### 6.3 Crash points and the registration transaction
 

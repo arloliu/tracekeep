@@ -29,8 +29,9 @@ Contract changes go through proposals, which the subject [README.md](README.md) 
 
 | Command | For |
 |---|---|
-| `capture terminate <id>` | the operator action of G5-251 and of every `open incident` row of §6.1: terminates the capture's deferred and parked messages, writes every unresolved parked version `terminated`, the declared losses, the audit row and a **termination order** with the traffic stream's `LastSeq` as cut-off for originals never parked (§6.1 *operator termination*); the acknowledgements follow at each message's next delivery; for a `pending` capture it ends the messages and leaves the placeholder row and its version resolutions in place; audited |
-| `capture close <id>` | force a close intent now instead of waiting for I; a request the compactor executes at its next cycle (T-41) |
+| `capture terminate <id>` | the operator action of G5-251 and of every `open incident` row of §6.1: terminates the capture's deferred and parked messages, writes every unresolved parked version `terminated`, the declared losses, the audit row and a **termination order** with the traffic stream's `LastSeq` as cut-off for originals never parked (§6.1 *operator termination*); the acknowledgements follow at each message's next delivery; for a `pending` capture it ends the messages and leaves the placeholder row and its version resolutions in place; refused for a log capture (`logfeed.md` §15.8); audited |
+| `capture close <id>` | force a close intent now instead of waiting for I; a request the compactor executes at its next cycle (T-41); refused for a log capture |
+| `capture stop <id>` | a log capture's stop, written by its converter at its next flush, or at once when no converter holds its lease group (`logfeed.md` §15.11, T-60); refused for any other capture; audited |
 | `scope merge <capture> <hour>` | re-run a merge after an operator resolved its inputs, an `unmergeable` scope's included; a request the compactor executes at its next cycle (T-41, T-45) |
 | `conflict acknowledge <capture> <seq>` | closes the incident; the scope stays unmerged for its lifetime (readers take the union and report the conflict, exports flag it, retention evicts it on time); a merge over differing versions is impossible by [STO §4], so no command promises one |
 | `scope exclude-input <pack>` | sets the pack `excluded` under the capture-row serialization, bumps the scope's revision and emits an event, so the next merge snapshot (which takes `staged` packs only) leaves it out; it stays readable and is never deleted by the merge relation; audited |
@@ -116,6 +117,8 @@ the chart's gateway rules keep their fallback for a gateway on an older SDK, whi
 | `TracekeepGapsGrowing` | `tracekeep_ingest_open_gaps` increasing on a piece of equipment over 30 min, or a seq of it declared lost within them (`tracekeep_ingest_last_declared_loss_timestamp_seconds`) | `gaps-and-losses` |
 | `TracekeepKeyRefused` | a key resolution refused within ten minutes (`tracekeep_key_last_problem_timestamp_seconds{outcome="refused"}`) | `key-refused` |
 | `TracekeepKeysUnavailable` | key resolutions unavailable through five minutes, each two minutes of them holding one (`tracekeep_key_last_problem_timestamp_seconds{outcome="unavailable"}`) | `keys-unavailable` |
+
+With the host log feed enabled, the chart adds the feed's rules, `TracekeepLogFeedSilent`, `TracekeepLogEntryUnreadable` and `TracekeepLogEntriesLate`, whose rows and metrics are in `logfeed.md` §15.11.
 
 The gateway's rules read the producer's metrics (`tracepub_`), which the gateway serves, not tracekeep;
 the chart ships them in a group of their own, off unless the values enable it for a Prometheus that scrapes the gateways too:

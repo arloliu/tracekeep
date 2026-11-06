@@ -16,10 +16,10 @@ A second module, the producer SDK, is published for producers (§4.7).
 
 | Role | Does | Scaling |
 |---|---|---|
-| `ingest` | pull consumer of the traffic stream; registers descriptors; batches records per (capture, UTC hour); masks; writes segments; registers packs; acks per message | stateless, N replicas; the work-queue stream balances them |
+| `ingest` | pull consumer of the traffic stream; registers descriptors; batches records per (capture, UTC hour); masks; writes segments; registers packs; acks per message; with `logfeed.enabled`, the log stage, which converts the host log feed (`logfeed.md`) | stateless, N replicas; the work-queue stream balances them; the log stage's lease groups are shared among them |
 | `compact` | merges scopes; closes captures left open; deletes merged segments after a delay; applies retention, claim objects included; reconciles `staging/` and `archive/` against the catalog | one active instance under a catalog lease with a fence token (§8); shard by equipment later if needed |
 | `api` | machine API for the VE service, human API and embedded web UI, exports, restore, admin | stateless, N replicas |
-| `migrate` | applies the catalog's versioned migrations; ensures the traffic stream and claim bucket, the bucket's stream with `AllowDirect` off (T-28) | once per release |
+| `migrate` | applies the catalog's versioned migrations; ensures the traffic stream and claim bucket, the bucket's stream with `AllowDirect` off (T-28), and with the feed enabled its stream and group consumers (`logfeed.md` §15.4) | once per release |
 
 JetStream consumer settings `ingest` depends on:
 `ack_wait` longer than the flush interval F plus the upload, and in-progress acks every `ack_wait/3`
