@@ -57,8 +57,7 @@ Milestones the owner set after seed v21 §12's (T-52).
 
 ## Active plans
 
-None.
-P3 (host log feed) is closed into `specs/tracekeep/logfeed.md` (T-62); its phase plan comes next.
+- [Host log feed](plans/host-log-feed.md), the phase that delivers `specs/tracekeep/logfeed.md` (P3, T-60, T-62), its bus and catalog-writer load measured first (T-63)
 
 Phase 0 is done (#1, #3, #4, #7, #8).
 Phase 1 is done (#9, #11, #13, #14, #16, #17, #18, #19).
