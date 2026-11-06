@@ -351,8 +351,10 @@ func TestExportWorkerCountsTheLeaseFromItsClaim(t *testing.T) {
 		g := stallAt(m, "renew") // no renewal: only the lease's own timer can end the put
 		startExport(t, c, capture)
 		dir := t.TempDir()
-		m.srv.Exports.WorkDir, m.srv.Exports.Lease = dir, 600*time.Millisecond
-		m.srv.Catalog = slowClaims{Catalog: c, delay: 400 * time.Millisecond}
+		// The lease counted from the claim ends the put about 400 ms after the answer, counted from the answer 2 s after it:
+		// the bound between leaves both a loaded runner's scheduling delay.
+		m.srv.Exports.WorkDir, m.srv.Exports.Lease = dir, 2*time.Second
+		m.srv.Catalog = slowClaims{Catalog: c, delay: 1600 * time.Millisecond}
 		ctx, stop := context.WithCancel(t.Context())
 		done := make(chan error, 1)
 		go func() { done <- m.srv.RunExports(ctx, "r1", 20*time.Millisecond) }()
@@ -373,8 +375,8 @@ func TestExportWorkerCountsTheLeaseFromItsClaim(t *testing.T) {
 		}
 		st.mu.Lock()
 		defer st.mu.Unlock()
-		if len(st.waited) == 0 || st.waited[0] > 450*time.Millisecond {
-			t.Errorf("the put waited %v, want it cancelled when the claim's lease passed, about 200 ms after the claim's answer", st.waited)
+		if len(st.waited) == 0 || st.waited[0] > 1200*time.Millisecond {
+			t.Errorf("the put waited %v, want it cancelled when the claim's lease passed, about 400 ms after the claim's answer", st.waited)
 		}
 	})
 }

@@ -13,13 +13,14 @@ import (
 	"github.com/go-sql-driver/mysql"
 	_ "modernc.org/sqlite"
 
+	"github.com/arloliu/tracekeep/internal/benchscale"
 	"github.com/arloliu/tracekeep/migrations"
 )
 
-// engines runs f once per engine on a fresh, empty database.
+// engines runs f once per engine benchscale.EnginesEnv leaves in, on a fresh, empty database.
 func engines(t *testing.T, f func(t *testing.T, db *sql.DB, engine string)) {
 	t.Helper()
-	for _, engine := range migrations.Engines {
+	for _, engine := range benchscale.Engines(t, migrations.Engines...) {
 		t.Run(engine, func(t *testing.T) {
 			t.Parallel()
 			f(t, open(t, engine), engine)

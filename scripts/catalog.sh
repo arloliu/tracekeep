@@ -3,7 +3,9 @@
 # Usage:
 #   scripts/catalog.sh diff <name>   generate a migration for both engines from schema.hcl
 #   scripts/catalog.sh check         validate both migration directories and check schema.hcl for drift
-#   scripts/catalog.sh test          run the catalog's tests on MariaDB, each package within 30 minutes
+#   scripts/catalog.sh test [leg]    run the catalog's tests on MariaDB alone (TRACEKEEP_BENCH_ENGINES=mariadb), each package within 30 minutes,
+#                                    over one leg's packages or every leg's
+#   scripts/catalog.sh legs          print the legs as a JSON array, failing if two share a package or one has none
 #   scripts/catalog.sh bench <file>  run the catalog's benchmarks on MariaDB alone (TRACEKEEP_BENCH_ENGINES=mariadb),
 #                                    -count ${COUNT:-10} -benchtime ${BENCHTIME:-1s} -cpu ${CPU:-nproc},
 #                                    over ${BENCH_PACKAGES:-every package reaching the catalog} and -bench ${BENCH:-.},
@@ -14,8 +16,15 @@ set -euo pipefail
 MARIADB_IMAGE=mariadb:11.8
 PASSWORD=tracekeep
 
-# The packages whose tests or benchmarks reach the catalog.
-PACKAGES="./migrations/ ./internal/catalog/... ./internal/bus/... ./internal/ingest/... ./internal/admin/... ./internal/keys/... ./internal/compact/... ./internal/service/... ./internal/metrics/... ./internal/api/..."
+# The packages whose tests or benchmarks reach MariaDB's catalog, in legs CI runs side by side (ci.yaml's catalog matrix):
+# each leg about a CI runner's worth of tests, and PACKAGES every leg's.
+declare -A LEGS=(
+	[catalog]="./internal/catalog/..."
+	[compact-api]="./internal/compact/... ./internal/api/..."
+	[ingest-service]="./internal/ingest/... ./internal/service/..."
+	[rest]="./migrations/ ./internal/bus/... ./internal/admin/... ./internal/keys/... ./internal/metrics/..."
+)
+PACKAGES="${LEGS[*]}"
 
 container=
 cleanup() { [ -z "$container" ] || docker rm -f "$container" >/dev/null; }
@@ -72,12 +81,25 @@ check)
 		rm -rf "$tmp"
 	done
 	;;
+legs)
+	# go list expands each leg; a package in two legs, or a leg naming none, fails.
+	seen=$(for leg in "${!LEGS[@]}"; do GOWORK=off go list ${LEGS[$leg]} | sed "s|^|$leg |"; done)
+	dup=$(cut -d' ' -f2 <<<"$seen" | sort | uniq -d)
+	[ -z "$dup" ] || { echo "in two legs: $dup" >&2; exit 1; }
+	for leg in "${!LEGS[@]}"; do grep -q "^$leg " <<<"$seen" || { echo "leg $leg names no package" >&2; exit 1; }; done
+	printf '%s\n' "${!LEGS[@]}" | sort | jq -Rcs 'split("\n") | map(select(. != ""))'
+	;;
 test)
+	leg=${2:-}
+	if [ -n "$leg" ] && [ -z "${LEGS[$leg]:-}" ]; then echo "no leg $leg; the legs: ${!LEGS[*]}" >&2; exit 2; fi
+	packages=$PACKAGES
+	[ -z "$leg" ] || packages=${LEGS[$leg]}
 	# The data on tmpfs: a test's database is created, migrated and dropped in 63 ms there, 1.5 s on a disk's syncs (T-61).
 	# The benchmarks keep the disk, whose durability a baseline records.
 	start_mariadb --tmpfs /var/lib/mysql:rw
-	TRACEKEEP_MARIADB_DSN="root:$PASSWORD@tcp(127.0.0.1:$port)/catalog" GOWORK=off CGO_ENABLED=1 \
-		go test $PACKAGES -race -count=1 -timeout 30m ${GOTESTFLAGS:-}
+	# Only MariaDB's runs of the two-engine loops: the ci job runs their SQLite ones.
+	TRACEKEEP_MARIADB_DSN="root:$PASSWORD@tcp(127.0.0.1:$port)/catalog" TRACEKEEP_BENCH_ENGINES=mariadb GOWORK=off CGO_ENABLED=1 \
+		go test $packages -race -count=1 -timeout 30m ${GOTESTFLAGS:-}
 	;;
 bench)
 	out=${2:?usage: catalog.sh bench <file>}
@@ -112,11 +134,11 @@ bench)
 	;;
 bench-smoke)
 	start_mariadb
-	TRACEKEEP_MARIADB_DSN="root:$PASSWORD@tcp(127.0.0.1:$port)/catalog" TRACEKEEP_REQUIRE_MARIADB=1 TRACEKEEP_BENCH_SCALE=small GOWORK=off \
+	TRACEKEEP_MARIADB_DSN="root:$PASSWORD@tcp(127.0.0.1:$port)/catalog" TRACEKEEP_REQUIRE_MARIADB=1 TRACEKEEP_BENCH_ENGINES=mariadb TRACEKEEP_BENCH_SCALE=small GOWORK=off \
 		go test $PACKAGES -run '^$' -bench . -benchtime 1x | sed '/^cpu:/d'
 	;;
 *)
-	echo "usage: catalog.sh diff <name> | check | test | bench <file> | bench-smoke" >&2
+	echo "usage: catalog.sh diff <name> | check | legs | test [leg] | bench <file> | bench-smoke" >&2
 	exit 2
 	;;
 esac

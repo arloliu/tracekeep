@@ -17,6 +17,7 @@ import (
 
 	"github.com/go-sql-driver/mysql"
 
+	"github.com/arloliu/tracekeep/internal/benchscale"
 	"github.com/arloliu/tracekeep/internal/catalog"
 	"github.com/arloliu/tracekeep/migrations"
 	"github.com/arloliu/tracekeep/migrations/migrationstest"
@@ -28,10 +29,10 @@ const EnvMariaDB = "TRACEKEEP_MARIADB_DSN"
 // EnvRequireMariaDB set to 1 fails a MariaDB run without a server instead of skipping it, as the catalog's benchmark smoke run does.
 const EnvRequireMariaDB = "TRACEKEEP_REQUIRE_MARIADB"
 
-// Engines runs f once per engine, each in a parallel subtest with a fresh catalog.
+// Engines runs f once per engine benchscale.EnginesEnv leaves in, each in a parallel subtest with a fresh catalog.
 func Engines(t *testing.T, f func(t *testing.T, c *catalog.Catalog)) {
 	t.Helper()
-	for _, engine := range []string{catalog.EngineSQLite, catalog.EngineMariaDB} {
+	for _, engine := range benchscale.Engines(t, catalog.EngineSQLite, catalog.EngineMariaDB) {
 		t.Run(engine, func(t *testing.T) {
 			t.Parallel()
 			f(t, Open(t, engine))

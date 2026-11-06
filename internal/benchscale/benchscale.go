@@ -1,6 +1,6 @@
 // Package benchscale reads TRACEKEEP_BENCH_SCALE, which sizes a benchmark runs (650-perf-sec.md):
 // its small size always, its medium and large sizes only when the variable names them;
-// and TRACEKEEP_BENCH_ENGINES, which catalog engines it runs.
+// and TRACEKEEP_BENCH_ENGINES, which catalog engines it runs, and a test's two-engine loop too.
 package benchscale
 
 import (
@@ -31,9 +31,9 @@ func Sizes[T any](tb testing.TB, small, medium, large T) []T {
 	}
 }
 
-// EnginesEnv names the catalog engines a benchmark runs, comma-separated (sqlite, mariadb); unset or empty runs every engine.
-// A benchmark loop skips the other engines' sub-benchmarks entirely, so they emit no row,
-// as bench.yaml's MariaDB runs need (650-perf-sec.md).
+// EnginesEnv names the catalog engines a benchmark or a test's two-engine loop runs, comma-separated (sqlite, mariadb); unset or empty runs every engine.
+// A loop skips the other engines' subtests and sub-benchmarks entirely, so they emit no row,
+// as bench.yaml's MariaDB runs need (650-perf-sec.md), and the catalog job leaves SQLite's runs to the ci job.
 const EnginesEnv = "TRACEKEEP_BENCH_ENGINES"
 
 // Engines returns the engines of all that EnginesEnv names, in all's order, or all when it names none.

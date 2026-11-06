@@ -276,7 +276,6 @@ func TestLeaseLostDuringACycle(t *testing.T) {
 		ctx := t.Context()
 		p := reconcilers(t, c)
 		a := p.a
-		a.LeaseTTL = time.Second
 		s := metrics.NewServer()
 		var err error
 		if a.Metrics, err = metrics.NewCompact(s); err != nil {
@@ -287,6 +286,9 @@ func TestLeaseLostDuringACycle(t *testing.T) {
 		f.put(t, orphan.key, orphan.data)
 		step(t, a)
 		first := stamp(scrape(t, s))
+		// Only the lost cycle needs a short lease, whose keeper notices the takeover within a third of it;
+		// the first cycle keeps the default, so a loaded runner's slow renewal cannot lose it.
+		a.LeaseTTL = 3 * time.Second
 		a.Store = &opening{ObjectStore: p.s, at: orphan.key, hook: func(held context.Context) {
 			if err := c.ReleaseLease(ctx, *a.lease); err != nil {
 				t.Error(err)

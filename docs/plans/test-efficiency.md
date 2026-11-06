@@ -1,6 +1,6 @@
 # Test efficiency
 
-Status: active (2026-11-06) — phase 1, catalog setup once per process
+Status: active (2026-11-06) — phase 2, the catalog job
 
 The work that delivers T-61 (`docs/specs/tracekeep/tracekeep-decisions.md`) before P3's phase plan (T-60):
 a catalog test stops paying for twelve migrations on SQLite and for a disk's syncs on MariaDB,
@@ -15,8 +15,8 @@ Tests that open only SQLite though the catalog's two engines would serve them ar
 
 | Phase | Work | State |
 |---|---|---|
-| 1 — catalog setup | SQLite catalogs copied from one migrated template per test process; the test MariaDB server's data on tmpfs | in-progress |
-| 2 — the catalog job | the engine loops' SQLite runs left to `ci`; the job's packages complete and split into matrix legs; the two timing flakes fixed | pending |
+| 1 — catalog setup | SQLite catalogs copied from one migrated template per test process; the test MariaDB server's data on tmpfs | done (#96) |
+| 2 — the catalog job | the engine loops' SQLite runs left to `ci`; the job's packages split into matrix legs; the two timing flakes fixed | in-progress |
 | 3 — harness time | the chaos harness's settle wait shortened for its failure tests; the load harness's production mode ratio-scaled and on either engine | pending |
 | 4 — benchmarks and close | benchmarks at `-count 5`; the rules and guides that name the old behaviour; the measurements after; this plan closed | pending |
 
@@ -56,51 +56,49 @@ After phase 1, on the same machine, under `-race`:
 | the service module's `go test ./... -short -race` | 83 s wall, 19 min 38 s CPU | 29 s wall, 5 min 24 s CPU |
 | a full `make test-catalog` | about 11 min wall | 36 s wall: `internal/catalog` 31 s, `internal/compact` 28 s, `internal/ingest` 19 s, `internal/api` 18 s, `internal/service` 13 s, the rest 4 s or less |
 
+CI's `catalog` job after phase 1 (#96): `make test-catalog` 7 min 2 s of its 9 min 11 s on a four-core runner, CPU-bound where the local machine has 32 cores;
+`internal/catalog` 326 s, `internal/compact` 173 s, `internal/ingest` 170 s, `internal/api` 126 s, `internal/service` 98 s, the rest 12 s or less, run side by side.
+
 Two tests failed once each during a full MariaDB run and passed when run alone:
 `TestLeaseLostDuringACycle` (`internal/compact/run_test.go`) and `TestExportWorkerCountsTheLeaseFromItsClaim` (`internal/api/export_worker_test.go`).
-Their causes are not yet known.
+Neither failed again in four runs of their packages on tmpfs nor in two on a disk.
+Each held a margin a loaded runner can spend: the first cycle of the lease test ran under the 1 s lease only its second cycle needs,
+and the export test told 200 ms from 600 ms with a 450 ms bound.
+A third, `TestRecordListingLeaseLostBetweenTransactions`'s `sweep pages` on MariaDB, failed once in the run on a disk, its second page deleted though the lease had lapsed;
+its barrier sees the lapse's statement in the process list, not that it waits for the lease row, and INNODB_TRX did not show the tests' waits.
+Its cause is not proven, and this plan leaves it open.
 
 `TestRunChaosFailsBrokenWiring`'s `no_traffic` and `only_startup_traffic` take 40 s and 30 s under `-race`, `TestRunChaos` 0.5 s:
 each failing scenario waits out the 10 s `settleTimeout`.
 
-## Phase 1 — catalog setup
-
-Today `catalogtest.OpenClosable` and `internal/catalog`'s `newCatalog` (`harness_test.go`) each migrate a fresh catalog for every test.
-`internal/catalog`'s tests cannot import `catalogtest`, which imports `internal/catalog`,
-so the template goes in a new test-support package, `migrations/migrationstest`, which imports only `migrations` and the SQLite driver, never a catalog package.
-Tests that test migrations or a historical schema (`migrations`' own, `internal/catalog`'s `preFence` and `migratedBefore`) keep migrating;
-`catalog.Open` still runs for every catalog.
+## Phase 2 — the catalog job
 
 ### Work
 
-- **The SQLite template**: the first catalog a process asks for migrates a template file in a temporary directory, once;
-  it is set to `journal_mode=DELETE` and closed, any error failing every catalog that asks for it, and no `-wal` or `-shm` file may remain.
-  The process keeps its bytes and removes the directory, so no test can change the template and nothing outlives the process.
-  Every catalog is then a copy of those bytes in the test's own `t.TempDir()`, which `catalog.Open` opens in WAL mode as today.
-- **The test MariaDB server**: `scripts/catalog.sh test` starts its container with the data directory on tmpfs;
-  `bench` and `bench-smoke` keep the disk, whose durability a baseline records (T-54).
-  Every MariaDB catalog stays a database created and migrated for its test alone, as today.
-- `300-testing.md` *Catalog* states what the tests rely on: a test's SQLite catalog is a copy of a template migrated once per process and kept in memory;
-  a test's MariaDB catalog is a database created and migrated for it alone, on a test server whose data is on tmpfs.
+- Every two-engine test loop (`catalogtest.Engines`, `internal/catalog`'s `engines` and `fenceEngines`, `TestLiveRoleMigration`, `migrations`' `engines`) runs the engines `TRACEKEEP_BENCH_ENGINES` names, as the benchmark loops do;
+  `scripts/catalog.sh test` and `bench-smoke` set it to `mariadb`.
+  `./migrations/migrationstest/...`, `./internal/auth/...` and `./cmd/tracekeep/...` stay out of the list: none of their tests reaches MariaDB.
+- `scripts/catalog.sh` names its packages in legs, `PACKAGES` being every leg's; `legs` prints them for CI and fails when two share a package or one has none;
+  `test <leg>` and `make test-catalog LEG=<leg>` run one.
+- `ci.yaml`'s `catalog` job is a matrix of those legs, `migrate-check` and `bench-catalog-smoke` in the `rest` leg.
+- The lease test runs its first cycle under the default lease and only the lost cycle under a short one;
+  the export test's lease and claim delay grow to 2 s and 1.6 s, its bound to 1.2 s, between the 400 ms it expects and the 2 s a lease counted from the answer gives.
 
 ### Done when
 
-- On SQLite, a catalog from the template has the schema (`sqlite_master`, triggers and indexes included) and the rows of a freshly migrated catalog,
-  its revision rows compared on every column but `executed_at` and `execution_time`,
-  and `migrations.Apply` on it applies nothing;
-  the comparison rejects an extra table, a missing index, a changed counter and a changed revision hash.
-- Two copies taken in parallel and one taken after the first test ended are independent files: a write to one is absent from the others and from the template.
-- Parallel first requests migrate the template once; a template that fails to migrate or to close fails each test that asks for a catalog, and no partial copy is handed out.
-- `make test` and `make test-catalog` pass,
-  and the measurements gain the after numbers: the service module's CPU under `-race` and `make test-catalog`'s wall time with each package's.
+- With `TRACEKEEP_BENCH_ENGINES=mariadb`, `go test -json` of `internal/catalog` and `migrations` passes or skips no `sqlite` subtest; without it, 262 pass.
+- `scripts/catalog.sh legs` rejects a package in two legs and a leg with none.
+- Each fixed test passes `-count 50` under `-race` on one MariaDB server while its packages' tests run `-count 3` on it,
+  and fails with the mechanism it asserts removed: the lease counted from the answer, or the keeper's cancellation on a lost lease.
+- CI's `catalog` legs pass, and the measurements gain their times.
 
 ## Gate cases
 
-- Phase 1's cases.
+- Phase 1's cases (#96).
 - In the `catalog` job, no two-engine loop runs its `sqlite` subtest, `TestLiveRoleMigration`'s included, the loops honouring `TRACEKEEP_BENCH_ENGINES` in tests as in benchmarks;
   `ci`'s `go test -json` passes and skips the same tests as before the change, opt-in tests such as `TestEngineFacts` skipping as they do today.
-- `bench-smoke` still covers every package of `scripts/catalog.sh`'s list, and the `test` leg's server is on tmpfs while the benchmarks' is not.
-- The matrix legs' packages, expanded by `go list`, are disjoint, none empty, and together equal `scripts/catalog.sh`'s list, which gains `./migrations/...`, `./internal/auth/...` and `./cmd/tracekeep/...`.
+- `bench-smoke` covers every package of `scripts/catalog.sh`'s list, and `test`'s server is on tmpfs while the benchmarks' is not.
+- The matrix legs' packages, expanded by `go list`, are disjoint and none empty, and `PACKAGES` is every leg's.
 - Each former flake passes `-count 50` under `-race` on MariaDB with its package's tests loading the same server,
   and its fix fails with the mechanism it asserts removed.
 - `RunChaos`'s exported signature and 10 s default are unchanged; `TestRunChaosFailsBrokenWiring` fails each broken wiring with that wiring's own error, in under 5 s under `-race`;

@@ -71,8 +71,8 @@ test-s3: ## Run the s3 store's tests against MinIO and Ceph RGW in containers (n
 test-vault: ## Run the vault key provider's tests against a dev-mode Vault server in a container (needs docker)
 	@scripts/test-vault.sh
 
-test-catalog: ## Run the catalog's tests on MariaDB in a container (needs docker); make test runs them on SQLite
-	@scripts/catalog.sh test
+test-catalog: ## Run the catalog's tests' MariaDB runs in a container, one LEG of scripts/catalog.sh or all (needs docker); make test runs their SQLite ones
+	@scripts/catalog.sh test $(LEG)
 
 test-clustered: ## Run the clustered-bus tests COUNT times (20) with -race, listed by name; MariaDB too with TRACEKEEP_MARIADB_DSN
 	@scripts/test-clustered.sh
