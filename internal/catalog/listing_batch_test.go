@@ -62,8 +62,16 @@ func varyListing(t *testing.T, c *Catalog, pop *listingPop) {
 	seedRows(t, c, "evicted_ranges", []string{"capture_id", "hour", "seq_from", "seq_to", "ts_from", "ts_to"}, evicted)
 	seedRows(t, c, "conflicts", []string{"capture_id", "seq_from", "seq_to", "pack_id", "other_pack_id", "state"}, conflicts)
 	seedRows(t, c, "pack_losses", []string{"pack_id", "ord", "seq_from", "seq_to", "ts_from", "ts_to"}, losses)
-	last, prev := pop.captures[len(pop.captures)-1], pop.captures[len(pop.captures)-2]
-	s := spec{instance: prev.RecorderInstanceID, device: last.Device, origin: last.OriginNS, endpoint: "192.0.2.1:5000", deviceID: 7, equipmentID: "T1"}
+	// The last capture joins the series of the latest earlier capture of its device and source, so it overlaps that one.
+	last := pop.captures[len(pop.captures)-1]
+	prev := pop.captures[len(pop.captures)-2]
+	for i := len(pop.captures) - 2; i >= 0; i-- {
+		if c := pop.captures[i]; c.Device == last.Device && c.Source == last.Source {
+			prev = c
+			break
+		}
+	}
+	s := spec{instance: prev.RecorderInstanceID, device: last.Device, source: last.Source, origin: last.OriginNS, endpoint: "192.0.2.1:5000", deviceID: 7, equipmentID: "T1"}
 	exec(t, c, `UPDATE captures SET descriptor = ?, recorder_instance_id = ?, highest_seq_ts = ? WHERE capture_id = ?`,
 		descriptorBytes(t, s), prev.RecorderInstanceID[:], hourNS(pop.hours)+50, last.ID[:])
 }

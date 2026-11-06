@@ -87,11 +87,11 @@ func (p *listingPop) hour() Selector {
 	return Selector{EquipmentID: "T1", From: hourNS(p.hours), To: hourNS(p.hours + 1)}
 }
 
-// listed is the population's captures in the listings' order: by device, origin and id.
+// listed is the population's captures in the listings' order: by device, source, origin and id.
 func (p *listingPop) listed() []CaptureListing {
 	out := slices.Clone(p.captures)
 	slices.SortFunc(out, func(a, b CaptureListing) int {
-		return cmp.Or(cmp.Compare(a.Device, b.Device), cmp.Compare(a.OriginNS, b.OriginNS), bytes.Compare(a.ID[:], b.ID[:]))
+		return cmp.Or(cmp.Compare(a.Device, b.Device), cmp.Compare(a.Source, b.Source), cmp.Compare(a.OriginNS, b.OriginNS), bytes.Compare(a.ID[:], b.ID[:]))
 	})
 
 	return out
@@ -112,8 +112,8 @@ func (p *listingPop) wantCaptures() []CaptureInfo {
 func (p *listingPop) wantDevices(sel Selector) []DeviceInfo {
 	var out []DeviceInfo
 	for _, cl := range p.listed() {
-		if len(out) == 0 || out[len(out)-1].Name != cl.Device {
-			out = append(out, DeviceInfo{Name: cl.Device})
+		if len(out) == 0 || out[len(out)-1].Name != cl.Device || out[len(out)-1].Source != cl.Source {
+			out = append(out, DeviceInfo{Name: cl.Device, Source: cl.Source})
 		}
 		d := &out[len(out)-1]
 		if cl.State == StateOpen {

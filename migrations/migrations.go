@@ -118,7 +118,7 @@ func ApplyDir(ctx context.Context, db *sql.DB, engine string, dir migrate.Dir) (
 	if err != nil {
 		return fmt.Errorf("migrations: %w", err)
 	}
-	if err := checkReset(ctx, conn, ex); err != nil {
+	if err := checkReset(ctx, conn, engine, ex); err != nil {
 		return err
 	}
 	err = ex.ExecuteN(ctx, 0)
@@ -135,8 +135,8 @@ func ApplyDir(ctx context.Context, db *sql.DB, engine string, dir migrate.Dir) (
 
 // checkReset refuses the identity reset on a catalog that holds any capture, before Atlas runs a statement,
 // so the refusal leaves the schema, the rows and the revisions as they were.
-// A catalog without a captures table holds none: only one whose first migration is still pending may lack it.
-func checkReset(ctx context.Context, conn *sql.Conn, ex *migrate.Executor) error {
+// Only a catalog shown to have no captures table is spared the count; any other failure to count refuses.
+func checkReset(ctx context.Context, conn *sql.Conn, engine string, ex *migrate.Executor) error {
 	pending, err := ex.Pending(ctx)
 	var dirty *migrate.NotCleanError
 	switch {
@@ -148,17 +148,24 @@ func checkReset(ctx context.Context, conn *sql.Conn, ex *migrate.Executor) error
 	if !slices.ContainsFunc(pending, func(f migrate.File) bool { return strings.HasSuffix(f.Name(), identityReset) }) {
 		return nil
 	}
-	var one int
-	err = conn.QueryRowContext(ctx, "SELECT 1 FROM captures LIMIT 1").Scan(&one)
-	switch {
+	exists := `SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'captures'`
+	if engine == "mariadb" {
+		exists = `SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = 'captures'`
+	}
+	var tables, one int
+	if err := conn.QueryRowContext(ctx, exists).Scan(&tables); err != nil {
+		return fmt.Errorf("migrations: look for the captures table: %w", err)
+	}
+	if tables == 0 {
+		return nil // a new catalog
+	}
+	switch err := conn.QueryRowContext(ctx, "SELECT 1 FROM captures LIMIT 1").Scan(&one); {
 	case errors.Is(err, sql.ErrNoRows):
 		return nil
-	case err == nil:
-		return ErrIdentityReset
-	case strings.HasSuffix(pending[0].Name(), "_init.sql"):
-		return nil // no captures table yet: a new catalog
-	default:
+	case err != nil:
 		return fmt.Errorf("migrations: count the captures: %w", err)
+	default:
+		return ErrIdentityReset
 	}
 }
 
