@@ -571,9 +571,9 @@ an export's bundle is the one download they offer.
 **Pages.**
 Every page keeps its state in its URL's search parameters, so a link names what it shows,
 and shows times in the browser's zone with their offset, or in UTC by a switch the browser remembers; it sends them as timestamps.
-- **Browser** (`/`): an equipment ID, typed (the equipment IDs recently opened are remembered by the browser; no operation lists them), and a window, by preset (last hour, 6 h, 24 h, 7 days) or from and to.
+- **Browser** (`/`): an equipment ID, typed (the equipment IDs recently opened are remembered by the browser under `tracekeep.equipment`; no operation lists them), and a window, by preset (last hour, 6 h, 24 h, 7 days) or from and to.
   `ListDevices` lists the equipment's series, one row per (device, source), with their open captures, overlap, last record and gap;
-  devices and sources are filtered independently, as the selector's lists are, and selecting them lists their captures (`ListCaptures`: state, origin, last record, overlap, thinning, unregistered intervals)
+  devices and sources are filtered independently, as the selector's lists are, in the URL's `equipment`, `devices` and `sources` parameters, and selecting them lists their captures (`ListCaptures`: state, origin, last record, overlap, thinning, unregistered intervals)
   and each capture's completeness hour by hour (`ListPacks`: retained, evicted, deferred, gaps, declared losses, crash gaps, conflicts, the unknown tail, hours with no data).
   A capture opens its records in the window, and an hour its records in that hour.
 - **Records** (`/records`): the selector, the window and `QueryRecords`' predicates (messages, direction, kinds, transport events, a capture's seq range) as a filter bar.

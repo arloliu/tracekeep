@@ -15,7 +15,7 @@ Read when a spec file uses a term you cannot place; the cited section is authori
 | equipment | the equipment the traffic belongs to, a mass noun ("a piece of equipment" where a count is needed); `equipment_id`, the equipment ID, names it and keys every read | §4.5, §10.1 |
 | device | a unit attached to the equipment, its main machine, a sensor or a load port, carried as `device`; a link that is no unit belongs to the unit it serves; not `device_id`, the SECS-II device ID of the session | §4.5 |
 | source | the deployment of a program or service that records traffic, named by the deployment and stable across restarts and leader changes, carried as `recorder_instance_name` | §4.5, §4.7 |
-| series | one source's recording of one device of one equipment, identified by `recorder_instance_id`; chaining, unregistered intervals and overlap are per series | §4.5, §7.3 |
+| series | one source's recording of one device of one piece of equipment, identified by `recorder_instance_id`; chaining, unregistered intervals and overlap are per series | §4.5, §7.3 |
 | overlap | two captures of one series whose spans intersect, as when two leaders run at once; both are flagged, neither is closed while live | §7.3, §8.2 |
 | seq | a record's position in its capture, from 0, assigned by the producer in capture order; 2^63 − 4 is the last ordinary seq and 2^63 − 1 the close sentinel | §2, §4.2 |
 | gap | a hole in a capture's producer coverage between seq 0 and the frontier, the higher of `highest_seq` and the highest parked seq, that no deferred or terminated seq explains | §7.3 |
