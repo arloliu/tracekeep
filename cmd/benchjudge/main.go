@@ -1,6 +1,6 @@
 // Command benchjudge decides whether a change regressed a benchmark (650-perf-sec.md, T-54).
 //
-// It reads three files of go test -bench output, each from -count 10 or so: two runs of the base and one of the head.
+// It reads three files of go test -bench output, each from -count 5 or so (T-61): two runs of the base and one of the head.
 // For each row and each metric it takes the base's repeatability r, abs(median(base2) / median(base1) - 1),
 // and the allowance T, 5% plus r, and a 95% percentile bootstrap interval of median(head) / median(base1):
 // the metric passes when the interval's upper bound is at most 1 + T, regresses when its lower bound exceeds 1 + T,

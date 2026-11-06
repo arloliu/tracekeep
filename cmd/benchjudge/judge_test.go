@@ -24,11 +24,14 @@ func outputAt(iters int, rows map[string][]string) string {
 	return b.String()
 }
 
-// around returns ten samples of ns/op near v, a spread of plus or minus 0.5%.
+// samples is a row's sample count in these tests, the -count benchmarks run at (T-61).
+const samples = 5
+
+// around returns samples of ns/op near v, a spread of plus or minus 0.2%.
 func around(v float64) []string {
-	out := make([]string, 10)
+	out := make([]string, samples)
 	for i := range out {
-		out[i] = fmt.Sprintf("%.2f ns/op", v*(1+float64(i-5)/1000))
+		out[i] = fmt.Sprintf("%.2f ns/op", v*(1+float64(i-samples/2)/1000))
 	}
 
 	return out
@@ -140,7 +143,7 @@ func TestRepeatability(t *testing.T) {
 func TestDecisions(t *testing.T) {
 	t.Parallel()
 	const n = "BenchmarkX-8"
-	wide := []string{"95 ns/op", "100 ns/op", "105 ns/op", "110 ns/op", "115 ns/op", "98 ns/op", "112 ns/op", "103 ns/op", "108 ns/op", "117 ns/op"}
+	wide := []string{"95 ns/op", "110 ns/op", "105 ns/op", "115 ns/op", "100 ns/op"}
 	for name, tc := range map[string]struct {
 		base2, head []string
 		metric      string
@@ -199,9 +202,9 @@ func TestExactMetrics(t *testing.T) {
 func TestAllocations(t *testing.T) {
 	t.Parallel()
 	const n = "BenchmarkX-8"
-	// allocs returns ten samples of 100 ns/op and the given allocations, cycling through them.
+	// allocs returns samples of 100 ns/op and the given allocations, cycling through them.
 	allocs := func(counts ...int) []string {
-		out := make([]string, 10)
+		out := make([]string, samples)
 		for i := range out {
 			out[i] = fmt.Sprintf("100 ns/op\t%d allocs/op", counts[i%len(counts)])
 		}
@@ -212,15 +215,15 @@ func TestAllocations(t *testing.T) {
 		base, head []string
 		want       verdict
 	}{
-		"a deterministic base, one more":       {allocs(4521), allocs(4522), regress},
-		"a deterministic base, as many":        {allocs(4521), allocs(4521), pass},
-		"a wobbling base, head within it":      {allocs(4521, 4522), allocs(4522), pass},
-		"a wobbling base, head well above it":  {allocs(4521, 4522), allocs(5000), regress},
-		"a zero base, one more":                {allocs(0), allocs(1), regress},
-		"a zero base, still none":              {allocs(0), allocs(0), pass},
-		"a wobbling zero base, head above it":  {allocs(0, 1), allocs(2), regress},
-		"a wobbling zero base, head inside it": {allocs(0, 1), allocs(0), pass},
-		"a varying base with a zero median":    {allocs(0, 0, 1, 0, 0, 1, 0, 1, 0, 1), allocs(0, 0, 100, 0, 0, 100, 0, 100, 0, 100), inconclusive},
+		"a deterministic base, one more":      {allocs(4521), allocs(4522), regress},
+		"a deterministic base, as many":       {allocs(4521), allocs(4521), pass},
+		"a wobbling base, head within it":     {allocs(4521, 4522), allocs(4522), pass},
+		"a wobbling base, head well above it": {allocs(4521, 4522), allocs(5000), regress},
+		"a zero base, one more":               {allocs(0), allocs(1), regress},
+		"a zero base, still none":             {allocs(0), allocs(0), pass},
+		"a wobbling base, head above it":      {allocs(1, 0), allocs(2), regress},
+		"a wobbling base, head inside it":     {allocs(1, 0), allocs(0), pass},
+		"a varying base with a zero median":   {allocs(0, 0, 1, 0, 0, 1, 0, 1, 0, 1), allocs(0, 0, 100, 0, 0, 100, 0, 100, 0, 100), inconclusive},
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
@@ -285,20 +288,21 @@ func TestRunParameters(t *testing.T) {
 	params := func(benchtime, count, scale string) string {
 		return fmt.Sprintf("benchtime: %s\ncount: %s\ncpus: 8\nscale: %s\n", benchtime, count, scale)
 	}
-	ten, five := map[string][]string{n: around(100)}, map[string][]string{n: around(100)[:5]}
-	base := params("1s", "10", "small") + output(ten)
+	full, fewer := map[string][]string{n: around(100)}, map[string][]string{n: around(100)[:3]}
+	count := fmt.Sprint(samples)
+	base := params("1s", count, "small") + output(full)
 	for name, tc := range map[string]struct {
 		head string
 		want verdict
 	}{
-		"every parameter the same": {params("1s", "10", "small") + output(ten), pass},
-		"another benchtime":        {params("2s", "10", "small") + output(ten), fail},
-		"another count":            {params("1s", "5", "small") + output(five), fail},
-		"another scale":            {params("1s", "10", "medium") + output(ten), fail},
-		"no parameters at all":     {output(ten), fail},
-		"fewer samples":            {params("1s", "10", "small") + output(five), fail},
+		"every parameter the same": {params("1s", count, "small") + output(full), pass},
+		"another benchtime":        {params("2s", count, "small") + output(full), fail},
+		"another count":            {params("1s", "3", "small") + output(fewer), fail},
+		"another scale":            {params("1s", count, "medium") + output(full), fail},
+		"no parameters at all":     {output(full), fail},
+		"fewer samples":            {params("1s", count, "small") + output(fewer), fail},
 		"a parameter changing within the file": {
-			params("1s", "10", "small") + output(map[string][]string{n: around(100)[:5]}) + params("2s", "10", "small") + output(five), fail,
+			params("1s", count, "small") + output(map[string][]string{n: around(100)[:2]}) + params("2s", count, "small") + output(fewer), fail,
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
