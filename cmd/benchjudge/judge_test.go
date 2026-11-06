@@ -169,7 +169,7 @@ func TestExactMetrics(t *testing.T) {
 	t.Parallel()
 	const n = "BenchmarkX-8"
 	lines := func(b, allocs int) []string {
-		out := make([]string, 10)
+		out := make([]string, samples)
 		for i := range out {
 			out[i] = fmt.Sprintf("%d ns/op\t%d B/op\t%d allocs/op", 100+i%2, b, allocs)
 		}
@@ -239,9 +239,9 @@ func TestRateIsJudgedAsItsInverse(t *testing.T) {
 	t.Parallel()
 	const n = "BenchmarkPublish-8"
 	rate := func(v float64) []string {
-		out := make([]string, 10)
+		out := make([]string, samples)
 		for i := range out {
-			out[i] = fmt.Sprintf("1000 ns/op\t%.1f records/s", v*(1+float64(i-5)/1000))
+			out[i] = fmt.Sprintf("1000 ns/op\t%.1f records/s", v*(1+float64(i-samples/2)/1000))
 		}
 
 		return out

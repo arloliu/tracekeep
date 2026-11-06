@@ -69,3 +69,8 @@ make test         # every module, race, -short
 make bench
 make bench-smoke  # every benchmark once at its small size, as CI runs them
 ```
+
+The load harness (`internal/service/load_test.go`, its modes in its header) runs alone, without `-race`, only when `TRACEKEEP_LOAD` names a mode:
+`production` runs ingest's flush, `ack_wait` and pending budgets scaled by 1/30 in a few minutes and fails unless its main case is sustained and its control reaches its budget,
+`production-real` the unscaled times for a phase gate (T-61);
+`TRACEKEEP_LOAD_ENGINE=mariadb` runs any mode on the server `TRACEKEEP_MARIADB_DSN` names, where the SQL counts are unavailable.
