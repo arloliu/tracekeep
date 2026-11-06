@@ -218,7 +218,7 @@ func TestClaimReadBackOnTheRealBus(t *testing.T) {
 				cb.leave = tt.leave(b, t)
 			}
 			// A read the SDK cannot tell from a timeout would cost it a whole τ per attempt.
-			p, err := producer.New(producer.Config{SubjectPrefix: prefix, ClaimBucket: bucket, Tunables: producer.Tunables{PublishTimeout: 2 * time.Second}},
+			p, err := producer.New(producer.Config{SubjectPrefix: prefix, ClaimBucket: bucket, Source: "test-source", Tunables: producer.Tunables{PublishTimeout: 2 * time.Second}},
 				producer.WithBus(cb))
 			if err != nil {
 				t.Fatalf("New: %v", err)
@@ -226,7 +226,7 @@ func TestClaimReadBackOnTheRealBus(t *testing.T) {
 			t.Cleanup(func() { _ = p.Close() })
 			ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 			defer cancel()
-			if err := p.Begin(ctx, producer.CaptureDescriptor{ToolID: "T1", DeviceName: "eqp"}); err != nil {
+			if err := p.Begin(ctx, producer.CaptureDescriptor{EquipmentID: "T1", Device: "eqp"}); err != nil {
 				t.Fatalf("Begin: %v", err)
 			}
 			rec := link.Recorder(p)

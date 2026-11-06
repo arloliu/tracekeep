@@ -38,7 +38,7 @@ func returns(t *testing.T, done <-chan struct{}, what string) {
 func TestCallbackWaitsOnlyForThePublishersInspection(t *testing.T) {
 	t.Parallel()
 	bus := newRecBus()
-	p, err := New(Config{SubjectPrefix: "tpk", ClaimBucket: "b"}, WithBus(bus))
+	p, err := New(Config{SubjectPrefix: "tpk", ClaimBucket: "b", Source: "test-source"}, WithBus(bus))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -113,7 +113,7 @@ func TestPublishersExternalWaitsHoldNoCallback(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			bus := newWaitBus(tt.publish)
-			p, err := New(Config{SubjectPrefix: "tpk", ClaimBucket: "b", Tunables: Tunables{PublishTimeout: time.Minute}}, WithBus(bus))
+			p, err := New(Config{SubjectPrefix: "tpk", ClaimBucket: "b", Source: "test-source", Tunables: Tunables{PublishTimeout: time.Minute}}, WithBus(bus))
 			if err != nil {
 				t.Fatal(err)
 			}

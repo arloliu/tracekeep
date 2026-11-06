@@ -27,7 +27,7 @@ type Problem struct {
 // the parking stream against the traffic stream (docs/specs/tracekeep/parking.md *Parking*),
 // max_payload against tracepack's minimum, the connection's TLS and reconnect buffer,
 // and the current capture's start message within the header-block and max_payload limits.
-// Begin and Rotate already refuse a descriptor without tool_id or recorder_instance_name.
+// New refuses a Config without a source, and Begin and Rotate a descriptor without equipment_id or device.
 // Encryption at rest is a deployment assurance no client can see, so Preflight does not check it.
 // It never creates or alters a stream; an empty list means it found nothing wrong.
 //

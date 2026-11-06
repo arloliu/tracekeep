@@ -6,7 +6,9 @@ import (
 	"errors"
 	"fmt"
 	"hash"
+	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/arloliu/go-secs/tracepack"
 	tpbus "github.com/arloliu/go-secs/tracepack/bus"
@@ -18,7 +20,7 @@ import (
 var ErrInvalidDescriptor = errors.New("producer: invalid capture descriptor")
 
 // recorderNamespace is the fixed namespace UUID of every recorder_instance_id the SDK derives.
-// Changing it changes every device's identity, so it never changes.
+// Changing it changes every series' identity, so it never changes.
 var recorderNamespace = tracepack.UUID{
 	0xe4, 0xbb, 0x8a, 0x4e, 0x8a, 0x26, 0x46, 0xc0, 0x8b, 0x44, 0x79, 0x99, 0x4b, 0xc4, 0x0a, 0x3e,
 }
@@ -27,16 +29,18 @@ var recorderNamespace = tracepack.UUID{
 // the descriptor values it owns (docs/specs/tracekeep/producer.md §4.5).
 //
 // The SDK owns the rest of the published descriptor:
-// recorder_instance_id, derived from ToolID and DeviceName, previous_capture_id, the capture origin,
+// recorder_instance_id, derived from EquipmentID, Device and Config.Source, which it writes as recorder_instance_name,
+// previous_capture_id, the previous capture of the same series, the capture origin,
 // and the values fixed by how the SDK observes:
 // HSMS-SS, raw-stream, the host vantage (the gateway is the host endpoint of the connection it records),
 // capture clock, subscribed lifecycle coverage, and quality evaluated (the SDK sets each stored quality bit where it holds).
 // A pointer or slice field is published only when it is non-nil or non-empty.
 type CaptureDescriptor struct {
-	// ToolID is the gateway's configured toolID (tool_id); required.
-	ToolID string
-	// DeviceName is the eqp-hsms device name (recorder_instance_name); required and never empty.
-	DeviceName string
+	// EquipmentID names the equipment (equipment_id); the gateway maps its own term to it; required.
+	EquipmentID string
+	// Device is the unit of the equipment the recorded link serves, the eqp-hsms device name of a unit's connection (device);
+	// required, valid UTF-8 of 1 to 255 bytes and not whitespace only.
+	Device string
 
 	// DeviceID is the configured device ID (device_id).
 	DeviceID *uint64
@@ -119,6 +123,24 @@ func thinningEntries(r *SamplingRule) []tracepack.Thinning {
 	return []tracepack.Thinning{{Stream: 1, Function: 3, Source: src}, {Stream: 1, Function: 4, Source: src}}
 }
 
+// maxIdentityBytes bounds a device and a source, the catalog's column width (docs/specs/tracekeep/producer.md §4.5).
+const maxIdentityBytes = 255
+
+// checkIdentity reports whether s is a device or a source tracekeep accepts:
+// valid UTF-8 of 1 to maxIdentityBytes bytes, not whitespace only.
+func checkIdentity(s string) error {
+	switch {
+	case len(s) > maxIdentityBytes:
+		return fmt.Errorf("%d bytes, at most %d", len(s), maxIdentityBytes)
+	case !utf8.ValidString(s):
+		return errors.New("not valid UTF-8")
+	case strings.TrimSpace(s) == "":
+		return errors.New("empty or whitespace only")
+	}
+
+	return nil
+}
+
 func writeLenPrefixed(h hash.Hash, s string) {
 	var n [4]byte
 	binary.BigEndian.PutUint32(n[:], uint32(len(s))) //nolint:gosec // a descriptor string is far below 4 GiB
@@ -128,15 +150,15 @@ func writeLenPrefixed(h hash.Hash, s string) {
 
 // encodeStartDescriptor encodes the descriptor a capture's start publishes in Tpk-Capture-Descriptor.
 // origin is the capture's start: its wall clock is capture_origin_utc_ns, and every mono_ns is measured from it.
-// The caller has run Validate on d, and tolerance (ε) is positive.
-func encodeStartDescriptor(d *CaptureDescriptor, previous *tracepack.UUID, origin time.Time, tolerance time.Duration, recorder string) ([]byte, error) {
-	name := d.DeviceName
+// The caller has run Validate on d, and tolerance (ε) is positive; source is the producer's Config.Source.
+func encodeStartDescriptor(d *CaptureDescriptor, source string, previous *tracepack.UUID, origin time.Time, tolerance time.Duration, recorder string) ([]byte, error) {
+	device := d.Device
 	originNs := origin.UnixNano()
 	originMono := int64(0)
 	toleranceNs := uint64(tolerance) //nolint:gosec // the caller passes a positive tolerance
 
 	m := &tracepack.PackMeta{
-		ToolID:               d.ToolID,
+		EquipmentID:          d.EquipmentID,
 		Transport:            tracepack.TransportHSMSSS,
 		CaptureMethod:        tracepack.CaptureMethodRawStream,
 		Vantage:              tracepack.VantageHost,
@@ -147,8 +169,9 @@ func encodeStartDescriptor(d *CaptureDescriptor, previous *tracepack.UUID, origi
 		ClockStepToleranceNs: &toleranceNs,
 		LifecycleCoverage:    tracepack.LifecycleCoverageSubscribed,
 		QualityEvaluated:     true,
-		RecorderInstanceID:   d.RecorderInstanceID(),
-		RecorderInstanceName: &name,
+		RecorderInstanceID:   d.RecorderInstanceID(source),
+		RecorderInstanceName: &source,
+		Device:               &device,
 		PreviousCaptureID:    previous,
 		DeviceID:             d.DeviceID,
 		HSMSTimers:           d.HSMSTimers,
@@ -168,11 +191,11 @@ func encodeStartDescriptor(d *CaptureDescriptor, previous *tracepack.UUID, origi
 // Returns:
 //   - error: nil, or an error wrapping ErrInvalidDescriptor naming the first value it refuses.
 func (d *CaptureDescriptor) Validate() error {
-	if _, err := tpbus.ToolToken(d.ToolID); err != nil {
-		return fmt.Errorf("%w: tool_id: %w", ErrInvalidDescriptor, err)
+	if _, err := tpbus.EquipmentToken(d.EquipmentID); err != nil {
+		return fmt.Errorf("%w: equipment_id: %w", ErrInvalidDescriptor, err)
 	}
-	if d.DeviceName == "" {
-		return fmt.Errorf("%w: recorder_instance_name is empty", ErrInvalidDescriptor)
+	if err := checkIdentity(d.Device); err != nil {
+		return fmt.Errorf("%w: device: %w", ErrInvalidDescriptor, err)
 	}
 	// The codec does not range-check this enum, and it is the only one the integrator sets.
 	if d.EquipmentConnectMode != nil && *d.EquipmentConnectMode > tracepack.SocketRoleActive {
@@ -184,22 +207,29 @@ func (d *CaptureDescriptor) Validate() error {
 		}
 	}
 	// The descriptor codec checks the remaining values, UTF-8 included, as a consumer's decoder will.
-	if _, err := encodeStartDescriptor(d, nil, time.Unix(0, 0), tracepack.DefaultClockStepTolerance, "validate"); err != nil {
+	if _, err := encodeStartDescriptor(d, "validate", nil, time.Unix(0, 0), tracepack.DefaultClockStepTolerance, "validate"); err != nil {
 		return fmt.Errorf("%w: %w", ErrInvalidDescriptor, err)
 	}
 
 	return nil
 }
 
-// RecorderInstanceID returns the recorder_instance_id of d's device:
-// the UUIDv5 (RFC 9562) under the SDK's fixed namespace of ToolID and DeviceName,
-// each prefixed by its byte length as a 4-byte big-endian integer, so no choice of characters makes two pairs collide.
+// RecorderInstanceID returns the recorder_instance_id of the series source records of d's device:
+// the UUIDv5 (RFC 9562) under the SDK's fixed namespace of EquipmentID, Device and source, in that order,
+// each prefixed by its byte length as a 4-byte big-endian integer, so no choice of characters makes two triples collide.
 // It depends on nothing else, so it is stable across restarts, rotations and leadership changes.
-func (d *CaptureDescriptor) RecorderInstanceID() tracepack.UUID {
+func (d *CaptureDescriptor) RecorderInstanceID(source string) tracepack.UUID {
+	return RecorderInstanceID(d.EquipmentID, d.Device, source)
+}
+
+// RecorderInstanceID returns the recorder_instance_id of the series one source records of one device of one equipment
+// (docs/specs/tracekeep/producer.md §4.5), which the service checks at admission.
+func RecorderInstanceID(equipmentID, device, source string) tracepack.UUID {
 	h := sha1.New() //nolint:gosec // see the import
 	h.Write(recorderNamespace[:])
-	writeLenPrefixed(h, d.ToolID)
-	writeLenPrefixed(h, d.DeviceName)
+	writeLenPrefixed(h, equipmentID)
+	writeLenPrefixed(h, device)
+	writeLenPrefixed(h, source)
 
 	var u tracepack.UUID
 	copy(u[:], h.Sum(nil))

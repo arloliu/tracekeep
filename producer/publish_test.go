@@ -85,7 +85,7 @@ func newHarness(t testing.TB, tun producer.Tunables, opts ...producer.Option) *h
 	bus := producertest.NewBus()
 	m := &metrics{counts: map[string]float64{}}
 	p, err := producer.New(
-		producer.Config{SubjectPrefix: "tpk", ClaimBucket: bucket, Tunables: tun},
+		producer.Config{SubjectPrefix: "tpk", ClaimBucket: bucket, Source: "test-source", Tunables: tun},
 		append([]producer.Option{producer.WithBus(bus), producer.WithMetrics(m)}, opts...)...,
 	)
 	if err != nil {
@@ -98,7 +98,7 @@ func newHarness(t testing.TB, tun producer.Tunables, opts ...producer.Option) *h
 
 func (h *harness) begin() *core.Capture {
 	h.t.Helper()
-	if err := h.p.Begin(h.t.Context(), producer.CaptureDescriptor{ToolID: "T1", DeviceName: "eqp"}); err != nil {
+	if err := h.p.Begin(h.t.Context(), producer.CaptureDescriptor{EquipmentID: "T1", Device: "eqp"}); err != nil {
 		h.t.Fatalf("Begin: %v", err)
 	}
 
@@ -172,7 +172,7 @@ func TestStartAndRecordsArePublished(t *testing.T) {
 	if msgs[0].ExpectStream != busconfig.DefaultTrafficStream {
 		t.Errorf("expected stream %q", msgs[0].ExpectStream)
 	}
-	if m, err := tracepack.DecodeDescriptor(start.Descriptor); err != nil || m.ToolID != "T1" {
+	if m, err := tracepack.DecodeDescriptor(start.Descriptor); err != nil || m.EquipmentID != "T1" {
 		t.Errorf("start descriptor: %v, %v", m, err)
 	}
 	if desc, _ := base64.StdEncoding.DecodeString(msgs[0].Header[tpbus.HeaderDescriptor]); !bytes.Equal(desc, start.Descriptor) {
@@ -711,7 +711,7 @@ func TestEndCoversRotatedCaptures(t *testing.T) {
 		return nil
 	})
 	sw := "v2"
-	if err := h.p.Rotate(t.Context(), producer.CaptureDescriptor{ToolID: "T1", DeviceName: "eqp", HostSoftware: &sw}); err != nil {
+	if err := h.p.Rotate(t.Context(), producer.CaptureDescriptor{EquipmentID: "T1", Device: "eqp", HostSoftware: &sw}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -795,7 +795,7 @@ func TestStartWaitsForAKnownMaxPayload(t *testing.T) {
 	bus.SetMaxPayload(0)
 	log := warnLog{warned: make(chan string, 1)}
 	p, err := producer.New(
-		producer.Config{SubjectPrefix: "tpk", ClaimBucket: bucket},
+		producer.Config{SubjectPrefix: "tpk", ClaimBucket: bucket, Source: "test-source"},
 		producer.WithBus(bus), producer.WithLogger(log),
 	)
 	if err != nil {

@@ -43,11 +43,11 @@ func TestBlockedLoggerStallsOnlyTheSink(t *testing.T) {
 	t.Parallel()
 
 	log := &blockedLog{entered: make(chan struct{}, 1), release: make(chan struct{})}
-	p, err := New(Config{SubjectPrefix: "tpk", ClaimBucket: "b"}, WithBus(newRecBus()), WithLogger(log))
+	p, err := New(Config{SubjectPrefix: "tpk", ClaimBucket: "b", Source: "test-source"}, WithBus(newRecBus()), WithLogger(log))
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	if err := p.Begin(t.Context(), CaptureDescriptor{ToolID: "T1", DeviceName: "eqp"}); err != nil {
+	if err := p.Begin(t.Context(), CaptureDescriptor{EquipmentID: "T1", Device: "eqp"}); err != nil {
 		t.Fatalf("Begin: %v", err)
 	}
 	<-log.entered // the rotation's log line holds the sink inside the Logger
@@ -55,7 +55,7 @@ func TestBlockedLoggerStallsOnlyTheSink(t *testing.T) {
 	for range 4 * sinkEvents { // more than the queue holds: the surplus is dropped, never waited for
 		sinkLogger{p}.Warn("producer: traffic connection lost")
 	}
-	if err := p.Rotate(t.Context(), CaptureDescriptor{ToolID: "T2", DeviceName: "eqp"}); err != nil {
+	if err := p.Rotate(t.Context(), CaptureDescriptor{EquipmentID: "T2", Device: "eqp"}); err != nil {
 		t.Fatalf("Rotate while the Logger is blocked: %v", err)
 	}
 
@@ -159,11 +159,11 @@ func TestCurrentCaptureGaugeSurvivesAFullSinkQueue(t *testing.T) {
 	log := &blockedLog{entered: make(chan struct{}, 1), release: make(chan struct{})}
 	log.pass.Store(true)
 	m := &gaugeMetrics{set: map[string]bool{}, applied: make(chan map[string]string, 1)}
-	p, err := New(Config{SubjectPrefix: "tpk", ClaimBucket: "b"}, WithBus(newRecBus()), WithLogger(log), WithMetrics(m))
+	p, err := New(Config{SubjectPrefix: "tpk", ClaimBucket: "b", Source: "test-source"}, WithBus(newRecBus()), WithLogger(log), WithMetrics(m))
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	if err := p.Begin(t.Context(), CaptureDescriptor{ToolID: "T1", DeviceName: "eqp"}); err != nil {
+	if err := p.Begin(t.Context(), CaptureDescriptor{EquipmentID: "T1", Device: "eqp"}); err != nil {
 		t.Fatalf("Begin: %v", err)
 	}
 	// Unless the gauge is seen set, its absence after Close proves nothing.

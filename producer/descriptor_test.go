@@ -3,6 +3,7 @@ package producer
 import (
 	"errors"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -12,18 +13,26 @@ import (
 func TestRecorderInstanceID(t *testing.T) {
 	t.Parallel()
 
-	// Expected values computed independently: SHA-1 over the namespace and the length-prefixed pair, RFC 9562 §5.5.
+	// Expected values computed independently: SHA-1 over the namespace and the length-prefixed triple, RFC 9562 §5.5.
+	// Each component changes the id, and the length prefixes keep "ab"+"c"+"d", "a"+"bc"+"d" and "a"+"b"+"cd" apart.
 	cases := []struct {
-		tool, device, want string
+		equipment, device, source, want string
 	}{
-		{"T1", "eqp", "b6f2d47e-4c06-5b99-89ee-006b945d34cf"},
-		{"ab", "c", "6884448a-f7da-55e4-afe9-5e7284e5f888"},
-		{"a", "bc", "fa9c19ad-2c40-5f53-b714-6a0c73915e0f"},
+		{"T1", "eqp", "gateway-a", "b8fe2295-6a3a-541c-902e-813a16cb2814"},
+		{"T1", "eqp", "gateway-b", "5fd76a73-7c3f-5869-9e25-efbdcdc1f67a"},
+		{"T1", "tlp", "gateway-a", "6ebc282f-a50f-5515-9ff8-5ab87ea7ce23"},
+		{"T2", "eqp", "gateway-a", "1631afc6-f2a3-5317-8d85-00d98277af5e"},
+		{"ab", "c", "d", "328fc04f-2688-5257-a904-40417ff4bd6a"},
+		{"a", "bc", "d", "3ea16f2a-0be7-5406-9bc3-3457178f568d"},
+		{"a", "b", "cd", "d35c08bf-d4de-5b45-bc99-e97e006cd8c3"},
 	}
 	for _, c := range cases {
-		d := CaptureDescriptor{ToolID: c.tool, DeviceName: c.device}
-		if got := d.RecorderInstanceID().String(); got != c.want {
-			t.Errorf("RecorderInstanceID(%q, %q) = %s, want %s", c.tool, c.device, got, c.want)
+		d := CaptureDescriptor{EquipmentID: c.equipment, Device: c.device}
+		if got := d.RecorderInstanceID(c.source).String(); got != c.want {
+			t.Errorf("RecorderInstanceID(%q, %q, %q) = %s, want %s", c.equipment, c.device, c.source, got, c.want)
+		}
+		if got := RecorderInstanceID(c.equipment, c.device, c.source).String(); got != c.want {
+			t.Errorf("RecorderInstanceID func(%q, %q, %q) = %s, want %s", c.equipment, c.device, c.source, got, c.want)
 		}
 	}
 }
@@ -36,16 +45,21 @@ func TestCaptureDescriptorValidate(t *testing.T) {
 		d    CaptureDescriptor
 		ok   bool
 	}{
-		{"valid", CaptureDescriptor{ToolID: "T1", DeviceName: "eqp"}, true},
-		{"no tool", CaptureDescriptor{DeviceName: "eqp"}, false},
-		{"tool a key cannot hold", CaptureDescriptor{ToolID: "..", DeviceName: "eqp"}, false},
-		{"no device", CaptureDescriptor{ToolID: "T1"}, false},
-		{"connect mode out of range", CaptureDescriptor{ToolID: "T1", DeviceName: "eqp", EquipmentConnectMode: new(tracepack.SocketRole(99))}, false},
-		{"sampling rule", CaptureDescriptor{ToolID: "T1", DeviceName: "eqp", Thinning: &SamplingRule{KeepEveryN: 10, KeepInterval: 1500 * time.Millisecond}}, true},
-		{"default sampling rule", CaptureDescriptor{ToolID: "T1", DeviceName: "eqp", Thinning: &SamplingRule{}}, true},
-		{"negative keep every", CaptureDescriptor{ToolID: "T1", DeviceName: "eqp", Thinning: &SamplingRule{KeepEveryN: -1}}, false},
-		{"negative keep interval", CaptureDescriptor{ToolID: "T1", DeviceName: "eqp", Thinning: &SamplingRule{KeepInterval: -time.Second}}, false},
-		{"keep interval below a millisecond", CaptureDescriptor{ToolID: "T1", DeviceName: "eqp", Thinning: &SamplingRule{KeepInterval: 1500 * time.Microsecond}}, false},
+		{"valid", CaptureDescriptor{EquipmentID: "T1", Device: "eqp"}, true},
+		{"no equipment", CaptureDescriptor{Device: "eqp"}, false},
+		{"equipment a key cannot hold", CaptureDescriptor{EquipmentID: "..", Device: "eqp"}, false},
+		{"no device", CaptureDescriptor{EquipmentID: "T1"}, false},
+		{"whitespace device", CaptureDescriptor{EquipmentID: "T1", Device: " \t"}, false},
+		{"invalid UTF-8 device", CaptureDescriptor{EquipmentID: "T1", Device: "e\xffq"}, false},
+		{"256-byte device", CaptureDescriptor{EquipmentID: "T1", Device: strings.Repeat("d", 256)}, false},
+		{"255-byte multibyte device", CaptureDescriptor{EquipmentID: "T1", Device: strings.Repeat("é", 127) + "d"}, true},
+		{"device with surrounding spaces", CaptureDescriptor{EquipmentID: "T1", Device: " eqp "}, true},
+		{"connect mode out of range", CaptureDescriptor{EquipmentID: "T1", Device: "eqp", EquipmentConnectMode: new(tracepack.SocketRole(99))}, false},
+		{"sampling rule", CaptureDescriptor{EquipmentID: "T1", Device: "eqp", Thinning: &SamplingRule{KeepEveryN: 10, KeepInterval: 1500 * time.Millisecond}}, true},
+		{"default sampling rule", CaptureDescriptor{EquipmentID: "T1", Device: "eqp", Thinning: &SamplingRule{}}, true},
+		{"negative keep every", CaptureDescriptor{EquipmentID: "T1", Device: "eqp", Thinning: &SamplingRule{KeepEveryN: -1}}, false},
+		{"negative keep interval", CaptureDescriptor{EquipmentID: "T1", Device: "eqp", Thinning: &SamplingRule{KeepInterval: -time.Second}}, false},
+		{"keep interval below a millisecond", CaptureDescriptor{EquipmentID: "T1", Device: "eqp", Thinning: &SamplingRule{KeepInterval: 1500 * time.Microsecond}}, false},
 	}
 	for _, c := range cases {
 		err := c.d.Validate()
@@ -66,8 +80,8 @@ func TestStartDescriptorRoundTrip(t *testing.T) {
 	devID := uint64(7)
 	t3 := uint64(45000)
 	d := CaptureDescriptor{
-		ToolID:               "T1",
-		DeviceName:           "eqp",
+		EquipmentID:          "T1",
+		Device:               "eqp",
 		DeviceID:             &devID,
 		EquipmentEndpoint:    &endpoint,
 		EquipmentConnectMode: &mode,
@@ -76,7 +90,7 @@ func TestStartDescriptorRoundTrip(t *testing.T) {
 	prev := tracepack.UUID{1}
 	origin := time.Unix(1_800_000_000, 5)
 
-	b, err := encodeStartDescriptor(&d, &prev, origin, tracepack.DefaultClockStepTolerance, "tracekeep-producer/test")
+	b, err := encodeStartDescriptor(&d, "test-source", &prev, origin, tracepack.DefaultClockStepTolerance, "tracekeep-producer/test")
 	if err != nil {
 		t.Fatalf("encodeStartDescriptor: %v", err)
 	}
@@ -85,12 +99,12 @@ func TestStartDescriptorRoundTrip(t *testing.T) {
 		t.Fatalf("DecodeDescriptor: %v", err)
 	}
 
-	name := "eqp"
+	source, device := "test-source", "eqp"
 	originNs := origin.UnixNano()
 	originMono := int64(0)
 	tolerance := uint64(tracepack.DefaultClockStepTolerance)
 	want := &tracepack.PackMeta{
-		ToolID:               "T1",
+		EquipmentID:          "T1",
 		Transport:            tracepack.TransportHSMSSS,
 		CaptureMethod:        tracepack.CaptureMethodRawStream,
 		Vantage:              tracepack.VantageHost,
@@ -101,8 +115,9 @@ func TestStartDescriptorRoundTrip(t *testing.T) {
 		ClockStepToleranceNs: &tolerance,
 		LifecycleCoverage:    tracepack.LifecycleCoverageSubscribed,
 		QualityEvaluated:     true,
-		RecorderInstanceID:   tracepack.UUID{0xb6, 0xf2, 0xd4, 0x7e, 0x4c, 0x06, 0x5b, 0x99, 0x89, 0xee, 0x00, 0x6b, 0x94, 0x5d, 0x34, 0xcf},
-		RecorderInstanceName: &name,
+		RecorderInstanceID:   tracepack.UUID{0x74, 0xd8, 0xfc, 0xf2, 0xe9, 0x2e, 0x53, 0x07, 0xa7, 0x50, 0xc9, 0x55, 0xee, 0xf4, 0x3c, 0x9d},
+		RecorderInstanceName: &source,
+		Device:               &device,
 		PreviousCaptureID:    &prev,
 		DeviceID:             &devID,
 		HSMSTimers:           &tracepack.HSMSTimers{T3Ms: &t3},
@@ -117,8 +132,8 @@ func TestStartDescriptorRoundTrip(t *testing.T) {
 func TestStartDescriptorWithoutPrevious(t *testing.T) {
 	t.Parallel()
 
-	d := CaptureDescriptor{ToolID: "T1", DeviceName: "eqp"}
-	b, err := encodeStartDescriptor(&d, nil, time.Unix(1_800_000_000, 0), tracepack.DefaultClockStepTolerance, "tracekeep-producer/test")
+	d := CaptureDescriptor{EquipmentID: "T1", Device: "eqp"}
+	b, err := encodeStartDescriptor(&d, "test-source", nil, time.Unix(1_800_000_000, 0), tracepack.DefaultClockStepTolerance, "tracekeep-producer/test")
 	if err != nil {
 		t.Fatalf("encodeStartDescriptor: %v", err)
 	}
@@ -144,8 +159,8 @@ func TestSamplingRuleDeclaresItsEntries(t *testing.T) {
 		{&SamplingRule{KeepEveryN: 10, KeepInterval: 1500 * time.Millisecond}, "fdc interval polling by request origin; keep_every_n=10; keep_interval_ms=1500; abnormal=kept"},
 	}
 	for _, c := range cases {
-		d := CaptureDescriptor{ToolID: "T1", DeviceName: "eqp", Thinning: c.rule}
-		b, err := encodeStartDescriptor(&d, nil, time.Unix(1_800_000_000, 0), tracepack.DefaultClockStepTolerance, "tracekeep-producer/test")
+		d := CaptureDescriptor{EquipmentID: "T1", Device: "eqp", Thinning: c.rule}
+		b, err := encodeStartDescriptor(&d, "test-source", nil, time.Unix(1_800_000_000, 0), tracepack.DefaultClockStepTolerance, "tracekeep-producer/test")
 		if err != nil {
 			t.Fatalf("%+v: encodeStartDescriptor: %v", c.rule, err)
 		}

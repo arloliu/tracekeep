@@ -73,14 +73,14 @@ func TestPublishWhileDisconnectedFailsAtOnce(t *testing.T) {
 	t.Cleanup(nc.Close)
 	log := newLog()
 	p, err := producer.New(
-		producer.Config{SubjectPrefix: prefix, ClaimBucket: bucket, Tunables: producer.Tunables{PublishTimeout: 30 * time.Second}},
+		producer.Config{SubjectPrefix: prefix, ClaimBucket: bucket, Source: "test-source", Tunables: producer.Tunables{PublishTimeout: 30 * time.Second}},
 		producer.WithConn(nc), producer.WithLogger(log),
 	)
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
 	t.Cleanup(func() { _ = p.Close() })
-	if err := p.Begin(t.Context(), producer.CaptureDescriptor{ToolID: "T1", DeviceName: "eqp"}); err != nil {
+	if err := p.Begin(t.Context(), producer.CaptureDescriptor{EquipmentID: "T1", Device: "eqp"}); err != nil {
 		t.Fatalf("Begin: %v", err)
 	}
 	rec := link.Recorder(p)
@@ -112,14 +112,14 @@ func TestClaimObjectAtTheMinimumMaxPayload(t *testing.T) {
 	t.Parallel()
 
 	b := newBusWith(t, testbus.Options{MaxPayload: tpbus.MinMaxPayload}, nil, false)
-	p, err := producer.New(producer.Config{Servers: []string{b.url}, SubjectPrefix: prefix, ClaimBucket: bucket})
+	p, err := producer.New(producer.Config{Servers: []string{b.url}, SubjectPrefix: prefix, ClaimBucket: bucket, Source: "test-source"})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
 	t.Cleanup(func() { _ = p.Close() })
 	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 	defer cancel()
-	if err := p.Begin(ctx, producer.CaptureDescriptor{ToolID: "T1", DeviceName: "eqp"}); err != nil {
+	if err := p.Begin(ctx, producer.CaptureDescriptor{EquipmentID: "T1", Device: "eqp"}); err != nil {
 		t.Fatalf("Begin: %v", err)
 	}
 	rec := link.Recorder(p)
@@ -190,7 +190,7 @@ func TestPreflightOnALiveBus(t *testing.T) {
 				t.Fatalf("connect: %v", err)
 			}
 			t.Cleanup(nc.Close)
-			p, err := producer.New(producer.Config{SubjectPrefix: prefix, ClaimBucket: bucket}, producer.WithConn(nc))
+			p, err := producer.New(producer.Config{SubjectPrefix: prefix, ClaimBucket: bucket, Source: "test-source"}, producer.WithConn(nc))
 			if err != nil {
 				t.Fatalf("New: %v", err)
 			}
@@ -218,7 +218,7 @@ func TestPreflightRunsOnceConnected(t *testing.T) {
 
 	b := newBusWith(t, testbus.Options{}, nil, true)
 	log := newLog()
-	p, err := producer.New(producer.Config{Servers: []string{b.url}, SubjectPrefix: prefix, ClaimBucket: bucket}, producer.WithLogger(log))
+	p, err := producer.New(producer.Config{Servers: []string{b.url}, SubjectPrefix: prefix, ClaimBucket: bucket, Source: "test-source"}, producer.WithLogger(log))
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -236,13 +236,13 @@ func TestClaimBucketWithDirectReadsIsRefused(t *testing.T) {
 
 	b := newBusWith(t, testbus.Options{MaxPayload: tpbus.MinMaxPayload}, nil, true)
 	log := newLog()
-	p, err := producer.New(producer.Config{Servers: []string{b.url}, SubjectPrefix: prefix, ClaimBucket: bucket}, producer.WithLogger(log))
+	p, err := producer.New(producer.Config{Servers: []string{b.url}, SubjectPrefix: prefix, ClaimBucket: bucket, Source: "test-source"}, producer.WithLogger(log))
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
 	t.Cleanup(func() { _ = p.Close() })
 	log.wait(t, "producer: preflight [check bucket") // connected, and the bucket reported
-	if err := p.Begin(t.Context(), producer.CaptureDescriptor{ToolID: "T1", DeviceName: "eqp"}); err != nil {
+	if err := p.Begin(t.Context(), producer.CaptureDescriptor{EquipmentID: "T1", Device: "eqp"}); err != nil {
 		t.Fatalf("Begin: %v", err)
 	}
 	// At the minimum max_payload the start itself goes by claim-check.
@@ -275,14 +275,14 @@ func TestStartPublishMakesOneAttempt(t *testing.T) {
 	}
 	t.Cleanup(nc.Close)
 	log := newLog()
-	p, err := producer.New(producer.Config{SubjectPrefix: prefix, ClaimBucket: bucket}, producer.WithConn(nc), producer.WithLogger(log))
+	p, err := producer.New(producer.Config{SubjectPrefix: prefix, ClaimBucket: bucket, Source: "test-source"}, producer.WithConn(nc), producer.WithLogger(log))
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
 	t.Cleanup(func() { _ = p.Close() })
 
 	start := time.Now()
-	if err := p.Begin(t.Context(), producer.CaptureDescriptor{ToolID: "T1", DeviceName: "eqp"}); err != nil {
+	if err := p.Begin(t.Context(), producer.CaptureDescriptor{EquipmentID: "T1", Device: "eqp"}); err != nil {
 		t.Fatalf("Begin: %v", err)
 	}
 	line := log.wait(t, "producer: reserved record not accepted, retrying")

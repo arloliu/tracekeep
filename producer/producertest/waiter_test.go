@@ -235,7 +235,7 @@ func TestCompeteReleasesEveryReportAtOnce(t *testing.T) {
 // Competing reports reach the SDK's table, which keeps the first terminal outcome only.
 func TestCompetingReportsOnTheProducer(t *testing.T) {
 	t.Parallel()
-	p, err := producer.New(producer.Config{SubjectPrefix: "tpk", ClaimBucket: "tpk-objects"}, producer.WithBus(producertest.NewBus()))
+	p, err := producer.New(producer.Config{SubjectPrefix: "tpk", ClaimBucket: "tpk-objects", Source: "test-source"}, producer.WithBus(producertest.NewBus()))
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}

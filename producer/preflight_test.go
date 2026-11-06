@@ -148,7 +148,7 @@ func TestPreflightChecksTheCurrentStart(t *testing.T) {
 	var begun bool
 	for n := 3200; n > 0 && !begun; n -= 8 {
 		sw := strings.Repeat("x", n)
-		err := h.p.Begin(t.Context(), producer.CaptureDescriptor{ToolID: "T1", DeviceName: "eqp", HostSoftware: &sw})
+		err := h.p.Begin(t.Context(), producer.CaptureDescriptor{EquipmentID: "T1", Device: "eqp", HostSoftware: &sw})
 		switch {
 		case err == nil:
 			begun = true

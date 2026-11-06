@@ -42,7 +42,7 @@ func conn(t *testing.T, opts ...nats.Option) *nats.Conn {
 func TestNewRefusesAMissingBus(t *testing.T) {
 	t.Parallel()
 
-	_, err := producer.New(producer.Config{SubjectPrefix: "tpk", ClaimBucket: bucket})
+	_, err := producer.New(producer.Config{SubjectPrefix: "tpk", ClaimBucket: bucket, Source: "test-source"})
 	if !errors.Is(err, producer.ErrInvalidConfig) {
 		t.Fatalf("New without servers: %v, want ErrInvalidConfig", err)
 	}
@@ -51,7 +51,7 @@ func TestNewRefusesAMissingBus(t *testing.T) {
 func TestNewRefusesAnEnabledReconnectBuffer(t *testing.T) {
 	t.Parallel()
 
-	cfg := producer.Config{SubjectPrefix: "tpk", ClaimBucket: bucket}
+	cfg := producer.Config{SubjectPrefix: "tpk", ClaimBucket: bucket, Source: "test-source"}
 	if _, err := producer.New(cfg, producer.WithConn(conn(t))); !errors.Is(err, producer.ErrInvalidConfig) {
 		t.Fatalf("New with the default reconnect buffer: %v, want ErrInvalidConfig", err)
 	}
@@ -69,7 +69,7 @@ func TestNewRefusesAnEnabledReconnectBuffer(t *testing.T) {
 func TestNewRefusesConnAndBusTogether(t *testing.T) {
 	t.Parallel()
 
-	_, err := producer.New(producer.Config{SubjectPrefix: "tpk", ClaimBucket: bucket},
+	_, err := producer.New(producer.Config{SubjectPrefix: "tpk", ClaimBucket: bucket, Source: "test-source"},
 		producer.WithConn(conn(t, nats.ReconnectBufSize(-1))), producer.WithBus(producertest.NewBus()))
 	if !errors.Is(err, producer.ErrInvalidConfig) {
 		t.Fatalf("New with both: %v, want ErrInvalidConfig", err)
@@ -80,14 +80,14 @@ func TestNewRefusesConnAndBusTogether(t *testing.T) {
 func TestUnreachableClusterDelaysNothing(t *testing.T) {
 	t.Parallel()
 
-	p, err := producer.New(producer.Config{Servers: []string{deadURL(t)}, SubjectPrefix: "tpk", ClaimBucket: bucket})
+	p, err := producer.New(producer.Config{Servers: []string{deadURL(t)}, SubjectPrefix: "tpk", ClaimBucket: bucket, Source: "test-source"})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
 	t.Cleanup(func() { _ = p.Close() })
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
-	if err := p.Begin(ctx, producer.CaptureDescriptor{ToolID: "T1", DeviceName: "eqp"}); err != nil {
+	if err := p.Begin(ctx, producer.CaptureDescriptor{EquipmentID: "T1", Device: "eqp"}); err != nil {
 		t.Fatalf("Begin: %v", err)
 	}
 	if _, err := p.Preflight(ctx); err == nil {
@@ -120,7 +120,7 @@ func TestStalledHandshakeDelaysNothing(t *testing.T) {
 	}()
 
 	start := time.Now()
-	p, err := producer.New(producer.Config{Servers: []string{"nats://" + l.Addr().String()}, SubjectPrefix: "tpk", ClaimBucket: bucket})
+	p, err := producer.New(producer.Config{Servers: []string{"nats://" + l.Addr().String()}, SubjectPrefix: "tpk", ClaimBucket: bucket, Source: "test-source"})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -130,7 +130,7 @@ func TestStalledHandshakeDelaysNothing(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		t.Fatal("the dial never reached the server")
 	}
-	if err := p.Begin(t.Context(), producer.CaptureDescriptor{ToolID: "T1", DeviceName: "eqp"}); err != nil {
+	if err := p.Begin(t.Context(), producer.CaptureDescriptor{EquipmentID: "T1", Device: "eqp"}); err != nil {
 		t.Fatalf("Begin: %v", err)
 	}
 	if err := p.Close(); err != nil {

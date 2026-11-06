@@ -47,7 +47,9 @@ type Producer struct {
 	log      Logger
 	metrics  Metrics
 	recorder string
-	now      func() (wall, mono int64)
+	// source is Config.Source, the recording deployment every capture names.
+	source string
+	now    func() (wall, mono int64)
 
 	// lifeSem is the lifecycle lock, which serializes every rotation, whatever its cause;
 	// a one-slot semaphore, so a caller can give up at its deadline.
@@ -185,6 +187,7 @@ func New(cfg Config, opts ...Option) (*Producer, error) {
 		log:      o.log,
 		metrics:  o.metrics,
 		recorder: recorderName(),
+		source:   cfg.Source,
 		now:      core.Now,
 		sinkQuit: make(chan struct{}),
 		sinkDone: make(chan struct{}),

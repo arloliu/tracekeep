@@ -236,7 +236,10 @@ func (p *Producer) rotateLocked(ctx context.Context, d *CaptureDescriptor, previ
 	}
 	wall, mono := p.now()
 	id := p.ids.next()
-	desc, err := encodeStartDescriptor(d, previous, time.Unix(0, wall), p.tun.ClockStepTolerance, p.recorder)
+	if previous != nil && (d.EquipmentID != p.desc.EquipmentID || d.Device != p.desc.Device) {
+		previous = nil // another series starts: a predecessor names its own series only (producer.md §4.2)
+	}
+	desc, err := encodeStartDescriptor(d, p.source, previous, time.Unix(0, wall), p.tun.ClockStepTolerance, p.recorder)
 	if err != nil {
 		return fmt.Errorf("%w: %w", ErrInvalidDescriptor, err)
 	}
@@ -252,7 +255,7 @@ func (p *Producer) rotateLocked(ctx context.Context, d *CaptureDescriptor, previ
 		Sampling:    sampling(d.Thinning),
 	})
 	c.Descriptor = base64.StdEncoding.EncodeToString(desc)
-	if c.Subject, err = tpbus.Subject(p.prefix, d.ToolID, id); err != nil {
+	if c.Subject, err = tpbus.Subject(p.prefix, d.EquipmentID, id); err != nil {
 		return fmt.Errorf("%w: %w", ErrInvalidDescriptor, err)
 	}
 	if err := p.checkStartFits(c); err != nil {
@@ -304,7 +307,7 @@ func (p *Producer) checkStartFits(c *core.Capture) error {
 // descriptorKey encodes what a descriptor decides, without the origin and previous capture a rotation fills in,
 // so two descriptors that would publish the same values compare equal.
 func (p *Producer) descriptorKey(d *CaptureDescriptor) ([]byte, error) {
-	b, err := encodeStartDescriptor(d, nil, time.Unix(0, 0), p.tun.ClockStepTolerance, p.recorder)
+	b, err := encodeStartDescriptor(d, p.source, nil, time.Unix(0, 0), p.tun.ClockStepTolerance, p.recorder)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %w", ErrInvalidDescriptor, err)
 	}
@@ -319,8 +322,8 @@ func (p *Producer) setCurrentMetric(c *core.Capture, d *CaptureDescriptor) {
 	if c != nil {
 		cur = &map[string]string{
 			"capture_id":           c.ID.String(),
-			"tool_id":              d.ToolID,
-			"recorder_instance_id": d.RecorderInstanceID().String(),
+			"equipment_id":         d.EquipmentID,
+			"recorder_instance_id": d.RecorderInstanceID(p.source).String(),
 		}
 	}
 	p.gauge.Store(cur)

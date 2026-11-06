@@ -101,7 +101,7 @@ func closeAsync(p *Producer) <-chan struct{} {
 func newSinkProducer(t *testing.T, log Logger, m Metrics, opts ...Option) *Producer {
 	t.Helper()
 	all := append([]Option{WithBus(newRecBus()), WithLogger(log), WithMetrics(m)}, opts...)
-	p, err := New(Config{SubjectPrefix: "tpk", ClaimBucket: "b"}, all...)
+	p, err := New(Config{SubjectPrefix: "tpk", ClaimBucket: "b", Source: "test-source"}, all...)
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -133,7 +133,7 @@ func TestRotationsAreCountedWhileTheIntegratorIsHeld(t *testing.T) {
 			for i := range rotations {
 				d := testDescriptor()
 				if i%2 == 0 {
-					d.DeviceName = "eqp-2"
+					d.Device = "eqp-2"
 				}
 				if err := p.Rotate(t.Context(), d); err != nil {
 					t.Fatalf("Rotate %d: %v", i, err)

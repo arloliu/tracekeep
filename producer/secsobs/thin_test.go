@@ -21,12 +21,12 @@ func dataFrame(sb byte, stream, function byte, text ...byte) []byte {
 func thinningHarness(t *testing.T) *harness {
 	t.Helper()
 	bus := producertest.NewBus()
-	p, err := producer.New(producer.Config{SubjectPrefix: "tpk", ClaimBucket: "tpk-objects"}, producer.WithBus(bus))
+	p, err := producer.New(producer.Config{SubjectPrefix: "tpk", ClaimBucket: "tpk-objects", Source: "test-source"}, producer.WithBus(bus))
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = p.Close() })
-	d := producer.CaptureDescriptor{ToolID: "T1", DeviceName: "eqp", Thinning: &producer.SamplingRule{KeepEveryN: 1000, KeepInterval: time.Hour}}
+	d := producer.CaptureDescriptor{EquipmentID: "T1", Device: "eqp", Thinning: &producer.SamplingRule{KeepEveryN: 1000, KeepInterval: time.Hour}}
 	if err := p.Begin(t.Context(), d); err != nil {
 		t.Fatal(err)
 	}
@@ -68,12 +68,12 @@ func TestInboundPrimaryUnderAPollsKeyIsKept(t *testing.T) {
 func TestThinnedPollIsPublishedUnobserved(t *testing.T) {
 	t.Parallel()
 	bus := producertest.NewBus()
-	p, err := producer.New(producer.Config{SubjectPrefix: "tpk", ClaimBucket: "tpk-objects"}, producer.WithBus(bus))
+	p, err := producer.New(producer.Config{SubjectPrefix: "tpk", ClaimBucket: "tpk-objects", Source: "test-source"}, producer.WithBus(bus))
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = p.Close() })
-	d := producer.CaptureDescriptor{ToolID: "T1", DeviceName: "eqp", Thinning: &producer.SamplingRule{KeepEveryN: 2, KeepInterval: time.Hour}}
+	d := producer.CaptureDescriptor{EquipmentID: "T1", Device: "eqp", Thinning: &producer.SamplingRule{KeepEveryN: 2, KeepInterval: time.Hour}}
 	if err := p.Begin(t.Context(), d); err != nil {
 		t.Fatal(err)
 	}

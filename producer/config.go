@@ -40,8 +40,8 @@ const (
 // ErrInvalidConfig reports a Config New refuses.
 var ErrInvalidConfig = errors.New("producer: invalid config")
 
-// Config names the traffic bus and nothing about how to drive it (docs/specs/tracekeep/producer-sdk.md §4.7).
-// It holds no identity: every capture's descriptor carries tool_id and the device name.
+// Config names the traffic bus, nothing about how to drive it, and the source that records (docs/specs/tracekeep/producer-sdk.md §4.7);
+// every capture's descriptor carries its equipment ID and its device.
 type Config struct {
 	// Servers are the NATS URLs of the traffic cluster; unused with WithConn or WithBus.
 	Servers []string
@@ -58,6 +58,9 @@ type Config struct {
 	ParkedStream string
 	// ClaimBucket is the object store large records are put into.
 	ClaimBucket string
+	// Source names the deployment that records, stable across restarts and leader changes, never a host or pod name;
+	// required, valid UTF-8 of 1 to 255 bytes and not whitespace only. Every capture carries it as recorder_instance_name.
+	Source string
 	// Tunables bounds the lanes and the publisher; every zero field takes its default.
 	Tunables Tunables
 }
@@ -119,6 +122,9 @@ func (c *Config) validate() error {
 	}
 	if c.ClaimBucket == "" {
 		return fmt.Errorf("%w: claim bucket is empty", ErrInvalidConfig)
+	}
+	if err := checkIdentity(c.Source); err != nil {
+		return fmt.Errorf("%w: source: %w", ErrInvalidConfig, err)
 	}
 	if err := c.Auth.validate(); err != nil {
 		return err

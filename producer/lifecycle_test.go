@@ -13,7 +13,7 @@ import (
 
 func newTestProducer(t *testing.T, tun Tunables) *Producer {
 	t.Helper()
-	p, err := New(Config{SubjectPrefix: "tpk", ClaimBucket: "tpk-objects", Tunables: tun}, func(o *options) { o.noPublisher = true })
+	p, err := New(Config{SubjectPrefix: "tpk", ClaimBucket: "tpk-objects", Source: "test-source", Tunables: tun}, func(o *options) { o.noPublisher = true })
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -23,7 +23,7 @@ func newTestProducer(t *testing.T, tun Tunables) *Producer {
 }
 
 func testDescriptor() CaptureDescriptor {
-	return CaptureDescriptor{ToolID: "T1", DeviceName: "eqp"}
+	return CaptureDescriptor{EquipmentID: "T1", Device: "eqp"}
 }
 
 // nextReserved waits for the next reserved-lane entry, failing after a generous bound.
@@ -81,7 +81,7 @@ func TestBeginRefusesAnInvalidDescriptor(t *testing.T) {
 	t.Parallel()
 	p := newTestProducer(t, Tunables{})
 
-	if err := p.Begin(t.Context(), CaptureDescriptor{ToolID: "T1"}); !errors.Is(err, ErrInvalidDescriptor) {
+	if err := p.Begin(t.Context(), CaptureDescriptor{EquipmentID: "T1"}); !errors.Is(err, ErrInvalidDescriptor) {
 		t.Errorf("Begin = %v, want ErrInvalidDescriptor", err)
 	}
 	if p.rec.Current() != nil {
@@ -331,5 +331,54 @@ func TestContendedEndChangesNothing(t *testing.T) {
 	d.HostSoftware = &sw
 	if err := p.Rotate(t.Context(), d); err != nil {
 		t.Errorf("Rotate after a contended End = %v, want a rotation", err)
+	}
+}
+
+// A predecessor names its own series only: a rotation or a Begin after End to another equipment or device starts a series with none,
+// and one within the series chains (docs/specs/tracekeep/producer.md §4.2).
+func TestPreviousCaptureStaysWithinTheSeries(t *testing.T) {
+	t.Parallel()
+	p := newTestProducer(t, Tunables{})
+	if err := p.Begin(t.Context(), testDescriptor()); err != nil {
+		t.Fatal(err)
+	}
+
+	other := testDescriptor()
+	other.Device = "tlp"
+	if err := p.Rotate(t.Context(), other); err != nil {
+		t.Fatalf("Rotate to another device: %v", err)
+	}
+	second := p.rec.Current()
+	if prev := previousOf(t, second); prev != nil {
+		t.Errorf("another device's capture names previous %s, want none", prev)
+	}
+
+	sw := "eqp-hub 1.2.3"
+	other.HostSoftware = &sw
+	if err := p.Rotate(t.Context(), other); err != nil {
+		t.Fatalf("Rotate within the series: %v", err)
+	}
+	third := p.rec.Current()
+	if prev := previousOf(t, third); prev == nil || *prev != second.ID {
+		t.Errorf("previous_capture_id = %v, want %s", prev, second.ID)
+	}
+
+	p.End(t.Context())
+	equipment := testDescriptor()
+	equipment.EquipmentID = "T2"
+	if err := p.Begin(t.Context(), equipment); err != nil {
+		t.Fatal(err)
+	}
+	fourth := p.rec.Current()
+	if prev := previousOf(t, fourth); prev != nil {
+		t.Errorf("another equipment's capture after End names previous %s, want none", prev)
+	}
+
+	p.End(t.Context())
+	if err := p.Begin(t.Context(), equipment); err != nil {
+		t.Fatal(err)
+	}
+	if prev := previousOf(t, p.rec.Current()); prev == nil || *prev != fourth.ID {
+		t.Errorf("Begin after End in the series names previous %v, want %s", prev, fourth.ID)
 	}
 }
