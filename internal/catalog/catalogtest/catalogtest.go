@@ -1,4 +1,4 @@
-// Package catalogtest opens fresh, migrated catalogs for the tests of the packages that use the catalog,
+// Package catalogtest opens fresh, migrated catalogs (a SQLite one a copy of migrationstest's template) for the tests of the packages that use the catalog,
 // one per engine, so their catalog-touching cases run on SQLite and on MariaDB (.agents/rules/300-testing.md *Catalog*).
 // MariaDB runs when TRACEKEEP_MARIADB_DSN names a server (make test-catalog starts one) and is skipped otherwise,
 // or fails when TRACEKEEP_REQUIRE_MARIADB is 1.
@@ -19,6 +19,7 @@ import (
 
 	"github.com/arloliu/tracekeep/internal/catalog"
 	"github.com/arloliu/tracekeep/migrations"
+	"github.com/arloliu/tracekeep/migrations/migrationstest"
 )
 
 // EnvMariaDB names the MariaDB server's DSN.
@@ -57,7 +58,7 @@ func OpenClosable(t testing.TB, engine string) (*catalog.Catalog, func()) {
 	case catalog.EngineSQLite:
 		dir := t.TempDir()
 		cfg.DSN = filepath.Join(dir, "catalog.db")
-		apply(t, "sqlite", catalog.SQLiteURI(cfg.DSN), engine)
+		migrationstest.SQLite(t, cfg.DSN)
 		drop = func() { _ = os.RemoveAll(dir) }
 	case catalog.EngineMariaDB:
 		cfg.DSN, drop = mariadbDatabase(t)
