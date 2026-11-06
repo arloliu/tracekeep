@@ -210,7 +210,7 @@ func TestExportBundleHoldsNoClearBody(t *testing.T) {
 
 // A piece of equipment's export holding a withheld capture beside a masked one: the withheld capture is named and holds no pack,
 // and the scan reads every record and redaction entry of the masked one, and no secret.
-func TestExportOfAToolHoldsNoClearBody(t *testing.T) {
+func TestExportOfEquipmentHoldsNoClearBody(t *testing.T) {
 	t.Parallel()
 	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
 		m := newMasked(t, c)

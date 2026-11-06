@@ -80,8 +80,8 @@ func perCapture(t *testing.T, c *Catalog, sel Selector) ([]CaptureListing, []Dev
 	for _, ci := range caps {
 		cp := completeness(t, c, ci.ID)
 		listed = append(listed, CaptureListing{CaptureInfo: ci, Completeness: cp})
-		if len(devices) == 0 || devices[len(devices)-1].Name != ci.Device {
-			devices = append(devices, DeviceInfo{Name: ci.Device})
+		if len(devices) == 0 || devices[len(devices)-1].Name != ci.Device || devices[len(devices)-1].Source != ci.Source {
+			devices = append(devices, DeviceInfo{Name: ci.Device, Source: ci.Source})
 		}
 		d := &devices[len(devices)-1]
 		d.EquipmentEndpoint, d.DeviceID = ci.EquipmentEndpoint, ci.DeviceID // ordered by origin: the last is the latest
@@ -157,8 +157,8 @@ func TestListingsBatchedAsPerCapture(t *testing.T) {
 						if !d.Gap {
 							t.Errorf("device %s has no gap in the whole window; the fixture gives each device one", d.Name)
 						}
-						if d.Name == last.Device && (d.EquipmentEndpoint == nil || !d.Overlap || d.LastRecordNS == nil || *d.LastRecordNS != hourNS(pop.hours)+50) {
-							t.Errorf("device %s = %+v, want the last capture's endpoint, overlap and record", d.Name, d)
+						if d.Name == last.Device && d.Source == last.Source && (d.EquipmentEndpoint == nil || !d.Overlap || d.LastRecordNS == nil || *d.LastRecordNS != hourNS(pop.hours)+50) {
+							t.Errorf("series (%s, %s) = %+v, want the last capture's endpoint, overlap and record", d.Name, d.Source, d)
 						}
 					}
 				})

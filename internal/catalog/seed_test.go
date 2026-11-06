@@ -106,11 +106,12 @@ func seedCaptureInfos(tb testing.TB, c *Catalog, devices, n int) []CaptureInfo {
 	rows := make([][]any, n)
 	for i := range n {
 		id := newID(tb)
-		s := spec{instance: newID(tb), device: fmt.Sprintf("eqp-%d", i%devices), origin: 1 + int64(i), equipmentID: equipment}
-		rows[i] = []any{id[:], "open", descriptorBytes(tb, s), equipment, s.instance[:], s.device, s.origin, cfg, 1, 0}
-		infos[i] = CaptureInfo{ID: id, State: StateOpen, Device: s.device, RecorderInstanceID: s.instance, OriginNS: s.origin, ConfigID: &cfg}
+		// Each device is recorded by two sources, so a listing groups series, not devices.
+		s := spec{instance: newID(tb), device: fmt.Sprintf("eqp-%d", i%devices), source: fmt.Sprintf("gw-%d", i/devices%2), origin: 1 + int64(i), equipmentID: equipment}
+		rows[i] = []any{id[:], "open", descriptorBytes(tb, s), equipment, s.instance[:], s.device, s.source, s.origin, cfg, 1, 0}
+		infos[i] = CaptureInfo{ID: id, State: StateOpen, Device: s.device, Source: s.source, RecorderInstanceID: s.instance, OriginNS: s.origin, ConfigID: &cfg}
 	}
-	seedRows(tb, c, "captures", []string{"capture_id", "state", "descriptor", "equipment_id", "recorder_instance_id", "device", "origin_ns", "config_id", "data_revision", "created_at"}, rows)
+	seedRows(tb, c, "captures", []string{"capture_id", "state", "descriptor", "equipment_id", "recorder_instance_id", "device", "source", "origin_ns", "config_id", "data_revision", "created_at"}, rows)
 	if got := count(tb, c, `SELECT COUNT(*) FROM captures WHERE equipment_id = ? AND state = 'open'`, equipment); got < n {
 		tb.Fatalf("seeded %d open captures of %s, found %d", n, equipment, got)
 	}

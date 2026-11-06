@@ -53,6 +53,8 @@ func TestAcceptedDescriptorNamesItsSeries(t *testing.T) {
 		{"no device", nil, str("gw"), nil, false},
 		{"no source", str("eqp"), nil, nil, false},
 		{"empty device", str(""), str("gw"), nil, false},
+		{"empty source", str("eqp"), str(""), nil, false},
+		{"whitespace device", str(" \n"), str("gw"), nil, false},
 		{"whitespace source", str("eqp"), str(" \t"), nil, false},
 		{"256-byte device", str(long), str("gw"), nil, false},
 		{"256-byte source", str("eqp"), str(long), nil, false},
