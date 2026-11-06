@@ -82,7 +82,7 @@ each failing scenario waits out the 10 s `settleTimeout`.
   `test <leg>` and `make test-catalog LEG=<leg>` run one.
 - `ci.yaml`'s `catalog` job is a matrix of those legs, `migrate-check` and `bench-catalog-smoke` in the `rest` leg.
 - The lease test runs its first cycle under the default lease and only the lost cycle under a short one;
-  the export test's lease and claim delay grow to 2 s and 1.6 s, its bound to 1.2 s, between the 400 ms it expects and the 2 s a lease counted from the answer gives.
+  the export test's lease and claim delay grow to 2 s and 1.6 s, and it bounds the put's cancellation from when the claim was asked for, at 2 to 2.8 s, where a lease counted from the answer gives 3.6 s.
 
 ### Done when
 

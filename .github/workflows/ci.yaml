@@ -85,7 +85,9 @@ jobs:
       with:
         install_args: go
     - id: legs
-      run: echo "legs=$(scripts/catalog.sh legs)" >> "$GITHUB_OUTPUT"
+      run: |
+        legs=$(scripts/catalog.sh legs)
+        echo "legs=$legs" >> "$GITHUB_OUTPUT"
 
   # The catalog on MariaDB, one leg of its packages a runner, each with a MariaDB container;
   # make ci runs the catalog's tests on SQLite only, and these their MariaDB runs only.
