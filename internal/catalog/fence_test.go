@@ -13,6 +13,7 @@ import (
 	"github.com/go-sql-driver/mysql"
 	"github.com/jmoiron/sqlx"
 
+	"github.com/arloliu/tracekeep/internal/benchscale"
 	"github.com/arloliu/tracekeep/migrations"
 )
 
@@ -72,7 +73,7 @@ func preFence(t *testing.T, engine string) (c *Catalog, fence func() error) {
 
 func fenceEngines(t *testing.T, f func(t *testing.T, engine string)) {
 	t.Helper()
-	for _, engine := range []string{EngineSQLite, EngineMariaDB} {
+	for _, engine := range benchscale.Engines(t, EngineSQLite, EngineMariaDB) {
 		t.Run(engine, func(t *testing.T) {
 			t.Parallel()
 			f(t, engine)

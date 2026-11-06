@@ -73,10 +73,30 @@ jobs:
     - name: make test-vault
       run: make test-vault
 
-  # The catalog on MariaDB, its tests and its benchmarks' smoke run, and its migrations validated and checked against schema.hcl, each with a MariaDB container;
-  # make ci runs the catalog's tests on SQLite only.
-  catalog:
+  # The catalog's legs, from scripts/catalog.sh, which fails if two share a package or one has none.
+  catalog-legs:
     runs-on: ubuntu-latest
+    outputs:
+      legs: ${{ steps.legs.outputs.legs }}
+    steps:
+    - uses: actions/checkout@v7
+    - name: Setup Go from mise.toml
+      uses: jdx/mise-action@v4
+      with:
+        install_args: go
+    - id: legs
+      run: echo "legs=$(scripts/catalog.sh legs)" >> "$GITHUB_OUTPUT"
+
+  # The catalog on MariaDB, one leg of its packages a runner, each with a MariaDB container;
+  # make ci runs the catalog's tests on SQLite only, and these their MariaDB runs only.
+  # The rest leg also validates the migrations, checks them against schema.hcl and runs the benchmarks' smoke run on MariaDB.
+  catalog:
+    needs: catalog-legs
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        leg: ${{ fromJSON(needs.catalog-legs.outputs.legs) }}
     steps:
     - uses: actions/checkout@v7
     - name: Setup Go and Atlas from mise.toml
@@ -84,11 +104,13 @@ jobs:
       with:
         install_args: go atlas
     - name: make migrate-check
+      if: matrix.leg == 'rest'
       run: make migrate-check
     - name: make test-catalog
-      run: make test-catalog
+      run: make test-catalog LEG=${{ matrix.leg }}
     # The catalog's benchmarks once on MariaDB, failing rather than skipping without it.
     - name: make bench-catalog-smoke
+      if: matrix.leg == 'rest'
       run: make bench-catalog-smoke
 
   # The frontend: its lint, type check and tests, then the release binary with the build embedded (api.md §10.3);

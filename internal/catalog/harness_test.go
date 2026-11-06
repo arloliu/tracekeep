@@ -24,10 +24,10 @@ const envMariaDB = "TRACEKEEP_MARIADB_DSN"
 // envRequireMariaDB set to 1 fails a MariaDB run without a server instead of skipping it, as the catalog's benchmark smoke run does.
 const envRequireMariaDB = "TRACEKEEP_REQUIRE_MARIADB"
 
-// engines runs f once per engine, each on a fresh, migrated catalog (.agents/rules/300-testing.md *Catalog*).
+// engines runs f once per engine benchscale.EnginesEnv leaves in, each on a fresh, migrated catalog (.agents/rules/300-testing.md *Catalog*).
 func engines(t *testing.T, f func(t *testing.T, c *Catalog)) {
 	t.Helper()
-	for _, engine := range []string{EngineSQLite, EngineMariaDB} {
+	for _, engine := range benchscale.Engines(t, EngineSQLite, EngineMariaDB) {
 		t.Run(engine, func(t *testing.T) {
 			t.Parallel()
 			f(t, newCatalog(t, engine))

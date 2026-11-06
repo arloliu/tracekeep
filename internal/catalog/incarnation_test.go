@@ -13,6 +13,7 @@ import (
 	atlas "ariga.io/atlas/sql/migrate"
 	"github.com/go-sql-driver/mysql"
 
+	"github.com/arloliu/tracekeep/internal/benchscale"
 	"github.com/arloliu/tracekeep/migrations"
 )
 
@@ -241,7 +242,7 @@ func migratedBefore(t *testing.T, engine string) (*Catalog, func() error) {
 // and once the operator adopts the stream, which retires both, it resumes and the roles start.
 func TestLiveRoleMigration(t *testing.T) {
 	t.Parallel()
-	for _, engine := range []string{EngineSQLite, EngineMariaDB} {
+	for _, engine := range benchscale.Engines(t, EngineSQLite, EngineMariaDB) {
 		t.Run(engine+"/retired rows", func(t *testing.T) {
 			t.Parallel()
 			c, rest := migratedBefore(t, engine)
