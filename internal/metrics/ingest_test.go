@@ -68,7 +68,7 @@ func TestRefreshKeepsTheLastValuesOnFailure(t *testing.T) {
 			t.Fatal(err)
 		}
 		start := &catalog.Identity{Version: catalog.VersionKey{Capture: tracepack.UUID{1}}, Incarnation: 1, StreamSeq: 1}
-		desc := &catalog.Descriptor{Bytes: []byte("d"), ToolID: "T1", RecorderInstanceID: tracepack.UUID{2}, Device: "eqp", OriginNS: 1}
+		desc := &catalog.Descriptor{Bytes: []byte("d"), EquipmentID: "T1", RecorderInstanceID: tracepack.UUID{2}, Device: "eqp", OriginNS: 1}
 		if _, err := c.Admit(ctx, start, desc); err != nil {
 			t.Fatal(err)
 		}
@@ -89,7 +89,7 @@ func TestRefreshKeepsTheLastValuesOnFailure(t *testing.T) {
 		}
 		b := body(t, s)
 		for _, want := range []string{
-			"tracekeep_ingest_stream_backlog_messages 7", `tracekeep_ingest_captures_open{tool_id="T1"} 1`,
+			"tracekeep_ingest_stream_backlog_messages 7", `tracekeep_ingest_captures_open{equipment_id="T1"} 1`,
 			"tracekeep_ingest_refresh_failures_total 1",
 			`tracekeep_ingest_refreshed_timestamp_seconds{source="bus"}`, `tracekeep_ingest_refreshed_timestamp_seconds{source="catalog"}`,
 		} {
@@ -150,7 +150,7 @@ func TestRefreshPublishesWhole(t *testing.T) {
 		}
 		admit := func(capture byte) {
 			start := &catalog.Identity{Version: catalog.VersionKey{Capture: tracepack.UUID{capture}}, Incarnation: 1, StreamSeq: int64(capture)}
-			desc := &catalog.Descriptor{Bytes: []byte("d"), ToolID: "T1", RecorderInstanceID: tracepack.UUID{capture, 1}, Device: "eqp", OriginNS: 1}
+			desc := &catalog.Descriptor{Bytes: []byte("d"), EquipmentID: "T1", RecorderInstanceID: tracepack.UUID{capture, 1}, Device: "eqp", OriginNS: 1}
 			if _, err := c.Admit(ctx, start, desc); err != nil {
 				t.Fatal(err)
 			}
@@ -182,7 +182,7 @@ func TestRefreshPublishesWhole(t *testing.T) {
 			for _, line := range []string{
 				fmt.Sprintf("tracekeep_ingest_consumer_ack_pending %d", bus), fmt.Sprintf("tracekeep_ingest_stream_backlog_messages %d", bus),
 				fmt.Sprintf("tracekeep_ingest_stream_backlog_bytes %d", bus),
-				fmt.Sprintf(`tracekeep_ingest_captures_open{tool_id="T1"} %d`, captures), `tracekeep_ingest_open_gaps{tool_id="T1"} 0`,
+				fmt.Sprintf(`tracekeep_ingest_captures_open{equipment_id="T1"} %d`, captures), `tracekeep_ingest_open_gaps{equipment_id="T1"} 0`,
 			} {
 				if !strings.Contains(b, line) {
 					t.Errorf("%s: /metrics lacks %s", stage, line)
@@ -210,7 +210,7 @@ func (fleet) ParkedCounts(context.Context) (map[string]int, error) { return map[
 func (f fleet) OpenCaptures(context.Context) ([]catalog.OpenCapture, error) {
 	out := make([]catalog.OpenCapture, 0, len(f))
 	for id := range f {
-		out = append(out, catalog.OpenCapture{ID: id, ToolID: "T1"})
+		out = append(out, catalog.OpenCapture{ID: id, EquipmentID: "T1"})
 	}
 
 	return out, nil
@@ -248,12 +248,12 @@ func TestUnknownTailDropsAClosedCapture(t *testing.T) {
 		}
 		capture := tracepack.UUID{0x61}
 		d := &catalog.Identity{Version: catalog.VersionKey{Capture: capture}, Incarnation: 1, StreamSeq: 1, Hour: 1}
-		if _, err := c.Admit(ctx, d, &catalog.Descriptor{Bytes: []byte("d"), ToolID: "T1", RecorderInstanceID: tracepack.UUID{2}, Device: "eqp", OriginNS: 1}); err != nil {
+		if _, err := c.Admit(ctx, d, &catalog.Descriptor{Bytes: []byte("d"), EquipmentID: "T1", RecorderInstanceID: tracepack.UUID{2}, Device: "eqp", OriginNS: 1}); err != nil {
 			t.Fatal(err)
 		}
 		register := func(seq uint64) {
 			p := &catalog.Pack{
-				ID: tracepack.UUID{byte(seq) + 1, 0x61}, Capture: capture, ToolID: "T1", Hour: 1, Role: catalog.RoleSegment,
+				ID: tracepack.UUID{byte(seq) + 1, 0x61}, Capture: capture, EquipmentID: "T1", Hour: 1, Role: catalog.RoleSegment,
 				Key: fmt.Sprintf("staging/t1/%d", seq), Size: 1, SeqStart: seq, FormatMinor: 2,
 				Ranges: []catalog.Range{{SeqFrom: seq, SeqTo: seq, TSFrom: int64(seq), TSTo: int64(seq)}}, //nolint:gosec // a small seq
 			}
@@ -265,7 +265,7 @@ func TestUnknownTailDropsAClosedCapture(t *testing.T) {
 		if err := m.Refresh(ctx, c, nil); err != nil {
 			t.Fatal(err)
 		}
-		if b := body(t, s); !strings.Contains(b, `tracekeep_ingest_captures_with_unknown_tail{tool_id="T1"} 1`) {
+		if b := body(t, s); !strings.Contains(b, `tracekeep_ingest_captures_with_unknown_tail{equipment_id="T1"} 1`) {
 			t.Errorf("an open capture's unknown tail not counted:\n%s", b)
 		}
 		// The compactor closes it, as its inactivity close would.
@@ -283,7 +283,7 @@ func TestUnknownTailDropsAClosedCapture(t *testing.T) {
 		if err := m.Refresh(ctx, c, nil); err != nil {
 			t.Fatal(err)
 		}
-		if b := body(t, s); strings.Contains(b, `tracekeep_ingest_captures_with_unknown_tail{tool_id="T1"} 1`) {
+		if b := body(t, s); strings.Contains(b, `tracekeep_ingest_captures_with_unknown_tail{equipment_id="T1"} 1`) {
 			t.Errorf("a closed capture still counted:\n%s", b)
 		}
 	})

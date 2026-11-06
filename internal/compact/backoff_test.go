@@ -257,13 +257,13 @@ func TestMergeCap(t *testing.T) {
 		for i := range int64(n) {
 			hr := hour - n + 1 + i
 			id := newID(t)
-			key, err := tracepack.SegmentKey("", tool, capture, uint64(i), id) //nolint:gosec // a test's small seq
+			key, err := tracepack.SegmentKey("", equipment, capture, uint64(i), id) //nolint:gosec // a test's small seq
 			if err != nil {
 				t.Fatal(err)
 			}
 			at := hr*nsPerHour + i
 			p := &catalog.Pack{
-				ID: id, Capture: capture, ToolID: tool, Hour: hr, Role: catalog.RoleSegment, Key: key, Size: 1, SeqStart: uint64(i), FormatMinor: 2, //nolint:gosec // a test's small seq
+				ID: id, Capture: capture, EquipmentID: equipment, Hour: hr, Role: catalog.RoleSegment, Key: key, Size: 1, SeqStart: uint64(i), FormatMinor: 2, //nolint:gosec // a test's small seq
 				Ranges: []catalog.Range{{SeqFrom: uint64(i), SeqTo: uint64(i), TSFrom: at, TSTo: at}}, //nolint:gosec // a test's small seq
 			}
 			if out, err := c.RegisterPack(ctx, p, catalog.Registration{Evidence: &catalog.Evidence{}, HorizonHour: f.horizon}); err != nil || out != catalog.Registered {

@@ -14,10 +14,10 @@ import (
 	"github.com/arloliu/tracekeep/internal/benchscale"
 )
 
-// historyCaptures is how many captures BenchmarkListingHistory's tool holds.
+// historyCaptures is how many captures BenchmarkListingHistory's equipment holds.
 const historyCaptures = 10
 
-// listingPop is a seeded listing population of tool T1 over hours hours, as the listings must report it:
+// listingPop is a seeded listing population of equipment T1 over hours hours, as the listings must report it:
 // its captures in seed order, each with its completeness, and each capture's packs hour by hour from hour 1, nil for a deleted one.
 type listingPop struct {
 	captures []CaptureListing
@@ -25,7 +25,7 @@ type listingPop struct {
 	hours    int64
 }
 
-// seedListing seeds n open captures of tool T1 on devices devices, the i-th on eqp-(i mod devices), each with every completeness input:
+// seedListing seeds n open captures of equipment T1 on devices devices, the i-th on eqp-(i mod devices), each with every completeness input:
 // seqs 0 to 49 evicted in hour 0; 50 to 53 parked and 54 terminated; 55 to 99 a declared loss of its first pack;
 // from seq 100 one pack of one ten-seq range in each of hours 1 to hours; and three suspects between its first two packs.
 // Every tenth capture, the first included, is closed with a crash gap; with gaps, the same captures also have every third pack deleted, each a gap.
@@ -80,11 +80,11 @@ func seedListing(tb testing.TB, c *Catalog, n, devices int, hours int64, gaps bo
 // whole is the window of the population's whole history, hour 0 to its last; hour is its last hour alone.
 // Both select every capture: each is open or has its last record in the last hour.
 func (p *listingPop) whole() Selector {
-	return Selector{ToolID: "T1", From: hourNS(0), To: hourNS(p.hours + 1)}
+	return Selector{EquipmentID: "T1", From: hourNS(0), To: hourNS(p.hours + 1)}
 }
 
 func (p *listingPop) hour() Selector {
-	return Selector{ToolID: "T1", From: hourNS(p.hours), To: hourNS(p.hours + 1)}
+	return Selector{EquipmentID: "T1", From: hourNS(p.hours), To: hourNS(p.hours + 1)}
 }
 
 // listed is the population's captures in the listings' order: by device, origin and id.
@@ -192,7 +192,7 @@ func sameValue(a, b reflect.Value) bool {
 	return true
 }
 
-// BenchmarkListings is the API's listings over one tool's captures, each with every completeness input (seedListing) over 24 hours.
+// BenchmarkListings is the API's listings over one piece of equipment's captures, each with every completeness input (seedListing) over 24 hours.
 // Its starting states hold 1, 100 or 1,500 captures (TRACEKEEP_BENCH_SCALE) on 1 or 100 devices, at most one a capture,
 // without gaps, or with them in every tenth capture; the window is the whole history.
 // One iteration lists once and asserts its complete answer equal to the one built from the seed (listingPop):
@@ -217,7 +217,7 @@ func BenchmarkListings(b *testing.B) {
 }
 
 // BenchmarkListingHistory is the API's listings of a window held constant while the history outside it grows.
-// Its starting state holds historyCaptures captures of one tool on one device, with gaps (seedListing), over 24, 720 or 8,760 hours (TRACEKEEP_BENCH_SCALE).
+// Its starting state holds historyCaptures captures of one piece of equipment on one device, with gaps (seedListing), over 24, 720 or 8,760 hours (TRACEKEEP_BENCH_SCALE).
 // One iteration lists the last hour, or the whole history, and asserts its complete answer as BenchmarkListings does.
 // Completeness takes no window, a capture's answer being its whole history (catalog.md §7.3), so it runs under window=whole alone.
 func BenchmarkListingHistory(b *testing.B) {

@@ -50,7 +50,7 @@ func (s *Server) StartExport(ctx context.Context, req *connect.Request[tkv1.Star
 	if err := s.countSelection(ctx, sel, bounds); err != nil {
 		return nil, err
 	}
-	r := exportRequest{Kind: "canonical", Selector: exportSelector{ToolID: sel.ToolID, Devices: sel.Devices, From: sel.From, To: sel.To}}
+	r := exportRequest{Kind: "canonical", Selector: exportSelector{EquipmentID: sel.EquipmentID, Devices: sel.Devices, Sources: sel.Sources, From: sel.From, To: sel.To}}
 	if sel.Capture != nil {
 		r.Selector.Capture = sel.Capture.String()
 	}
@@ -228,7 +228,7 @@ func (s *Server) jobOf(j *catalog.ExportJob) *tkv1.ExportJob {
 	var r exportRequest
 	if json.Unmarshal(j.Request, &r) == nil {
 		out.Kind = r.Kind
-		out.Selector = &tkv1.Selector{ToolId: r.Selector.ToolID, Devices: r.Selector.Devices, From: ts(r.Selector.From), To: ts(r.Selector.To)}
+		out.Selector = &tkv1.Selector{EquipmentId: r.Selector.EquipmentID, Devices: r.Selector.Devices, Sources: r.Selector.Sources, From: ts(r.Selector.From), To: ts(r.Selector.To)}
 		if r.Selector.Capture != "" {
 			out.Selector.CaptureId = &r.Selector.Capture
 		}

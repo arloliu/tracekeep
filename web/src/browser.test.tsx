@@ -1,3 +1,4 @@
+import type { MessageInitShape } from "@bufbuild/protobuf";
 import { timestampDate, timestampFromDate } from "@bufbuild/protobuf/wkt";
 import { Code, ConnectError, type ConnectRouter } from "@connectrpc/connect";
 import { screen, waitFor, within } from "@testing-library/react";
@@ -5,8 +6,8 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, test } from "vitest";
 
 import { thinningText } from "@/browser";
-import { MachineService, type ListCapturesRequest, type ListDevicesRequest, type ListPacksRequest } from "@/gen/tracekeep/v1/machine_pb";
-import { recentTools, validateSelector, windowOf } from "@/selector";
+import { MachineService, type DeviceSchema, type ListCapturesRequest, type ListDevicesRequest, type ListPacksRequest } from "@/gen/tracekeep/v1/machine_pb";
+import { recentEquipment, validateSelector, windowOf } from "@/selector";
 import { renderApp, stubFetch } from "@/test/render";
 
 const capID = "0192f1a0-0000-7000-8000-000000000001";
@@ -20,19 +21,24 @@ interface Asked {
   packs: ListPacksRequest[];
 }
 
-function machine(asked: Asked) {
+const twoDevices: MessageInitShape<typeof DeviceSchema>[] = [
+  { name: "eq-a", source: "gw-a", openCaptures: 1n, overlap: true, lastRecord: ts("2026-10-31T08:30:00Z"), gap: false },
+  { name: "eq-b", source: "gw-a", openCaptures: 0n },
+];
+
+function machine(asked: Asked, devices = twoDevices) {
   return (r: ConnectRouter) =>
     r.service(MachineService, {
       listDevices(req) {
         asked.devices.push(req);
-        return { devices: [{ name: "eq-a", openCaptures: 1n, overlap: true, lastRecord: ts("2026-10-31T08:30:00Z"), gap: false }, { name: "eq-b", openCaptures: 0n }] };
+        return { devices };
       },
       listCaptures(req) {
         asked.captures.push(req);
         return {
           captures: [
             {
-              captureId: capID, state: "open", device: "eq-a", origin: ts("2026-10-31T07:00:00Z"),
+              captureId: capID, state: "open", device: "eq-a", source: "gw-a", origin: ts("2026-10-31T07:00:00Z"),
               thinning: [{ stream: 6n, function: 11n, source: "every 10", keepEveryN: 10n }],
               unregistered: [{ end: ts("2026-10-31T07:00:00Z") }],
             },
@@ -49,7 +55,7 @@ function machine(asked: Asked) {
           ],
           captures: [
             {
-              capture: { captureId: capID, state: "open", device: "eq-a" },
+              capture: { captureId: capID, state: "open", device: "eq-a", source: "gw-a" },
               completeness: { frontier: 40n, gaps: [{ seqFrom: 12n, seqTo: 14n, start: ts("2026-10-31T08:10:00Z"), end: ts("2026-10-31T08:11:00Z") }], unknownTailFrom: 41n },
             },
           ],
@@ -66,33 +72,35 @@ beforeEach(() => {
   stubFetch();
 });
 
-test("a tool typed opens its devices over the last hour and is remembered", async () => {
+test("an equipment ID typed opens its devices over the last hour and is remembered", async () => {
   const asked = fresh();
   const { router } = renderApp("/", machine(asked));
-  await userEvent.type(await screen.findByLabelText("Tool id"), "T-1");
+  await userEvent.type(await screen.findByLabelText("Equipment ID"), "T-1");
   const before = Date.now();
   await userEvent.click(screen.getByRole("button", { name: "Open" }));
   expect(await screen.findByText("eq-a")).toBeInTheDocument();
-  expect(router.state.location.search).toEqual({ tool: "T-1", last: "1h" });
+  expect(router.state.location.search).toEqual({ equipment: "T-1", last: "1h" });
   const sel = asked.devices[0]?.selector;
-  expect(sel?.toolId).toBe("T-1");
+  expect(sel?.equipmentId).toBe("T-1");
   expect(sel?.devices).toEqual([]);
   const span = Number((sel?.to?.seconds ?? 0n) - (sel?.from?.seconds ?? 0n));
   expect(span).toBe(3600);
   expect(Number(sel?.to?.seconds ?? 0n) * 1000).toBeGreaterThanOrEqual(Math.floor(before / 1000) * 1000);
-  expect(recentTools()).toEqual(["T-1"]);
+  expect(recentEquipment()).toEqual(["T-1"]);
+  expect(localStorage.getItem("tracekeep.equipment")).toBe('["T-1"]');
   expect(screen.getByText("overlap")).toBeInTheDocument();
   expect(asked.captures).toHaveLength(0); // no device selected yet
 });
 
-test("selecting a device lists its captures and their completeness by hour, with links into the records", async () => {
+test("selecting a series lists its captures and their completeness by hour, with links into the records", async () => {
   const asked = fresh();
-  const { router } = renderApp("/?tool=T-1&last=6h", machine(asked));
-  await userEvent.click(await screen.findByRole("checkbox", { name: "Select eq-a" }));
+  const { router } = renderApp("/?equipment=T-1&last=6h", machine(asked));
+  await userEvent.click(await screen.findByRole("checkbox", { name: "Select eq-a from gw-a" }));
   await waitFor(() => { expect(router.state.location.search.devices).toEqual(["eq-a"]); });
   expect(await screen.findAllByText(capID)).toHaveLength(2); // its row and its completeness
   const sel = asked.captures[0]?.selector;
   expect(sel?.devices).toEqual(["eq-a"]);
+  expect(sel?.sources).toEqual(["gw-a"]);
   expect(Number((sel?.to?.seconds ?? 0n) - (sel?.from?.seconds ?? 0n))).toBe(6 * 3600);
   expect(asked.packs[0]?.selector?.devices).toEqual(["eq-a"]);
 
@@ -102,8 +110,8 @@ test("selecting a device lists its captures and their completeness by hour, with
   const records = screen.getByRole("link", { name: `Records of ${capID}` });
   const url = new URL(records.getAttribute("href") ?? "", "https://h");
   expect(url.pathname).toBe("/records");
-  expect(validateSelector(Object.fromEntries([...url.searchParams].map(([k, v]) => [k, k === "devices" ? JSON.parse(v) as unknown : v])))).toEqual({
-    tool: "T-1", devices: ["eq-a"], capture: capID, from: sel?.from && timestampDate(sel.from).toISOString(), to: sel?.to && timestampDate(sel.to).toISOString(),
+  expect(validateSelector(Object.fromEntries([...url.searchParams].map(([k, v]) => [k, k === "devices" || k === "sources" ? JSON.parse(v) as unknown : v])))).toEqual({
+    equipment: "T-1", devices: ["eq-a"], sources: ["gw-a"], capture: capID, from: sel?.from && timestampDate(sel.from).toISOString(), to: sel?.to && timestampDate(sel.to).toISOString(),
   });
 
   const hours = await screen.findByRole("table", { name: "Hours" });
@@ -119,10 +127,29 @@ test("selecting a device lists its captures and their completeness by hour, with
   expect(screen.getByText("from seq 41")).toBeInTheDocument(); // the unknown tail
 });
 
+test("two sources of one device are two rows, and the selector carries the selected devices and sources", async () => {
+  const asked = fresh();
+  const { router } = renderApp("/?equipment=T-1", machine(asked, [{ name: "eq-a", source: "gw-a" }, { name: "eq-a", source: "gw-b" }]));
+  const a = await screen.findByRole("checkbox", { name: "Select eq-a from gw-a" });
+  const b = screen.getByRole("checkbox", { name: "Select eq-a from gw-b" });
+  await userEvent.click(a);
+  await waitFor(() => { expect(router.state.location.search).toMatchObject({ devices: ["eq-a"], sources: ["gw-a"] }); });
+  await waitFor(() => { expect(asked.captures.at(-1)?.selector).toMatchObject({ devices: ["eq-a"], sources: ["gw-a"] }); });
+  expect(asked.packs.at(-1)?.selector).toMatchObject({ devices: ["eq-a"], sources: ["gw-a"] });
+  expect(b).not.toBeChecked();
+  await userEvent.click(b);
+  await waitFor(() => { expect(router.state.location.search).toMatchObject({ devices: ["eq-a"], sources: ["gw-a", "gw-b"] }); });
+  await waitFor(() => { expect(asked.captures.at(-1)?.selector?.sources).toEqual(["gw-a", "gw-b"]); });
+  await userEvent.click(a);
+  await waitFor(() => { expect(router.state.location.search).toMatchObject({ devices: ["eq-a"], sources: ["gw-b"] }); });
+  expect(a).not.toBeChecked();
+  expect(b).toBeChecked();
+});
+
 test("a custom window is read in the chosen zone, and from must come before to", async () => {
   const asked = fresh();
   const { router } = renderApp("/", machine(asked));
-  await userEvent.type(await screen.findByLabelText("Tool id"), "T-1");
+  await userEvent.type(await screen.findByLabelText("Equipment ID"), "T-1");
   const from = screen.getByLabelText("From");
   const to = screen.getByLabelText("To");
   await userEvent.clear(from);
@@ -136,12 +163,12 @@ test("a custom window is read in the chosen zone, and from must come before to",
   await userEvent.type(to, "2026-10-31T10:30");
   await userEvent.click(screen.getByRole("button", { name: "Open" }));
   await screen.findByText("eq-a");
-  expect(router.state.location.search).toEqual({ tool: "T-1", from: "2026-10-31T09:00:00.000Z", to: "2026-10-31T10:30:00.000Z" });
+  expect(router.state.location.search).toEqual({ equipment: "T-1", from: "2026-10-31T09:00:00.000Z", to: "2026-10-31T10:30:00.000Z" });
   expect(asked.devices[0]?.selector?.from?.seconds).toBe(BigInt(Date.parse("2026-10-31T09:00:00Z") / 1000));
 });
 
 test("an operation the roles do not admit says so where its result would be", async () => {
-  renderApp("/?tool=T-1", (r) =>
+  renderApp("/?equipment=T-1", (r) =>
     r.service(MachineService, {
       listDevices() {
         throw new ConnectError("roles", Code.PermissionDenied);
@@ -153,10 +180,10 @@ test("an operation the roles do not admit says so where its result would be", as
 
 describe("the selector in the URL", () => {
   test("keeps what it understands and drops the rest", () => {
-    expect(validateSelector({ tool: 123, devices: "eq-a", last: "2h", from: "nope", to: "2026-10-31T00:00:00Z", junk: 1 })).toEqual({ tool: "123", devices: ["eq-a"] });
-    expect(validateSelector({ tool: "T", from: "2026-10-31T01:00:00Z", to: "2026-10-31T00:00:00Z", last: "24h" })).toEqual({ tool: "T", last: "24h" });
-    expect(validateSelector({ devices: ["a", "a", 7] })).toEqual({ devices: ["a", "7"] });
-    expect(validateSelector({ tool: "T", last: "constructor" })).toEqual({ tool: "T" }); // no inherited name is a preset
+    expect(validateSelector({ equipment: 123, devices: "eq-a", sources: "gw-a", last: "2h", from: "nope", to: "2026-10-31T00:00:00Z", junk: 1 })).toEqual({ equipment: "123", devices: ["eq-a"], sources: ["gw-a"] });
+    expect(validateSelector({ equipment: "T", from: "2026-10-31T01:00:00Z", to: "2026-10-31T00:00:00Z", last: "24h" })).toEqual({ equipment: "T", last: "24h" });
+    expect(validateSelector({ devices: ["a", "a", 7], sources: ["s", "s"] })).toEqual({ devices: ["a", "7"], sources: ["s"] });
+    expect(validateSelector({ equipment: "T", last: "constructor" })).toEqual({ equipment: "T" }); // no inherited name is a preset
   });
 
   test("a preset ends at now, and from and to win", () => {

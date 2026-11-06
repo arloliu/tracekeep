@@ -8,7 +8,7 @@ import (
 func descriptor(t testing.TB, b string) *Descriptor {
 	t.Helper()
 
-	return &Descriptor{Bytes: []byte(b), ToolID: "T1", RecorderInstanceID: newID(t), Device: "eqp", OriginNS: 1}
+	return &Descriptor{Bytes: []byte(b), EquipmentID: "T1", RecorderInstanceID: newID(t), Device: "eqp", OriginNS: 1}
 }
 
 // gate registers one member executing a fresh configuration, so admissions can bind it.

@@ -84,7 +84,7 @@ func seedConfig(tb testing.TB, c *Catalog) int64 {
 	return cfg
 }
 
-// seedCaptures writes n open captures of tool T1, the i-th on device eqp-(i mod devices) with its own recorder instance and origin 1+i,
+// seedCaptures writes n open captures of equipment T1, the i-th on device eqp-(i mod devices) with its own recorder instance and origin 1+i,
 // each with a decodable start descriptor and bound to a decodable configuration, and returns them in order.
 func seedCaptures(tb testing.TB, c *Catalog, devices, n int) []tracepack.UUID {
 	tb.Helper()
@@ -100,19 +100,19 @@ func seedCaptures(tb testing.TB, c *Catalog, devices, n int) []tracepack.UUID {
 // seedCaptureInfos is seedCaptures, returning each capture as ListCaptures reports it before any registration.
 func seedCaptureInfos(tb testing.TB, c *Catalog, devices, n int) []CaptureInfo {
 	tb.Helper()
-	const tool = "T1"
+	const equipment = "T1"
 	cfg := seedConfig(tb, c)
 	infos := make([]CaptureInfo, n)
 	rows := make([][]any, n)
 	for i := range n {
 		id := newID(tb)
-		s := spec{instance: newID(tb), device: fmt.Sprintf("eqp-%d", i%devices), origin: 1 + int64(i), toolID: tool}
-		rows[i] = []any{id[:], "open", descriptorBytes(tb, s), tool, s.instance[:], s.device, s.origin, cfg, 1, 0}
+		s := spec{instance: newID(tb), device: fmt.Sprintf("eqp-%d", i%devices), origin: 1 + int64(i), equipmentID: equipment}
+		rows[i] = []any{id[:], "open", descriptorBytes(tb, s), equipment, s.instance[:], s.device, s.origin, cfg, 1, 0}
 		infos[i] = CaptureInfo{ID: id, State: StateOpen, Device: s.device, RecorderInstanceID: s.instance, OriginNS: s.origin, ConfigID: &cfg}
 	}
-	seedRows(tb, c, "captures", []string{"capture_id", "state", "descriptor", "tool_id", "recorder_instance_id", "device", "origin_ns", "config_id", "data_revision", "created_at"}, rows)
-	if got := count(tb, c, `SELECT COUNT(*) FROM captures WHERE tool_id = ? AND state = 'open'`, tool); got < n {
-		tb.Fatalf("seeded %d open captures of %s, found %d", n, tool, got)
+	seedRows(tb, c, "captures", []string{"capture_id", "state", "descriptor", "equipment_id", "recorder_instance_id", "device", "origin_ns", "config_id", "data_revision", "created_at"}, rows)
+	if got := count(tb, c, `SELECT COUNT(*) FROM captures WHERE equipment_id = ? AND state = 'open'`, equipment); got < n {
+		tb.Fatalf("seeded %d open captures of %s, found %d", n, equipment, got)
 	}
 
 	return infos
@@ -131,13 +131,13 @@ type packsSeed struct {
 	deletedEvery int
 }
 
-// seedPacks writes s's segments of capture, of its tool, their ranges and their hours' open scopes,
+// seedPacks writes s's segments of capture, of its equipment, their ranges and their hours' open scopes,
 // raises the capture's highest seq to the last one, and returns the packs in order with the seq after the last.
 // A range's records are at its hour's start plus the seq's offset in the hour, in nanoseconds.
 // An hour of a capture is seeded once: its scope row is inserted, not upserted.
 func seedPacks(tb testing.TB, c *Catalog, capture tracepack.UUID, s packsSeed) ([]tracepack.UUID, uint64) {
 	tb.Helper()
-	tool := captureTool(tb, c, capture)
+	equipment := captureEquipment(tb, c, capture)
 	var ids []tracepack.UUID
 	var packs, ranges, scopes [][]any
 	seq, live, deleted := s.seq0, 0, 0
@@ -154,7 +154,7 @@ func seedPacks(tb testing.TB, c *Catalog, capture tracepack.UUID, s packsSeed) (
 				live++
 			}
 			ids = append(ids, id)
-			packs = append(packs, []any{id[:], capture[:], tool, h, RoleSegment, "staging/" + id.String(), 1 << 20, int64(seq), 2, state, false, 0}) //nolint:gosec // a seeded seq is small
+			packs = append(packs, []any{id[:], capture[:], equipment, h, RoleSegment, "staging/" + id.String(), 1 << 20, int64(seq), 2, state, false, 0}) //nolint:gosec // a seeded seq is small
 			for range s.ranges {
 				from, to := seq, seq+s.span-1
 				tsFrom, tsTo := hourNS(h)+int64(from-first), hourNS(h)+int64(to-first)                  //nolint:gosec // a seeded seq is small
@@ -164,7 +164,7 @@ func seedPacks(tb testing.TB, c *Catalog, capture tracepack.UUID, s packsSeed) (
 		}
 	}
 	seedTx(tb, c, func(tx *sqlx.Tx) {
-		insertRows(tb, tx, "packs", []string{"pack_id", "capture_id", "tool_id", "hour", "role", "object_key", "size", "seq_start", "format_minor", "state", "adopted", "registered_at"}, packs)
+		insertRows(tb, tx, "packs", []string{"pack_id", "capture_id", "equipment_id", "hour", "role", "object_key", "size", "seq_start", "format_minor", "state", "adopted", "registered_at"}, packs)
 		insertRows(tb, tx, "pack_ranges", []string{"pack_id", "capture_id", "seq_from", "seq_to", "ts_from", "ts_to"}, ranges)
 		insertRows(tb, tx, "scopes", []string{"capture_id", "hour", "state", "revision"}, scopes)
 		if len(ranges) > 0 {
@@ -189,15 +189,15 @@ func seedPacks(tb testing.TB, c *Catalog, capture tracepack.UUID, s packsSeed) (
 	return ids, seq
 }
 
-// captureTool reads capture's tool.
-func captureTool(tb testing.TB, c *Catalog, capture tracepack.UUID) string {
+// captureEquipment reads capture's equipment.
+func captureEquipment(tb testing.TB, c *Catalog, capture tracepack.UUID) string {
 	tb.Helper()
-	var tool string
-	if err := c.read.GetContext(tb.Context(), &tool, `SELECT tool_id FROM captures WHERE capture_id = ?`, capture[:]); err != nil {
+	var equipment string
+	if err := c.read.GetContext(tb.Context(), &equipment, `SELECT equipment_id FROM captures WHERE capture_id = ?`, capture[:]); err != nil {
 		tb.Fatal(err)
 	}
 
-	return tool
+	return equipment
 }
 
 // seedAudit writes n audit rows, the i-th at at0+i by actors[i mod len] about captures[i mod len], restores as the API writes them.
@@ -240,12 +240,12 @@ func seedEvents(tb testing.TB, c *Catalog, capture tracepack.UUID, hour int64, n
 // each with its staged archive and its inputs merged segments; it returns the merges.
 func seedMerges(tb testing.TB, c *Catalog, capture tracepack.UUID, hour int64, n, inputs int, at, deleteAt int64) []tracepack.UUID {
 	tb.Helper()
-	tool := captureTool(tb, c, capture)
+	equipment := captureEquipment(tb, c, capture)
 	ids := make([]tracepack.UUID, n)
 	packs, merges, links := make([][]any, 0, n*(1+inputs)), make([][]any, 0, n), make([][]any, 0, n*inputs)
 	pack := func(role, state string) tracepack.UUID {
 		id := newID(tb)
-		packs = append(packs, []any{id[:], capture[:], tool, hour, role, "staging/" + id.String(), 1 << 20, 0, 2, state, false, 0})
+		packs = append(packs, []any{id[:], capture[:], equipment, hour, role, "staging/" + id.String(), 1 << 20, 0, 2, state, false, 0})
 
 		return id
 	}
@@ -259,7 +259,7 @@ func seedMerges(tb testing.TB, c *Catalog, capture tracepack.UUID, hour int64, n
 		}
 	}
 	seedTx(tb, c, func(tx *sqlx.Tx) {
-		insertRows(tb, tx, "packs", []string{"pack_id", "capture_id", "tool_id", "hour", "role", "object_key", "size", "seq_start", "format_minor", "state", "adopted", "registered_at"}, packs)
+		insertRows(tb, tx, "packs", []string{"pack_id", "capture_id", "equipment_id", "hour", "role", "object_key", "size", "seq_start", "format_minor", "state", "adopted", "registered_at"}, packs)
 		insertRows(tb, tx, "merges", []string{"merge_id", "capture_id", "hour", "output_pack_id", "outcome", "at", "delete_at"}, merges)
 		insertRows(tb, tx, "merge_inputs", []string{"merge_id", "pack_id"}, links)
 	})
@@ -382,7 +382,7 @@ func seedLosses(tb testing.TB, c *Catalog, pack tracepack.UUID, losses []Loss) {
 // and a decodable pack meta, as the compactor leaves a capture whose recorder stopped without its stop record.
 func seedCloses(tb testing.TB, c *Catalog, captures []tracepack.UUID, at, gapStart, gapEnd int64) {
 	tb.Helper()
-	meta := descriptorBytes(tb, spec{toolID: "T1", device: "eqp"})
+	meta := descriptorBytes(tb, spec{equipmentID: "T1", device: "eqp"})
 	rows := make([][]any, len(captures))
 	args := make([]any, 0, len(captures))
 	for i, capture := range captures {

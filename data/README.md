@@ -8,7 +8,7 @@ Only this file and `.gitignore` are tracked; every other file here stays local.
 
 - Keep the tree owner-only: `chmod -R go-rwx data`.
 - Nothing read from here enters a tracked file, a commit message or a message to another agent session:
-  no company, site, tool ID, person or internal-service name, no local path, no real traffic
+  no company, site, equipment ID, person or internal-service name, no local path, no real traffic
   (`.agents/rules/100-overview.md`, prime directive 1).
   A message to another session carries counts, not content, and is sent only with the owner's approval.
 - A test never reads from here; its only recorded input is a masked or synthetic pack (`.agents/rules/300-testing.md`).

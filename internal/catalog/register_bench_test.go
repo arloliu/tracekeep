@@ -97,7 +97,7 @@ func fixedN(b *testing.B, perIter, prior int) int {
 	return n
 }
 
-// seedHistory seeds one open capture of tool T1 with prior ranges, prior a multiple of historyHourRanges.
+// seedHistory seeds one open capture of equipment T1 with prior ranges, prior a multiple of historyHourRanges.
 func seedHistory(tb testing.TB, c *Catalog, prior int) *history {
 	tb.Helper()
 	capture := seedCaptures(tb, c, 1, 1)[0]
@@ -122,7 +122,7 @@ func benchPack(tb testing.TB, h *history, hour int64, ranges []Range, delivered 
 	tb.Helper()
 	id := newID(tb)
 	p := &Pack{
-		ID: id, Capture: h.capture, ToolID: "T1", Hour: hour, Role: RoleSegment, Key: "staging/" + id.String(), Size: 1 << 20,
+		ID: id, Capture: h.capture, EquipmentID: "T1", Hour: hour, Role: RoleSegment, Key: "staging/" + id.String(), Size: 1 << 20,
 		SeqStart: ranges[0].SeqFrom, FormatMinor: 2, Ranges: ranges,
 	}
 	ev := &Evidence{Deliveries: make([]Identity, 0, len(delivered))}
@@ -371,7 +371,7 @@ func seedWideHour(tb testing.TB, c *Catalog, h *history) int64 {
 	hour, id := h.lastHour+1, newID(tb)
 	from, span := h.next, uint64(historyHourRanges*historySpan)
 	seedTx(tb, c, func(tx *sqlx.Tx) {
-		insertRows(tb, tx, "packs", []string{"pack_id", "capture_id", "tool_id", "hour", "role", "object_key", "size", "seq_start", "format_minor", "state", "adopted", "registered_at"},
+		insertRows(tb, tx, "packs", []string{"pack_id", "capture_id", "equipment_id", "hour", "role", "object_key", "size", "seq_start", "format_minor", "state", "adopted", "registered_at"},
 			[][]any{{id[:], h.capture[:], "T1", hour, RoleArchive, "staging/" + id.String(), 1 << 20, int64(from), 2, "staged", false, 0}}) //nolint:gosec // a seeded seq is small
 		insertRows(tb, tx, "pack_ranges", []string{"pack_id", "capture_id", "seq_from", "seq_to", "ts_from", "ts_to"},
 			[][]any{{id[:], h.capture[:], int64(from), int64(from + span - 1), hourNS(hour), hourNS(hour) + int64(span) - 1}}) //nolint:gosec // a seeded seq is small

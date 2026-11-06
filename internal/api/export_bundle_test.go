@@ -57,7 +57,7 @@ func unpacked(t *testing.T, path string) map[string][]byte {
 
 func build(t *testing.T, m *masked, capture tracepack.UUID) (map[string][]byte, manifest) {
 	t.Helper()
-	req := &exportRequest{Kind: "canonical", Selector: exportSelector{ToolID: tool, Capture: capture.String(), From: hour * nsPerHour, To: (hour + 2) * nsPerHour}}
+	req := &exportRequest{Kind: "canonical", Selector: exportSelector{EquipmentID: equipment, Capture: capture.String(), From: hour * nsPerHour, To: (hour + 2) * nsPerHour}}
 	path, size, err := m.srv.buildBundle(t.Context(), newID(t), req, t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -208,7 +208,7 @@ func TestExportBundleHoldsNoClearBody(t *testing.T) {
 	})
 }
 
-// A tool's export holding a withheld capture beside a masked one: the withheld capture is named and holds no pack,
+// A piece of equipment's export holding a withheld capture beside a masked one: the withheld capture is named and holds no pack,
 // and the scan reads every record and redaction entry of the masked one, and no secret.
 func TestExportOfAToolHoldsNoClearBody(t *testing.T) {
 	t.Parallel()
@@ -221,7 +221,7 @@ func TestExportOfAToolHoldsNoClearBody(t *testing.T) {
 		m.put(t, capture, hour, ms, entries, m.policy())
 		withheld := m.admitUnmasked(t) // bound to a configuration without a policy, activated after the masked capture's
 		m.put(t, withheld, hour, captured(recordsOf(cs, hour)), nil, nil)
-		req := &exportRequest{Kind: "canonical", Selector: exportSelector{ToolID: tool, From: hour * nsPerHour, To: (hour + 1) * nsPerHour}}
+		req := &exportRequest{Kind: "canonical", Selector: exportSelector{EquipmentID: equipment, From: hour * nsPerHour, To: (hour + 1) * nsPerHour}}
 		path, _, err := m.srv.buildBundle(t.Context(), newID(t), req, t.TempDir())
 		if err != nil {
 			t.Fatal(err)
@@ -286,7 +286,7 @@ func TestExportBundleBounds(t *testing.T) {
 			m.put(t, capture, hour, captured(recordsOf(carriers(t)[i:i+1], hour)), nil, nil)
 		}
 		m.srv.Exports.Bounds.MaxPacks = 2
-		req := &exportRequest{Kind: "canonical", Selector: exportSelector{ToolID: tool, Capture: capture.String(), From: hour * nsPerHour, To: (hour + 1) * nsPerHour}}
+		req := &exportRequest{Kind: "canonical", Selector: exportSelector{EquipmentID: equipment, Capture: capture.String(), From: hour * nsPerHour, To: (hour + 1) * nsPerHour}}
 		if _, _, err := m.srv.buildBundle(t.Context(), newID(t), req, t.TempDir()); !errors.Is(err, errBounds) {
 			t.Errorf("three packs, at most two = %v, want errBounds", err)
 		}

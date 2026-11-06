@@ -136,7 +136,7 @@ func TestPruningRacingAReader(t *testing.T) {
 		}
 		exec(t, c, `UPDATE scope_events SET at = seq * 10`) // seqs 1–3 at 10, 20 and 30
 		l := compactorLease(t, c, "h")
-		all := Selector{ToolID: "T1", From: 0, To: hourNS(9)}
+		all := Selector{EquipmentID: "T1", From: 0, To: hourNS(9)}
 		held, release := holdAt(c, hookWatermarkRead)
 		var page Changes
 		var rerr error

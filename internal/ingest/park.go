@@ -172,14 +172,14 @@ func confirm(ack *jetstream.PubAck, err error) Confirmation {
 	return Unconfirmed
 }
 
-// parkSubject is the version's own subject on the parking stream, <park prefix>.<tool token>.<capture_id>.<seq>.<version token>,
-// the tool token taken from the original's traffic subject, whose last two tokens are the tool token and the capture id.
+// parkSubject is the version's own subject on the parking stream, <park prefix>.<equipment token>.<capture_id>.<seq>.<version token>,
+// the equipment token taken from the original's traffic subject, whose last two tokens are the equipment token and the capture id.
 // The version token is the full lowercase hex of SHA-256 over the 44 header bytes and the 32 digest bytes,
 // so two versions of one seq never share a subject.
 func parkSubject(parkPrefix, trafficSubject string, v Version) (string, error) {
 	tokens := strings.Split(trafficSubject, ".")
 	if len(tokens) < 3 || tokens[len(tokens)-1] != v.Capture.String() {
-		return "", fmt.Errorf("ingest: traffic subject %q does not end with a tool token and capture %s", trafficSubject, v.Capture)
+		return "", fmt.Errorf("ingest: traffic subject %q does not end with a piece of equipment token and capture %s", trafficSubject, v.Capture)
 	}
 	h := sha256.New()
 	h.Write(v.Header[:])

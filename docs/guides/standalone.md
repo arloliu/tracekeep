@@ -89,6 +89,11 @@ systemctl start tracekeep
 
 The configuration, credentials and keys stay as they are.
 
+**Across the identity reset** (equipment, source and device, `docs/specs/tracekeep/catalog.md` §7.4), an upgrade keeps nothing:
+the reset's migration refuses a catalog holding any capture and leaves it as it was, so the start fails.
+With the unit stopped, start on a fresh catalog, a fresh store and fresh traffic and parking streams,
+and point the gateways at a producer SDK of v0.6.0 or later, which names its source.
+
 The unit migrates before every start (`ExecStartPre`), while no role holds a SQLite catalog, which has one writer;
 a start without a new release migrates nothing. `TimeoutStartSec` (15 min) bounds the migration, a held MariaDB migration lock included.
 The unit restarts a failed start every 10 s with no start limit, so a bus or catalog that comes up later is waited for; `journalctl -u tracekeep` says why each start failed.
@@ -103,5 +108,5 @@ Without one, the command says so, and runs once the unit is stopped.
 ## Checks
 
 `make unit-check` verifies the unit with `systemd-analyze`.
-The standalone leg of the packaging tests, `make packaging-standalone`, installs the unit, drives a browser through a troubleshooting session and upgrades from the newest ancestor on `main` whose packaging run passed;
+The standalone leg of the packaging tests, `make packaging-standalone`, installs the unit, drives a browser through a troubleshooting session and upgrades from the newest ancestor on `main` past the identity reset whose packaging run passed;
 it installs a system unit, so it refuses to run outside a GitHub-hosted runner or over an existing installation.

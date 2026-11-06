@@ -61,25 +61,25 @@ func TestConfigStageQuotesNoKeyID(t *testing.T) {
 	}
 }
 
-// ListScopeChanges refuses too many devices naming the bound, never the request's tool.
-func TestScopeChangesRefusalQuotesNoTool(t *testing.T) {
+// ListScopeChanges refuses too many devices naming the bound, never the request's equipment.
+func TestScopeChangesRefusalQuotesNoEquipment(t *testing.T) {
 	t.Parallel()
 	c := catalogtest.Open(t, catalog.EngineSQLite)
 	r := newRig(t, &Server{Catalog: c}, nil)
 	answers := make([]string, 0, 3)
-	for _, tool := range []string{"password=pw-sentinel", "session=cookie-sentinel", "Bearer token-sentinel"} {
+	for _, equipment := range []string{"password=pw-sentinel", "session=cookie-sentinel", "Bearer token-sentinel"} {
 		s := sel(hour*nsPerHour, (hour+1)*nsPerHour)
-		s.ToolId = tool
+		s.EquipmentId = equipment
 		s.Devices = make([]string, 1001)
 		_, err := r.cl.ListScopeChanges(t.Context(), reader(&tkv1.ListScopeChangesRequest{Selector: s}))
 		<-r.done
 		answers = append(answers, errMessage(err))
 		if connect.CodeOf(err) != connect.CodeInvalidArgument || !strings.Contains(errMessage(err), "at most") {
-			t.Errorf("tool %q = %v, want invalid_argument naming the bound", tool, err)
+			t.Errorf("equipment %q = %v, want invalid_argument naming the bound", equipment, err)
 		}
 	}
 	if text := strings.Join(answers, "\n") + r.logs.String(); strings.Contains(text, "sentinel") {
-		t.Errorf("an answer or the log quotes the request's tool:\n%s", text)
+		t.Errorf("an answer or the log quotes the request's equipment:\n%s", text)
 	}
 }
 

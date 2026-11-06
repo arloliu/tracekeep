@@ -1,7 +1,7 @@
 // Package migrations embeds the catalog's Atlas migrations, one directory per engine with its atlas.sum (docs/specs/tracekeep/catalog.md §7.4),
 // and applies them with Atlas's executor, recording each revision in the service's own table, so a deployment needs no Atlas binary.
 // They are generated from schema.hcl by scripts/catalog.sh and never edited by hand,
-// except the counters' seed, a MariaDB spelling Atlas gets wrong and the live role's key, each marked in its file.
+// except the counters' seed, a MariaDB spelling Atlas gets wrong, the live role's key and the identity reset's renames, each marked in its file.
 package migrations
 
 import (
@@ -31,6 +31,14 @@ const Table = "tracekeep_revisions"
 
 // ErrOtherTool marks a catalog that holds tables but no revision in Table: another tool migrated it, and it is refused.
 var ErrOtherTool = errors.New("migrations: the catalog holds tables but no tracekeep revision: another tool migrated it")
+
+// ErrIdentityReset marks a catalog holding captures that the identity reset would carry over:
+// nothing written before it is kept (catalog.md §7.4), so it applies only to a catalog without captures.
+var ErrIdentityReset = errors.New("migrations: the identity reset applies only to a catalog without captures: " +
+	"stop every tracekeep process and start on a fresh catalog, bucket and traffic streams")
+
+// identityReset is the suffix of the identity reset's migration on each engine.
+const identityReset = "_equipment_identity.sql"
 
 // Dir is engine's embedded migration directory, its atlas.sum included.
 func Dir(engine string) (*migrate.MemDir, error) {
@@ -110,6 +118,9 @@ func ApplyDir(ctx context.Context, db *sql.DB, engine string, dir migrate.Dir) (
 	if err != nil {
 		return fmt.Errorf("migrations: %w", err)
 	}
+	if err := checkReset(ctx, conn, ex); err != nil {
+		return err
+	}
 	err = ex.ExecuteN(ctx, 0)
 	var dirty *migrate.NotCleanError
 	switch {
@@ -119,6 +130,29 @@ func ApplyDir(ctx context.Context, db *sql.DB, engine string, dir migrate.Dir) (
 		return fmt.Errorf("%w (%s)", ErrOtherTool, dirty.Reason)
 	default:
 		return fmt.Errorf("migrations: %w", err)
+	}
+}
+
+// checkReset refuses the identity reset on a catalog that holds any capture, before Atlas runs a statement,
+// so the refusal leaves the schema, the rows and the revisions as they were.
+// A catalog whose first migration is still pending is new and holds none.
+func checkReset(ctx context.Context, conn *sql.Conn, ex *migrate.Executor) error {
+	pending, err := ex.Pending(ctx)
+	if err != nil {
+		return nil // nothing pending, or a catalog ExecuteN refuses with its own error
+	}
+	if !slices.ContainsFunc(pending, func(f migrate.File) bool { return strings.HasSuffix(f.Name(), identityReset) }) ||
+		strings.HasSuffix(pending[0].Name(), "_init.sql") {
+		return nil
+	}
+	var one int
+	switch err := conn.QueryRowContext(ctx, "SELECT 1 FROM captures LIMIT 1").Scan(&one); {
+	case errors.Is(err, sql.ErrNoRows):
+		return nil
+	case err != nil:
+		return fmt.Errorf("migrations: count the captures: %w", err)
+	default:
+		return ErrIdentityReset
 	}
 }
 

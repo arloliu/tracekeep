@@ -41,7 +41,7 @@ function SelectorText({ sel }: { sel: Selector | undefined }) {
   if (!sel) return <span className="text-muted-foreground">—</span>;
   return (
     <span>
-      {sel.toolId} · {sel.devices.length > 0 ? sel.devices.join(", ") : "every device"}
+      {sel.equipmentId} · {sel.devices.length > 0 ? sel.devices.join(", ") : "every device"} · {sel.sources.length > 0 ? sel.sources.join(", ") : "every source"}
       {sel.captureId !== undefined && <> · capture <span className="font-mono text-xs">{sel.captureId}</span></>}
       <br />
       <Time ts={sel.from} /> – <Time ts={sel.to} />
@@ -52,11 +52,11 @@ function SelectorText({ sel }: { sel: Selector | undefined }) {
 // ExportLink starts a new export of a page's selector and window, for a principal whose roles admit exports.
 export function ExportLink({ search, from, to }: { search: SelectorSearch; from: Date; to: Date }) {
   const me = useMe();
-  if (!can.export(me) || search.tool === undefined) return null;
+  if (!can.export(me) || search.equipment === undefined) return null;
   return (
     <Link
       to="/exports/new"
-      search={{ tool: search.tool, devices: search.devices, capture: search.capture, from: from.toISOString(), to: to.toISOString() }}
+      search={{ equipment: search.equipment, devices: search.devices, sources: search.sources, capture: search.capture, from: from.toISOString(), to: to.toISOString() }}
       className="text-sm text-primary underline-offset-4 hover:underline"
     >
       Export this selection…
@@ -111,7 +111,7 @@ export function NewExport() {
   const client = useQueryClient();
   // A preset is resolved once, so the job exports the window confirmed.
   const [now] = useState(() => Date.now());
-  const sel = search.tool === undefined ? undefined : selectorOf(search, windowOf(search, now));
+  const sel = search.equipment === undefined ? undefined : selectorOf(search, windowOf(search, now));
   const start = useMutation({
     mutationFn: async (s: Selector) => (await machine.startExport({ selector: s, kind: "canonical" })).jobId,
     onSuccess: (jobId) => {

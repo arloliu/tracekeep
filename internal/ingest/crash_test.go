@@ -381,7 +381,7 @@ func TestPutFailsAfterTheFirstSegment(t *testing.T) {
 }
 
 // A batch whose hour passed the retention horizon at its flush registers nothing, and each message is terminated with its audit row,
-// a loss of the capture's tool.
+// a loss of the capture's equipment.
 func TestFlushBeyondTheHorizon(t *testing.T) {
 	t.Parallel()
 	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
@@ -410,7 +410,7 @@ func TestFlushBeyondTheHorizon(t *testing.T) {
 		if got, _ := c.Capture(t.Context(), capture); got.HasHighestSeq {
 			t.Errorf("a segment was registered: %+v", got)
 		}
-		if want := fmt.Sprintf(`tracekeep_ingest_declared_losses_total{tool_id="T1"} %d`, len(hs)); !strings.Contains(scrape(t, s), want) {
+		if want := fmt.Sprintf(`tracekeep_ingest_declared_losses_total{equipment_id="T1"} %d`, len(hs)); !strings.Contains(scrape(t, s), want) {
 			t.Errorf("/metrics lacks %s", want)
 		}
 	})

@@ -31,8 +31,8 @@ const openTimeout = 10 * time.Second
 
 // Options shape the loopback pair's traffic.
 type Options struct {
-	// ToolID and DeviceName go into every capture's descriptor.
-	ToolID, DeviceName string
+	// EquipmentID and Device go into every capture's descriptor.
+	EquipmentID, Device string
 	// SessionID is the HSMS-SS device id.
 	SessionID uint16
 	// T3 is how long the waiter waits for the reply to a forwarded request.
@@ -272,7 +272,7 @@ func (l *Loopback) Close() error {
 
 func (l *Loopback) descriptor() producer.CaptureDescriptor {
 	reload := l.reload.Load()
-	return producer.CaptureDescriptor{ToolID: l.opts.ToolID, DeviceName: l.opts.DeviceName, DeviceID: &reload, Thinning: l.opts.Thinning}
+	return producer.CaptureDescriptor{EquipmentID: l.opts.EquipmentID, Device: l.opts.Device, DeviceID: &reload, Thinning: l.opts.Thinning}
 }
 
 // equipment answers a primary with its own item, unless it withholds the answer.

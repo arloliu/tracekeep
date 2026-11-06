@@ -25,7 +25,7 @@ const testOwner = "static:viewer"
 // startExport creates a job over capture's hour, as StartExport would.
 func startExport(t *testing.T, c *catalog.Catalog, capture tracepack.UUID) tracepack.UUID {
 	t.Helper()
-	req, err := json.Marshal(exportRequest{Kind: "canonical", Selector: exportSelector{ToolID: tool, Capture: capture.String(), From: hour * nsPerHour, To: (hour + 1) * nsPerHour}})
+	req, err := json.Marshal(exportRequest{Kind: "canonical", Selector: exportSelector{EquipmentID: equipment, Capture: capture.String(), From: hour * nsPerHour, To: (hour + 1) * nsPerHour}})
 	if err != nil {
 		t.Fatal(err)
 	}

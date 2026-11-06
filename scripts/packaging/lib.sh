@@ -7,7 +7,7 @@ UNMAPPED_EMAIL=nobody@example.test
 UNMAPPED_HASH='$2a$10$2b2cU8CPhOTaGrs1HRQuAueS7JTT5ZHsHSzYiFPm1leZck7Mc8T4W'
 PEOPLE_CLIENT=tracekeep-web
 PEOPLE_SECRET=packaging-people-secret
-TOOL=SIM-TOOL
+EQUIPMENT=SIM-EQP
 DEVICE=eqp
 # The simulator sends this as a process program's body (S7F3), which the baseline policy masks: no page or bundle may show it.
 PROCESS_PROGRAM=SIM-PROCESS-PROGRAM-BODY
@@ -97,7 +97,7 @@ playwright() {
 	shift
 	[ -d "$home/.pki" ] || browser_home "$home"
 	(cd web && npx playwright install chromium >/dev/null &&
-		TRACEKEEP_URL=$url TRACEKEEP_TOOL=$TOOL TRACEKEEP_DEVICE=$DEVICE TRACEKEEP_UNMAPPED_EMAIL=$UNMAPPED_EMAIL TRACEKEEP_PROCESS_PROGRAM=$PROCESS_PROGRAM \
+		TRACEKEEP_URL=$url TRACEKEEP_EQUIPMENT=$EQUIPMENT TRACEKEEP_DEVICE=$DEVICE TRACEKEEP_UNMAPPED_EMAIL=$UNMAPPED_EMAIL TRACEKEEP_PROCESS_PROGRAM=$PROCESS_PROGRAM \
 		TRACEKEEP_HOST_RULES="MAP tracekeep.test 127.0.0.1, MAP dex.test 127.0.0.1" TRACEKEEP_BROWSER_HOME=$home \
 		npx playwright test "$@")
 }

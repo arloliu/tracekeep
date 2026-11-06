@@ -11,14 +11,14 @@ import { Input } from "@/components/ui/input";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { ErrorNote } from "@/errors";
 import { ExportLink } from "@/exports";
-import type { Capture, Completeness, Hour, Thinning } from "@/gen/tracekeep/v1/machine_pb";
-import { presetLabels, presets, recentTools, rememberTool, selectorOf, windowOf, type Preset, type SelectorSearch, type Window } from "@/selector";
+import type { Capture, Completeness, Device, Hour, Thinning } from "@/gen/tracekeep/v1/machine_pb";
+import { presetLabels, presets, recentEquipment, rememberEquipment, selectorOf, windowOf, type Preset, type SelectorSearch, type Window } from "@/selector";
 import { fromInput, inputValue, Time, useZone } from "@/time";
 
 const hour = 3_600_000;
 
-// Browser is the browser page (api.md §10.3 *Pages*): a tool and a window, its devices,
-// and the selected devices' captures with each capture's completeness hour by hour.
+// Browser is the browser page (api.md §10.3 *Pages*): equipment and a window, its series (device and source),
+// and the selected series' captures with each capture's completeness hour by hour.
 export function Browser() {
   const search = useSearch({ from: "/" });
   const client = useQueryClient();
@@ -32,9 +32,9 @@ export function Browser() {
   };
   return (
     <div className="space-y-8">
-      <ToolForm key={`${search.tool ?? ""}|${search.last ?? ""}|${search.from ?? ""}|${search.to ?? ""}|${zone}`} search={search} w={w} onOpen={reopen} />
-      {search.tool === undefined ? (
-        <p className="text-muted-foreground">Type a tool id to browse its devices.</p>
+      <EquipmentForm key={`${search.equipment ?? ""}|${search.last ?? ""}|${search.from ?? ""}|${search.to ?? ""}|${zone}`} search={search} w={w} onOpen={reopen} />
+      {search.equipment === undefined ? (
+        <p className="text-muted-foreground">Type an equipment ID to browse its devices.</p>
       ) : (
         <>
           <ExportLink search={search} from={w.from} to={w.to} />
@@ -53,26 +53,27 @@ export function Browser() {
   );
 }
 
-function ToolForm({ search, w, onOpen }: { search: SelectorSearch; w: Window; onOpen: () => void }) {
+function EquipmentForm({ search, w, onOpen }: { search: SelectorSearch; w: Window; onOpen: () => void }) {
   const { zone } = useZone();
   const navigate = useNavigate({ from: "/" });
-  const [tool, setTool] = useState(search.tool ?? "");
+  const [equipment, setEquipment] = useState(search.equipment ?? "");
   const [last, setLast] = useState<Preset | "custom">(search.from !== undefined ? "custom" : (search.last ?? "1h"));
   const [from, setFrom] = useState(inputValue(w.from, zone));
   const [to, setTo] = useState(inputValue(w.to, zone));
   const [problem, setProblem] = useState("");
-  const recent = recentTools();
+  const recent = recentEquipment();
 
-  const open = (t: string, window: Pick<SelectorSearch, "last" | "from" | "to">) => {
-    rememberTool(t);
+  const open = (e: string, window: Pick<SelectorSearch, "last" | "from" | "to">) => {
+    rememberEquipment(e);
     onOpen();
-    void navigate({ search: { tool: t, devices: t === search.tool ? search.devices : undefined, ...window } });
+    const same = e === search.equipment;
+    void navigate({ search: { equipment: e, devices: same ? search.devices : undefined, sources: same ? search.sources : undefined, ...window } });
   };
   const submit = (e: SyntheticEvent) => {
     e.preventDefault();
-    const t = tool.trim();
+    const t = equipment.trim();
     if (t === "") {
-      setProblem("Type a tool id.");
+      setProblem("Type an equipment ID.");
       return;
     }
     if (last !== "custom") {
@@ -92,8 +93,8 @@ function ToolForm({ search, w, onOpen }: { search: SelectorSearch; w: Window; on
     <form onSubmit={submit} className="space-y-3">
       <div className="flex flex-wrap items-end gap-3">
         <label className="grid gap-1 text-sm">
-          Tool id
-          <Input className="w-56" value={tool} onChange={(e) => { setTool(e.target.value); }} />
+          Equipment ID
+          <Input className="w-56" value={equipment} onChange={(e) => { setEquipment(e.target.value); }} />
         </label>
         <div role="group" aria-label="Window" className="flex gap-1">
           {(Object.keys(presets) as Preset[]).map((p) => (
@@ -129,7 +130,7 @@ function ToolForm({ search, w, onOpen }: { search: SelectorSearch; w: Window; on
 
 // keyOf is a query's key from its selector's parts; a Timestamp holds a bigint, which a key cannot.
 function keyOf(op: string, s: SelectorSearch, w: Window) {
-  return ["browser", op, s.tool, s.devices, w.from.toISOString(), w.to.toISOString()];
+  return ["browser", op, s.equipment, s.devices, s.sources, w.from.toISOString(), w.to.toISOString()];
 }
 
 function Section({ title, children }: { title: string; children: ReactNode }) {
@@ -149,13 +150,15 @@ function Devices({ search, w }: { search: SelectorSearch; w: Window }) {
   const machine = useMachine();
   const navigate = useNavigate({ from: "/" });
   const q = useQuery({
-    queryKey: keyOf("devices", { tool: search.tool }, w),
-    queryFn: async ({ signal }) => (await machine.listDevices({ selector: selectorOf({ tool: search.tool }, w) }, { signal })).devices,
+    queryKey: keyOf("devices", { equipment: search.equipment }, w),
+    queryFn: async ({ signal }) => (await machine.listDevices({ selector: selectorOf({ equipment: search.equipment }, w) }, { signal })).devices,
   });
-  const selected = new Set(search.devices);
-  const toggle = (name: string) => {
-    const next = selected.has(name) ? [...selected].filter((d) => d !== name) : [...selected, name];
-    void navigate({ search: (prev) => ({ ...prev, devices: next.length > 0 ? next : undefined }) });
+  // A row is a series; the selector intersects its devices and sources, so a row is selected when both lists admit it.
+  const isSelected = (d: Device) => (search.devices ?? []).includes(d.name) && (search.sources === undefined || search.sources.includes(d.source));
+  const toggle = (row: Device) => {
+    const rows = (q.data ?? []).filter((d) => d !== row && isSelected(d)).concat(isSelected(row) ? [] : [row]);
+    const unique = (xs: string[]) => (xs.length > 0 ? [...new Set(xs)] : undefined);
+    void navigate({ search: (prev) => ({ ...prev, devices: unique(rows.map((d) => d.name)), sources: unique(rows.map((d) => d.source)) }) });
   };
   return (
     <Section title="Devices">
@@ -164,13 +167,14 @@ function Devices({ search, w }: { search: SelectorSearch; w: Window }) {
       ) : q.isError ? (
         <ErrorNote error={q.error} />
       ) : q.data.length === 0 ? (
-        <p className="text-muted-foreground">The tool has no device with a capture in the window.</p>
+        <p className="text-muted-foreground">The equipment has no device with a capture in the window.</p>
       ) : (
         <Table>
           <TableHeader>
             <TableRow>
               <TableHead />
               <TableHead>Device</TableHead>
+              <TableHead>Source</TableHead>
               <TableHead>Endpoint</TableHead>
               <TableHead>Device id</TableHead>
               <TableHead>Open captures</TableHead>
@@ -181,11 +185,12 @@ function Devices({ search, w }: { search: SelectorSearch; w: Window }) {
           </TableHeader>
           <TableBody>
             {q.data.map((d) => (
-              <TableRow key={d.name} data-state={selected.has(d.name) ? "selected" : undefined}>
+              <TableRow key={`${d.name}|${d.source}`} data-state={isSelected(d) ? "selected" : undefined}>
                 <TableCell>
-                  <input type="checkbox" aria-label={`Select ${d.name}`} checked={selected.has(d.name)} onChange={() => { toggle(d.name); }} />
+                  <input type="checkbox" aria-label={`Select ${d.name} from ${d.source}`} checked={isSelected(d)} onChange={() => { toggle(d); }} />
                 </TableCell>
                 <TableCell className="font-medium">{d.name}</TableCell>
+                <TableCell>{d.source}</TableCell>
                 <TableCell>{d.equipmentEndpoint ?? "—"}</TableCell>
                 <TableCell>{d.deviceId === undefined ? "—" : String(d.deviceId)}</TableCell>
                 <TableCell>{String(d.openCaptures)}</TableCell>
@@ -221,7 +226,7 @@ function Captures({ search, w }: { search: SelectorSearch; w: Window }) {
   const machine = useMachine();
   const q = useQuery({
     queryKey: keyOf("captures", search, w),
-    queryFn: async ({ signal }) => (await machine.listCaptures({ selector: selectorOf({ tool: search.tool, devices: search.devices }, w) }, { signal })).captures,
+    queryFn: async ({ signal }) => (await machine.listCaptures({ selector: selectorOf({ equipment: search.equipment, devices: search.devices, sources: search.sources }, w) }, { signal })).captures,
   });
   return (
     <Section title="Captures">
@@ -237,6 +242,7 @@ function Captures({ search, w }: { search: SelectorSearch; w: Window }) {
             <TableRow>
               <TableHead>Capture</TableHead>
               <TableHead>Device</TableHead>
+              <TableHead>Source</TableHead>
               <TableHead>State</TableHead>
               <TableHead>Origin</TableHead>
               <TableHead>Last record</TableHead>
@@ -251,6 +257,7 @@ function Captures({ search, w }: { search: SelectorSearch; w: Window }) {
               <TableRow key={c.captureId}>
                 <TableCell className="font-mono text-xs">{c.captureId}</TableCell>
                 <TableCell>{c.device}</TableCell>
+                <TableCell>{c.source}</TableCell>
                 <TableCell><Badge variant="secondary">{c.state}</Badge></TableCell>
                 <TableCell><Time ts={c.origin} /></TableCell>
                 <TableCell><Time ts={c.lastRecord} /></TableCell>
@@ -271,15 +278,16 @@ function Captures({ search, w }: { search: SelectorSearch; w: Window }) {
   );
 }
 
-// RecordsLink opens the records of the selected devices, or of one capture, between from and to.
+// RecordsLink opens the records of the selected series, or of one capture, between from and to.
 function RecordsLink({ search, capture, from, to, children }: { search: SelectorSearch; capture?: Capture; from: Date; to: Date; children: ReactNode }) {
   return (
     <Link
       aria-label={capture ? `Records of ${capture.captureId}` : undefined}
       to="/records"
       search={{
-        tool: search.tool,
+        equipment: search.equipment,
         devices: capture ? [capture.device] : search.devices,
+        sources: capture ? [capture.source] : search.sources,
         capture: capture?.captureId,
         from: from.toISOString(),
         to: to.toISOString(),
@@ -339,7 +347,7 @@ function CompletenessByHour({ search, w }: { search: SelectorSearch; w: Window }
   const machine = useMachine();
   const q = useQuery({
     queryKey: keyOf("packs", search, w),
-    queryFn: async ({ signal }) => await machine.listPacks({ selector: selectorOf({ tool: search.tool, devices: search.devices }, w) }, { signal }),
+    queryFn: async ({ signal }) => await machine.listPacks({ selector: selectorOf({ equipment: search.equipment, devices: search.devices, sources: search.sources }, w) }, { signal }),
   });
   if (q.isPending) return <Section title="Completeness"><p className="text-muted-foreground">Loading…</p></Section>;
   if (q.isError) return <Section title="Completeness"><ErrorNote error={q.error} /></Section>;
@@ -349,7 +357,7 @@ function CompletenessByHour({ search, w }: { search: SelectorSearch; w: Window }
       {caps.map(({ capture, completeness }) => (
         <div key={capture.captureId} className="rounded-md border p-3 text-sm">
           <p className="mb-2 font-medium">
-            <span className="font-mono text-xs">{capture.captureId}</span> · {capture.device}
+            <span className="font-mono text-xs">{capture.captureId}</span> · {capture.device} · {capture.source}
           </p>
           <dl className="grid grid-cols-[max-content_1fr] gap-x-4 gap-y-1">
             {facts(completeness)
@@ -369,7 +377,7 @@ function CompletenessByHour({ search, w }: { search: SelectorSearch; w: Window }
             <TableHead>Hour</TableHead>
             {caps.map(({ capture }) => (
               <TableHead key={capture.captureId} className="font-mono text-xs" title={capture.captureId}>
-                {capture.captureId.slice(0, 8)} · {capture.device}
+                {capture.captureId.slice(0, 8)} · {capture.device} · {capture.source}
               </TableHead>
             ))}
             <TableHead>Notes</TableHead>

@@ -366,7 +366,7 @@ func describe(rd *tracepack.Reader, keyPrefix string, info store.ObjectInfo) (*c
 		return nil, "the pack has no metadata"
 	}
 	p := &catalog.Pack{
-		ID: h.PackID, Capture: h.CaptureID, ToolID: m.ToolID, Hour: floorHour(m.PeriodStart), Key: info.Key, Size: info.Size,
+		ID: h.PackID, Capture: h.CaptureID, EquipmentID: m.EquipmentID, Hour: floorHour(m.PeriodStart), Key: info.Key, Size: info.Size,
 		SeqStart: m.SeqStart, FormatMinor: int(h.FormatMinor),
 	}
 	var key string
@@ -378,10 +378,10 @@ func describe(rd *tracepack.Reader, keyPrefix string, info store.ObjectInfo) (*c
 		if m.SeqStart == math.MaxInt64 {
 			p.Role = catalog.RoleClose
 		}
-		key, err = tracepack.SegmentKey(keyPrefix, m.ToolID, h.CaptureID, m.SeqStart, h.PackID)
+		key, err = tracepack.SegmentKey(keyPrefix, m.EquipmentID, h.CaptureID, m.SeqStart, h.PackID)
 	case tracepack.PackRoleArchive:
 		p.Role = catalog.RoleArchive
-		key, err = tracepack.ArchiveKey(keyPrefix, m.ToolID, h.CaptureID, p.Hour, h.PackID)
+		key, err = tracepack.ArchiveKey(keyPrefix, m.EquipmentID, h.CaptureID, p.Hour, h.PackID)
 	case tracepack.PackRoleUnknown, tracepack.PackRoleExtract, tracepack.PackRoleRepair:
 		return p, fmt.Sprintf("pack role %v, which no tracekeep key holds", m.PackRole)
 	default:

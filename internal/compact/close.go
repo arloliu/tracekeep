@@ -227,13 +227,13 @@ func (r *Compactor) writeClose(ctx context.Context, w *os.File, c *catalog.Close
 	if err != nil {
 		return nil, fmt.Errorf("compact: open the close: %w", err)
 	}
-	key, err := tracepack.SegmentKey(r.KeyPrefix, c.ToolID, c.Capture, math.MaxInt64, c.PackID)
+	key, err := tracepack.SegmentKey(r.KeyPrefix, c.EquipmentID, c.Capture, math.MaxInt64, c.PackID)
 	if err != nil {
 		return nil, err
 	}
 
 	return &catalog.Pack{
-		ID: c.PackID, Capture: c.Capture, ToolID: c.ToolID, Hour: floorHour(c.TriggeredAt), Role: catalog.RoleClose, Key: key,
+		ID: c.PackID, Capture: c.Capture, EquipmentID: c.EquipmentID, Hour: floorHour(c.TriggeredAt), Role: catalog.RoleClose, Key: key,
 		Size: info.Size(), SeqStart: math.MaxInt64, FormatMinor: int(rd.Header().FormatMinor),
 	}, nil
 }

@@ -135,7 +135,7 @@ func TestAPIRoleThroughAnIdPOutage(t *testing.T) {
 			r.Header.Set("Content-Type", "application/json")
 			r.Header.Set("Origin", public)
 			r.AddCookie(sc)
-			r.Body = io.NopCloser(strings.NewReader(`{"selector":{"toolId":"SIM-TOOL","from":"2026-11-01T00:00:00Z","to":"2026-11-01T01:00:00Z"}}`))
+			r.Body = io.NopCloser(strings.NewReader(`{"selector":{"equipmentId":"SIM-EQP","from":"2026-11-01T00:00:00Z","to":"2026-11-01T01:00:00Z"}}`))
 		})
 		if resp.StatusCode != http.StatusOK {
 			t.Errorf("ListDevices by the session cookie, %s = %d, want 200", what, resp.StatusCode)

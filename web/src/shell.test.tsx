@@ -13,9 +13,9 @@ beforeEach(() => {
 
 test("signed out, the sign-in page starts a login returning to the page", async () => {
   stubFetch({ "/auth/me": () => new Response("not signed in", { status: 401 }) });
-  renderApp("/records?tool=T-1");
+  renderApp("/records?equipment=T-1");
   const link = await screen.findByRole("link", { name: "Sign in" });
-  expect(link).toHaveAttribute("href", "/auth/login?return=%2Frecords%3Ftool%3DT-1");
+  expect(link).toHaveAttribute("href", "/auth/login?return=%2Frecords%3Fequipment%3DT-1");
 });
 
 test("a host without sign-in says so, with nothing to sign in to", async () => {

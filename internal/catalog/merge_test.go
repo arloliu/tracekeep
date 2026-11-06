@@ -25,7 +25,7 @@ func archiveOf(t *testing.T, capture tracepack.UUID, hour int64, inputs ...*Pack
 	t.Helper()
 	id := newID(t)
 	a := &Pack{
-		ID: id, Capture: capture, ToolID: "T1", Hour: hour, Role: RoleArchive, Key: "archive/" + id.String(), Size: 200,
+		ID: id, Capture: capture, EquipmentID: "T1", Hour: hour, Role: RoleArchive, Key: "archive/" + id.String(), Size: 200,
 		SeqStart: inputs[0].SeqStart, FormatMinor: 1,
 	}
 	for _, p := range inputs {

@@ -23,7 +23,7 @@ const hour = timestampFromDate(new Date("2026-10-31T08:00:00Z"));
 const window = "from=2026-10-31T08%3A00%3A00.000Z&to=2026-10-31T09%3A00%3A00.000Z";
 
 const start = (truncated = false): Item => ({
-  item: { case: "capture", value: { capture: { captureId: capID, device: "eq-a", state: "open" }, completeness: { gaps: [{ seqFrom: 5n, seqTo: 6n }] }, completenessTruncated: truncated } },
+  item: { case: "capture", value: { capture: { captureId: capID, device: "eq-a", source: "gw-a", state: "open" }, completeness: { gaps: [{ seqFrom: 5n, seqTo: 6n }] }, completenessTruncated: truncated } },
 });
 const record = (seq: bigint, extra: object = {}): Item => ({
   item: {
@@ -63,7 +63,7 @@ beforeEach(() => {
 test("the stream fills one list with the records and the markers, the URL's predicates asked", async () => {
   const asked: QueryRecordsRequest[] = [];
   renderApp(
-    `/records?tool=T-1&devices=%5B%22eq-a%22%5D&capture=${capID}&${window}&messages=%5B%22S6F11%22%5D&dir=to_host&kinds=%5B%22data%22%5D&events=true&seqFrom=%2210%22&seqTo=%2218446744073709551615%22`,
+    `/records?equipment=T-1&devices=%5B%22eq-a%22%5D&sources=%5B%22gw-a%22%5D&capture=${capID}&${window}&messages=%5B%22S6F11%22%5D&dir=to_host&kinds=%5B%22data%22%5D&events=true&seqFrom=%2210%22&seqTo=%2218446744073709551615%22`,
     stream(asked, function* () {
       yield { items: [start(true), record(1n)], cursor: "c1" };
       yield {
@@ -75,9 +75,10 @@ test("the stream fills one list with the records and the markers, the URL's pred
   );
   expect(await screen.findByText(/2 records in the list/)).toBeInTheDocument();
   const req = asked[0];
-  expect(req.selector?.toolId).toBe("T-1");
+  expect(req.selector?.equipmentId).toBe("T-1");
   expect(req.selector?.captureId).toBe(capID);
   expect(req.selector?.devices).toEqual(["eq-a"]);
+  expect(req.selector?.sources).toEqual(["gw-a"]);
   expect(req.messages).toEqual(["S6F11"]);
   expect(req.direction).toBe("to_host");
   expect(req.kinds).toEqual(["data"]);
@@ -96,7 +97,9 @@ test("the stream fills one list with the records and the markers, the URL's pred
   const whole = within(list).getByRole("link", { name: "the browser has it whole" });
   const url = new URL(whole.getAttribute("href") ?? "", "https://h");
   expect(url.pathname).toBe("/");
-  expect(url.searchParams.get("tool")).toBe("T-1");
+  expect(url.searchParams.get("equipment")).toBe("T-1");
+  expect(url.searchParams.get("devices")).toBe('["eq-a"]');
+  expect(url.searchParams.get("sources")).toBe('["gw-a"]'); // the capture's own source
   expect(url.searchParams.get("from")).toBe("2026-10-31T08:00:00.000Z");
   expect(screen.queryByRole("button", { name: "Next page" })).not.toBeInTheDocument();
   expect(screen.queryByRole("button", { name: "Continue" })).not.toBeInTheDocument();
@@ -106,7 +109,7 @@ test("a selected record shows its header, SML, holders and transaction, looked u
   const asked: QueryRecordsRequest[] = [];
   const looked: FindTransactionRequest[] = [];
   renderApp(
-    `/records?tool=T-1&${window}`,
+    `/records?equipment=T-1&${window}`,
     stream(
       asked,
       function* () {
@@ -163,7 +166,7 @@ test("a selected record shows its header, SML, holders and transaction, looked u
 test("a limit's cursor offers the next page, whose items join the same list", async () => {
   const asked: QueryRecordsRequest[] = [];
   renderApp(
-    `/records?tool=T-1&${window}`,
+    `/records?equipment=T-1&${window}`,
     stream(asked, function* (req) {
       if (req.cursor === "") {
         yield { items: [start(), record(1n)], cursor: "c1", end: { records: 1n, cursor: "page-2" } };
@@ -183,7 +186,7 @@ test("a limit's cursor offers the next page, whose items join the same list", as
 test("an interrupted stream keeps its items, says the code, and continues from the last batch's cursor", async () => {
   const asked: QueryRecordsRequest[] = [];
   renderApp(
-    `/records?tool=T-1&${window}`,
+    `/records?equipment=T-1&${window}`,
     stream(asked, function* (req) {
       if (req.cursor === "") {
         yield { items: [start(), record(1n)], cursor: "c1" };
@@ -207,7 +210,7 @@ test("a completeness cut to fit keeps the list incomplete across a continuation"
   const asked: QueryRecordsRequest[] = [];
   const cutStart: Item = { item: { case: "capture", value: { capture: { captureId: capID, device: "eq-a", state: "open" }, completeness: {}, completenessTruncated: true } } };
   renderApp(
-    `/records?tool=T-1&${window}`,
+    `/records?equipment=T-1&${window}`,
     stream(asked, function* (req) {
       if (req.cursor === "") {
         yield { items: [cutStart, record(1n)], cursor: "c1" };
@@ -223,7 +226,7 @@ test("a completeness cut to fit keeps the list incomplete across a continuation"
 
 test("a stream that stops without its end is interrupted too", async () => {
   renderApp(
-    `/records?tool=T-1&${window}`,
+    `/records?equipment=T-1&${window}`,
     stream([], function* () {
       yield { items: [start(), record(1n)], cursor: "c1" };
     }),
@@ -237,9 +240,9 @@ test("changing a filter cancels the stream, which is not shown as a failure", as
   let release: () => void = () => undefined;
   const released = new Promise<void>((resolve) => { release = resolve; });
   const { router } = renderApp(
-    `/records?tool=T-1&${window}`,
+    `/records?equipment=T-1&${window}`,
     stream(asked, async function* (req, ctx) {
-      if (req.selector?.toolId === "T-1") {
+      if (req.selector?.equipmentId === "T-1") {
         yield { items: [start(), record(1n)], cursor: "c1" };
         await new Promise((_, reject) => {
           ctx.signal.addEventListener("abort", () => {
@@ -254,9 +257,9 @@ test("changing a filter cancels the stream, which is not shown as a failure", as
     }),
   );
   expect(await screen.findByText("Reading… 1 record in the list.")).toBeInTheDocument();
-  void router.navigate({ to: "/records", search: (s) => ({ ...s, tool: "T-2" }) });
+  void router.navigate({ to: "/records", search: (s) => ({ ...s, equipment: "T-2" }) });
   await waitFor(() => { expect(aborted).toBe(true); });
-  await waitFor(() => { expect(asked.map((r) => r.selector?.toolId)).toEqual(["T-1", "T-2"]); });
+  await waitFor(() => { expect(asked.map((r) => r.selector?.equipmentId)).toEqual(["T-1", "T-2"]); });
   await drain(); // the old stream's rejection reaches its catch by microtasks, all run before the next task
   expect(screen.getByText("Reading… 1 record in the list.")).toBeInTheDocument();
   expect(screen.queryByText(/Interrupted/)).not.toBeInTheDocument();
@@ -267,7 +270,7 @@ test("changing a filter cancels the stream, which is not shown as a failure", as
 test("a preset's window is fixed when the page opens, so the stream starts once", async () => {
   const asked: QueryRecordsRequest[] = [];
   renderApp(
-    "/records?tool=T-1&last=6h",
+    "/records?equipment=T-1&last=6h",
     stream(asked, function* () {
       yield { items: [start(), record(1n)], cursor: "c1", end: { records: 1n } };
     }),
@@ -285,7 +288,7 @@ test("a stream answering unauthenticated returns to the sign-in page", async () 
   let me = 0;
   stubFetch({ "/auth/me": () => (++me === 1 ? json({ subject: "alice", roles: ["viewer"], expiry: "2099-01-01T00:00:00Z" }) : new Response(null, { status: 401 })) });
   renderApp(
-    `/records?tool=T-1&${window}`,
+    `/records?equipment=T-1&${window}`,
     stream([], function* () {
       yield* [];
       throw new ConnectError("session", Code.Unauthenticated);
@@ -297,7 +300,7 @@ test("a stream answering unauthenticated returns to the sign-in page", async () 
 test("a long list renders only the rows in view", async () => {
   const items = [start(), ...Array.from({ length: 2000 }, (_, i) => record(BigInt(i + 1)))];
   renderApp(
-    `/records?tool=T-1&${window}`,
+    `/records?equipment=T-1&${window}`,
     stream([], function* () {
       yield { items, cursor: "c", end: { records: 2000n } };
     }),
@@ -310,7 +313,7 @@ test("a long list renders only the rows in view", async () => {
 
 test("the filter bar refuses a seq range without a capture", async () => {
   const asked: QueryRecordsRequest[] = [];
-  renderApp(`/records?tool=T-1&${window}`, stream(asked, function* () {
+  renderApp(`/records?equipment=T-1&${window}`, stream(asked, function* () {
     yield { items: [], cursor: "", end: { records: 0n } };
   }));
   await screen.findByText(/^0 records in the list/);
@@ -322,8 +325,8 @@ test("the filter bar refuses a seq range without a capture", async () => {
 
 describe("the records' search", () => {
   test("keeps the predicates it understands, seqs only with a capture", () => {
-    expect(validateRecords({ tool: "T", messages: "S1F1", dir: "sideways", kinds: ["data", "bogus"], events: "true", seqFrom: "5" })).toEqual({
-      tool: "T", messages: ["S1F1"], kinds: ["data"], events: true,
+    expect(validateRecords({ equipment: "T", messages: "S1F1", dir: "sideways", kinds: ["data", "bogus"], events: "true", seqFrom: "5" })).toEqual({
+      equipment: "T", messages: ["S1F1"], kinds: ["data"], events: true,
     });
     expect(validateRecords({ capture: "c", seqFrom: 5, seqTo: "18446744073709551616" })).toEqual({ capture: "c", seqFrom: "5" });
   });

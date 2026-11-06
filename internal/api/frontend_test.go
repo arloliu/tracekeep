@@ -39,7 +39,7 @@ func TestFrontendServing(t *testing.T) {
 		frontend     bool
 	}{
 		{http.MethodGet, "/", http.StatusOK, "<title>app</title>", "text/html", "no-cache", true},
-		{http.MethodGet, "/records?tool=T-1", http.StatusOK, "<title>app</title>", "text/html", "no-cache", true},
+		{http.MethodGet, "/records?equipment=T-1", http.StatusOK, "<title>app</title>", "text/html", "no-cache", true},
 		{http.MethodGet, "/exports/0f3a", http.StatusOK, "<title>app</title>", "text/html", "no-cache", true},
 		{http.MethodGet, "/assets/index-abc1.js", http.StatusOK, "console.log(1)", "text/javascript", "public, max-age=31536000, immutable", true},
 		{http.MethodGet, "/favicon.svg", http.StatusOK, "<svg/>", "image/svg+xml", "no-cache", true},

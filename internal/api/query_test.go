@@ -49,7 +49,7 @@ func (m *masked) admitUnmasked(t *testing.T) tracepack.UUID {
 // query is a QueryRecords request over the test's hour for capture, as the viewer.
 func query(capture tracepack.UUID, edit func(*tkv1.QueryRecordsRequest)) *connect.Request[tkv1.QueryRecordsRequest] {
 	id := capture.String()
-	m := &tkv1.QueryRecordsRequest{Selector: &tkv1.Selector{ToolId: tool, CaptureId: &id, From: hourTS(hour), To: hourTS(hour + 1)}}
+	m := &tkv1.QueryRecordsRequest{Selector: &tkv1.Selector{EquipmentId: equipment, CaptureId: &id, From: hourTS(hour), To: hourTS(hour + 1)}}
 	if edit != nil {
 		edit(m)
 	}
@@ -201,6 +201,9 @@ func TestQueryRecordsLimitAndCursor(t *testing.T) {
 		for name, edit := range map[string]func(*tkv1.QueryRecordsRequest){
 			"another request's cursor": func(q *tkv1.QueryRecordsRequest) {
 				q.Cursor, q.Messages = cursor, []string{"S1F1"}
+			},
+			"the cursor under other sources": func(q *tkv1.QueryRecordsRequest) {
+				q.Cursor, q.Selector.Sources = cursor, []string{"another-source"}
 			},
 			"a cursor that does not parse": func(q *tkv1.QueryRecordsRequest) { q.Cursor = "!" },
 			"a limit above 50,000":         func(q *tkv1.QueryRecordsRequest) { q.Limit = 50001 },

@@ -116,7 +116,7 @@ var mariadbDialect = dialect{
 type captureRow struct {
 	State          string         `db:"state"`
 	Descriptor     []byte         `db:"descriptor"`
-	ToolID         sql.NullString `db:"tool_id"`
+	EquipmentID    sql.NullString `db:"equipment_id"`
 	ConfigID       sql.NullInt64  `db:"config_id"`
 	DataRevision   int64          `db:"data_revision"`
 	HighestSeq     sql.NullInt64  `db:"highest_seq"`
@@ -219,7 +219,7 @@ func (c *Catalog) lockCapture(ctx context.Context, tx *sqlx.Tx, id tracepack.UUI
 	if _, err := tx.ExecContext(ctx, c.d.prologue, id[:], c.now()); err != nil {
 		return row, fmt.Errorf("catalog: lock capture: %w", err)
 	}
-	err := tx.GetContext(ctx, &row, `SELECT state, descriptor, tool_id, config_id, data_revision, highest_seq, highest_seq_ts,
+	err := tx.GetContext(ctx, &row, `SELECT state, descriptor, equipment_id, config_id, data_revision, highest_seq, highest_seq_ts,
 		stop_seen, last_registered_at FROM captures WHERE capture_id = ?`, id[:])
 	if err != nil {
 		return row, fmt.Errorf("catalog: lock capture: %w", err)

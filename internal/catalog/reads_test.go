@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"math"
 	"slices"
 	"testing"
@@ -18,30 +19,37 @@ const readQ = 15 * time.Minute
 
 // spec describes a capture as its start descriptor states it.
 type spec struct {
-	instance tracepack.UUID
-	device   string
-	origin   int64
-	previous *tracepack.UUID
-	endpoint string
-	deviceID uint64
-	thinning []tracepack.Thinning
-	toolID   string
-	rejectIt bool
+	instance    tracepack.UUID
+	device      string
+	source      string
+	origin      int64
+	previous    *tracepack.UUID
+	endpoint    string
+	deviceID    uint64
+	thinning    []tracepack.Thinning
+	equipmentID string
+	rejectIt    bool
 }
 
-// described admits a capture of tool T1 (or s.toolID) with a real descriptor, as ingest's admission of its start would.
+// described admits a capture of equipment T1 (or s.equipmentID) with a real descriptor, as ingest's admission of its start would.
 func described(t testing.TB, c *Catalog, s spec) tracepack.UUID {
 	t.Helper()
 	gate(t, c)
-	if s.toolID == "" {
-		s.toolID = "T1"
+	if s.equipmentID == "" {
+		s.equipmentID = "T1"
 	}
 	if s.device == "" {
 		s.device = "eqp"
 	}
+	if s.source == "" {
+		s.source = "test-source"
+	}
 	b := descriptorBytes(t, s)
 	id := newID(t)
-	d := &Descriptor{Bytes: b, ToolID: s.toolID, RecorderInstanceID: s.instance, Device: s.device, OriginNS: s.origin, PreviousCaptureID: s.previous}
+	d := &Descriptor{
+		Bytes: b, EquipmentID: s.equipmentID, RecorderInstanceID: s.instance, Device: s.device, Source: s.source,
+		OriginNS: s.origin, PreviousCaptureID: s.previous,
+	}
 	if s.rejectIt {
 		if _, err := c.Reject(t.Context(), start(id), b); err != nil {
 			t.Fatal(err)
@@ -61,11 +69,11 @@ func descriptorBytes(t testing.TB, s spec) []byte {
 	t.Helper()
 	mono, tolerance := int64(0), uint64(time.Second)
 	m := &tracepack.PackMeta{
-		ToolID: s.toolID, Transport: tracepack.TransportHSMSSS, CaptureMethod: tracepack.CaptureMethodRawStream,
+		EquipmentID: s.equipmentID, Transport: tracepack.TransportHSMSSS, CaptureMethod: tracepack.CaptureMethodRawStream,
 		Vantage: tracepack.VantageHost, Recorder: "test", TimeSource: tracepack.TimeSourceCaptureClock,
 		CaptureOriginUTCNs: &s.origin, CaptureOriginMonoNs: &mono, ClockStepToleranceNs: &tolerance,
 		LifecycleCoverage: tracepack.LifecycleCoverageSubscribed, QualityEvaluated: true,
-		RecorderInstanceID: s.instance, RecorderInstanceName: &s.device, PreviousCaptureID: s.previous,
+		RecorderInstanceID: s.instance, RecorderInstanceName: &s.source, Device: &s.device, PreviousCaptureID: s.previous,
 		Thinning: s.thinning,
 	}
 	if s.endpoint != "" {
@@ -108,11 +116,12 @@ func listCaptures(t *testing.T, c *Catalog, sel Selector) map[tracepack.UUID]Cap
 	return out
 }
 
-func window(from, to int64) Selector { return Selector{ToolID: "T1", From: from, To: to} }
+func window(from, to int64) Selector { return Selector{EquipmentID: "T1", From: from, To: to} }
 
-// Overlap comes from the spans of one recorder's captures, survives a close, and is never computed across recorders;
+// Overlap comes from the spans of one series' captures, survives a close, and is never computed across series;
 // an unregistered interval is reported against the latest span end of every earlier capture, only past Q,
-// and for a predecessor the catalog never admitted.
+// and for a predecessor the catalog never admitted or one of another series: of two captures naming one admitted predecessor,
+// only the one of another series keeps an interval of unknown start (catalog.md §7.3).
 func TestListCapturesSpans(t *testing.T) {
 	t.Parallel()
 	engines(t, func(t *testing.T, c *Catalog) {
@@ -128,19 +137,22 @@ func TestListCapturesSpans(t *testing.T) {
 		missing := newID(t)
 		orphan := described(t, c, spec{instance: other, origin: 70, previous: &missing})
 		lastRecord(t, c, orphan, 80)
-		known := described(t, c, spec{instance: newID(t), origin: 10, previous: &a})
+		sibling := newID(t)
+		named := described(t, c, spec{instance: sibling, origin: 20})
+		chained := described(t, c, spec{instance: sibling, origin: 20 + q, previous: &named}) // exactly Q after named's origin
+		foreign := described(t, c, spec{instance: newID(t), origin: 10, previous: &named})
 		exec(t, c, `UPDATE captures SET state = 'closed' WHERE capture_id = ?`, a[:])
 
 		got := listCaptures(t, c, window(0, 1<<62))
-		if len(got) != 6 {
-			t.Fatalf("listed %d captures, want 6", len(got))
+		if len(got) != 8 {
+			t.Fatalf("listed %d captures, want 8", len(got))
 		}
-		for id, want := range map[tracepack.UUID]bool{a: true, b: true, atQ: false, pastQ: false, orphan: false, known: false} {
+		for id, want := range map[tracepack.UUID]bool{a: true, b: true, atQ: false, pastQ: false, orphan: false, named: false, chained: false, foreign: false} {
 			if got[id].Overlap != want {
 				t.Errorf("capture origin %d: overlap %v, want %v", got[id].OriginNS, got[id].Overlap, want)
 			}
 		}
-		for _, id := range []tracepack.UUID{a, b, atQ, known} {
+		for _, id := range []tracepack.UUID{a, b, atQ, named, chained} {
 			if u := got[id].Unregistered; len(u) != 0 {
 				t.Errorf("capture origin %d: unregistered %+v, want none", got[id].OriginNS, u)
 			}
@@ -152,13 +164,78 @@ func TestListCapturesSpans(t *testing.T) {
 		if u := got[orphan].Unregistered; len(u) != 1 || u[0].Start != nil || u[0].End != 70 {
 			t.Errorf("missing predecessor: unregistered %+v, want an open-started interval to its origin", u)
 		}
-		if got[a].State != StateClosed || got[known].PreviousCaptureID == nil || *got[known].PreviousCaptureID != a {
-			t.Errorf("state %v, previous %v", got[a].State, got[known].PreviousCaptureID)
+		if u := got[foreign].Unregistered; len(u) != 1 || u[0].Start != nil || u[0].End != 10 {
+			t.Errorf("another series' predecessor: unregistered %+v, want an open-started interval to its origin", u)
+		}
+		if got[a].State != StateClosed || got[chained].PreviousCaptureID == nil || *got[chained].PreviousCaptureID != named {
+			t.Errorf("state %v, previous %v", got[a].State, got[chained].PreviousCaptureID)
 		}
 	})
 }
 
-// A window selects the admitted captures of the tool and devices whose span meets it, an open capture's span unbounded.
+// Two devices each recorded by two sources are four series: ListDevices answers one row each, sorted by device then source,
+// with that series' own endpoint and last record; captures of one device under two sources never overlap,
+// another source's earlier capture never shortens an unregistered interval, and devices and sources intersect (catalog.md §7.3).
+func TestTwoSourcesOfOneDeviceAreTwoSeries(t *testing.T) {
+	t.Parallel()
+	engines(t, func(t *testing.T, c *Catalog) {
+		q := int64(readQ)
+		type series struct{ device, source string }
+		all := []series{{"eqp", "a"}, {"eqp", "b"}, {"tlp", "a"}, {"tlp", "b"}}
+		instances := map[series]tracepack.UUID{}
+		for i, sr := range all {
+			instances[sr] = newID(t)
+			id := described(t, c, spec{
+				instance: instances[sr], device: sr.device, source: sr.source, origin: int64(10 * i),
+				endpoint: fmt.Sprintf("192.0.2.%d:5000", i+1), deviceID: 1,
+			})
+			lastRecord(t, c, id, int64(100+i))
+		}
+		// (eqp, a) is silent past Q after its first capture; (eqp, b)'s capture spans that silence and must not fill it.
+		late := described(t, c, spec{instance: instances[all[0]], device: "eqp", source: "a", origin: 100 + 2*q})
+		filler := described(t, c, spec{instance: instances[all[1]], device: "eqp", source: "b", origin: 102})
+		lastRecord(t, c, filler, 100+2*q-1)
+
+		devices, err := c.ListDevices(t.Context(), window(0, 1<<62), readQ)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(devices) != 4 {
+			t.Fatalf("ListDevices = %d rows, want 4", len(devices))
+		}
+		for i, d := range devices {
+			if d.Name != all[i].device || d.Source != all[i].source {
+				t.Errorf("row %d = (%s, %s), want (%s, %s)", i, d.Name, d.Source, all[i].device, all[i].source)
+			}
+			if d.Overlap {
+				t.Errorf("(%s, %s) overlaps, but no series holds two captures at once", d.Name, d.Source)
+			}
+		}
+		if e := devices[2].EquipmentEndpoint; e == nil || *e != "192.0.2.3:5000" {
+			t.Errorf("(tlp, a)'s endpoint = %v, want its own", e)
+		}
+		if l := devices[3].LastRecordNS; l == nil || *l != 103 {
+			t.Errorf("(tlp, b)'s last record = %v, want 103", l)
+		}
+
+		got := listCaptures(t, c, window(0, 1<<62))
+		if u := got[late].Unregistered; len(u) != 1 || u[0].Start == nil || *u[0].Start != 100 || u[0].End != 100+2*q {
+			t.Errorf("(eqp, a)'s silence = %+v, want [100, %d), unfilled by (eqp, b)", u, 100+2*q)
+		}
+
+		sel := window(0, 1<<62)
+		sel.Devices, sel.Sources = []string{"eqp"}, []string{"b"}
+		picked, err := c.ListDevices(t.Context(), sel, readQ)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(picked) != 1 || picked[0].Name != "eqp" || picked[0].Source != "b" {
+			t.Errorf("devices [eqp] and sources [b] = %+v, want (eqp, b) alone", picked)
+		}
+	})
+}
+
+// A window selects the admitted captures of the equipment and devices whose span meets it, an open capture's span unbounded.
 func TestListCapturesSelection(t *testing.T) {
 	t.Parallel()
 	engines(t, func(t *testing.T, c *Catalog) {
@@ -169,7 +246,7 @@ func TestListCapturesSelection(t *testing.T) {
 		lastRecord(t, c, stillOpen, 20)
 		late := described(t, c, spec{instance: newID(t), origin: 100})
 		other := described(t, c, spec{instance: newID(t), origin: 50, device: "pdf"})
-		described(t, c, spec{instance: newID(t), origin: 50, toolID: "T2"})
+		described(t, c, spec{instance: newID(t), origin: 50, equipmentID: "T2"})
 		described(t, c, spec{instance: newID(t), origin: 50, rejectIt: true})
 		unknown := newID(t)
 		exec(t, c, `INSERT INTO captures (capture_id, state, created_at) VALUES (?, 'pending', 0)`, unknown[:])
@@ -192,8 +269,8 @@ func TestListCapturesSelection(t *testing.T) {
 			"after the stopped one's end": {window(30, 100), sorted(stillOpen, other)},
 			"at its end":                  {window(20, 100), sorted(ended, stillOpen, other)},
 			"through the late origin":     {window(30, 101), sorted(stillOpen, other, late)},
-			"one device":                  {Selector{ToolID: "T1", Devices: []string{"pdf"}, From: 0, To: 200}, sorted(other)},
-			"one capture":                 {Selector{ToolID: "T1", Capture: &late, From: 0, To: 200}, sorted(late)},
+			"one device":                  {Selector{EquipmentID: "T1", Devices: []string{"pdf"}, From: 0, To: 200}, sorted(other)},
+			"one capture":                 {Selector{EquipmentID: "T1", Capture: &late, From: 0, To: 200}, sorted(late)},
 		} {
 			if got := ids(tc.sel); !slices.Equal(got, tc.want) {
 				t.Errorf("%s: %d captures, want %d", name, len(got), len(tc.want))
@@ -377,14 +454,14 @@ func changes(t *testing.T, c *Catalog, after Cursor, sel Selector, limit int) Ch
 	return got
 }
 
-// A page holds the selected tool's and devices' events above the cursor in seq order;
-// its next cursor passes every event it scanned, and a short page ends at the watermark, past other tools' later events.
+// A page holds the selected equipment's and devices' events above the cursor in seq order;
+// its next cursor passes every event it scanned, and a short page ends at the watermark, past other equipment's later events.
 func TestListScopeChanges(t *testing.T) {
 	t.Parallel()
 	engines(t, func(t *testing.T, c *Catalog) {
 		eqp := described(t, c, spec{instance: newID(t), origin: 1})
 		pdf := described(t, c, spec{instance: newID(t), origin: 1, device: "pdf"})
-		other := described(t, c, spec{instance: newID(t), origin: 1, toolID: "T2"})
+		other := described(t, c, spec{instance: newID(t), origin: 1, equipmentID: "T2"})
 		staged(t, c, other, 1, 0)
 		staged(t, c, eqp, 1, 0)
 		staged(t, c, other, 2, 1)
@@ -399,7 +476,7 @@ func TestListScopeChanges(t *testing.T) {
 		var seen []ScopeEvent
 		cursor := Cursor{}
 		for page := 0; ; page++ {
-			got := changes(t, c, cursor, Selector{ToolID: "T1"}, 2)
+			got := changes(t, c, cursor, Selector{EquipmentID: "T1"}, 2)
 			if got.Stale || page > 3 {
 				t.Fatalf("page %d: %+v", page, got)
 			}
@@ -424,7 +501,7 @@ func TestListScopeChanges(t *testing.T) {
 				t.Errorf("event %d: %+v", i, e)
 			}
 		}
-		if got := changes(t, c, Cursor{}, Selector{ToolID: "T1", Devices: []string{"pdf"}}, 10); len(got.Events) != 1 || got.Events[0].Capture != pdf || got.Next.Seq != w {
+		if got := changes(t, c, Cursor{}, Selector{EquipmentID: "T1", Devices: []string{"pdf"}}, 10); len(got.Events) != 1 || got.Events[0].Capture != pdf || got.Next.Seq != w {
 			t.Errorf("one device: %+v", got)
 		}
 	})
@@ -445,7 +522,7 @@ func TestListScopeChangesStale(t *testing.T) {
 			{Cursor{Epoch: 2, Seq: 9}, false},
 			{Cursor{Epoch: 2, Seq: 100}, false}, // above the watermark: continued from the watermark, never skipping 10–100
 		} {
-			got := changes(t, c, tc.after, Selector{ToolID: "T1"}, 10)
+			got := changes(t, c, tc.after, Selector{EquipmentID: "T1"}, 10)
 			if got.Stale != tc.stale {
 				t.Errorf("cursor %+v: stale %v, want %v", tc.after, got.Stale, tc.stale)
 			}
@@ -461,9 +538,9 @@ func TestReadsRefuseAnEmptyWindow(t *testing.T) {
 	t.Parallel()
 	engines(t, func(t *testing.T, c *Catalog) {
 		described(t, c, spec{instance: newID(t), origin: 0})
-		noTool := window(hourNS(1), hourNS(2))
-		noTool.ToolID = ""
-		for _, w := range []Selector{window(hourNS(2), hourNS(2)), window(hourNS(3), hourNS(1)), noTool} {
+		noEquipment := window(hourNS(1), hourNS(2))
+		noEquipment.EquipmentID = ""
+		for _, w := range []Selector{window(hourNS(2), hourNS(2)), window(hourNS(3), hourNS(1)), noEquipment} {
 			_, errP := c.ListPacks(t.Context(), w, readQ)
 			_, errC := c.ListCaptures(t.Context(), w, readQ)
 			_, errD := c.ListDevices(t.Context(), w, readQ)
@@ -471,8 +548,8 @@ func TestReadsRefuseAnEmptyWindow(t *testing.T) {
 				t.Errorf("selector %+v: %v, %v, %v; want each refused as invalid", w, errP, errC, errD)
 			}
 		}
-		if _, err := c.ListScopeChanges(t.Context(), Cursor{}, noTool, 10); !errors.Is(err, ErrInvalidSelector) {
-			t.Errorf("ListScopeChanges without a tool = %v, want refused as invalid", err)
+		if _, err := c.ListScopeChanges(t.Context(), Cursor{}, noEquipment, 10); !errors.Is(err, ErrInvalidSelector) {
+			t.Errorf("ListScopeChanges without a piece of equipment = %v, want refused as invalid", err)
 		}
 	})
 }
@@ -503,7 +580,7 @@ func TestReadsOfManyCaptures(t *testing.T) {
 			t.Fatal(err)
 		}
 		for batch := 0; batch < n; batch += 500 {
-			query := `INSERT INTO captures (capture_id, state, descriptor, tool_id, recorder_instance_id, device, origin_ns, created_at) VALUES `
+			query := `INSERT INTO captures (capture_id, state, descriptor, equipment_id, recorder_instance_id, device, origin_ns, created_at) VALUES `
 			args := make([]any, 0, 3*500)
 			for i := range 500 {
 				id, instance := newID(t), newID(t)

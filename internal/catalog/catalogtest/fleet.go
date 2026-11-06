@@ -20,8 +20,8 @@ const FleetOrigin = 1767225600 * int64(time.Second)
 // FleetSeqs is the seqs SeedFleet registers a capture an hour, in one segment of one range.
 const FleetSeqs = 1000
 
-// FleetTool is the tool id of SeedFleet's i-th tool.
-func FleetTool(i int) string { return fmt.Sprintf("TOOL-%04d", i) }
+// FleetEquipment is the equipment id of SeedFleet's i-th equipment.
+func FleetEquipment(i int) string { return fmt.Sprintf("EQP-%04d", i) }
 
 // BenchEngines runs f once per engine in a sub-benchmark named for it, each with a fresh catalog.
 // MariaDB is skipped without TRACEKEEP_MARIADB_DSN, and fails instead when TRACEKEEP_REQUIRE_MARIADB is 1;
@@ -33,11 +33,11 @@ func BenchEngines(b *testing.B, f func(b *testing.B, c *catalog.Catalog)) {
 	}
 }
 
-// SeedFleet admits capturesPerTool open captures of each of tools tools (FleetTool), as ingest would:
+// SeedFleet admits capturesPerEquipment open captures of each of equipment equipment (FleetEquipment), as ingest would:
 // each with a decodable start descriptor of its own recorder instance on device eqp, bound to a decodable configuration,
 // and a segment registered in each of hours hours from FleetOrigin, FleetSeqs seqs an hour, with empty evidence.
-// A selector by one tool selects its capturesPerTool captures. It returns the captures, tool by tool, and asserts them open and gapless.
-func SeedFleet(tb testing.TB, c *catalog.Catalog, tools, capturesPerTool, hours int) []tracepack.UUID {
+// A selector by one piece of equipment selects its capturesPerEquipment captures. It returns the captures, equipment by equipment, and asserts them open and gapless.
+func SeedFleet(tb testing.TB, c *catalog.Catalog, equipment, capturesPerEquipment, hours int) []tracepack.UUID {
 	tb.Helper()
 	ctx := tb.Context()
 	content := procconfig.Content{Classifier: classify.Name(), MaxFrameLen: 1 << 20}
@@ -48,19 +48,19 @@ func SeedFleet(tb testing.TB, c *catalog.Catalog, tools, capturesPerTool, hours 
 	if _, err := c.Register(ctx, "bench", []int64{cfg}, time.Hour); err != nil {
 		tb.Fatal(err)
 	}
-	ids := make([]tracepack.UUID, 0, tools*capturesPerTool)
-	for i := range tools {
-		tool := FleetTool(i)
-		for k := range capturesPerTool {
+	ids := make([]tracepack.UUID, 0, equipment*capturesPerEquipment)
+	for i := range equipment {
+		equipment := FleetEquipment(i)
+		for k := range capturesPerEquipment {
 			origin := FleetOrigin + int64(k)
-			id := admit(tb, c, tool, origin, int64(len(ids))+1)
+			id := admit(tb, c, equipment, origin, int64(len(ids))+1)
 			for h := range hours {
 				var pack tracepack.UUID
 				_, _ = rand.Read(pack[:])
 				from := uint64(h) * FleetSeqs //nolint:gosec // a small hour index
 				at := FleetOrigin + int64(h)*int64(time.Hour)
 				p := &catalog.Pack{
-					ID: pack, Capture: id, ToolID: tool, Hour: at / int64(time.Hour), Role: catalog.RoleSegment, Key: "staging/" + pack.String(),
+					ID: pack, Capture: id, EquipmentID: equipment, Hour: at / int64(time.Hour), Role: catalog.RoleSegment, Key: "staging/" + pack.String(),
 					Size: 1 << 20, SeqStart: from, FormatMinor: 2,
 					Ranges: []catalog.Range{{SeqFrom: from, SeqTo: from + FleetSeqs - 1, TSFrom: at, TSTo: at + int64(time.Hour) - 1}},
 				}
@@ -76,15 +76,15 @@ func SeedFleet(tb testing.TB, c *catalog.Catalog, tools, capturesPerTool, hours 
 	return ids
 }
 
-// admit admits a capture of tool from origin with a decodable descriptor of a fresh recorder instance.
-func admit(tb testing.TB, c *catalog.Catalog, tool string, origin, streamSeq int64) tracepack.UUID {
+// admit admits a capture of equipment from origin with a decodable descriptor of a fresh recorder instance.
+func admit(tb testing.TB, c *catalog.Catalog, equipment string, origin, streamSeq int64) tracepack.UUID {
 	tb.Helper()
 	var id, instance tracepack.UUID
 	_, _ = rand.Read(id[:])
 	_, _ = rand.Read(instance[:])
 	device, mono, tolerance := "eqp", int64(0), uint64(time.Second)
 	b, err := tracepack.EncodeDescriptor(&tracepack.PackMeta{
-		ToolID: tool, Transport: tracepack.TransportHSMSSS, CaptureMethod: tracepack.CaptureMethodRawStream,
+		EquipmentID: equipment, Transport: tracepack.TransportHSMSSS, CaptureMethod: tracepack.CaptureMethodRawStream,
 		Vantage: tracepack.VantageHost, Recorder: "bench", TimeSource: tracepack.TimeSourceCaptureClock,
 		CaptureOriginUTCNs: &origin, CaptureOriginMonoNs: &mono, ClockStepToleranceNs: &tolerance,
 		LifecycleCoverage: tracepack.LifecycleCoverageSubscribed, QualityEvaluated: true,
@@ -94,7 +94,7 @@ func admit(tb testing.TB, c *catalog.Catalog, tool string, origin, streamSeq int
 		tb.Fatal(err)
 	}
 	d := &catalog.Identity{Version: catalog.VersionKey{Capture: id}, Incarnation: 1, StreamSeq: streamSeq, Hour: origin / int64(time.Hour)}
-	desc := &catalog.Descriptor{Bytes: b, ToolID: tool, RecorderInstanceID: instance, Device: device, OriginNS: origin}
+	desc := &catalog.Descriptor{Bytes: b, EquipmentID: equipment, RecorderInstanceID: instance, Device: device, OriginNS: origin}
 	if res, err := c.Admit(tb.Context(), d, desc); err != nil || res.Outcome != catalog.Admitted {
 		tb.Fatalf("Admit = %+v, %v", res, err)
 	}

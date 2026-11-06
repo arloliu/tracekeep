@@ -197,7 +197,7 @@ func (m *masked) put(t testing.TB, capture tracepack.UUID, h int64, rs []tracepa
 		t.Fatal(err)
 	}
 	p := &catalog.Pack{
-		ID: id, Capture: capture, ToolID: tool, Hour: h, Role: catalog.RoleSegment, Key: "staging/" + id.String(), Size: int64(buf.Len()),
+		ID: id, Capture: capture, EquipmentID: equipment, Hour: h, Role: catalog.RoleSegment, Key: "staging/" + id.String(), Size: int64(buf.Len()),
 		SeqStart: rs[0].Seq, FormatMinor: 1,
 		Ranges: []catalog.Range{{SeqFrom: rs[0].Seq, SeqTo: rs[len(rs)-1].Seq, TSFrom: rs[0].TSUTCNs, TSTo: rs[len(rs)-1].TSUTCNs}},
 	}

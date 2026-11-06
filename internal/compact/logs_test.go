@@ -205,7 +205,7 @@ func TestCycleLogsNameNoKey(t *testing.T) {
 		adopted := segment(t, capture, []uint64{1}, false)
 		misnamed := segment(t, capture, []uint64{3}, false)
 		spelled := misnamed.key
-		misnamed.key, _ = tracepack.SegmentKey("", tool, capture, 3, newID(t))
+		misnamed.key, _ = tracepack.SegmentKey("", equipment, capture, 3, newID(t))
 		corrupt := segment(t, capture, []uint64{4, 5}, false)
 		corrupt.data = corrupt.data[:len(corrupt.data)-1]
 		unadmitted := segment(t, newID(t), []uint64{1}, false)

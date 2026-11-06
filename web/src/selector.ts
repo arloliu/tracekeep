@@ -10,8 +10,9 @@ export const presetLabels: Record<Preset, string> = { "1h": "Last hour", "6h": "
 
 // SelectorSearch is a page's selector and window in its URL: a preset ending now, or from and to as ISO times.
 export interface SelectorSearch {
-  tool?: string;
+  equipment?: string;
   devices?: string[];
+  sources?: string[];
   capture?: string;
   last?: Preset;
   from?: string;
@@ -23,7 +24,7 @@ export interface Window {
   to: Date;
 }
 
-// scalar reads a search value the router may have parsed as JSON (a tool named 123 arrives as a number).
+// scalar reads a search value the router may have parsed as JSON (equipment named 123 arrives as a number).
 function scalar(v: unknown): string | undefined {
   if (typeof v === "string") return v === "" ? undefined : v;
   if (typeof v === "number" || typeof v === "boolean") return String(v);
@@ -35,14 +36,17 @@ function time(v: unknown): string | undefined {
   return s !== undefined && !Number.isNaN(Date.parse(s)) ? new Date(s).toISOString() : undefined;
 }
 
+const list = (v: unknown) => (Array.isArray(v) ? v : v === undefined ? [] : [v]).map(scalar).filter((s): s is string => s !== undefined);
+
 // validateSelector keeps the search parameters a selector understands and drops the rest.
 export function validateSelector(search: Record<string, unknown>): SelectorSearch {
   const out: SelectorSearch = {};
-  const tool = scalar(search.tool);
-  if (tool !== undefined) out.tool = tool;
-  const devices = Array.isArray(search.devices) ? search.devices : search.devices === undefined ? [] : [search.devices];
-  const names = devices.map(scalar).filter((d): d is string => d !== undefined);
-  if (names.length > 0) out.devices = [...new Set(names)];
+  const equipment = scalar(search.equipment);
+  if (equipment !== undefined) out.equipment = equipment;
+  const devices = list(search.devices);
+  if (devices.length > 0) out.devices = [...new Set(devices)];
+  const sources = list(search.sources);
+  if (sources.length > 0) out.sources = [...new Set(sources)];
   const capture = scalar(search.capture);
   if (capture !== undefined) out.capture = capture;
   const from = time(search.from);
@@ -66,19 +70,20 @@ export function windowOf(s: SelectorSearch, now: number): Window {
 // selectorOf is the operations' selector for s over w.
 export function selectorOf(s: SelectorSearch, w: Window): Selector {
   return create(SelectorSchema, {
-    toolId: s.tool ?? "",
+    equipmentId: s.equipment ?? "",
     devices: s.devices ?? [],
+    sources: s.sources ?? [],
     captureId: s.capture,
     from: timestampFromDate(w.from),
     to: timestampFromDate(w.to),
   });
 }
 
-const recentKey = "tracekeep.tools";
+const recentKey = "tracekeep.equipment";
 const recentMax = 8;
 
-// recentTools are the tools the browser opened last, newest first; no operation lists tools.
-export function recentTools(): string[] {
+// recentEquipment is the equipment the browser opened last, newest first; no operation lists equipment.
+export function recentEquipment(): string[] {
   try {
     const v: unknown = JSON.parse(localStorage.getItem(recentKey) ?? "[]");
     return Array.isArray(v) ? v.filter((t): t is string => typeof t === "string").slice(0, recentMax) : [];
@@ -87,8 +92,8 @@ export function recentTools(): string[] {
   }
 }
 
-export function rememberTool(tool: string) {
-  localStorage.setItem(recentKey, JSON.stringify([tool, ...recentTools().filter((t) => t !== tool)].slice(0, recentMax)));
+export function rememberEquipment(equipment: string) {
+  localStorage.setItem(recentKey, JSON.stringify([equipment, ...recentEquipment().filter((e) => e !== equipment)].slice(0, recentMax)));
 }
 
 export const kinds = ["data", "control", "transport-event", "annotation"] as const;
@@ -105,7 +110,6 @@ export interface RecordsSearch extends SelectorSearch {
   seqTo?: string;
 }
 
-const list = (v: unknown) => (Array.isArray(v) ? v : v === undefined ? [] : [v]).map(scalar).filter((s): s is string => s !== undefined);
 const seq = (v: unknown) => {
   const s = scalar(v);
   return s !== undefined && /^\d{1,20}$/.test(s) && BigInt(s) < 2n ** 64n ? BigInt(s).toString() : undefined;

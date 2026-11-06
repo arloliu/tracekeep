@@ -114,7 +114,7 @@ func msgs(t *testing.T, s jetstream.Stream) uint64 {
 	return info.State.Msgs
 }
 
-// A version's subject names the park prefix, the tool token, the capture, the seq and the version token,
+// A version's subject names the park prefix, the equipment token, the capture, the seq and the version token,
 // the full hex SHA-256 of its header and digest, so two versions of one seq never share one.
 func TestParkSubject(t *testing.T) {
 	t.Parallel()
@@ -133,7 +133,7 @@ func TestParkSubject(t *testing.T) {
 	}
 	for _, bad := range []string{"tk", "tk.T1." + tracepack.UUID{2}.String()} {
 		if _, err := parkSubject("tkpark", bad, a.Raw.Version); err == nil {
-			t.Errorf("traffic subject %q, which does not end with the tool token and the version's capture, was taken", bad)
+			t.Errorf("traffic subject %q, which does not end with the equipment token and the version's capture, was taken", bad)
 		}
 	}
 }

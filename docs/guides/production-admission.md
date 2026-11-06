@@ -2,8 +2,8 @@
 
 Status: current (2026-10-30) — the policy, its staging, the masking migration and the cutover's prerequisites
 
-How a tool type is admitted to production traffic, and what must hold before sensitive traffic reaches tracekeep at all.
-Read before a tool type's first production capture, before writing a site's policy, and before the cutover to masking.
+How an equipment type is admitted to production traffic, and what must hold before sensitive traffic reaches tracekeep at all.
+Read before an equipment type's first production capture, before writing a site's policy, and before the cutover to masking.
 The design is `docs/specs/tracekeep/masking-keys.md` §9 and `rollouts.md` §6.4; the commands are `operations.md` §10.4's.
 
 ## What protects a recipe
@@ -13,12 +13,12 @@ a message the policy does not name is stored as it was received.
 The baseline policy covers the recipe carriers the SEMI standards define
 (process programs in S7, data sets in S13, recipes in S15 and S16, S6F25),
 and `tracekeep admin policy show baseline 1` prints its rules.
-A tool type is admitted to production only after its manual's recipe carriers are checked against the policy in force,
+An equipment type is admitted to production only after its manual's recipe carriers are checked against the policy in force,
 and an operator procedure, not code, does that check.
 
-## Admitting a tool type
+## Admitting an equipment type
 
-1. From the tool type's manual, list every message that carries recipe content:
+1. From the equipment type's manual, list every message that carries recipe content:
    the standard ones above, and any vendor stream or function that carries process parameters, recipe bodies or files.
 2. Check each against the policy: the same stream and function, and a path that selects the content.
    A path is 1-based element indexes into nested lists, `*` for every element of a list.
@@ -42,7 +42,7 @@ annotation_rules:
    Outside `tracekeep dev` a policy lacking a baseline rule is refused,
    and a policy version, once stored, never changes: a changed policy is a new version.
    The file is read by the process that runs the command, the service's when the command goes through its API.
-6. Record which tool types were checked against which policy version, outside the repository.
+6. Record which equipment types were checked against which policy version, outside the repository.
 
 ## The cutover to masking
 

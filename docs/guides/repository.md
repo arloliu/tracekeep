@@ -87,7 +87,7 @@ and sign in at dev's test IdP with any subject and roles.
 Vite serves the pages with hot reload and proxies `/auth/`, `/download/` and the services to dev's API,
 `https://127.0.0.1:8080` unless `TRACEKEEP_DEV_API` names another `--api`;
 the session cookie and the Origin check hold because the browser sees one origin, the public URL.
-The simulator's tool is `SIM-TOOL`, its device `eqp`.
+The simulator's equipment is `SIM-EQP`, its device `eqp` and its source `tracekeep-sim` (`tracekeep-dev` under `tracekeep dev`).
 
 The pages' tests are Vitest with Testing Library in jsdom, the API answered by a Connect router transport (`.agents/rules/300-testing.md`).
 

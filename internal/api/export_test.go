@@ -27,7 +27,7 @@ import (
 func exportReq(capture tracepack.UUID, kind string) *tkv1.StartExportRequest {
 	id := capture.String()
 
-	return &tkv1.StartExportRequest{Kind: kind, Selector: &tkv1.Selector{ToolId: tool, CaptureId: &id, From: hourTS(hour), To: hourTS(hour + 1)}}
+	return &tkv1.StartExportRequest{Kind: kind, Selector: &tkv1.Selector{EquipmentId: equipment, CaptureId: &id, From: hourTS(hour), To: hourTS(hour + 1)}}
 }
 
 // An exporter starts a job, a worker completes it, and the exporter alone reads it, with a download URL whose issue is audited.
@@ -41,7 +41,9 @@ func TestExportThroughTheAPI(t *testing.T) {
 		ms, entries := m.mask(t, capture, captured(recordsOf(carriers(t), hour)))
 		m.put(t, capture, hour, ms, entries, m.policy())
 		workers(t, m)
-		started, err := m.cl.StartExport(t.Context(), withToken(exportReq(capture, "canonical"), exporterToken))
+		req := exportReq(capture, "canonical")
+		req.Selector.Sources = []string{testSource}
+		started, err := m.cl.StartExport(t.Context(), withToken(req, exporterToken))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -60,6 +62,7 @@ func TestExportThroughTheAPI(t *testing.T) {
 		if got.GetState() != catalog.ExportDone || got.GetUrl() == "" || got.GetDeadline() == nil || got.GetSize() == 0 || got.GetKind() != "canonical" {
 			t.Fatalf("job = %v, want done with a URL", got)
 		}
+		wantSources(t, got, testSource)
 		if strings.Contains(got.GetUrl(), "exports/") {
 			t.Error("the URL names the object key")
 		}
@@ -79,6 +82,14 @@ func TestExportThroughTheAPI(t *testing.T) {
 			t.Errorf("CancelExport of a done job = %v, want failed_precondition", err)
 		}
 	})
+}
+
+// wantSources checks that job's selector kept its request's sources.
+func wantSources(t *testing.T, job *tkv1.ExportJob, sources ...string) {
+	t.Helper()
+	if got := job.GetSelector().GetSources(); !slices.Equal(got, sources) {
+		t.Errorf("the job's selector sources = %v, want %v", got, sources)
+	}
 }
 
 // auditOf is actor's audit rows, each its action and detail.
@@ -204,7 +215,7 @@ func TestExportOfConflictsAcrossHours(t *testing.T) {
 		records, entries, put := threeConflicts(t, m, capture, &cs[0])
 		workers(t, m)
 		id := capture.String()
-		req := &tkv1.StartExportRequest{Kind: "canonical", Selector: &tkv1.Selector{ToolId: tool, CaptureId: &id, From: hourTS(hour), To: hourTS(hour + 2)}}
+		req := &tkv1.StartExportRequest{Kind: "canonical", Selector: &tkv1.Selector{EquipmentId: equipment, CaptureId: &id, From: hourTS(hour), To: hourTS(hour + 2)}}
 		started, err := m.cl.StartExport(t.Context(), withToken(req, exporterToken))
 		if err != nil {
 			t.Fatal(err)

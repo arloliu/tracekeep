@@ -28,7 +28,7 @@ func recordsAt(hr int64, seqs ...uint64) []tracepack.Record {
 func segmentOf(t testing.TB, capture tracepack.UUID, hr int64, recs []tracepack.Record, adjust func(*tracepack.PackMeta)) built {
 	t.Helper()
 	b := writeRecords(t, capture, tracepack.PackRoleSegment, hr, recs, adjust)
-	key, err := tracepack.SegmentKey("", tool, capture, recs[0].Seq, b.id)
+	key, err := tracepack.SegmentKey("", equipment, capture, recs[0].Seq, b.id)
 	if err != nil {
 		t.Fatal(err)
 	}

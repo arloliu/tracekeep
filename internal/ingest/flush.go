@@ -285,7 +285,7 @@ func (f *Flusher) writeFile(b *Batch, capture *catalog.Capture, cfg *Config, seg
 // register puts seg's working file under its key and registers it, judged against the retention horizon hour.
 func (f *Flusher) register(ctx context.Context, b *Batch, capture *catalog.Capture, seg *segment, w *working, horizon int64) (catalog.PackOutcome, error) {
 	first := seg.entries[0].D.Raw.Version.Seq
-	key, err := tracepack.SegmentKey(f.KeyPrefix, capture.ToolID, b.Key.Capture, first, seg.id)
+	key, err := tracepack.SegmentKey(f.KeyPrefix, capture.EquipmentID, b.Key.Capture, first, seg.id)
 	if err != nil {
 		return 0, fmt.Errorf("ingest: segment key: %w", err)
 	}
@@ -311,7 +311,7 @@ func (f *Flusher) register(ctx context.Context, b *Batch, capture *catalog.Captu
 		return 0, err
 	}
 	p := &catalog.Pack{
-		ID: seg.id, Capture: b.Key.Capture, ToolID: capture.ToolID, Hour: b.Key.Hour, Role: seg.role, Key: key, Size: w.size,
+		ID: seg.id, Capture: b.Key.Capture, EquipmentID: capture.EquipmentID, Hour: b.Key.Hour, Role: seg.role, Key: key, Size: w.size,
 		SeqStart: first, FormatMinor: int(w.minor), Ranges: ranges(seg.entries), Stop: hasStop(seg.entries), Conflicts: seg.others,
 	}
 	started = time.Now()
@@ -325,11 +325,11 @@ func (f *Flusher) register(ctx context.Context, b *Batch, capture *catalog.Captu
 	}
 	switch outcome {
 	case catalog.Registered:
-		f.Metrics.Registered(time.Since(started), capture.ToolID, w.size, seg.role == catalog.RoleConflict)
+		f.Metrics.Registered(time.Since(started), capture.EquipmentID, w.size, seg.role == catalog.RoleConflict)
 		if f.Timed != nil {
 			f.Timed(stageName(b.parked(), "register", nil), time.Since(started))
 		}
-		f.Metrics.GapsObserved(capture.ToolID, gaps)
+		f.Metrics.GapsObserved(capture.EquipmentID, gaps)
 
 		return outcome, nil
 	case catalog.BeyondHorizon, catalog.LostToTermination:

@@ -93,20 +93,20 @@ spec:
     - alert: TracekeepGapsGrowing
       expr: |
         (
-            max by (tool_id) (
+            max by (equipment_id) (
               tracekeep_ingest_open_gaps
               and on(instance) (time() - tracekeep_ingest_refreshed_timestamp_seconds{source="catalog"}) < 600
             )
-          - max by (tool_id) (
+          - max by (equipment_id) (
               tracekeep_ingest_open_gaps offset 30m
               and on(instance) (time() - 1800 - tracekeep_ingest_refreshed_timestamp_seconds{source="catalog"} offset 30m) < 600
             )
         ) > 0
-        or min by (tool_id) (time() - tracekeep_ingest_last_declared_loss_timestamp_seconds) < 1800
+        or min by (equipment_id) (time() - tracekeep_ingest_last_declared_loss_timestamp_seconds) < 1800
       labels:
         severity: warning
       annotations:
-        summary: "Tool {{ "{{" }} $labels.tool_id {{ "}}" }}: open gaps or declared losses increasing."
+        summary: "Equipment {{ "{{" }} $labels.equipment_id {{ "}}" }}: open gaps or declared losses increasing."
         runbook_url: {{ $runbook }}#gaps-and-losses
     - alert: TracekeepKeyRefused
       expr: min(time() - tracekeep_key_last_problem_timestamp_seconds{outcome="refused"}) < 600
@@ -128,7 +128,7 @@ spec:
   # The gateway's rules: the producer's metrics, which the gateways serve.
   - name: tracepub
     rules:
-    - alert: TracepubToolSilent
+    - alert: TracepubEquipmentSilent
       # Connected through the last ten minutes (and seen ten minutes ago) with nothing published in them;
       # the SDK reports its counter at zero from its start, and the last clause keeps a gateway on an older SDK,
       # which has no counter until it publishes, counting a first publication as one.
@@ -144,7 +144,7 @@ spec:
         severity: warning
       annotations:
         summary: "Producer {{ "{{" }} $labels.instance {{ "}}" }} is connected and has published nothing for ten minutes."
-        runbook_url: {{ $runbook }}#tool-silent
+        runbook_url: {{ $runbook }}#equipment-silent
     - alert: TracepubDropping
       # The SDK reports every reason at zero when its publisher starts, so a reason's first drop counts;
       # a gateway on an older SDK reports a reason only from its first drop, which then counts from the second.

@@ -36,6 +36,7 @@ type config struct {
 	prefix   string
 	bucket   string
 	stream   string
+	source   string
 	rate     float64
 	duration time.Duration
 	thinning bool
@@ -52,8 +53,9 @@ func main() {
 	flag.StringVar(&c.prefix, "prefix", "tpk", "the traffic stream's subject prefix")
 	flag.StringVar(&c.bucket, "bucket", "tpk-objects", "the claim bucket")
 	flag.StringVar(&c.stream, "stream", "", "the traffic stream; empty takes the SDK's default")
-	flag.StringVar(&c.opts.ToolID, "tool", "SIM-TOOL", "the tool_id every capture carries")
-	flag.StringVar(&c.opts.DeviceName, "device", "eqp", "the device name every capture carries")
+	flag.StringVar(&c.opts.EquipmentID, "equipment", "SIM-EQP", "the equipment_id every capture carries")
+	flag.StringVar(&c.opts.Device, "device", "eqp", "the device every capture carries")
+	flag.StringVar(&c.source, "source", "tracekeep-sim", "the source, the recording deployment's name, every capture carries")
 	flag.DurationVar(&c.opts.T3, "t3", 45*time.Second, "the waiter's timeout for a forwarded request")
 	flag.Uint64Var(&c.opts.WithholdEvery, "withhold-every", 0, "the equipment leaves every n-th forwarded request unanswered; 0 answers all")
 	flag.StringVar(&c.opts.ProcessProgram, "process-program", "", "make every tenth forwarded request an S7F3 sending this as a process program's body, which the baseline policy masks; synthetic text only")
@@ -90,7 +92,7 @@ func run(ctx context.Context, c *config) error {
 	}
 	log := slog.New(slog.NewTextHandler(os.Stderr, nil))
 	p, err := producer.New(producer.Config{
-		Servers: strings.Split(c.servers, ","), SubjectPrefix: c.prefix, Stream: c.stream, ClaimBucket: c.bucket,
+		Servers: strings.Split(c.servers, ","), SubjectPrefix: c.prefix, Stream: c.stream, ClaimBucket: c.bucket, Source: c.source,
 	}, producer.WithLogger(log))
 	if err != nil {
 		return err

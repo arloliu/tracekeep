@@ -54,14 +54,14 @@ func twoCaptures(t *testing.T, c *catalog.Catalog) (*masked, *configReads, []tra
 	return m, reads, caps
 }
 
-// toolQuery is a QueryRecords request over hour and hour+1 of every capture of the tool.
-func toolQuery() *connect.Request[tkv1.QueryRecordsRequest] {
-	return withToken(&tkv1.QueryRecordsRequest{Selector: &tkv1.Selector{ToolId: tool, From: hourTS(hour), To: hourTS(hour + 2)}}, viewerToken)
+// equipmentQuery is a QueryRecords request over hour and hour+1 of every capture of the equipment.
+func equipmentQuery() *connect.Request[tkv1.QueryRecordsRequest] {
+	return withToken(&tkv1.QueryRecordsRequest{Selector: &tkv1.Selector{EquipmentId: equipment, From: hourTS(hour), To: hourTS(hour + 2)}}, viewerToken)
 }
 
-// toolExport is an export request over hour and hour+1 of every capture of the tool.
-func toolExport() *exportRequest {
-	return &exportRequest{Kind: "canonical", Selector: exportSelector{ToolID: tool, From: hour * nsPerHour, To: (hour + 2) * nsPerHour}}
+// equipmentExport is an export request over hour and hour+1 of every capture of the equipment.
+func equipmentExport() *exportRequest {
+	return &exportRequest{Kind: "canonical", Selector: exportSelector{EquipmentID: equipment, From: hour * nsPerHour, To: (hour + 2) * nsPerHour}}
 }
 
 // A QueryRecords RPC reads a configuration its captures share once, across its hours, its captures and an hour read again;
@@ -70,7 +70,7 @@ func TestQueryRecordsDecodesAConfigurationOnce(t *testing.T) {
 	t.Parallel()
 	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
 		m, reads, _ := twoCaptures(t, c)
-		msgs, err := m.streamed(t, toolQuery())
+		msgs, err := m.streamed(t, equipmentQuery())
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -80,7 +80,7 @@ func TestQueryRecordsDecodesAConfigurationOnce(t *testing.T) {
 		if n := reads.n.Load(); n != 1 {
 			t.Errorf("one RPC read the configuration %d times, want once", n)
 		}
-		if _, err := m.streamed(t, toolQuery()); err != nil {
+		if _, err := m.streamed(t, equipmentQuery()); err != nil {
 			t.Fatal(err)
 		}
 		if n := reads.n.Load(); n != 2 {
@@ -95,13 +95,13 @@ func TestExportDecodesAConfigurationOnce(t *testing.T) {
 	t.Parallel()
 	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
 		m, reads, _ := twoCaptures(t, c)
-		if _, _, err := m.srv.buildBundle(t.Context(), newID(t), toolExport(), t.TempDir()); err != nil {
+		if _, _, err := m.srv.buildBundle(t.Context(), newID(t), equipmentExport(), t.TempDir()); err != nil {
 			t.Fatal(err)
 		}
 		if n := reads.n.Load(); n != 1 {
 			t.Errorf("one attempt read the configuration %d times, want once", n)
 		}
-		if _, _, err := m.srv.buildBundle(t.Context(), newID(t), toolExport(), t.TempDir()); err != nil {
+		if _, _, err := m.srv.buildBundle(t.Context(), newID(t), equipmentExport(), t.TempDir()); err != nil {
 			t.Fatal(err)
 		}
 		if n := reads.n.Load(); n != 2 {
@@ -134,7 +134,7 @@ func TestALaterReadSetIsStillChecked(t *testing.T) {
 			if n := reads.n.Load(); n != tc.reads {
 				t.Errorf("%s: QueryRecords read configurations %d times, want %d", tc.name, n, tc.reads)
 			}
-			if _, _, err := m.srv.buildBundle(t.Context(), newID(t), toolExport(), t.TempDir()); !errors.Is(err, records.ErrWithheld) {
+			if _, _, err := m.srv.buildBundle(t.Context(), newID(t), equipmentExport(), t.TempDir()); !errors.Is(err, records.ErrWithheld) {
 				t.Errorf("%s: an export = %v, want withheld", tc.name, err)
 			}
 		}

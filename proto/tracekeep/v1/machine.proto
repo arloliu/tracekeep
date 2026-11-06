@@ -11,7 +11,7 @@ option go_package = "github.com/arloliu/tracekeep/proto/tracekeep/v1;tracekeepv1
 
 // MachineService serves the catalog's reads (catalog.md §7.3) and download URLs.
 service MachineService {
-  // ListDevices answers, per device of the tool, its latest endpoint, open captures, overlap, last record and whether the window holds a gap.
+  // ListDevices answers, per series (a device as one source recorded it), its latest endpoint, open captures, overlap, last record and whether the window holds a gap.
   rpc ListDevices(ListDevicesRequest) returns (ListDevicesResponse);
   // ListCaptures answers the captures the selector selects, each with its unregistered intervals and overlap.
   rpc ListCaptures(ListCapturesRequest) returns (ListCapturesResponse);
@@ -39,12 +39,14 @@ service MachineService {
   rpc CancelExport(CancelExportRequest) returns (CancelExportResponse);
 }
 
-// Selector names the connections a read wants (api.md §10.1 *Selector*).
+// Selector names the series a read wants (api.md §10.1 *Selector*): devices, sources and the capture intersect.
 message Selector {
-  // tool_id is required.
-  string tool_id = 1;
-  // devices are the eqp-hsms device names; none selects every device of the tool.
+  // equipment_id is required.
+  string equipment_id = 1;
+  // devices are the equipment's device names; none selects every device.
   repeated string devices = 2;
+  // sources are the recording deployments; none selects every source.
+  repeated string sources = 6;
   // capture_id, when set, selects that one capture.
   optional string capture_id = 3;
   // The window [from, to), nonempty.
@@ -60,9 +62,10 @@ message ListDevicesResponse {
   repeated Device devices = 1;
 }
 
-// Device is one device of the tool.
+// Device is one series: a device of the equipment as one source recorded it.
 message Device {
   string name = 1;
+  string source = 8;
   // equipment_endpoint and device_id are the latest selected capture's.
   optional string equipment_endpoint = 2;
   optional uint64 device_id = 3;
@@ -86,6 +89,7 @@ message Capture {
   string capture_id = 1;
   string state = 2;
   string device = 3;
+  string source = 14;
   string recorder_instance_id = 4;
   optional string previous_capture_id = 5;
   google.protobuf.Timestamp origin = 6;

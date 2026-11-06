@@ -56,10 +56,10 @@ const (
 // Descriptor is an accepted start descriptor: its bytes and the fields the catalog indexes.
 type Descriptor struct {
 	Bytes              []byte
-	ToolID             string
+	EquipmentID        string
 	RecorderInstanceID tracepack.UUID
-	// Device is the descriptor's recorder_instance_name.
-	Device            string
+	// Device is the descriptor's device, and Source its recorder_instance_name.
+	Device, Source    string
 	OriginNS          int64
 	PreviousCaptureID *tracepack.UUID
 }
@@ -75,7 +75,7 @@ type Capture struct {
 	ID            tracepack.UUID
 	State         string
 	Descriptor    []byte
-	ToolID        string
+	EquipmentID   string
 	Device        string
 	ConfigID      int64
 	HighestSeq    int64
@@ -140,9 +140,9 @@ func (c *Catalog) AdmitWhere(ctx context.Context, dv *Identity, d *Descriptor, b
 		if d.PreviousCaptureID != nil {
 			prev = d.PreviousCaptureID[:]
 		}
-		_, err = tx.ExecContext(ctx, `UPDATE captures SET state = 'open', descriptor = ?, tool_id = ?, recorder_instance_id = ?, device = ?,
-			origin_ns = ?, previous_capture_id = ?, config_id = ? WHERE capture_id = ?`,
-			d.Bytes, d.ToolID, d.RecorderInstanceID[:], d.Device, d.OriginNS, prev, cfg, id[:])
+		_, err = tx.ExecContext(ctx, `UPDATE captures SET state = 'open', descriptor = ?, equipment_id = ?, recorder_instance_id = ?, device = ?,
+			source = ?, origin_ns = ?, previous_capture_id = ?, config_id = ? WHERE capture_id = ?`,
+			d.Bytes, d.EquipmentID, d.RecorderInstanceID[:], d.Device, d.Source, d.OriginNS, prev, cfg, id[:])
 		res = Result{Outcome: Admitted, ConfigID: cfg}
 
 		return err
@@ -200,16 +200,16 @@ func (c *Catalog) Reject(ctx context.Context, dv *Identity, descriptor []byte) (
 // Capture looks capture id up; a capture with no row returns ErrUnknownCapture, and a pending row is returned as pending.
 func (c *Catalog) Capture(ctx context.Context, id tracepack.UUID) (Capture, error) {
 	var row struct {
-		State      string         `db:"state"`
-		Descriptor []byte         `db:"descriptor"`
-		ToolID     sql.NullString `db:"tool_id"`
-		Device     sql.NullString `db:"device"`
-		ConfigID   sql.NullInt64  `db:"config_id"`
-		HighestSeq sql.NullInt64  `db:"highest_seq"`
-		StopSeen   bool           `db:"stop_seen"`
-		Revision   int64          `db:"data_revision"`
+		State       string         `db:"state"`
+		Descriptor  []byte         `db:"descriptor"`
+		EquipmentID sql.NullString `db:"equipment_id"`
+		Device      sql.NullString `db:"device"`
+		ConfigID    sql.NullInt64  `db:"config_id"`
+		HighestSeq  sql.NullInt64  `db:"highest_seq"`
+		StopSeen    bool           `db:"stop_seen"`
+		Revision    int64          `db:"data_revision"`
 	}
-	err := c.read.GetContext(ctx, &row, `SELECT state, descriptor, tool_id, device, config_id, highest_seq, stop_seen, data_revision
+	err := c.read.GetContext(ctx, &row, `SELECT state, descriptor, equipment_id, device, config_id, highest_seq, stop_seen, data_revision
 		FROM captures WHERE capture_id = ?`, id[:])
 	if errors.Is(err, sql.ErrNoRows) {
 		return Capture{}, fmt.Errorf("%w: %s", ErrUnknownCapture, id)
@@ -219,30 +219,30 @@ func (c *Catalog) Capture(ctx context.Context, id tracepack.UUID) (Capture, erro
 	}
 
 	return Capture{
-		ID: id, State: row.State, Descriptor: row.Descriptor, ToolID: row.ToolID.String, Device: row.Device.String,
+		ID: id, State: row.State, Descriptor: row.Descriptor, EquipmentID: row.EquipmentID.String, Device: row.Device.String,
 		ConfigID: row.ConfigID.Int64, HighestSeq: row.HighestSeq.Int64, HasHighestSeq: row.HighestSeq.Valid,
 		StopSeen: row.StopSeen, DataRevision: row.Revision,
 	}, nil
 }
 
-// OpenCapture is an open capture and its tool.
+// OpenCapture is an open capture and its equipment.
 type OpenCapture struct {
-	ID     tracepack.UUID
-	ToolID string
+	ID          tracepack.UUID
+	EquipmentID string
 }
 
-// OpenCaptures lists the open captures, for the metrics that count them by tool.
+// OpenCaptures lists the open captures, for the metrics that count them by equipment.
 func (c *Catalog) OpenCaptures(ctx context.Context) ([]OpenCapture, error) {
 	var rows []struct {
-		ID   []byte         `db:"capture_id"`
-		Tool sql.NullString `db:"tool_id"`
+		ID        []byte         `db:"capture_id"`
+		Equipment sql.NullString `db:"equipment_id"`
 	}
-	if err := c.read.SelectContext(ctx, &rows, `SELECT capture_id, tool_id FROM captures WHERE state = ?`, StateOpen); err != nil {
+	if err := c.read.SelectContext(ctx, &rows, `SELECT capture_id, equipment_id FROM captures WHERE state = ?`, StateOpen); err != nil {
 		return nil, fmt.Errorf("catalog: open captures: %w", err)
 	}
 	out := make([]OpenCapture, 0, len(rows))
 	for _, r := range rows {
-		out = append(out, OpenCapture{ID: tracepack.UUID(r.ID), ToolID: r.Tool.String})
+		out = append(out, OpenCapture{ID: tracepack.UUID(r.ID), EquipmentID: r.Equipment.String})
 	}
 
 	return out, nil

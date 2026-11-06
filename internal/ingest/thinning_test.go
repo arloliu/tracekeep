@@ -31,13 +31,13 @@ import (
 func thinnedTraffic(t *testing.T, n int) (tracepack.UUID, []byte, []tracepack.Record) {
 	t.Helper()
 	bus := producertest.NewBus()
-	p, err := producer.New(producer.Config{SubjectPrefix: "tpk", ClaimBucket: "tpk-objects"}, producer.WithBus(bus))
+	p, err := producer.New(producer.Config{SubjectPrefix: "tpk", ClaimBucket: "tpk-objects", Source: "test-source"}, producer.WithBus(bus))
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = p.Close() })
 	l, err := sim.NewLoopback(p, sim.Options{
-		ToolID: "SIM-TOOL", DeviceName: "eqp", SessionID: 1, T3: time.Second,
+		EquipmentID: "SIM-EQP", Device: "eqp", SessionID: 1, T3: time.Second,
 		Thinning: &producer.SamplingRule{KeepEveryN: 3, KeepInterval: time.Hour},
 	})
 	if err != nil {
@@ -119,7 +119,7 @@ func TestThinnedRecordsThroughMaskingAndTheMerge(t *testing.T) {
 
 		restoreThinned(t, served(t, p, k, slog.New(slog.DiscardHandler)), capture, sent, thinned, kept)
 
-		listed, err := c.ListCaptures(t.Context(), catalog.Selector{ToolID: "SIM-TOOL", Capture: &capture, From: last - int64(time.Hour), To: last + int64(time.Hour)}, time.Minute)
+		listed, err := c.ListCaptures(t.Context(), catalog.Selector{EquipmentID: "SIM-EQP", Capture: &capture, From: last - int64(time.Hour), To: last + int64(time.Hour)}, time.Minute)
 		if err != nil || len(listed) != 1 || len(listed[0].Thinning) != 2 {
 			t.Fatalf("ListCaptures = %+v, %v; want the capture with its S1F3 and S1F4 entries", listed, err)
 		}

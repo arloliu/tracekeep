@@ -114,7 +114,7 @@ func TestStartStagesWithoutActivating(t *testing.T) {
 			t.Fatalf("after a start: %v, want one staged and none active", n)
 		}
 		_, err := c.Admit(ctx, &catalog.Identity{Version: catalog.VersionKey{Capture: tracepack.UUID{1}}, Incarnation: 1, StreamSeq: 1},
-			&catalog.Descriptor{Bytes: []byte("d"), ToolID: "T1", RecorderInstanceID: tracepack.UUID{8}, Device: "eqp", OriginNS: 1})
+			&catalog.Descriptor{Bytes: []byte("d"), EquipmentID: "T1", RecorderInstanceID: tracepack.UUID{8}, Device: "eqp", OriginNS: 1})
 		if !errors.Is(err, catalog.ErrNoBindableConfig) {
 			t.Errorf("an admission with only a staged configuration = %v, want ErrNoBindableConfig", err)
 		}
@@ -173,7 +173,7 @@ func TestExecutableKeepsARetiredBoundConfiguration(t *testing.T) {
 		}
 		capture := tracepack.UUID{9}
 		res, err := c.Admit(ctx, &catalog.Identity{Version: catalog.VersionKey{Capture: capture}, Incarnation: 1, StreamSeq: 1},
-			&catalog.Descriptor{Bytes: []byte("d"), ToolID: "T1", RecorderInstanceID: tracepack.UUID{8}, Device: "eqp", OriginNS: 1})
+			&catalog.Descriptor{Bytes: []byte("d"), EquipmentID: "T1", RecorderInstanceID: tracepack.UUID{8}, Device: "eqp", OriginNS: 1})
 		if err != nil || first[res.ConfigID].MaxFrameLen != 1 {
 			t.Fatalf("Admit = %+v, %v; want the capture bound to the first limit", res, err)
 		}

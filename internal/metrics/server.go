@@ -1,7 +1,7 @@
 // Package metrics is the service's Prometheus metrics and health endpoints (operations.md §10.4):
 // a registry, a listener serving /metrics, /healthz and /readyz, and one collector struct per role.
 // A component records through a pointer to its role's struct; a nil pointer records nothing.
-// Labels are bounded: tool_id (about 1,500 values), reasons and outcomes; capture_id is never a label.
+// Labels are bounded: equipment_id (about 1,500 values), reasons and outcomes; capture_id is never a label.
 package metrics
 
 import (

@@ -17,7 +17,7 @@ import (
 // Every method records nothing on a nil *Ingest, so a component without metrics needs no check.
 type Ingest struct {
 	messages, segments, segmentBytes, conflicts, losses, gapObservations *prometheus.CounterVec
-	// lastLoss is when each tool's last seq was declared lost, an event an alert reads whatever the counter's history (operations.md §10.4).
+	// lastLoss is when each piece of equipment's last seq was declared lost, an event an alert reads whatever the counter's history (operations.md §10.4).
 	lastLoss                                     *prometheus.GaugeVec
 	now                                          func() time.Time
 	redelivered, inProgress, flushStalls         prometheus.Counter
@@ -37,14 +37,14 @@ func NewIngest(s *Server, now func() time.Time) (*Ingest, error) {
 	}
 	m := &Ingest{
 		messages:     counter("messages_total", "Deliveries disposed, by disposition.", "disposition"),
-		segments:     counter("segments_total", "Segments registered, conflict segments included, by tool.", "tool_id"),
-		segmentBytes: counter("segment_bytes_total", "Bytes of the segments registered, by tool.", "tool_id"),
-		conflicts:    counter("conflicts_total", "Conflict segments registered, by tool.", "tool_id"),
+		segments:     counter("segments_total", "Segments registered, conflict segments included, by equipment.", "equipment_id"),
+		segmentBytes: counter("segment_bytes_total", "Bytes of the segments registered, by equipment.", "equipment_id"),
+		conflicts:    counter("conflicts_total", "Conflict segments registered, by equipment.", "equipment_id"),
 		gapObservations: counter("gap_observations_total",
-			"Holes first seen at a registration, by tool: an event count, not a loss count, since a later registration may fill a hole.", "tool_id"),
-		losses: counter("declared_losses_total", "Seqs ingest declared lost, records beyond retention, by tool.", "tool_id"),
+			"Holes first seen at a registration, by equipment: an event count, not a loss count, since a later registration may fill a hole.", "equipment_id"),
+		losses: counter("declared_losses_total", "Seqs ingest declared lost, records beyond retention, by equipment.", "equipment_id"),
 		lastLoss: prometheus.NewGaugeVec(prometheus.GaugeOpts{Namespace: "tracekeep", Subsystem: "ingest", Name: "last_declared_loss_timestamp_seconds",
-			Help: "When ingest last declared a seq of the tool lost, in Unix seconds."}, []string{"tool_id"}),
+			Help: "When ingest last declared a seq of the equipment lost, in Unix seconds."}, []string{"equipment_id"}),
 		now: now,
 		redelivered: prometheus.NewCounter(prometheus.CounterOpts{Namespace: "tracekeep", Subsystem: "ingest", Name: "redelivered_total",
 			Help: "Deliveries that were redeliveries."}),
@@ -166,34 +166,34 @@ func (m *Ingest) Put(d time.Duration) {
 	m.put.Observe(d.Seconds())
 }
 
-// Registered observes a segment's registration and counts the segment of tool, a conflict segment or not.
-func (m *Ingest) Registered(d time.Duration, tool string, bytes int64, conflict bool) {
+// Registered observes a segment's registration and counts the segment of equipment, a conflict segment or not.
+func (m *Ingest) Registered(d time.Duration, equipment string, bytes int64, conflict bool) {
 	if m == nil {
 		return
 	}
 	m.registration.Observe(d.Seconds())
-	m.segments.WithLabelValues(tool).Inc()
-	m.segmentBytes.WithLabelValues(tool).Add(float64(bytes))
+	m.segments.WithLabelValues(equipment).Inc()
+	m.segmentBytes.WithLabelValues(equipment).Add(float64(bytes))
 	if conflict {
-		m.conflicts.WithLabelValues(tool).Inc()
+		m.conflicts.WithLabelValues(equipment).Inc()
 	}
 }
 
-// GapsObserved counts the n holes a registration of tool first saw.
-func (m *Ingest) GapsObserved(tool string, n int) {
+// GapsObserved counts the n holes a registration of equipment first saw.
+func (m *Ingest) GapsObserved(equipment string, n int) {
 	if m == nil {
 		return
 	}
-	m.gapObservations.WithLabelValues(tool).Add(float64(n))
+	m.gapObservations.WithLabelValues(equipment).Add(float64(n))
 }
 
-// Lost counts a seq of tool ingest declared lost.
-func (m *Ingest) Lost(tool string) {
+// Lost counts a seq of equipment ingest declared lost.
+func (m *Ingest) Lost(equipment string) {
 	if m == nil {
 		return
 	}
-	m.losses.WithLabelValues(tool).Inc()
-	m.lastLoss.WithLabelValues(tool).Set(float64(m.now().UnixNano()) / 1e9)
+	m.losses.WithLabelValues(equipment).Inc()
+	m.lastLoss.WithLabelValues(equipment).Set(float64(m.now().UnixNano()) / 1e9)
 }
 
 // BusState is the traffic consumer's and stream's backlog.
@@ -210,7 +210,7 @@ type Consumer interface {
 }
 
 // Refresh reads the gauges of the catalog and the bus: the traffic consumer's and stream's backlog,
-// then the unresolved parked versions by reason and the open captures and their unfilled holes by tool.
+// then the unresolved parked versions by reason and the open captures and their unfilled holes by equipment.
 // Each source's gauges change together, at once, and only when the whole source was read,
 // stamping refreshed_timestamp_seconds{source}.
 // A failure keeps the source's previous values and counts in refresh_failures_total.
@@ -269,10 +269,10 @@ func readCatalog(ctx context.Context, cat Catalog) (catalogState, error) {
 		if err != nil {
 			return catalogState{}, err
 		}
-		c.captures[o.ToolID]++
-		c.gaps[o.ToolID] += len(cp.Gaps)
+		c.captures[o.EquipmentID]++
+		c.gaps[o.EquipmentID] += len(cp.Gaps)
 		if cp.UnknownTailFrom != 0 {
-			c.unknownTail[o.ToolID]++
+			c.unknownTail[o.EquipmentID]++
 		}
 	}
 
@@ -290,10 +290,10 @@ type snapshot struct {
 
 var (
 	parkedDesc       = prometheus.NewDesc("tracekeep_ingest_parked_messages", "Parked versions not yet resolved, by reason.", []string{"reason"}, nil)
-	capturesOpenDesc = prometheus.NewDesc("tracekeep_ingest_captures_open", "Open captures, by tool.", []string{"tool_id"}, nil)
-	openGapsDesc     = prometheus.NewDesc("tracekeep_ingest_open_gaps", "Holes currently unfilled in the open captures, by tool.", []string{"tool_id"}, nil)
+	capturesOpenDesc = prometheus.NewDesc("tracekeep_ingest_captures_open", "Open captures, by equipment.", []string{"equipment_id"}, nil)
+	openGapsDesc     = prometheus.NewDesc("tracekeep_ingest_open_gaps", "Holes currently unfilled in the open captures, by equipment.", []string{"equipment_id"}, nil)
 	unknownTailDesc  = prometheus.NewDesc("tracekeep_ingest_captures_with_unknown_tail",
-		"Open captures whose seqs above the frontier are unknown, by tool.", []string{"tool_id"}, nil)
+		"Open captures whose seqs above the frontier are unknown, by equipment.", []string{"equipment_id"}, nil)
 	ackPendingDesc = prometheus.NewDesc("tracekeep_ingest_consumer_ack_pending",
 		"Messages the traffic consumer delivered and holds unacknowledged.", nil, nil)
 	backlogMessagesDesc = prometheus.NewDesc("tracekeep_ingest_stream_backlog_messages", "Messages on the traffic stream.", nil, nil)
@@ -341,10 +341,10 @@ func (s *snapshot) Collect(ch chan<- prometheus.Metric) {
 	for reason, n := range c.parked {
 		gauge(parkedDesc, float64(n), reason)
 	}
-	for tool, n := range c.captures {
-		gauge(capturesOpenDesc, float64(n), tool)
-		gauge(openGapsDesc, float64(c.gaps[tool]), tool)
-		gauge(unknownTailDesc, float64(c.unknownTail[tool]), tool)
+	for equipment, n := range c.captures {
+		gauge(capturesOpenDesc, float64(n), equipment)
+		gauge(openGapsDesc, float64(c.gaps[equipment]), equipment)
+		gauge(unknownTailDesc, float64(c.unknownTail[equipment]), equipment)
 	}
 }
 

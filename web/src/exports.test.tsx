@@ -13,7 +13,7 @@ type Job = MessageInitShape<typeof ExportJobSchema>;
 
 const jobID = "0192f1a0-0000-7000-8000-00000000000a";
 const ts = (iso: string) => timestampFromDate(new Date(iso));
-const selector = { toolId: "T-1", devices: ["eq-a"], from: ts("2026-10-31T08:00:00Z"), to: ts("2026-10-31T09:00:00Z") };
+const selector = { equipmentId: "T-1", devices: ["eq-a"], sources: ["gw-a"], from: ts("2026-10-31T08:00:00Z"), to: ts("2026-10-31T09:00:00Z") };
 const job = (state: string, extra: { jobId?: string; size?: bigint; ended?: Timestamp; url?: string; reason?: string } = {}): Job => ({ jobId: jobID, state, kind: "canonical", selector, created: ts("2026-10-31T09:01:00Z"), ...extra });
 
 const both = { subject: "alice", roles: ["viewer", "exporter"], expiry: "2099-01-01T00:00:00Z" };
@@ -57,14 +57,14 @@ test("the list shows the principal's jobs with their state, selection and size",
   expect(link).toHaveAttribute("href", `/exports/${jobID}`);
   expect(screen.getByText("1.5 MiB")).toBeInTheDocument();
   expect(screen.getByText("failed")).toBeInTheDocument();
-  expect(screen.getAllByText(/T-1 · eq-a/)).toHaveLength(2);
+  expect(screen.getAllByText(/T-1 · eq-a · gw-a/)).toHaveLength(2);
   expect(screen.getAllByText("2026-10-31 08:00:00.000 UTC")).toHaveLength(2);
 });
 
 test("a new job starts from the browser's selection, confirmed before StartExport, kind canonical", async () => {
   const started: StartExportRequest[] = [];
   const { router } = renderApp(
-    "/?tool=T-1&devices=%5B%22eq-a%22%5D&from=2026-10-31T08%3A00%3A00.000Z&to=2026-10-31T09%3A00%3A00.000Z",
+    "/?equipment=T-1&devices=%5B%22eq-a%22%5D&sources=%5B%22gw-a%22%5D&from=2026-10-31T08%3A00%3A00.000Z&to=2026-10-31T09%3A00%3A00.000Z",
     answers([], [job("queued")], {
       listDevices: () => ({ devices: [] }),
       listCaptures: () => ({ captures: [] }),
@@ -76,21 +76,22 @@ test("a new job starts from the browser's selection, confirmed before StartExpor
     }),
   );
   await userEvent.click(await screen.findByRole("link", { name: "Export this selection…" }));
-  expect(await screen.findByText(/T-1 · eq-a/)).toBeInTheDocument();
+  expect(await screen.findByText(/T-1 · eq-a · gw-a/)).toBeInTheDocument();
   expect(started).toHaveLength(0);
   await userEvent.click(screen.getByRole("button", { name: "Start export" }));
   await waitFor(() => { expect(router.state.location.pathname).toBe(`/exports/${jobID}`); });
   expect(started[0]?.kind).toBe("canonical");
-  expect(started[0]?.selector?.toolId).toBe("T-1");
+  expect(started[0]?.selector?.equipmentId).toBe("T-1");
   expect(started[0]?.selector?.devices).toEqual(["eq-a"]);
+  expect(started[0]?.selector?.sources).toEqual(["gw-a"]);
   expect(started[0]?.selector?.from?.seconds).toBe(selector.from.seconds);
   expect(started[0]?.selector?.to?.seconds).toBe(selector.to.seconds);
 });
 
 test("without the exporter role the pages offer no export", async () => {
   stubFetch({ "/auth/me": () => json({ ...both, roles: ["viewer"] }) });
-  renderApp("/?tool=T-1", (r) => r.service(MachineService, { listDevices: () => ({ devices: [] }) }));
-  await screen.findByText("The tool has no device with a capture in the window.");
+  renderApp("/?equipment=T-1", (r) => r.service(MachineService, { listDevices: () => ({ devices: [] }) }));
+  await screen.findByText("The equipment has no device with a capture in the window.");
   expect(screen.queryByRole("link", { name: "Export this selection…" })).not.toBeInTheDocument();
 });
 

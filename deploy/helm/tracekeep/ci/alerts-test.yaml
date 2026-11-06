@@ -139,30 +139,30 @@ tests:
   - eval_time: 3h10m
     alertname: TracekeepMergeStalled
     exp_alerts: [{exp_labels: {severity: warning, cause: no-cycle-since-lease}, exp_annotations: {summary: "The merge task has completed no cycle for two hours.", runbook_url: "rb#merge-stalled"}}]
-- name: open gaps growing on a tool, fresh, two replicas
+- name: open gaps growing on a piece of equipment, fresh, two replicas
   interval: 1m
   input_series:
-  - {series: 'tracekeep_ingest_open_gaps{instance="a",tool_id="T-1"}', values: '1x30 3x10'}
-  - {series: 'tracekeep_ingest_open_gaps{instance="b",tool_id="T-1"}', values: '1x30 3x10'}
+  - {series: 'tracekeep_ingest_open_gaps{instance="a",equipment_id="T-1"}', values: '1x30 3x10'}
+  - {series: 'tracekeep_ingest_open_gaps{instance="b",equipment_id="T-1"}', values: '1x30 3x10'}
   - {series: 'tracekeep_ingest_refreshed_timestamp_seconds{instance="a",source="catalog"}', values: '0+60x40'}
   alert_rule_test:
   - {eval_time: 20m, alertname: TracekeepGapsGrowing, exp_alerts: []}
   - eval_time: 35m
     alertname: TracekeepGapsGrowing
-    exp_alerts: [{exp_labels: {severity: warning, tool_id: T-1}, exp_annotations: {summary: "Tool T-1: open gaps or declared losses increasing.", runbook_url: "rb#gaps-and-losses"}}]
+    exp_alerts: [{exp_labels: {severity: warning, equipment_id: T-1}, exp_annotations: {summary: "Equipment T-1: open gaps or declared losses increasing.", runbook_url: "rb#gaps-and-losses"}}]
 - name: open gaps grown but their source stale
   interval: 1m
   input_series:
-  - {series: 'tracekeep_ingest_open_gaps{instance="a",tool_id="T-1"}', values: '1x30 3x10'}
+  - {series: 'tracekeep_ingest_open_gaps{instance="a",equipment_id="T-1"}', values: '1x30 3x10'}
   - {series: 'tracekeep_ingest_refreshed_timestamp_seconds{instance="a",source="catalog"}', values: '0x40'}
   alert_rule_test:
   - {eval_time: 35m, alertname: TracekeepGapsGrowing, exp_alerts: []}
 - name: open gaps grown in one replica's stale snapshot, flat in another's fresh one
   interval: 1m
   input_series:
-  - {series: 'tracekeep_ingest_open_gaps{instance="a",tool_id="T-1"}', values: '1x30 3x10'}
+  - {series: 'tracekeep_ingest_open_gaps{instance="a",equipment_id="T-1"}', values: '1x30 3x10'}
   - {series: 'tracekeep_ingest_refreshed_timestamp_seconds{instance="a",source="catalog"}', values: '0x40'}
-  - {series: 'tracekeep_ingest_open_gaps{instance="b",tool_id="T-1"}', values: '1x40'}
+  - {series: 'tracekeep_ingest_open_gaps{instance="b",equipment_id="T-1"}', values: '1x40'}
   - {series: 'tracekeep_ingest_refreshed_timestamp_seconds{instance="b",source="catalog"}', values: '0+60x40'}
   alert_rule_test:
   - {eval_time: 35m, alertname: TracekeepGapsGrowing, exp_alerts: []}
@@ -172,7 +172,7 @@ tests:
   - {series: 'tracepub_bus_connected{job="gw",instance="gw-1"}', values: '1x30'}
   - {series: 'tracepub_records_published_total{job="gw",instance="gw-1"}', values: '0+10x30'}
   alert_rule_test:
-  - {eval_time: 25m, alertname: TracepubToolSilent, exp_alerts: []}
+  - {eval_time: 25m, alertname: TracepubEquipmentSilent, exp_alerts: []}
 - name: a connected producer silent, and one that never published
   interval: 1m
   input_series:
@@ -181,26 +181,26 @@ tests:
   - {series: 'tracepub_bus_connected{job="gw",instance="gw-2"}', values: '1x30'}
   alert_rule_test:
   - eval_time: 22m
-    alertname: TracepubToolSilent
+    alertname: TracepubEquipmentSilent
     exp_alerts:
-    - {exp_labels: {severity: warning, job: gw, instance: gw-1}, exp_annotations: {summary: "Producer gw-1 is connected and has published nothing for ten minutes.", runbook_url: "rb#tool-silent"}}
-    - {exp_labels: {severity: warning, job: gw, instance: gw-2}, exp_annotations: {summary: "Producer gw-2 is connected and has published nothing for ten minutes.", runbook_url: "rb#tool-silent"}}
+    - {exp_labels: {severity: warning, job: gw, instance: gw-1}, exp_annotations: {summary: "Producer gw-1 is connected and has published nothing for ten minutes.", runbook_url: "rb#equipment-silent"}}
+    - {exp_labels: {severity: warning, job: gw, instance: gw-2}, exp_annotations: {summary: "Producer gw-2 is connected and has published nothing for ten minutes.", runbook_url: "rb#equipment-silent"}}
 - name: a producer connected only minutes ago, not yet published
   interval: 1m
   input_series:
   - {series: 'tracepub_bus_connected{job="gw",instance="gw-3"}', values: '0x10 1x8'}
   alert_rule_test:
-  - {eval_time: 17m, alertname: TracepubToolSilent, exp_alerts: []}
+  - {eval_time: 17m, alertname: TracepubEquipmentSilent, exp_alerts: []}
 - name: a connected producer that stops publishing
   interval: 1m
   input_series:
   - {series: 'tracepub_bus_connected{job="gw",instance="gw-1"}', values: '1x45'}
   - {series: 'tracepub_records_published_total{job="gw",instance="gw-1"}', values: '0+10x20 200x25'}
   alert_rule_test:
-  - {eval_time: 28m, alertname: TracepubToolSilent, exp_alerts: []}
+  - {eval_time: 28m, alertname: TracepubEquipmentSilent, exp_alerts: []}
   - eval_time: 33m
-    alertname: TracepubToolSilent
-    exp_alerts: [{exp_labels: {severity: warning, job: gw, instance: gw-1}, exp_annotations: {summary: "Producer gw-1 is connected and has published nothing for ten minutes.", runbook_url: "rb#tool-silent"}}]
+    alertname: TracepubEquipmentSilent
+    exp_alerts: [{exp_labels: {severity: warning, job: gw, instance: gw-1}, exp_annotations: {summary: "Producer gw-1 is connected and has published nothing for ten minutes.", runbook_url: "rb#equipment-silent"}}]
 - name: a producer dropping records
   interval: 1m
   input_series:
@@ -226,18 +226,18 @@ tests:
   - {series: 'tracepub_bus_connected{job="gw",instance="gw-6"}', values: '1x30'}
   - {series: 'tracepub_records_published_total{job="gw",instance="gw-6"}', values: '0x30'}
   alert_rule_test:
-  - {eval_time: 5m, alertname: TracepubToolSilent, exp_alerts: []}
+  - {eval_time: 5m, alertname: TracepubEquipmentSilent, exp_alerts: []}
   - eval_time: 12m
-    alertname: TracepubToolSilent
-    exp_alerts: [{exp_labels: {severity: warning, job: gw, instance: gw-6}, exp_annotations: {summary: "Producer gw-6 is connected and has published nothing for ten minutes.", runbook_url: "rb#tool-silent"}}]
+    alertname: TracepubEquipmentSilent
+    exp_alerts: [{exp_labels: {severity: warning, job: gw, instance: gw-6}, exp_annotations: {summary: "Producer gw-6 is connected and has published nothing for ten minutes.", runbook_url: "rb#equipment-silent"}}]
 - name: a connected producer counted from zero, publishing
   interval: 1m
   input_series:
   - {series: 'tracepub_bus_connected{job="gw",instance="gw-7"}', values: '1x30'}
   - {series: 'tracepub_records_published_total{job="gw",instance="gw-7"}', values: '0x8 4+2x21'}
   alert_rule_test:
-  - {eval_time: 12m, alertname: TracepubToolSilent, exp_alerts: []}
-  - {eval_time: 25m, alertname: TracepubToolSilent, exp_alerts: []}
+  - {eval_time: 12m, alertname: TracepubEquipmentSilent, exp_alerts: []}
+  - {eval_time: 25m, alertname: TracepubEquipmentSilent, exp_alerts: []}
 - name: a producer on an older SDK, the first drop of a reason seen only from the second
   interval: 1m
   input_series:
@@ -251,17 +251,17 @@ tests:
   input_series:
   - {series: 'tracepub_bus_connected{job="gw",instance="gw-4"}', values: '1x30'}
   alert_rule_test:
-  - {eval_time: 5m, alertname: TracepubToolSilent, exp_alerts: []}
+  - {eval_time: 5m, alertname: TracepubEquipmentSilent, exp_alerts: []}
   - eval_time: 12m
-    alertname: TracepubToolSilent
-    exp_alerts: [{exp_labels: {severity: warning, job: gw, instance: gw-4}, exp_annotations: {summary: "Producer gw-4 is connected and has published nothing for ten minutes.", runbook_url: "rb#tool-silent"}}]
+    alertname: TracepubEquipmentSilent
+    exp_alerts: [{exp_labels: {severity: warning, job: gw, instance: gw-4}, exp_annotations: {summary: "Producer gw-4 is connected and has published nothing for ten minutes.", runbook_url: "rb#equipment-silent"}}]
 - name: a producer's first publication
   interval: 1m
   input_series:
   - {series: 'tracepub_bus_connected{job="gw",instance="gw-5"}', values: '1x30'}
   - {series: 'tracepub_records_published_total{job="gw",instance="gw-5"}', values: '_x8 4x22'}
   alert_rule_test:
-  - {eval_time: 12m, alertname: TracepubToolSilent, exp_alerts: []}
+  - {eval_time: 12m, alertname: TracepubEquipmentSilent, exp_alerts: []}
 
 # Events read by their stamped time (each value the event's time, in the test's seconds from zero).
 - name: a refused merge, alerting for an hour
@@ -274,14 +274,14 @@ tests:
     alertname: TracekeepMergeRefused
     exp_alerts: [{exp_labels: {severity: warning}, exp_annotations: {summary: "A merge was refused over the reader's metadata budget.", runbook_url: "rb#merge-over-budget"}}]
   - {eval_time: 70m, alertname: TracekeepMergeRefused, exp_alerts: []}
-- name: a declared loss on a tool, before any of its segments
+- name: a declared loss on a piece of equipment, before any of its segments
   interval: 1m
   input_series:
-  - {series: 'tracekeep_ingest_last_declared_loss_timestamp_seconds{instance="a",tool_id="T-3"}', values: '_x5 300x40'}
+  - {series: 'tracekeep_ingest_last_declared_loss_timestamp_seconds{instance="a",equipment_id="T-3"}', values: '_x5 300x40'}
   alert_rule_test:
   - eval_time: 10m
     alertname: TracekeepGapsGrowing
-    exp_alerts: [{exp_labels: {severity: warning, tool_id: T-3}, exp_annotations: {summary: "Tool T-3: open gaps or declared losses increasing.", runbook_url: "rb#gaps-and-losses"}}]
+    exp_alerts: [{exp_labels: {severity: warning, equipment_id: T-3}, exp_annotations: {summary: "Equipment T-3: open gaps or declared losses increasing.", runbook_url: "rb#gaps-and-losses"}}]
   - {eval_time: 40m, alertname: TracekeepGapsGrowing, exp_alerts: []}
 - name: a key refused
   interval: 1m

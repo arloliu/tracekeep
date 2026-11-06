@@ -393,7 +393,7 @@ func survivorAndStray(t *testing.T, c *catalog.Catalog) {
 		t.Fatal(err)
 	}
 	capture := tracepack.UUID{3}
-	d := &catalog.Descriptor{Bytes: []byte("d"), ToolID: "T1", RecorderInstanceID: tracepack.UUID{4}, Device: "eqp", OriginNS: 1}
+	d := &catalog.Descriptor{Bytes: []byte("d"), EquipmentID: "T1", RecorderInstanceID: tracepack.UUID{4}, Device: "eqp", OriginNS: 1}
 	if _, err := c.Admit(ctx, identity(capture, 0, 1, 1), d); err != nil {
 		t.Fatal(err)
 	}
@@ -444,7 +444,7 @@ func TestObjectList(t *testing.T) {
 	})
 }
 
-// status lists the pending captures by id first, then each tool with its open captures, deferred versions
+// status lists the pending captures by id first, then each piece of equipment with its open captures, deferred versions
 // and the backlog on its subjects, and the stream's whole backlog; deferred list groups what waits by capture and reason.
 func TestStatusAndDeferredList(t *testing.T) {
 	t.Parallel()
@@ -455,7 +455,7 @@ func TestStatusAndDeferredList(t *testing.T) {
 		if _, err := c.ActivateConfig(ctx, []byte("config")); err != nil {
 			t.Fatal(err)
 		}
-		d := &catalog.Descriptor{Bytes: []byte("d"), ToolID: "T1", RecorderInstanceID: tracepack.UUID{4}, Device: "eqp", OriginNS: 1}
+		d := &catalog.Descriptor{Bytes: []byte("d"), EquipmentID: "T1", RecorderInstanceID: tracepack.UUID{4}, Device: "eqp", OriginNS: 1}
 		if _, err := c.Admit(ctx, identity(admittedCapture, 0, 1, 1), d); err != nil {
 			t.Fatal(err)
 		}
@@ -483,8 +483,8 @@ func TestStatusAndDeferredList(t *testing.T) {
 		if len(st.Pending) != 1 || st.Pending[0].Capture != pending.String() {
 			t.Errorf("pending = %+v", st.Pending)
 		}
-		if len(st.Tools) != 1 || st.Tools[0].ToolID != "T1" || st.Tools[0].OpenCaptures != 1 || st.Tools[0].Backlog != 2 {
-			t.Errorf("tools = %+v, want T1 with its open capture and two messages of backlog", st.Tools)
+		if len(st.Equipment) != 1 || st.Equipment[0].EquipmentID != "T1" || st.Equipment[0].OpenCaptures != 1 || st.Equipment[0].Backlog != 2 {
+			t.Errorf("equipment = %+v, want T1 with its open capture and two messages of backlog", st.Equipment)
 		}
 		if st.BacklogMessages != 3 || st.BacklogBytes == 0 {
 			t.Errorf("the stream's backlog = %d messages, %d bytes; want all three", st.BacklogMessages, st.BacklogBytes)

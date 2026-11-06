@@ -112,7 +112,7 @@ func TestSignInAcrossReplicas(t *testing.T) {
 	keys := newSessionKeys("s-1", "s-1")
 	a, b := p.replica(c, keys, nil), p.replica(c, keys, nil)
 	br := newBrowser()
-	w := br.do(a.people.Handler(), http.MethodGet, "/auth/login?return=%2Fcaptures%3Ftool%3DT1", nil)
+	w := br.do(a.people.Handler(), http.MethodGet, "/auth/login?return=%2Fcaptures%3Fequipment%3DT1", nil)
 	if w.Code != http.StatusFound || w.Header().Get("Cache-Control") != "no-store" {
 		t.Fatalf("login = %d, Cache-Control %q", w.Code, w.Header().Get("Cache-Control"))
 	}
@@ -121,7 +121,7 @@ func TestSignInAcrossReplicas(t *testing.T) {
 	// The callback reaches the other replica, which holds nothing of the login but its cookie.
 	code := p.grantChallenge(q.Get("code_challenge"), sign(t, s, p.idClaims(c.Now(), q.Get("nonce"))))
 	w = br.do(b.people.Handler(), http.MethodGet, "/auth/callback?code="+code+"&state="+q.Get("state"), nil)
-	if w.Code != http.StatusSeeOther || w.Header().Get("Location") != "/captures?tool=T1" || w.Header().Get("Referrer-Policy") != "no-referrer" {
+	if w.Code != http.StatusSeeOther || w.Header().Get("Location") != "/captures?equipment=T1" || w.Header().Get("Referrer-Policy") != "no-referrer" {
 		t.Fatalf("callback = %d to %q, %s", w.Code, w.Header().Get("Location"), w.Body)
 	}
 	if _, ok := br.cookies[LoginCookie]; ok {
@@ -437,18 +437,18 @@ func TestStalledDiscoveryIsBounded(t *testing.T) {
 func TestReturnPath(t *testing.T) {
 	t.Parallel()
 	for raw, want := range map[string]string{
-		"":                       "/",
-		"/":                      "/",
-		"/captures?tool=T1#x":    "/captures?tool=T1#x",
-		"//evil.example":         "/",
-		"/\\evil.example":        "/",
-		"/\t/evil.example":       "/",
-		"/ /evil":                "/",
-		"https://evil.example/":  "/",
-		"evil":                   "/",
-		"/%09/evil":              "/%09/evil",
-		"/café":                  "/",
-		"/x\r\nLocation: //evil": "/",
+		"":                         "/",
+		"/":                        "/",
+		"/captures?equipment=T1#x": "/captures?equipment=T1#x",
+		"//evil.example":           "/",
+		"/\\evil.example":          "/",
+		"/\t/evil.example":         "/",
+		"/ /evil":                  "/",
+		"https://evil.example/":    "/",
+		"evil":                     "/",
+		"/%09/evil":                "/%09/evil",
+		"/café":                    "/",
+		"/x\r\nLocation: //evil":   "/",
 	} {
 		if got := ReturnPath(raw); got != want {
 			t.Errorf("ReturnPath(%q) = %q, want %q", raw, got, want)

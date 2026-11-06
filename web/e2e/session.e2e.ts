@@ -4,9 +4,9 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { expect, test, type Page } from "@playwright/test";
 
 // A troubleshooting session end to end against the packaged service (the gate's case, architecture.md §3.3 *Packaging tests*):
-// sign in at Dex, browse the simulator's tool, read its records and a transaction, export them and read the bundle's manifest.
+// sign in at Dex, browse the simulator's equipment, read its records and a transaction, export them and read the bundle's manifest.
 
-const tool = process.env.TRACEKEEP_TOOL ?? "SIM-TOOL";
+const equipment = process.env.TRACEKEEP_EQUIPMENT ?? "SIM-EQP";
 const device = process.env.TRACEKEEP_DEVICE ?? "eqp";
 // The simulator sends this as a process program's body (S7F3), which the baseline policy masks: no page or bundle may show it.
 const processProgram = process.env.TRACEKEEP_PROCESS_PROGRAM ?? "SIM-PROCESS-PROGRAM-BODY";
@@ -71,7 +71,7 @@ function isS7F3(payload: unknown): boolean {
 
 interface Manifest {
   kind?: string;
-  selector?: { tool_id?: string; devices?: string[]; capture_id?: string; from?: number; to?: number };
+  selector?: { equipment_id?: string; devices?: string[]; sources?: string[]; capture_id?: string; from?: number; to?: number };
   captures?: { capture?: { device?: string }; hours?: { hour?: string; packs?: { file?: string }[]; left_out?: unknown[] }[] }[];
 }
 
@@ -83,10 +83,10 @@ interface Evidence {
   first: string;
 }
 
-// openRecords opens the tool's device, sees an hour of its capture with its scope's state and packs, and opens the capture's records,
+// openRecords opens the equipment's device, sees an hour of its capture with its scope's state and packs, and opens the capture's records,
 // returning the list's end once it is read.
 async function openRecords(page: Page) {
-  await page.getByLabel("Tool id").fill(tool);
+  await page.getByLabel("Equipment ID").fill(equipment);
   await page.getByRole("button", { name: "Open" }).click();
   await page.getByRole("checkbox", { name: `Select ${device}` }).check();
   const records = page.getByRole("link", { name: /^Records of / }).first();
@@ -125,7 +125,7 @@ async function expectMatched(page: Page) {
   throw new Error(`no transaction matched among five primaries, each ordering-uncertain:\n${unmatched.join("\n---\n")}`);
 }
 
-// While the leg's simulator still sends (TRACEKEEP_LIVE), a primary's transaction is looked up and matched, as on a running tool.
+// While the leg's simulator still sends (TRACEKEEP_LIVE), a primary's transaction is looked up and matched, as on running equipment.
 test("a transaction is matched while the simulator sends", async ({ page }) => {
   test.skip(!process.env.TRACEKEEP_LIVE, "runs while the leg's simulator sends");
   await signIn(page);
@@ -133,7 +133,7 @@ test("a transaction is matched while the simulator sends", async ({ page }) => {
   await expectMatched(page);
 });
 
-test("a person browses a tool, reads its records and a transaction, and exports them", async ({ page }) => {
+test("a person browses equipment, reads its records and a transaction, and exports them", async ({ page }) => {
   // The checks below can fail: the process program is found as it is and inside a base64 word.
   expect(shows(`SML ${Buffer.from(`ab${processProgram}`).toString("base64")}.`) && shows(processProgram)).toBe(true);
   await signIn(page);
@@ -167,8 +167,8 @@ test("a person browses a tool, reads its records and a transaction, and exports 
   expect(manifest, "the bundle holds manifest.json").toBeDefined();
   const m = JSON.parse(manifest?.toString("utf8") ?? "{}") as Manifest;
   expect(m.kind).toBe("canonical");
-  // The selection exported: the tool, the device and the records' window, to the millisecond (the manifest's nanoseconds parse as a double).
-  expect(m.selector?.tool_id).toBe(tool);
+  // The selection exported: the equipment, the device and the records' window, to the millisecond (the manifest's nanoseconds parse as a double).
+  expect(m.selector?.equipment_id).toBe(equipment);
   expect(m.selector?.devices).toContain(device);
   expect(Math.abs((m.selector?.from ?? 0) / 1e6 - Date.parse(selected.get("from") ?? ""))).toBeLessThan(1);
   expect(Math.abs((m.selector?.to ?? 0) / 1e6 - Date.parse(selected.get("to") ?? ""))).toBeLessThan(1);
@@ -227,14 +227,14 @@ test("a person no group maps is signed in and admitted to nothing", async ({ pag
   await page.getByRole("button", { name: "Login" }).click();
   await expect(page.getByText("Your roles do not admit this page; it needs viewer.")).toBeVisible();
   // The server refuses it too, not only the page: the session cookie and this origin's Origin on a call of the machine API.
-  const res = await page.evaluate(async (toolId) => {
+  const res = await page.evaluate(async (equipmentId) => {
     const r = await fetch("/tracekeep.v1.MachineService/ListDevices", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ selector: { toolId } }),
+      body: JSON.stringify({ selector: { equipmentId } }),
     });
     return { status: r.status, body: await r.text() };
-  }, tool);
+  }, equipment);
   expect(res.status, res.body).toBe(403);
   expect(res.body).toContain("permission_denied");
 });
@@ -253,7 +253,7 @@ test("a session outlives an outage of the IdP, and sign-in returns with it", asy
   try {
     execSync(stop ?? "", { stdio: "inherit", timeout: 180_000 });
     await page.reload();
-    await page.getByLabel("Tool id").fill(tool);
+    await page.getByLabel("Equipment ID").fill(equipment);
     await page.getByRole("button", { name: "Open" }).click();
     await expect(page.getByRole("checkbox", { name: `Select ${device}` })).toBeVisible();
 
