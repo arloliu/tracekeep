@@ -43,7 +43,7 @@ func TestClaimCheckStartAtTheMinimumMaxPayload(t *testing.T) {
 		put := &putting{ObjectStore: e.Store, put: make(chan string, 16)}
 		e.Store = put
 
-		p, err := producer.New(producer.Config{Servers: []string{srv.URL()}, SubjectPrefix: e.Config.Bus.SubjectPrefix, ClaimBucket: e.Config.Bus.ClaimBucket, Source: "test-source"})
+		p, err := producer.New(producer.Config{Servers: []string{srv.URL()}, SubjectPrefix: e.Config.Bus.SubjectPrefix, ClaimBucket: e.Config.Bus.ClaimBucket, Source: devSource})
 		if err != nil {
 			t.Fatal(err)
 		}

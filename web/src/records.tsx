@@ -66,8 +66,8 @@ function FilterBar({ search, w }: { search: RecordsSearch; w: Window }) {
   const navigate = useNavigate({ from: "/records" });
   const [f, setF] = useState({
     equipment: search.equipment ?? "",
-    devices: (search.devices ?? []).join(", "),
-    sources: (search.sources ?? []).join(", "),
+    devices: search.devices ?? [],
+    sources: search.sources ?? [],
     capture: search.capture ?? "",
     from: inputValue(w.from, zone),
     to: inputValue(w.to, zone),
@@ -98,14 +98,12 @@ function FilterBar({ search, w }: { search: RecordsSearch; w: Window }) {
       setProblem(problems.join(" "));
       return;
     }
-    const devices = split(f.devices);
-    const sources = split(f.sources);
     const messages = split(f.messages).map((m) => m.toUpperCase());
     void navigate({
       search: {
         equipment: f.equipment.trim(),
-        devices: devices.length > 0 ? devices : undefined,
-        sources: sources.length > 0 ? sources : undefined,
+        devices: f.devices.length > 0 ? f.devices : undefined,
+        sources: f.sources.length > 0 ? f.sources : undefined,
         capture: f.capture.trim() || undefined,
         from: from.toISOString(),
         to: to.toISOString(),
@@ -125,12 +123,32 @@ function FilterBar({ search, w }: { search: RecordsSearch; w: Window }) {
       {input}
     </label>
   );
+  // Devices and sources are kept byte for byte from the URL, never retyped: a name may hold spaces or commas.
+  const names = (k: "devices" | "sources", label: string, every: string) => (
+    <div role="group" aria-label={`${label}s`} className="grid gap-1 text-sm">
+      {label}s
+      <div className="flex h-9 flex-wrap items-center gap-1">
+        {f[k].length === 0 ? (
+          <span className="text-muted-foreground">{every}</span>
+        ) : (
+          f[k].map((n) => (
+            <Badge key={n} variant="secondary" className="whitespace-pre">
+              {n}
+              <button type="button" aria-label={`Remove ${label.toLowerCase()} ${n}`} onClick={() => { setF({ ...f, [k]: f[k].filter((x) => x !== n) }); }}>
+                ×
+              </button>
+            </Badge>
+          ))
+        )}
+      </div>
+    </div>
+  );
   return (
     <form onSubmit={submit} className="space-y-2" aria-label="Filters">
       <div className="flex flex-wrap items-end gap-3">
         {field("Equipment ID", <Input className="w-40" value={f.equipment} onChange={set("equipment")} />)}
-        {field("Devices", <Input className="w-48" placeholder="every device" value={f.devices} onChange={set("devices")} />)}
-        {field("Sources", <Input className="w-48" placeholder="every source" value={f.sources} onChange={set("sources")} />)}
+        {names("devices", "Device", "every device")}
+        {names("sources", "Source", "every source")}
         {field("Capture", <Input className="w-80 font-mono text-xs" value={f.capture} onChange={set("capture")} />)}
         {field("From", <Input type="datetime-local" className="w-52" value={f.from} onChange={set("from")} />)}
         {field("To", <Input type="datetime-local" className="w-52" value={f.to} onChange={set("to")} />)}

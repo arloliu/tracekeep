@@ -323,6 +323,34 @@ test("the filter bar refuses a seq range without a capture", async () => {
   expect(asked).toHaveLength(1);
 });
 
+test("the filter bar keeps the selection's devices and sources byte for byte, removing only what is removed", async () => {
+  const asked: QueryRecordsRequest[] = [];
+  const devices = encodeURIComponent(JSON.stringify([" eqp ", "tlp"]));
+  const sources = encodeURIComponent(JSON.stringify(["gw,a"]));
+  const { router } = renderApp(`/records?equipment=T-1&devices=${devices}&sources=${sources}&${window}`, stream(asked, function* () {
+    yield { items: [], cursor: "", end: { records: 0n } };
+  }));
+  await screen.findByText(/^0 records in the list/);
+  expect(asked[0]?.selector).toMatchObject({ devices: [" eqp ", "tlp"], sources: ["gw,a"] });
+  await userEvent.type(screen.getByLabelText("Messages"), "S6F11");
+  await userEvent.click(screen.getByRole("button", { name: "Apply" }));
+  await waitFor(() => { expect(router.state.location.search.messages).toEqual(["S6F11"]); });
+  expect(router.state.location.search).toMatchObject({ devices: [" eqp ", "tlp"], sources: ["gw,a"] });
+  await waitFor(() => { expect(asked.at(-1)?.messages).toEqual(["S6F11"]); });
+  expect(asked.at(-1)?.selector).toMatchObject({ devices: [" eqp ", "tlp"], sources: ["gw,a"] });
+
+  await userEvent.click(screen.getByRole("button", { name: "Remove device tlp" }));
+  await userEvent.click(screen.getByRole("button", { name: "Apply" }));
+  await waitFor(() => { expect(router.state.location.search.devices).toEqual([" eqp "]); });
+  expect(router.state.location.search.sources).toEqual(["gw,a"]);
+  await waitFor(() => { expect(asked.at(-1)?.selector).toMatchObject({ devices: [" eqp "], sources: ["gw,a"] }); });
+
+  await userEvent.click(screen.getByRole("button", { name: "Remove source gw,a" }));
+  await userEvent.click(screen.getByRole("button", { name: "Apply" }));
+  await waitFor(() => { expect(router.state.location.search.sources).toBeUndefined(); });
+  expect(router.state.location.search.devices).toEqual([" eqp "]);
+});
+
 describe("the records' search", () => {
   test("keeps the predicates it understands, seqs only with a capture", () => {
     expect(validateRecords({ equipment: "T", messages: "S1F1", dir: "sideways", kinds: ["data", "bogus"], events: "true", seqFrom: "5" })).toEqual({

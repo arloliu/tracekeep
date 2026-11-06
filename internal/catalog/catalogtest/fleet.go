@@ -2,6 +2,7 @@ package catalogtest
 
 import (
 	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"testing"
 	"time"
@@ -12,6 +13,7 @@ import (
 	"github.com/arloliu/tracekeep/internal/benchscale"
 	"github.com/arloliu/tracekeep/internal/catalog"
 	"github.com/arloliu/tracekeep/internal/procconfig"
+	"github.com/arloliu/tracekeep/producer"
 )
 
 // FleetOrigin is the start of SeedFleet's first hour, 2026-01-01T00:00:00Z in Unix nanoseconds, fixed so a benchmark can hold a window constant.
@@ -76,25 +78,26 @@ func SeedFleet(tb testing.TB, c *catalog.Catalog, equipment, capturesPerEquipmen
 	return ids
 }
 
-// admit admits a capture of equipment from origin with a decodable descriptor of a fresh recorder instance.
+// admit admits a capture of equipment from origin with a descriptor admission accepts, of a series of its own:
+// its device eqp, a source named for the capture and the recorder_instance_id derived from them.
 func admit(tb testing.TB, c *catalog.Catalog, equipment string, origin, streamSeq int64) tracepack.UUID {
 	tb.Helper()
 	var id, instance tracepack.UUID
 	_, _ = rand.Read(id[:])
-	_, _ = rand.Read(instance[:])
-	device, mono, tolerance := "eqp", int64(0), uint64(time.Second)
+	device, source, mono, tolerance := "eqp", "fleet-"+hex.EncodeToString(id[:8]), int64(0), uint64(time.Second)
+	instance = producer.RecorderInstanceID(equipment, device, source)
 	b, err := tracepack.EncodeDescriptor(&tracepack.PackMeta{
 		EquipmentID: equipment, Transport: tracepack.TransportHSMSSS, CaptureMethod: tracepack.CaptureMethodRawStream,
 		Vantage: tracepack.VantageHost, Recorder: "bench", TimeSource: tracepack.TimeSourceCaptureClock,
 		CaptureOriginUTCNs: &origin, CaptureOriginMonoNs: &mono, ClockStepToleranceNs: &tolerance,
 		LifecycleCoverage: tracepack.LifecycleCoverageSubscribed, QualityEvaluated: true,
-		RecorderInstanceID: instance, RecorderInstanceName: &device,
+		RecorderInstanceID: instance, RecorderInstanceName: &source, Device: &device,
 	})
 	if err != nil {
 		tb.Fatal(err)
 	}
 	d := &catalog.Identity{Version: catalog.VersionKey{Capture: id}, Incarnation: 1, StreamSeq: streamSeq, Hour: origin / int64(time.Hour)}
-	desc := &catalog.Descriptor{Bytes: b, EquipmentID: equipment, RecorderInstanceID: instance, Device: device, OriginNS: origin}
+	desc := &catalog.Descriptor{Bytes: b, EquipmentID: equipment, RecorderInstanceID: instance, Device: device, Source: source, OriginNS: origin}
 	if res, err := c.Admit(tb.Context(), d, desc); err != nil || res.Outcome != catalog.Admitted {
 		tb.Fatalf("Admit = %+v, %v", res, err)
 	}

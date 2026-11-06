@@ -107,8 +107,9 @@ func registered(t *testing.T, e *Env) reading {
 			t.Fatalf("%s: %v", k, err)
 		}
 		g.captures[r.Header().CaptureID] = true
-		if r.Header().Meta.EquipmentID != "SIM-EQP" {
-			t.Errorf("%s: equipment %q, want the simulator's", k, r.Header().Meta.EquipmentID)
+		if m := r.Header().Meta; m.EquipmentID != "SIM-EQP" || m.Device == nil || *m.Device != "eqp" ||
+			m.RecorderInstanceName == nil || *m.RecorderInstanceName != devSource {
+			t.Errorf("%s: equipment %q, device %v, source %v, want the simulator's", k, m.EquipmentID, m.Device, m.RecorderInstanceName)
 		}
 		_, err = r.Iterate(ctx, tracepack.Query{}, func(it *tracepack.Item) error {
 			switch {

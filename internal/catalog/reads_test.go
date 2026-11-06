@@ -167,6 +167,10 @@ func TestListCapturesSpans(t *testing.T) {
 		if u := got[foreign].Unregistered; len(u) != 1 || u[0].Start != nil || u[0].End != 10 {
 			t.Errorf("another series' predecessor: unregistered %+v, want an open-started interval to its origin", u)
 		}
+		// A same-series predecessor outside the window still counts.
+		if u := listCaptures(t, c, window(20+q, 1<<62))[chained].Unregistered; len(u) != 0 {
+			t.Errorf("chained, its predecessor outside the window: unregistered %+v, want none", u)
+		}
 		if got[a].State != StateClosed || got[chained].PreviousCaptureID == nil || *got[chained].PreviousCaptureID != named {
 			t.Errorf("state %v, previous %v", got[a].State, got[chained].PreviousCaptureID)
 		}

@@ -77,6 +77,7 @@ type Capture struct {
 	Descriptor    []byte
 	EquipmentID   string
 	Device        string
+	Source        string
 	ConfigID      int64
 	HighestSeq    int64
 	HasHighestSeq bool
@@ -204,12 +205,13 @@ func (c *Catalog) Capture(ctx context.Context, id tracepack.UUID) (Capture, erro
 		Descriptor  []byte         `db:"descriptor"`
 		EquipmentID sql.NullString `db:"equipment_id"`
 		Device      sql.NullString `db:"device"`
+		Source      sql.NullString `db:"source"`
 		ConfigID    sql.NullInt64  `db:"config_id"`
 		HighestSeq  sql.NullInt64  `db:"highest_seq"`
 		StopSeen    bool           `db:"stop_seen"`
 		Revision    int64          `db:"data_revision"`
 	}
-	err := c.read.GetContext(ctx, &row, `SELECT state, descriptor, equipment_id, device, config_id, highest_seq, stop_seen, data_revision
+	err := c.read.GetContext(ctx, &row, `SELECT state, descriptor, equipment_id, device, source, config_id, highest_seq, stop_seen, data_revision
 		FROM captures WHERE capture_id = ?`, id[:])
 	if errors.Is(err, sql.ErrNoRows) {
 		return Capture{}, fmt.Errorf("%w: %s", ErrUnknownCapture, id)
@@ -220,7 +222,7 @@ func (c *Catalog) Capture(ctx context.Context, id tracepack.UUID) (Capture, erro
 
 	return Capture{
 		ID: id, State: row.State, Descriptor: row.Descriptor, EquipmentID: row.EquipmentID.String, Device: row.Device.String,
-		ConfigID: row.ConfigID.Int64, HighestSeq: row.HighestSeq.Int64, HasHighestSeq: row.HighestSeq.Valid,
+		Source: row.Source.String, ConfigID: row.ConfigID.Int64, HighestSeq: row.HighestSeq.Int64, HasHighestSeq: row.HighestSeq.Valid,
 		StopSeen: row.StopSeen, DataRevision: row.Revision,
 	}, nil
 }

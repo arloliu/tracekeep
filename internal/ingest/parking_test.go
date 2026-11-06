@@ -425,8 +425,9 @@ func terminatedStartThenAnotherVersion(t *testing.T, claim bool) {
 		}
 		later(other) // another version, above the cut-off
 		r.step(t)
-		if got, err := c.Capture(ctx, capture); err != nil || got.State != catalog.StateOpen {
-			t.Fatalf("capture %+v, %v; want the other version's start admitting it", got, err)
+		if got, err := c.Capture(ctx, capture); err != nil || got.State != catalog.StateOpen ||
+			got.EquipmentID != "T1" || got.Device != "eqp" || got.Source != testSource {
+			t.Fatalf("capture %+v, %v; want the other version's start admitting it in place with its series", got, err)
 		}
 
 		later(first)

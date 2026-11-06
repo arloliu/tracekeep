@@ -88,7 +88,7 @@ interface Evidence {
 async function openRecords(page: Page) {
   await page.getByLabel("Equipment ID").fill(equipment);
   await page.getByRole("button", { name: "Open" }).click();
-  await page.getByRole("checkbox", { name: `Select ${device}` }).check();
+  await page.getByRole("checkbox", { name: `Device ${device}`, exact: true }).check();
   const records = page.getByRole("link", { name: /^Records of / }).first();
   await expect(records).toBeVisible();
   await expect(page.getByRole("table", { name: "Hours" }).getByRole("row").filter({ hasText: /(open|settled|unmergeable) \d+ packs?\b/ }).first()).toBeVisible();
@@ -255,7 +255,7 @@ test("a session outlives an outage of the IdP, and sign-in returns with it", asy
     await page.reload();
     await page.getByLabel("Equipment ID").fill(equipment);
     await page.getByRole("button", { name: "Open" }).click();
-    await expect(page.getByRole("checkbox", { name: `Select ${device}` })).toBeVisible();
+    await expect(page.getByRole("checkbox", { name: `Device ${device}`, exact: true })).toBeVisible();
 
     const other = await browser.newContext({ baseURL });
     const login = await other.newPage();

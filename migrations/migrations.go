@@ -135,24 +135,30 @@ func ApplyDir(ctx context.Context, db *sql.DB, engine string, dir migrate.Dir) (
 
 // checkReset refuses the identity reset on a catalog that holds any capture, before Atlas runs a statement,
 // so the refusal leaves the schema, the rows and the revisions as they were.
-// A catalog whose first migration is still pending is new and holds none.
+// A catalog without a captures table holds none: only one whose first migration is still pending may lack it.
 func checkReset(ctx context.Context, conn *sql.Conn, ex *migrate.Executor) error {
 	pending, err := ex.Pending(ctx)
-	if err != nil {
-		return nil // nothing pending, or a catalog ExecuteN refuses with its own error
+	var dirty *migrate.NotCleanError
+	switch {
+	case errors.Is(err, migrate.ErrNoPendingFiles), errors.As(err, &dirty):
+		return nil // nothing to apply, or a catalog ExecuteN refuses with ErrOtherTool
+	case err != nil:
+		return fmt.Errorf("migrations: %w", err)
 	}
-	if !slices.ContainsFunc(pending, func(f migrate.File) bool { return strings.HasSuffix(f.Name(), identityReset) }) ||
-		strings.HasSuffix(pending[0].Name(), "_init.sql") {
+	if !slices.ContainsFunc(pending, func(f migrate.File) bool { return strings.HasSuffix(f.Name(), identityReset) }) {
 		return nil
 	}
 	var one int
-	switch err := conn.QueryRowContext(ctx, "SELECT 1 FROM captures LIMIT 1").Scan(&one); {
+	err = conn.QueryRowContext(ctx, "SELECT 1 FROM captures LIMIT 1").Scan(&one)
+	switch {
 	case errors.Is(err, sql.ErrNoRows):
 		return nil
-	case err != nil:
-		return fmt.Errorf("migrations: count the captures: %w", err)
-	default:
+	case err == nil:
 		return ErrIdentityReset
+	case strings.HasSuffix(pending[0].Name(), "_init.sql"):
+		return nil // no captures table yet: a new catalog
+	default:
+		return fmt.Errorf("migrations: count the captures: %w", err)
 	}
 }
 

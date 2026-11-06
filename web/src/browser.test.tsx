@@ -3,7 +3,7 @@ import { timestampDate, timestampFromDate } from "@bufbuild/protobuf/wkt";
 import { Code, ConnectError, type ConnectRouter } from "@connectrpc/connect";
 import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { beforeEach, describe, expect, test } from "vitest";
+import { beforeEach, describe, expect, test, vi } from "vitest";
 
 import { thinningText } from "@/browser";
 import { MachineService, type DeviceSchema, type ListCapturesRequest, type ListDevicesRequest, type ListPacksRequest } from "@/gen/tracekeep/v1/machine_pb";
@@ -78,7 +78,7 @@ test("an equipment ID typed opens its devices over the last hour and is remember
   await userEvent.type(await screen.findByLabelText("Equipment ID"), "T-1");
   const before = Date.now();
   await userEvent.click(screen.getByRole("button", { name: "Open" }));
-  expect(await screen.findByText("eq-a")).toBeInTheDocument();
+  expect(await screen.findByRole("checkbox", { name: "Device eq-a" })).toBeInTheDocument();
   expect(router.state.location.search).toEqual({ equipment: "T-1", last: "1h" });
   const sel = asked.devices[0]?.selector;
   expect(sel?.equipmentId).toBe("T-1");
@@ -89,18 +89,18 @@ test("an equipment ID typed opens its devices over the last hour and is remember
   expect(recentEquipment()).toEqual(["T-1"]);
   expect(localStorage.getItem("tracekeep.equipment")).toBe('["T-1"]');
   expect(screen.getByText("overlap")).toBeInTheDocument();
-  expect(asked.captures).toHaveLength(0); // no device selected yet
+  expect(asked.captures).toHaveLength(0); // no device or source selected yet
 });
 
-test("selecting a series lists its captures and their completeness by hour, with links into the records", async () => {
+test("selecting a device lists its captures and their completeness by hour, with links into the records", async () => {
   const asked = fresh();
   const { router } = renderApp("/?equipment=T-1&last=6h", machine(asked));
-  await userEvent.click(await screen.findByRole("checkbox", { name: "Select eq-a from gw-a" }));
+  await userEvent.click(await screen.findByRole("checkbox", { name: "Device eq-a" }));
   await waitFor(() => { expect(router.state.location.search.devices).toEqual(["eq-a"]); });
   expect(await screen.findAllByText(capID)).toHaveLength(2); // its row and its completeness
   const sel = asked.captures[0]?.selector;
   expect(sel?.devices).toEqual(["eq-a"]);
-  expect(sel?.sources).toEqual(["gw-a"]);
+  expect(sel?.sources).toEqual([]); // every source
   expect(Number((sel?.to?.seconds ?? 0n) - (sel?.from?.seconds ?? 0n))).toBe(6 * 3600);
   expect(asked.packs[0]?.selector?.devices).toEqual(["eq-a"]);
 
@@ -127,23 +127,50 @@ test("selecting a series lists its captures and their completeness by hour, with
   expect(screen.getByText("from seq 41")).toBeInTheDocument(); // the unknown tail
 });
 
-test("two sources of one device are two rows, and the selector carries the selected devices and sources", async () => {
+// covered are the series rows the selection covers, as [device, source].
+const covered = () =>
+  within(screen.getByRole("table", { name: "Series" }))
+    .getAllByRole("row")
+    .filter((r) => within(r).queryByText("selected"))
+    .map((r) => within(r).getAllByRole("cell").slice(1, 3).map((c) => c.textContent));
+
+test("devices and sources are filtered independently, as the selector intersects them", async () => {
   const asked = fresh();
-  const { router } = renderApp("/?equipment=T-1", machine(asked, [{ name: "eq-a", source: "gw-a" }, { name: "eq-a", source: "gw-b" }]));
-  const a = await screen.findByRole("checkbox", { name: "Select eq-a from gw-a" });
-  const b = screen.getByRole("checkbox", { name: "Select eq-a from gw-b" });
-  await userEvent.click(a);
-  await waitFor(() => { expect(router.state.location.search).toMatchObject({ devices: ["eq-a"], sources: ["gw-a"] }); });
-  await waitFor(() => { expect(asked.captures.at(-1)?.selector).toMatchObject({ devices: ["eq-a"], sources: ["gw-a"] }); });
-  expect(asked.packs.at(-1)?.selector).toMatchObject({ devices: ["eq-a"], sources: ["gw-a"] });
-  expect(b).not.toBeChecked();
-  await userEvent.click(b);
-  await waitFor(() => { expect(router.state.location.search).toMatchObject({ devices: ["eq-a"], sources: ["gw-a", "gw-b"] }); });
-  await waitFor(() => { expect(asked.captures.at(-1)?.selector?.sources).toEqual(["gw-a", "gw-b"]); });
-  await userEvent.click(a);
-  await waitFor(() => { expect(router.state.location.search).toMatchObject({ devices: ["eq-a"], sources: ["gw-b"] }); });
-  expect(a).not.toBeChecked();
-  expect(b).toBeChecked();
+  const rows = [{ name: "eqp", source: "a" }, { name: "eqp", source: "b" }, { name: "tlp", source: "a" }, { name: "tlp", source: "b" }];
+  const { router } = renderApp("/?equipment=T-1", machine(asked, rows));
+  await userEvent.click(await screen.findByRole("checkbox", { name: "Device eqp" }));
+  await userEvent.click(screen.getByRole("checkbox", { name: "Source b" }));
+  await waitFor(() => { expect(router.state.location.search).toMatchObject({ devices: ["eqp"], sources: ["b"] }); });
+  expect(covered()).toEqual([["eqp", "b"]]);
+  await waitFor(() => { expect(asked.captures.at(-1)?.selector).toMatchObject({ devices: ["eqp"], sources: ["b"] }); });
+  await waitFor(() => { expect(asked.packs.at(-1)?.selector).toMatchObject({ devices: ["eqp"], sources: ["b"] }); });
+
+  await userEvent.click(screen.getByRole("checkbox", { name: "Device tlp" }));
+  await waitFor(() => { expect(router.state.location.search).toMatchObject({ devices: ["eqp", "tlp"], sources: ["b"] }); });
+  expect(covered()).toEqual([["eqp", "b"], ["tlp", "b"]]);
+  await waitFor(() => { expect(asked.captures.at(-1)?.selector).toMatchObject({ devices: ["eqp", "tlp"], sources: ["b"] }); });
+  await waitFor(() => { expect(asked.packs.at(-1)?.selector).toMatchObject({ devices: ["eqp", "tlp"], sources: ["b"] }); });
+
+  await userEvent.click(screen.getByRole("checkbox", { name: "Device eqp" }));
+  await waitFor(() => { expect(router.state.location.search).toMatchObject({ devices: ["tlp"], sources: ["b"] }); });
+  expect(covered()).toEqual([["tlp", "b"]]);
+  await waitFor(() => { expect(asked.captures.at(-1)?.selector).toMatchObject({ devices: ["tlp"], sources: ["b"] }); });
+  expect(screen.getByRole("checkbox", { name: "Device eqp" })).not.toBeChecked();
+  expect(screen.getByRole("checkbox", { name: "Source a" })).not.toBeChecked();
+
+  await userEvent.click(screen.getByRole("checkbox", { name: "Device tlp" }));
+  await waitFor(() => { expect(router.state.location.search.devices).toBeUndefined(); });
+  expect(covered()).toEqual([["eqp", "b"], ["tlp", "b"]]); // no device named: every device
+  await waitFor(() => { expect(asked.captures.at(-1)?.selector).toMatchObject({ devices: [], sources: ["b"] }); });
+});
+
+test("a series is told apart by its device and source whatever they hold", async () => {
+  const error = vi.spyOn(console, "error");
+  renderApp("/?equipment=T-1&sources=%5B%22c%22%2C%22b%7Cc%22%5D", machine(fresh(), [{ name: "a|b", source: "c" }, { name: "a", source: "b|c" }]));
+  await screen.findByRole("checkbox", { name: "Device a|b" });
+  expect(covered()).toEqual([["a|b", "c"], ["a", "b|c"]]);
+  expect(error.mock.calls.flat().join(" ")).not.toMatch(/same key/);
+  error.mockRestore();
 });
 
 test("a custom window is read in the chosen zone, and from must come before to", async () => {
@@ -162,7 +189,7 @@ test("a custom window is read in the chosen zone, and from must come before to",
   await userEvent.clear(to);
   await userEvent.type(to, "2026-10-31T10:30");
   await userEvent.click(screen.getByRole("button", { name: "Open" }));
-  await screen.findByText("eq-a");
+  await screen.findByRole("checkbox", { name: "Device eq-a" });
   expect(router.state.location.search).toEqual({ equipment: "T-1", from: "2026-10-31T09:00:00.000Z", to: "2026-10-31T10:30:00.000Z" });
   expect(asked.devices[0]?.selector?.from?.seconds).toBe(BigInt(Date.parse("2026-10-31T09:00:00Z") / 1000));
 });

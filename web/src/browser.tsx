@@ -32,15 +32,15 @@ export function Browser() {
   };
   return (
     <div className="space-y-8">
-      <EquipmentForm key={`${search.equipment ?? ""}|${search.last ?? ""}|${search.from ?? ""}|${search.to ?? ""}|${zone}`} search={search} w={w} onOpen={reopen} />
+      <EquipmentForm key={JSON.stringify([search.equipment, search.last, search.from, search.to, zone])} search={search} w={w} onOpen={reopen} />
       {search.equipment === undefined ? (
         <p className="text-muted-foreground">Type an equipment ID to browse its devices.</p>
       ) : (
         <>
           <ExportLink search={search} from={w.from} to={w.to} />
           <Devices search={search} w={w} />
-          {search.devices === undefined ? (
-            <p className="text-muted-foreground">Select devices to list their captures.</p>
+          {search.devices === undefined && search.sources === undefined ? (
+            <p className="text-muted-foreground">Select devices or sources to list their captures.</p>
           ) : (
             <>
               <Captures search={search} w={w} />
@@ -153,13 +153,26 @@ function Devices({ search, w }: { search: SelectorSearch; w: Window }) {
     queryKey: keyOf("devices", { equipment: search.equipment }, w),
     queryFn: async ({ signal }) => (await machine.listDevices({ selector: selectorOf({ equipment: search.equipment }, w) }, { signal })).devices,
   });
-  // A row is a series; the selector intersects its devices and sources, so a row is selected when both lists admit it.
-  const isSelected = (d: Device) => (search.devices ?? []).includes(d.name) && (search.sources === undefined || search.sources.includes(d.source));
-  const toggle = (row: Device) => {
-    const rows = (q.data ?? []).filter((d) => d !== row && isSelected(d)).concat(isSelected(row) ? [] : [row]);
-    const unique = (xs: string[]) => (xs.length > 0 ? [...new Set(xs)] : undefined);
-    void navigate({ search: (prev) => ({ ...prev, devices: unique(rows.map((d) => d.name)), sources: unique(rows.map((d) => d.source)) }) });
+  // A row is a series; the selector intersects its devices and sources, an empty list admitting all, so a row is covered when both lists admit it.
+  const picked = search.devices !== undefined || search.sources !== undefined;
+  const covered = (d: Device) => picked && (search.devices ?? [d.name]).includes(d.name) && (search.sources ?? [d.source]).includes(d.source);
+  const toggle = (k: "devices" | "sources", v: string) => {
+    const xs = search[k] ?? [];
+    const next = xs.includes(v) ? xs.filter((x) => x !== v) : [...xs, v];
+    void navigate({ search: (prev) => ({ ...prev, [k]: next.length > 0 ? next : undefined }) });
   };
+  // A filter's choices are the rows' names, and any the URL selects that no row has, so it can be cleared.
+  const filter = (k: "devices" | "sources", label: string, names: string[]) => (
+    <fieldset className="flex flex-wrap items-center gap-3 text-sm">
+      <legend className="mb-1 font-medium">{label}s</legend>
+      {[...new Set([...names, ...(search[k] ?? [])])].map((n) => (
+        <label key={n} className="flex items-center gap-1 whitespace-pre">
+          <input type="checkbox" aria-label={`${label} ${n}`} checked={(search[k] ?? []).includes(n)} onChange={() => { toggle(k, n); }} />
+          {n}
+        </label>
+      ))}
+    </fieldset>
+  );
   return (
     <Section title="Devices">
       {q.isPending ? (
@@ -169,38 +182,40 @@ function Devices({ search, w }: { search: SelectorSearch; w: Window }) {
       ) : q.data.length === 0 ? (
         <p className="text-muted-foreground">The equipment has no device with a capture in the window.</p>
       ) : (
-        <Table>
-          <TableHeader>
-            <TableRow>
-              <TableHead />
-              <TableHead>Device</TableHead>
-              <TableHead>Source</TableHead>
-              <TableHead>Endpoint</TableHead>
-              <TableHead>Device id</TableHead>
-              <TableHead>Open captures</TableHead>
-              <TableHead>Overlap</TableHead>
-              <TableHead>Last record</TableHead>
-              <TableHead>Gap</TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {q.data.map((d) => (
-              <TableRow key={`${d.name}|${d.source}`} data-state={isSelected(d) ? "selected" : undefined}>
-                <TableCell>
-                  <input type="checkbox" aria-label={`Select ${d.name} from ${d.source}`} checked={isSelected(d)} onChange={() => { toggle(d); }} />
-                </TableCell>
-                <TableCell className="font-medium">{d.name}</TableCell>
-                <TableCell>{d.source}</TableCell>
-                <TableCell>{d.equipmentEndpoint ?? "—"}</TableCell>
-                <TableCell>{d.deviceId === undefined ? "—" : String(d.deviceId)}</TableCell>
-                <TableCell>{String(d.openCaptures)}</TableCell>
-                <TableCell><Flag on={d.overlap} label="overlap" /></TableCell>
-                <TableCell><Time ts={d.lastRecord} /></TableCell>
-                <TableCell><Flag on={d.gap} label="gap" /></TableCell>
+        <>
+          {filter("devices", "Device", q.data.map((d) => d.name))}
+          {filter("sources", "Source", q.data.map((d) => d.source))}
+          <Table aria-label="Series">
+            <TableHeader>
+              <TableRow>
+                <TableHead />
+                <TableHead>Device</TableHead>
+                <TableHead>Source</TableHead>
+                <TableHead>Endpoint</TableHead>
+                <TableHead>Device id</TableHead>
+                <TableHead>Open captures</TableHead>
+                <TableHead>Overlap</TableHead>
+                <TableHead>Last record</TableHead>
+                <TableHead>Gap</TableHead>
               </TableRow>
-            ))}
-          </TableBody>
-        </Table>
+            </TableHeader>
+            <TableBody>
+              {q.data.map((d) => (
+                <TableRow key={JSON.stringify([d.name, d.source])} data-state={covered(d) ? "selected" : undefined}>
+                  <TableCell>{covered(d) && <Badge variant="secondary">selected</Badge>}</TableCell>
+                  <TableCell className="font-medium whitespace-pre">{d.name}</TableCell>
+                  <TableCell className="whitespace-pre">{d.source}</TableCell>
+                  <TableCell>{d.equipmentEndpoint ?? "—"}</TableCell>
+                  <TableCell>{d.deviceId === undefined ? "—" : String(d.deviceId)}</TableCell>
+                  <TableCell>{String(d.openCaptures)}</TableCell>
+                  <TableCell><Flag on={d.overlap} label="overlap" /></TableCell>
+                  <TableCell><Time ts={d.lastRecord} /></TableCell>
+                  <TableCell><Flag on={d.gap} label="gap" /></TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        </>
       )}
     </Section>
   );
