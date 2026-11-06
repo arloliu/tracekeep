@@ -57,6 +57,7 @@ Milestones the owner set after seed v21 §12's (T-52).
 
 ## Active plans
 
+- [Capture identity](plans/capture-identity.md): equipment, source and device (T-59), before P3
 - [P3 — host log feed](specs/tracekeep/proposals/p3-host-log-feed.md), a proposal the owner accepted (T-60) on a new capture identity (T-59); its tracepack text is done in go-secs (G5-302), and the identity change comes first
 
 Phase 0 is done (#1, #3, #4, #7, #8).
