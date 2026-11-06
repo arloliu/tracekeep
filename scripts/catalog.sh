@@ -3,7 +3,7 @@
 # Usage:
 #   scripts/catalog.sh diff <name>   generate a migration for both engines from schema.hcl
 #   scripts/catalog.sh check         validate both migration directories and check schema.hcl for drift
-#   scripts/catalog.sh test [leg]    run the catalog's tests on MariaDB alone (TRACEKEEP_BENCH_ENGINES=mariadb), each package within 30 minutes,
+#   scripts/catalog.sh test [leg]    run the catalog's tests with the two-engine loops on MariaDB alone (TRACEKEEP_BENCH_ENGINES=mariadb), each package within 30 minutes,
 #                                    over one leg's packages or every leg's
 #   scripts/catalog.sh legs          print the legs as a JSON array, failing if two share a package or one has none
 #   scripts/catalog.sh bench <file>  run the catalog's benchmarks on MariaDB alone (TRACEKEEP_BENCH_ENGINES=mariadb),
@@ -82,11 +82,14 @@ check)
 	done
 	;;
 legs)
-	# go list expands each leg; a package in two legs, or a leg naming none, fails.
-	seen=$(for leg in "${!LEGS[@]}"; do GOWORK=off go list ${LEGS[$leg]} | sed "s|^|$leg |"; done)
-	dup=$(cut -d' ' -f2 <<<"$seen" | sort | uniq -d)
-	[ -z "$dup" ] || { echo "in two legs: $dup" >&2; exit 1; }
-	for leg in "${!LEGS[@]}"; do grep -q "^$leg " <<<"$seen" || { echo "leg $leg names no package" >&2; exit 1; }; done
+	# go list expands each leg; a leg it fails on or finds no package in, or a package in two legs, fails.
+	all=
+	for leg in "${!LEGS[@]}"; do
+		pkgs=$(GOWORK=off go list ${LEGS[$leg]}) || { echo "leg $leg: go list failed" >&2; exit 1; }
+		[ -n "$pkgs" ] || { echo "leg $leg names no package" >&2; exit 1; }
+		all+="$pkgs"$'\n'
+	done
+	dup=$(sort <<<"$all" | uniq -d | grep .) && { echo "in two legs: $dup" >&2; exit 1; }
 	printf '%s\n' "${!LEGS[@]}" | sort | jq -Rcs 'split("\n") | map(select(. != ""))'
 	;;
 test)

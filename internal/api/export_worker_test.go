@@ -10,6 +10,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -240,6 +241,8 @@ type puts struct {
 	fail   int
 	block  bool
 	waited []time.Duration
+	// ended is when each blocked put's context ended.
+	ended []time.Time
 }
 
 func (p *puts) Put(ctx context.Context, key string, r io.ReadSeeker, size int64) error {
@@ -258,6 +261,7 @@ func (p *puts) Put(ctx context.Context, key string, r io.ReadSeeker, size int64)
 			<-ctx.Done()
 			p.mu.Lock()
 			p.waited = append(p.waited, time.Since(start))
+			p.ended = append(p.ended, time.Now())
 			p.mu.Unlock()
 
 			return ctx.Err()
@@ -323,15 +327,19 @@ func TestExportWorkerStalledRenewal(t *testing.T) {
 	})
 }
 
-// slowClaims answers each claim only after delay, as a slow catalog would, its lease already running.
+// slowClaims answers each claim only after delay, as a slow catalog would, its lease already running;
+// asked is when the first claim granted was asked for, in Unix nanoseconds.
 type slowClaims struct {
 	Catalog
 	delay time.Duration
+	asked *atomic.Int64
 }
 
 func (c slowClaims) ClaimExport(ctx context.Context, holder string, lease time.Duration, maxAttempts int) (catalog.Claim, bool, error) {
+	asked := time.Now()
 	cl, ok, err := c.Catalog.ClaimExport(ctx, holder, lease, maxAttempts)
 	if ok {
+		c.asked.CompareAndSwap(0, asked.UnixNano())
 		<-time.After(c.delay)
 	}
 
@@ -351,10 +359,11 @@ func TestExportWorkerCountsTheLeaseFromItsClaim(t *testing.T) {
 		g := stallAt(m, "renew") // no renewal: only the lease's own timer can end the put
 		startExport(t, c, capture)
 		dir := t.TempDir()
-		// The lease counted from the claim ends the put about 400 ms after the answer, counted from the answer 2 s after it:
-		// the bound between leaves both a loaded runner's scheduling delay.
+		// The lease counted from the claim ends the put 2 s after the claim was asked for, counted from the answer 3.6 s after:
+		// the bound between leaves both a loaded runner's scheduling delay, whenever the put began.
 		m.srv.Exports.WorkDir, m.srv.Exports.Lease = dir, 2*time.Second
-		m.srv.Catalog = slowClaims{Catalog: c, delay: 1600 * time.Millisecond}
+		var asked atomic.Int64
+		m.srv.Catalog = slowClaims{Catalog: c, delay: 1600 * time.Millisecond, asked: &asked}
 		ctx, stop := context.WithCancel(t.Context())
 		done := make(chan error, 1)
 		go func() { done <- m.srv.RunExports(ctx, "r1", 20*time.Millisecond) }()
@@ -375,8 +384,11 @@ func TestExportWorkerCountsTheLeaseFromItsClaim(t *testing.T) {
 		}
 		st.mu.Lock()
 		defer st.mu.Unlock()
-		if len(st.waited) == 0 || st.waited[0] > 1200*time.Millisecond {
-			t.Errorf("the put waited %v, want it cancelled when the claim's lease passed, about 400 ms after the claim's answer", st.waited)
+		if len(st.ended) == 0 {
+			t.Fatal("no put was cancelled")
+		}
+		if after := st.ended[0].Sub(time.Unix(0, asked.Load())); after < 2*time.Second || after > 2800*time.Millisecond {
+			t.Errorf("the put was cancelled %v after the claim was asked for, want when the claim's 2 s lease passed", after)
 		}
 	})
 }

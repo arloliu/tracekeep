@@ -35,7 +35,8 @@ A test's SQLite catalog is a copy of a template `migrations/migrationstest` migr
 a test's MariaDB catalog is a database created and migrated for it alone, on a test server whose data is on tmpfs (`make test-catalog`).
 A test of migrations or of a historical schema migrates its own.
 A two-engine loop runs the engines `TRACEKEEP_BENCH_ENGINES` names, every one when unset:
-`make test` runs both where a server is configured, and `make test-catalog` MariaDB's alone, the `ci` job having run SQLite's.
+`make test` runs both where a server is configured, and `make test-catalog` the loops' MariaDB runs alone, the `ci` job having run their SQLite ones;
+a test that opens only SQLite runs in both.
 
 ## Bus
 
