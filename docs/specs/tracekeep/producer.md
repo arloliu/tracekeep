@@ -336,12 +336,13 @@ A capture's identity has three layers (T-59):
 `equipment_id` names the equipment and is the key of every read;
 the device is a unit attached to the equipment, its main machine, a sensor or a load port;
 the source is the deployment that records, named by the deployment and stable across restarts and leader changes, never a host or pod name.
-A **series** is one source's recording of one device of one equipment (G5-305).
+A **series** is one source's recording of one device of one piece of equipment (G5-305).
 
 `equipment_id` = the hub's configured **`toolID`** (top-level config, the identity FDC also receives), passed to the plugin as a device property and mapped at the integrator's boundary,
 since eqp-hub keeps its own term;
 **not** the device name, which the templates set to `eqp` for every piece of equipment;
 `device` = the `eqp-hsms` device name (`devices[].name`) of a unit's connection, unchanged (tracepack G5-304, tag 0x0035, optional in the format and required by tracekeep);
+the SDK's `Validate` refuses a descriptor whose device breaks the bounds below, and `New` a source that does;
 `recorder_instance_name` = the source, `Config.Source` (G5-270, tag 0x0034);
 both count toward the 4096-byte header block of the `start` message,
 and each is valid UTF-8 of 1 to 255 bytes, not whitespace only, kept and hashed byte for byte;

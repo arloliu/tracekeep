@@ -182,4 +182,5 @@ the SECS-I path is designed when SECS-I equipment needs one.
 The service accepts the descriptor of a raw-stream capture of an HSMS-SS connection that names its series (T-59):
 a `device` and a `recorder_instance_name` (the source), each valid UTF-8 of 1 to 255 bytes and not whitespace only,
 and a `recorder_instance_id` that is their derivation with `equipment_id` (`producer.md` §4.5);
+the bound is the code's on both catalog engines, since SQLite does not bound a `varchar`;
 any other descriptor is not accepted (`ingest.md` §6.1).

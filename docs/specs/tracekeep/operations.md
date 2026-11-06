@@ -82,6 +82,7 @@ a role stopped by a signal that drains within its bound exits 0.
 `tracekeep status` lists `pending` captures by capture id first, outside any per-equipment grouping
 (they have no equipment yet), then prints per equipment the last record time, open captures, deferred messages and backlog;
 its JSON names them `equipment`, each with its `equipment_id`.
+`cmd/tracekeep-sim` names the equipment with `-equipment` and the source with `-source`.
 Deferred messages are the equipment's unresolved parked versions, as `deferred list` counts them;
 backlog is the traffic stream's messages on the equipment's subjects, whose token after the prefix is the equipment's (tracepack's `bus.Subject`),
 and the stream's bytes, which no subject divides, once for all equipment.
@@ -92,7 +93,7 @@ and since the listener is unauthenticated and a profile shows the heap and the c
 The Helm chart ships alert rules (`architecture.md` §3.3), each with its runbook section in `docs/guides/runbook.md` as its `runbook_url` and the metric it reads;
 the thresholds are the chart's values, the defaults below.
 The ingest gauges of shared state are observed by every ingest replica alike from a snapshot it refreshes:
-the stream's backlog from the bus (`source="bus"`), an equipment's open gaps and the parked messages from the catalog (`source="catalog"`);
+the stream's backlog from the bus (`source="bus"`), each piece of equipment's open gaps and the parked messages from the catalog (`source="catalog"`);
 a rule reads their maximum, never their sum, over the replicas whose own `tracekeep_ingest_refreshed_timestamp_seconds` of that source is less than ten minutes old,
 so one replica's stale snapshot neither fires a rule nor is vouched for by another's fresh one.
 The deferred messages (`deferred_messages`, `deferred_oldest_age_seconds`) are each replica's own, computed at each scrape from the deliveries it holds,
@@ -112,7 +113,7 @@ the chart's gateway rules keep their fallback for a gateway on an older SDK, whi
 | `TracekeepCompactLeaseLost` | no `compact` replica holds the lease (`tracekeep_compact_lease_held`) for 5 min | `lease-lost` |
 | `TracekeepMergeStalled` | the lease holder's merge task (`tracekeep_compact_last_success_timestamp{task="merge"}` of the replica whose `tracekeep_compact_lease_held` is 1, never a standby's) has completed no cycle for two hours, or none since it took the lease two hours ago, each its own rule labelled by `cause`; a cycle that merged nothing counts as completed, and a scope left unmerged shows as `tracekeep_compact_oldest_unmerged_scope_age_seconds` instead | `merge-stalled` |
 | `TracekeepMergeRefused` | a merge refused over the metadata budget within the hour (`tracekeep_compact_last_merge_timestamp_seconds{outcome="refused"}`) | `merge-over-budget` |
-| `TracekeepGapsGrowing` | `tracekeep_ingest_open_gaps` increasing on an equipment over 30 min, or a seq of it declared lost within them (`tracekeep_ingest_last_declared_loss_timestamp_seconds`) | `gaps-and-losses` |
+| `TracekeepGapsGrowing` | `tracekeep_ingest_open_gaps` increasing on a piece of equipment over 30 min, or a seq of it declared lost within them (`tracekeep_ingest_last_declared_loss_timestamp_seconds`) | `gaps-and-losses` |
 | `TracekeepKeyRefused` | a key resolution refused within ten minutes (`tracekeep_key_last_problem_timestamp_seconds{outcome="refused"}`) | `key-refused` |
 | `TracekeepKeysUnavailable` | key resolutions unavailable through five minutes, each two minutes of them holding one (`tracekeep_key_last_problem_timestamp_seconds{outcome="unavailable"}`) | `keys-unavailable` |
 
