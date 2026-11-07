@@ -497,7 +497,11 @@ func Ingest(ctx context.Context, e *Env) error {
 		refreshed := make(chan struct{})
 		go func() {
 			defer close(refreshed)
-			e.refresh(rctx, gs[0].Metrics, e.Catalog, states[0])
+			var feed metrics.Consumer
+			if stage != nil {
+				feed = feedState{js: e.JS, stream: e.Config.Logfeed.Stream}
+			}
+			e.refresh(rctx, gs[0].Metrics, e.Catalog, states[0], feed)
 		}()
 		defer func() {
 			cancel()
@@ -542,6 +546,12 @@ func logStage(ctx context.Context, e *Env, g *ingest.Ingester) (*logfeed.Stage, 
 	for eq, rs := range l.DeviceOverrides {
 		overrides[eq] = rules(rs)
 	}
+	var m *metrics.Logfeed
+	if e.Metrics != nil {
+		if m, err = metrics.NewLogfeed(e.Metrics); err != nil {
+			return nil, err
+		}
+	}
 
 	return &logfeed.Stage{
 		Catalog: e.Catalog, Stream: s, Feed: e.Feed(traffic.CachedInfo().Config.Replicas), Replica: c.Replica,
@@ -552,19 +562,24 @@ func logStage(ctx context.Context, e *Env, g *ingest.Ingester) (*logfeed.Stage, 
 			Devices: logfeed.Devices{Main: l.MainDevice, Rules: rules(l.Devices), Overrides: overrides},
 			Flush:   l.Flush(c.Ingest.FlushInterval), Reorder: l.ReorderWindow, Idle: l.IdlePeriod, AckWait: c.Ingest.AckWait, Pairing: l.PairingWindow,
 			MaxBatchBytes: int(c.Ingest.BatchMaxBytes.Int64()), HorizonHour: func() int64 { return ingest.HourOf(e.horizon()) }, Now: e.now,
-			Log: e.Log.With("role", "logfeed"),
+			Log: e.Log.With("role", "logfeed"), Metrics: m,
 		},
 	}, nil
 }
 
-// refresh reads ingest's catalog and bus gauges every refreshInterval until ctx ends, each pass bounded by the interval.
+// refresh reads ingest's catalog and bus gauges every refreshInterval until ctx ends, each pass bounded by the interval,
+// and the feed stream's backlog unless feed is nil.
 // A failed pass's catalog and bus causes are logged through safetext.Text, so a URL they quote keeps no credential or query.
-func (e *Env) refresh(ctx context.Context, m *metrics.Ingest, cat metrics.Catalog, traffic metrics.Consumer) {
+func (e *Env) refresh(ctx context.Context, m *metrics.Ingest, cat metrics.Catalog, traffic, feed metrics.Consumer) {
 	t := time.NewTicker(refreshInterval)
 	defer t.Stop()
 	for {
 		pctx, cancel := context.WithTimeout(ctx, refreshInterval)
-		if err := m.Refresh(pctx, cat, traffic); err != nil && ctx.Err() == nil {
+		err := m.Refresh(pctx, cat, traffic)
+		if feed != nil {
+			err = errors.Join(err, m.RefreshFeed(pctx, feed))
+		}
+		if err != nil && ctx.Err() == nil {
 			e.Log.Warn("metrics: refresh", "error", safetext.Text(err.Error()))
 		}
 		cancel()
@@ -603,6 +618,22 @@ func (b busState) State(ctx context.Context) (metrics.BusState, error) {
 	st := s.CachedInfo().State
 
 	return metrics.BusState{AckPending: uint64(ci.NumAckPending), Messages: st.Msgs, Bytes: st.Bytes}, nil //nolint:gosec // a count is positive
+}
+
+// feedState reads the host log feed's stream backlog; its G group consumers have no single pending count.
+type feedState struct {
+	js     jetstream.JetStream
+	stream string
+}
+
+func (f feedState) State(ctx context.Context) (metrics.BusState, error) {
+	s, err := f.js.Stream(ctx, f.stream)
+	if err != nil {
+		return metrics.BusState{}, err
+	}
+	st := s.CachedInfo().State
+
+	return metrics.BusState{Messages: st.Msgs, Bytes: st.Bytes}, nil
 }
 
 // run runs the joined ingesters until ctx ends, and ends their memberships.

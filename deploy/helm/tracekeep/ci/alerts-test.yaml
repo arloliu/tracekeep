@@ -323,3 +323,64 @@ tests:
   - {series: 'tracekeep_key_last_problem_timestamp_seconds{instance="a",kind="digest",outcome="unavailable"}', values: '_x2 120 120 240x18'}
   alert_rule_test:
   - {eval_time: 8m, alertname: TracekeepKeysUnavailable, exp_alerts: []}
+
+# The host log feed: an equipment's latest arrival over the replicas; the backlog's floor; a counter's first increment.
+- name: an equipment silent for fifteen minutes, an older stamp on a former lease holder
+  interval: 1m
+  input_series:
+  - {series: 'tracekeep_logfeed_last_entry_timestamp_seconds{instance="a",equipment_id="T1"}', values: '0x40'}
+  - {series: 'tracekeep_logfeed_last_entry_timestamp_seconds{instance="b",equipment_id="T1"}', values: '0+60x10 600x30'}
+  alert_rule_test:
+  - {eval_time: 24m, alertname: TracekeepLogFeedSilent, exp_alerts: []}
+  - eval_time: 32m
+    alertname: TracekeepLogFeedSilent
+    exp_alerts: [{exp_labels: {severity: warning, equipment_id: T1}, exp_annotations: {summary: "The host log feed is silent or falling behind (equipment T1).", runbook_url: "rb#log-feed-silent"}}]
+- name: an equipment silent for more than a day
+  interval: 1m
+  input_series:
+  - {series: 'tracekeep_logfeed_last_entry_timestamp_seconds{instance="a",equipment_id="T1"}', values: '0x1460'}
+  alert_rule_test:
+  - {eval_time: 1450m, alertname: TracekeepLogFeedSilent, exp_alerts: []}
+- name: the feed's backlog floor growing
+  interval: 1m
+  input_series:
+  - {series: 'tracekeep_logfeed_stream_backlog_messages{instance="a"}', values: '0+10x50'}
+  - {series: 'tracekeep_ingest_refreshed_timestamp_seconds{instance="a",source="feed"}', values: '0+60x50'}
+  alert_rule_test:
+  - {eval_time: 12m, alertname: TracekeepLogFeedSilent, exp_alerts: []}
+  - eval_time: 35m
+    alertname: TracekeepLogFeedSilent
+    exp_alerts: [{exp_labels: {severity: warning}, exp_annotations: {summary: "The host log feed is silent or falling behind.", runbook_url: "rb#log-feed-silent"}}]
+- name: the feed's backlog rising and falling with each flush
+  interval: 1m
+  input_series:
+  - {series: 'tracekeep_logfeed_stream_backlog_messages{instance="a"}', values: '0 100 200 300 400 0 100 200 300 400 0 100 200 300 400 0 100 200 300 400 0 100 200 300 400 0 100 200 300 400 0 100 200 300 400 0 100 200 300 400 0 100 200 300 400 0 100 200 300 400'}
+  - {series: 'tracekeep_ingest_refreshed_timestamp_seconds{instance="a",source="feed"}', values: '0+60x50'}
+  alert_rule_test:
+  - {eval_time: 45m, alertname: TracekeepLogFeedSilent, exp_alerts: []}
+- name: the feed's backlog growing, its source stale
+  interval: 1m
+  input_series:
+  - {series: 'tracekeep_logfeed_stream_backlog_messages{instance="a"}', values: '0+10x50'}
+  - {series: 'tracekeep_ingest_refreshed_timestamp_seconds{instance="a",source="feed"}', values: '0x50'}
+  alert_rule_test:
+  - {eval_time: 45m, alertname: TracekeepLogFeedSilent, exp_alerts: []}
+- name: an unreadable entry, the counter's first
+  interval: 1m
+  input_series:
+  - {series: 'tracekeep_logfeed_entries_total{instance="a",equipment_id="T1",outcome="unreadable"}', values: '_x4 1x80'}
+  alert_rule_test:
+  - {eval_time: 3m, alertname: TracekeepLogEntryUnreadable, exp_alerts: []}
+  - eval_time: 6m
+    alertname: TracekeepLogEntryUnreadable
+    exp_alerts: [{exp_labels: {severity: warning, equipment_id: T1}, exp_annotations: {summary: "Equipment T1: the feed carried an entry tracekeep cannot read.", runbook_url: "rb#log-entry-unreadable"}}]
+  - {eval_time: 70m, alertname: TracekeepLogEntryUnreadable, exp_alerts: []}
+- name: stale entries growing
+  interval: 1m
+  input_series:
+  - {series: 'tracekeep_logfeed_entries_total{instance="a",equipment_id="T1",outcome="stale"}', values: '3x70 4x10'}
+  alert_rule_test:
+  - {eval_time: 65m, alertname: TracekeepLogEntriesLate, exp_alerts: []}
+  - eval_time: 75m
+    alertname: TracekeepLogEntriesLate
+    exp_alerts: [{exp_labels: {severity: warning, equipment_id: T1}, exp_annotations: {summary: "Equipment T1: feed entries arrived too late to convert.", runbook_url: "rb#log-entries-late"}}]

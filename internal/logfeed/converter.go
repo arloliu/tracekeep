@@ -15,9 +15,11 @@ import (
 	"time"
 
 	"github.com/arloliu/go-secs/tracepack"
+	tpbus "github.com/arloliu/go-secs/tracepack/bus"
 
 	"github.com/arloliu/tracekeep/internal/catalog"
 	"github.com/arloliu/tracekeep/internal/ingest"
+	"github.com/arloliu/tracekeep/internal/metrics"
 	"github.com/arloliu/tracekeep/internal/procconfig"
 	"github.com/arloliu/tracekeep/internal/store"
 	"github.com/arloliu/tracekeep/producer"
@@ -69,6 +71,7 @@ type Converter struct {
 	HorizonHour func() int64
 	Now         func() time.Time
 	Log         *slog.Logger
+	Metrics     *metrics.Logfeed
 
 	equipment map[string]*equipmentState
 
@@ -155,12 +158,21 @@ func (c *Converter) Receive(ctx context.Context, m Msg, now time.Time) error {
 		return err // the lease lost: nothing more is acknowledged
 	}
 	token := m.Subject()[strings.LastIndexByte(m.Subject(), '.')+1:]
+	// An unparsable token is no equipment ID, and never a label: the subject's bytes are the pipeline's.
+	equipment, _ := tpbus.ParseEquipmentToken(token)
+	if equipment != "" {
+		c.Metrics.Arrived(equipment, now)
+	}
 	e, err := Decode(token, m.Data())
 	if errors.Is(err, ErrUnreadable) {
+		c.Metrics.Entries(equipment, metrics.OutcomeUnreadable, 1)
+
 		return c.ack(ctx, m)
 	}
 	malformed := errors.Is(err, ErrMalformed)
 	if ingest.HourOf(e.UTCNs) < c.HorizonHour() {
+		c.Metrics.Entries(e.EquipmentID, metrics.OutcomeBeyondRetention, 1)
+
 		return c.ack(ctx, m)
 	}
 	f, err := c.file(ctx, e, now)
@@ -168,15 +180,20 @@ func (c *Converter) Receive(ctx context.Context, m Msg, now time.Time) error {
 		return err
 	}
 	if f.stopped {
+		c.Metrics.Entries(e.EquipmentID, metrics.OutcomeStale, 1)
+
 		return c.ack(ctx, m)
 	}
 	f.lastArrival = now
 	p := &pend{e: e, malformed: malformed, h: &handle{msgs: []Msg{m}}}
 	switch d, held := f.window.Add(e.At(), now, p); d {
 	case Duplicate:
+		c.Metrics.Entries(e.EquipmentID, metrics.OutcomeDuplicate, 1)
 		held.h.msgs = append(held.h.msgs, m)
 		c.track(m)
 	case Stale:
+		c.Metrics.Entries(e.EquipmentID, metrics.OutcomeStale, 1)
+
 		return c.ack(ctx, m)
 	case Held:
 		c.track(m)
@@ -349,6 +366,7 @@ func (c *Converter) convert(ctx context.Context, eq *equipmentState, f *fileStat
 		for _, e := range it.Entries() {
 			hs = append(hs, f.pends[e].h)
 		}
+		c.count(eq.id, it, &b, cs.stopped)
 		if cs.stopped {
 			// A stopped capture's key takes nothing more: its entries are stale (§15.11), and a redelivery of one is stale too.
 			for _, e := range it.Entries() {
@@ -376,6 +394,35 @@ func (c *Converter) convert(ctx context.Context, eq *equipmentState, f *fileStat
 	}
 
 	return nil
+}
+
+// count counts item's entries, built as b, and the annotation and unpaired entry it is (§15.11); a stopped capture's are stale.
+// shortcut: counted at conversion, so a flush given up and converted again after its redeliveries counts twice; count at registration if that skews.
+func (c *Converter) count(equipment string, it *Item, b *Built, stopped bool) {
+	n := len(it.Entries())
+	switch {
+	case stopped:
+		c.Metrics.Entries(equipment, metrics.OutcomeStale, n)
+
+		return
+	case b.Record.Kind == tracepack.KindData:
+		c.Metrics.Entries(equipment, metrics.OutcomeRecord, n)
+
+		return
+	}
+	c.Metrics.Entries(equipment, metrics.OutcomeAnnotation, n)
+	kind := tracepack.AnnotationKindUnparsedEntry
+	if it.Kind == Unclassified || it.Kind == Unrecognised {
+		kind = tracepack.AnnotationKindUnrecognisedLine
+	}
+	c.Metrics.Annotation(equipment, kind.String())
+	switch {
+	case it.Kind == LoneHeader:
+		c.Metrics.Unpaired(equipment, "header")
+	case it.Kind == LoneBody || it.Kind == Encrypted && it.Header == nil:
+		c.Metrics.Unpaired(equipment, "body")
+	default:
+	}
 }
 
 // classify judges a data record's frame with the capture's classifier: a frame it finds oversized is so recorded,
@@ -895,6 +942,6 @@ func (c *Converter) clone(l catalog.Lease, n int) *Converter {
 		Lease: l, Group: n, Catalog: c.Catalog, Store: c.Store, KeyPrefix: c.KeyPrefix, WorkDir: c.WorkDir, Writer: c.Writer,
 		Configs: c.Configs, Bindable: c.Bindable, Keys: c.Keys, Devices: c.Devices, Flush: c.Flush, Reorder: c.Reorder, Idle: c.Idle,
 		AckWait: c.AckWait, Pairing: c.Pairing, MaxBatchBytes: c.MaxBatchBytes, MetaBytes: c.MetaBytes, HorizonHour: c.HorizonHour,
-		Now: c.Now, Log: c.Log,
+		Now: c.Now, Log: c.Log, Metrics: c.Metrics,
 	}
 }

@@ -146,6 +146,14 @@ function Flag({ on, label }: { on: boolean; label: string }) {
   return on ? <Badge variant="warn">{label}</Badge> : <span className="text-muted-foreground">—</span>;
 }
 
+// Method names a capture's or series' method; a log capture is reconstructed from the host program's log and claims no coverage (logfeed.md §15.8).
+export function Method({ method }: { method: string }) {
+  if (method === "log") {
+    return <Badge variant="outline" title="Reconstructed from the host program's log: it claims no coverage, and what the log lacks is missing unsaid">log · reconstructed</Badge>;
+  }
+  return <span>{method === "" ? "—" : method}</span>;
+}
+
 function Devices({ search, w }: { search: SelectorSearch; w: Window }) {
   const machine = useMachine();
   const navigate = useNavigate({ from: "/" });
@@ -160,6 +168,15 @@ function Devices({ search, w }: { search: SelectorSearch; w: Window }) {
     const xs = search[k] ?? [];
     const next = xs.includes(v) ? xs.filter((x) => x !== v) : [...xs, v];
     void navigate({ search: (prev) => ({ ...prev, [k]: next.length > 0 ? next : undefined }) });
+  };
+  // A method selects the sources of its series, a source being one recorder deployment of one method.
+  const sourcesOf = (m: string) => [...new Set(q.data?.filter((d) => d.captureMethod === m).map((d) => d.source))];
+  const methodOn = (m: string) => sourcesOf(m).every((x) => (search.sources ?? []).includes(x));
+  const toggleMethod = (m: string) => {
+    const ms = sourcesOf(m);
+    const xs = search.sources ?? [];
+    const next = methodOn(m) ? xs.filter((x) => !ms.includes(x)) : [...new Set([...xs, ...ms])];
+    void navigate({ search: (prev) => ({ ...prev, sources: next.length > 0 ? next : undefined }) });
   };
   // A filter's choices are the rows' names, and any the URL selects that no row has, so it can be cleared.
   const filter = (k: "devices" | "sources", label: string, names: string[]) => (
@@ -185,12 +202,22 @@ function Devices({ search, w }: { search: SelectorSearch; w: Window }) {
         <>
           {filter("devices", "Device", q.data.map((d) => d.name))}
           {filter("sources", "Source", q.data.map((d) => d.source))}
+          <fieldset className="flex flex-wrap items-center gap-3 text-sm">
+            <legend className="mb-1 font-medium">Methods</legend>
+            {[...new Set(q.data.map((d) => d.captureMethod).filter((m) => m !== ""))].map((m) => (
+              <label key={m} className="flex items-center gap-1">
+                <input type="checkbox" aria-label={`Method ${m}`} checked={methodOn(m)} onChange={() => { toggleMethod(m); }} />
+                {m}
+              </label>
+            ))}
+          </fieldset>
           <Table aria-label="Series">
             <TableHeader>
               <TableRow>
                 <TableHead />
                 <TableHead>Device</TableHead>
                 <TableHead>Source</TableHead>
+                <TableHead>Method</TableHead>
                 <TableHead>Endpoint</TableHead>
                 <TableHead>Device id</TableHead>
                 <TableHead>Open captures</TableHead>
@@ -205,6 +232,7 @@ function Devices({ search, w }: { search: SelectorSearch; w: Window }) {
                   <TableCell>{covered(d) && <Badge variant="secondary">selected</Badge>}</TableCell>
                   <TableCell className="font-medium whitespace-pre">{d.name}</TableCell>
                   <TableCell className="whitespace-pre">{d.source}</TableCell>
+                  <TableCell><Method method={d.captureMethod} /></TableCell>
                   <TableCell>{d.equipmentEndpoint ?? "—"}</TableCell>
                   <TableCell>{d.deviceId === undefined ? "—" : String(d.deviceId)}</TableCell>
                   <TableCell>{String(d.openCaptures)}</TableCell>
@@ -258,6 +286,7 @@ function Captures({ search, w }: { search: SelectorSearch; w: Window }) {
               <TableHead>Capture</TableHead>
               <TableHead>Device</TableHead>
               <TableHead>Source</TableHead>
+              <TableHead>Method</TableHead>
               <TableHead>State</TableHead>
               <TableHead>Origin</TableHead>
               <TableHead>Last record</TableHead>
@@ -273,6 +302,7 @@ function Captures({ search, w }: { search: SelectorSearch; w: Window }) {
                 <TableCell className="font-mono text-xs">{c.captureId}</TableCell>
                 <TableCell>{c.device}</TableCell>
                 <TableCell>{c.source}</TableCell>
+                <TableCell><Method method={c.captureMethod} /></TableCell>
                 <TableCell><Badge variant="secondary">{c.state}</Badge></TableCell>
                 <TableCell><Time ts={c.origin} /></TableCell>
                 <TableCell><Time ts={c.lastRecord} /></TableCell>

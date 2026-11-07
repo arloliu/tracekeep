@@ -1,6 +1,6 @@
 # Host log feed
 
-Status: active (2026-11-07) — step 9, web UI and operations
+Status: active (2026-11-07) — step 10, the gate
 
 The work that delivers the host log feed, `docs/specs/tracekeep/logfeed.md` (§15), as T-60 shapes it,
 with its two riskiest costs measured before the converter is built (T-63): the feed's load on the bus, and its registration's on the catalog writer.
@@ -18,22 +18,12 @@ The design is the spec's and the rationale the decision log's; this plan only or
 | 6 — the converter | a lease group's converter: deliveries through windows and pairing into admitted captures, seq, masking, batches, segments, `RegisterLogFlush`, acknowledgements, file stops and stop requests; `internal/logfeed` in a `scripts/catalog.sh` leg (§15.5–§15.7) | done (#107) |
 | 7 — lease groups and wiring | taking, renewing and losing group leases, the consumer's re-creation and the fetch loop, giving up and taking again, the heartbeat, the stage started by `ingest` with its readiness and metrics (§15.4, §15.5 *Taking a lease*) | done (#108) |
 | 8 — reads and admin | the reads' method fields, `capture stop`, `tracekeep status`'s feed lines (§15.8, §15.11) | done (#109) |
-| 9 — web UI and operations | the UI's method filter and badge; alerts, metrics, runbook, configuration and pipeline guides (§15.8, §15.11) | in-progress |
-| 10 — the gate | the gate cases below | pending |
+| 9 — web UI and operations | the UI's method filter and badge; alerts, metrics, runbook, configuration and pipeline guides (§15.8, §15.11) | done (#110) |
+| 10 — the gate | the gate cases below | in-progress |
 
 Each step is one pull request.
 Steps 1 and 2 record their numbers here before step 5 starts;
 a number past its budget stops the plan for the owner's decision.
-
-## Step 9 — web UI and operations
-
-- **Web UI** (§15.8): the browser shows each capture's and series' method, marks a log capture as reconstructed, claiming no coverage, and filters by method.
-- **Metrics** (§15.11), `equipment_id` a label: `tracekeep_logfeed_entries_total{outcome}`, `tracekeep_logfeed_unpaired_total{side}`,
-  `tracekeep_logfeed_annotations_total{kind}`, `tracekeep_logfeed_last_entry_timestamp_seconds`, and the feed stream's backlog beside the traffic stream's.
-- **Alerts** (§15.11): `TracekeepLogFeedSilent`, `TracekeepLogEntryUnreadable`, `TracekeepLogEntriesLate` in the chart's rules, each with its runbook section.
-- **Guides**: the runbook's three sections; the configuration guide's `logfeed.*` rows checked against the code;
-  a pipeline guide for the host program's log route, with placeholder patterns only (T-60).
-- Tests: the metrics' outcomes from a converter run, the rules' check (`make alerts-check`), the web client's tests.
 
 ## Gate cases
 
@@ -112,3 +102,7 @@ Each run's history is its own iterations: a flush row registered 1,356 to 2,565 
 **Step 6** (#107): no measurement.
 
 **Step 7** (#108): no measurement.
+
+**Step 8** (#109): no measurement.
+
+**Step 9** (#110): no measurement.

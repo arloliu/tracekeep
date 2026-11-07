@@ -1,6 +1,6 @@
 # Runbook
 
-Status: current (2026-10-31) — every alert the Helm chart ships, key, masking and sign-in incidents, refused restores and digests, the pages
+Status: current (2026-11-07) — every alert the Helm chart ships, the host log feed's included, key, masking and sign-in incidents, refused restores and digests, the pages
 
 One section per named incident of `docs/specs/tracekeep/operations.md` §10.4:
 the alert that raises it, the metric to look at, the command that resolves it, and what is lost if it is ignored.
@@ -21,6 +21,9 @@ Read when an alert names an incident; each alert the Helm chart ships links its 
 | `keys-unavailable` (`TracekeepKeysUnavailable`) | `tracekeep_key_last_problem_timestamp_seconds{outcome="unavailable"}`, `tracekeep_key_resolutions_total{outcome="unavailable"}`, `tracekeep_key_provider_errors_total{reason}` | restore the key provider's reachability or credentials | records that need an uncached key stay deferred |
 | `equipment-silent` (`TracepubEquipmentSilent`) | the gateway's `tracepub_records_published_total`, `tracepub_bus_connected` | check the equipment's traffic and the gateway's capture | none |
 | `producer-drops` (`TracepubDropping`) | the gateway's `tracepub_records_dropped_total{reason}` | remove the drop's reason at the gateway or the bus | the dropped seqs stay gaps |
+| `log-feed-silent` (`TracekeepLogFeedSilent`) | `tracekeep_logfeed_last_entry_timestamp_seconds{equipment_id}`, `tracekeep_logfeed_stream_backlog_messages`, `tracekeep status`'s `feed` | restore the pipeline's route, or the log stage's throughput | none: past the feed stream's limit, the pipeline's publications are refused |
+| `log-entry-unreadable` (`TracekeepLogEntryUnreadable`) | `tracekeep_logfeed_entries_total{outcome="unreadable"}` | fix the pipeline's entry for the equipment | none: the entry was acknowledged unconverted |
+| `log-entries-late` (`TracekeepLogEntriesLate`) | `tracekeep_logfeed_entries_total{outcome="stale"}` | bound the pipeline's retries and in-flight time below `logfeed.reorder_window` | none: a late entry was acknowledged unconverted |
 
 ## key-binding-mismatch
 
@@ -279,3 +282,42 @@ the gateway's log has one error line for each report in which it rose, never the
 A panic before a record took its seq faults the capture (`capture_fault`); report it with the gateway's SDK and go-secs versions.
 
 **If ignored**: every dropped record is a gap in its capture (`gaps-and-losses`).
+
+## log-feed-silent
+
+**Alert** `TracekeepLogFeedSilent` (`logfeed.md` §15.11): an equipment whose host log entries arrived in the past day has sent none for 15 minutes,
+or the floor of the feed stream's backlog, what remains between flushes, has grown for 15 minutes.
+
+1. With an `equipment_id`: the host program or its log pipeline for that equipment stopped.
+   Equipment that logs nothing, idle or down, sends nothing: check its host program first, then the pipeline's own log and its publications to the bus.
+   `tracekeep status` counts the equipment whose log captures registered nothing for 15 minutes.
+2. Without one: the log stage converts less than the pipelines send.
+   Check the `ingest` replicas are up and ready with `logfeed.enabled`, and their log for flushes given up;
+   a slow `tracekeep_catalog_*` or store makes every flush slow, as for `backlog`.
+3. A backlog that drains once fixed needs nothing more; its entries are acknowledged as their flushes register.
+
+**If ignored**: entries a stopped pipeline never sent are missing records, said by no gap, since a log capture claims no coverage;
+past `logfeed.max_bytes` the stream refuses the pipeline's publications, and what the pipeline then drops is lost.
+
+## log-entry-unreadable
+
+**Alert** `TracekeepLogEntryUnreadable`: within the hour the feed carried an entry tracekeep cannot place or time (`logfeed.md` §15.3):
+not JSON, a field of the envelope missing or of the wrong type, its `equipment_id` not its subject's, or a `tz` or `ts` that does not parse.
+
+1. The pipeline's configuration for the equipment builds the entry wrongly: compare one of its entries with `log-pipeline.md`'s schema.
+2. An entry whose kind's fields alone are malformed is not this alert: it becomes an `unrecognised-line` annotation, read with the capture.
+
+**If ignored**: each such entry is acknowledged and never converted, so its record is missing from its capture.
+
+## log-entries-late
+
+**Alert** `TracekeepLogEntriesLate`: within the hour entries arrived stale (`logfeed.md` §15.5 *Stale entries*):
+older than their file's registered watermark, or of a file or capture already stopped.
+
+1. Entries retried by the pipeline for longer than `logfeed.reorder_window`, or held in flight longer, arrive past it:
+   cap the pipeline's retry duration and in-flight time below the window (`log-pipeline.md`), or widen the window.
+2. A replica that crashed after registering a flush and before acknowledging it has its redeliveries counted here once; that needs nothing.
+3. Entries of a file the host program writes again after its next dated file began are stale by design.
+
+**If ignored**: each stale entry is acknowledged unconverted, its record missing from its capture.
+
