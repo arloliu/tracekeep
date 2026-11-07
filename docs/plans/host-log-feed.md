@@ -1,6 +1,6 @@
 # Host log feed
 
-Status: active (2026-11-07) — step 10b, the gate's load, its traffic criterion awaiting the owner
+Status: active (2026-11-07) — every step done; closing
 
 The work that delivers the host log feed, `docs/specs/tracekeep/logfeed.md` (§15), as T-60 shapes it,
 with its two riskiest costs measured before the converter is built (T-63): the feed's load on the bus, and its registration's on the catalog writer.
@@ -20,7 +20,7 @@ The design is the spec's and the rationale the decision log's; this plan only or
 | 8 — reads and admin | the reads' method fields, `capture stop`, `tracekeep status`'s feed lines (§15.8, §15.11) | done (#109) |
 | 9 — web UI and operations | the UI's method filter and badge; alerts, metrics, runbook, configuration and pipeline guides (§15.8, §15.11) | done (#110) |
 | 10a — the gate's correctness | every gate case below but the load, through the converter or the stage, on both engines | done (#111) |
-| 10b — the gate's load | the load case: the owner's fleet through the stage itself, beside traffic, on SQLite then MariaDB | in-progress |
+| 10b — the gate's load | the load case: the owner's fleet through the stage itself, beside traffic, on SQLite then MariaDB | done (#112) |
 
 Each step is one pull request.
 Steps 1 and 2 record their numbers here before step 5 starts;
@@ -179,4 +179,18 @@ The burst's shortfall grew instead: one server held every stream, its CPU about 
 A stream of one replica lives on one server, which takes its publishes and its acknowledgements in turn: the feed stream takes the fleet's 95 MB/s,
 and the burst's 117 MB/s more waits, its publishes acknowledged in about 0.9 s at the 99th percentile.
 Raising each publishing connection's publishes in flight from 256 to 2,048 made it worse: publishes queued past their 5 s acknowledgement timeout, 59 failed within 20 minutes, and the run was stopped.
-Open for the owner: the burst's criterion, the stream's ceiling being one server's.
+The owner then judged a split of the feed into several streams no-go and set the gate's burst criterion to what the burst sent (T-66):
+digested within two flushes of its end, every entry accounted for once, its rate and the publishers' after it reported, their rate before it judged;
+the gate's environment the bus of its own, pinned apart (`scripts/load-feed.sh`).
+The harness's publishers then waited for room when their window was full and retried a failed publish until it was stored, within the duplicate window from its first attempt:
+
+| Run | Catalog | Made before the burst / offered entries/s | Failed | Publish p99 | Burst made | Digested after it | Drained | Record entries, all registered | Duplicates stored | Traffic: minima slope / bound | Traffic ack age max |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| 7 | SQLite | 24,744 / 24,752 | 0 | 775 ms | 75.0% | 2m19s | 0 in 5m33s | 55,352,178 | 928 | +170.8 / 8.0 | 5m03s |
+
+Run 7's 928 duplicates were retries its harness started late, past the duplicate window, which the retries' deadline from the first attempt then fixed (smoke only);
+each was converted once and acknowledged with its entry, a duplicate outcome the account does not settle.
+Its traffic verdict failed on two high minima, each a second before a low one (173,202 then 3,565; 372,559 then 3,967), while every traffic record was acknowledged within F and 3 seconds:
+the cycle judge's known split of a flush into two cycles when its passes settle a second apart (`docs/ROADMAP.md` *Open items*), as the control's pairs show too;
+of the three runs on a bus of their own, two sustained and one met the split.
+The step closes on these runs, the feed's conversion, digestion, drain and account passing in every run; the judge's split stays an open item.
