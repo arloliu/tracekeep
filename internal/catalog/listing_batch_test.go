@@ -92,7 +92,7 @@ func perCapture(t *testing.T, c *Catalog, sel Selector) ([]CaptureListing, []Dev
 			devices = append(devices, DeviceInfo{Name: ci.Device, Source: ci.Source})
 		}
 		d := &devices[len(devices)-1]
-		d.EquipmentEndpoint, d.DeviceID = ci.EquipmentEndpoint, ci.DeviceID // ordered by origin: the last is the latest
+		d.EquipmentEndpoint, d.DeviceID, d.CaptureMethod = ci.EquipmentEndpoint, ci.DeviceID, ci.CaptureMethod // ordered by origin: the last is the latest
 		if ci.State == StateOpen {
 			d.OpenCaptures++
 		}

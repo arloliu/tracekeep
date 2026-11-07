@@ -329,6 +329,13 @@ func (c *Catalog) selectCaptures(ctx context.Context, tx *sqlx.Tx, sel Selector,
 				return nil, fmt.Errorf("the descriptor of admitted capture %s: %w", ci.ID, err)
 			}
 			ci.Thinning, ci.EquipmentEndpoint, ci.DeviceID = thinningOf(m.Thinning), m.EquipmentEndpoint, m.DeviceID
+			// A capture admitted before the method columns existed has them NULL; its descriptor still names them.
+			if !r.Method.Valid {
+				ci.CaptureMethod, ci.Vantage = m.CaptureMethod.String(), m.Vantage.String()
+				if m.SourceDialect != nil {
+					ci.SourceDialect = *m.SourceDialect
+				}
+			}
 		}
 		out = append(out, ci)
 		spans = append(spans, span{id: ci.ID, instance: ci.RecorderInstanceID, origin: ci.OriginNS, last: r.Last})
