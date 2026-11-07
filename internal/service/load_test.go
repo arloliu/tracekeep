@@ -32,7 +32,9 @@ package service
 //   - feed measures the host log feed's stream (loadfeed_test.go, docs/plans/host-log-feed.md step 1) on a three-node cluster beside production's traffic:
 //     2,000 equipment at 3,200 entries a second through 32 partitioned group consumers at ingest's times scaled by 1/30, then its controls (about 10 minutes);
 //     feed-real runs the same at ingest's own times, for the plan's numbers (about an hour);
-//   - ceiling-smoke, claimcheck-smoke, production-smoke, recovery-smoke and feed-smoke check those five in a few minutes, at a low rate over short spans,
+//   - feed-convert is the host log feed's gate load (loadconvert_test.go, step 10b): the same feed converted by dev's own log stage beside K = 100 traffic,
+//     judged on the rate, the backlog, the drain and every stored entry's account (a few minutes);
+//   - ceiling-smoke, claimcheck-smoke, production-smoke, recovery-smoke, feed-smoke and feed-convert-smoke check those six in a few minutes, at a low rate over short spans,
 //     recovery-smoke parking 200 records unless TRACEKEEP_LOAD_RECOVERY_M names M.
 //
 // TRACEKEEP_LOAD_OFFERED, forwards a second, skips the sweep and offers that rate at the largest K, as the gate does with the rate a baseline recorded.
@@ -96,6 +98,8 @@ type loadSpec struct {
 	redelivery time.Duration
 	// bus, when not empty, is the bus dev uses instead of its own, as the feed mode shares a cluster with it (loadfeed_test.go).
 	bus string
+	// feed, when set, enables dev's host log feed with these settings, its stream and consumers ensured as migrate does (loadconvert_test.go).
+	feed func(*config.Logfeed)
 }
 
 var (
@@ -235,6 +239,21 @@ func newLoadHarness(t *testing.T, spec loadSpec) *loadHarness {
 	if spec.redelivery > 0 {
 		d.Env.Config.Parking.RedeliveryDelay = spec.redelivery
 	}
+	if spec.feed != nil {
+		d.Env.Config.Logfeed.Enabled = true
+		spec.feed(&d.Env.Config.Logfeed)
+		ss := map[string]jetstream.StreamConfig{}
+		for _, role := range []string{catalog.RoleTraffic, catalog.RoleParking} {
+			s, err := d.Env.JS.Stream(ctx, bus.StreamName(d.Env.Bus(), role))
+			if err != nil {
+				t.Fatal(err)
+			}
+			ss[role] = s.CachedInfo().Config
+		}
+		if err := d.Env.migrateFeed(ctx, ss[catalog.RoleTraffic], ss[catalog.RoleParking]); err != nil {
+			t.Fatal(err)
+		}
+	}
 	if spec.probed {
 		h.probe = &loadProbe{stages: map[string]*stageTotal{}}
 		d.Env.timed, d.Env.passSettled = h.probe.timed, h.probe.settled
@@ -326,7 +345,7 @@ func TestLoad(t *testing.T) {
 		return
 	}
 	if mode != "baseline" && mode != "gate" && mode != "smoke" {
-		t.Fatalf("TRACEKEEP_LOAD=%q: want baseline, gate, smoke, ceiling, claimcheck, production, recovery or feed, the last five with -smoke or without", mode)
+		t.Fatalf("TRACEKEEP_LOAD=%q: want baseline, gate, smoke, ceiling, claimcheck, production, recovery, feed or feed-convert, the last six with -smoke or without", mode)
 	}
 	spec := fullLoad
 	if mode == "smoke" {
