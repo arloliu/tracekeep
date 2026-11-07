@@ -116,6 +116,7 @@ func (p *listingPop) wantDevices(sel Selector) []DeviceInfo {
 			out = append(out, DeviceInfo{Name: cl.Device, Source: cl.Source})
 		}
 		d := &out[len(out)-1]
+		d.CaptureMethod = cl.CaptureMethod
 		if cl.State == StateOpen {
 			d.OpenCaptures++
 		}
