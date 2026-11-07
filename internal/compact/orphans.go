@@ -260,7 +260,7 @@ func (r *Compactor) adopt(ctx context.Context, lease catalog.Lease, p *catalog.P
 		r.Log.Info("compact: orphan adopted", at...)
 	case catalog.AlreadyRegistered:
 		// Its registration committed after the listing's look.
-	case catalog.BeyondHorizon, catalog.LostToTermination:
+	case catalog.BeyondHorizon, catalog.LostToTermination, catalog.LogOrphan:
 		// The key is now tombstoned, so the object goes; an orphan's messages were never acknowledged and are decided again.
 		rep.Tombstoned = append(rep.Tombstoned, p.Key)
 		return r.delete(ctx, lease, p.Key, rep)

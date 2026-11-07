@@ -3,6 +3,7 @@ package catalog
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"math"
 	"time"
@@ -47,7 +48,7 @@ func (c *Catalog) CloseCandidates(ctx context.Context, now int64, inactivity, qu
 		Successor int64  `db:"successor"`
 	}
 	err := c.read.SelectContext(ctx, &bySuccessor, `SELECT c.capture_id, MIN(n.origin_ns) AS successor FROM captures c `+successorOf+`
-		WHERE c.state = 'open' AND NOT c.stop_seen AND `+registeredOrSeen+` < ? GROUP BY c.capture_id`,
+		WHERE c.state = 'open' AND NOT c.stop_seen AND `+notLog+` AND `+registeredOrSeen+` < ? GROUP BY c.capture_id`,
 		now-quiet.Nanoseconds(), now-quiet.Nanoseconds())
 	if err != nil {
 		return nil, fmt.Errorf("catalog: close candidates: %w", err)
@@ -61,7 +62,7 @@ func (c *Catalog) CloseCandidates(ctx context.Context, now int64, inactivity, qu
 	}
 	var inactive [][]byte
 	err = c.read.SelectContext(ctx, &inactive, `SELECT c.capture_id FROM captures c
-		WHERE c.state = 'open' AND NOT c.stop_seen AND `+registeredOrSeen+` < ?`, now-inactivity.Nanoseconds())
+		WHERE c.state = 'open' AND NOT c.stop_seen AND `+notLog+` AND `+registeredOrSeen+` < ?`, now-inactivity.Nanoseconds())
 	if err != nil {
 		return nil, fmt.Errorf("catalog: close candidates: %w", err)
 	}
@@ -137,13 +138,20 @@ func (c *Catalog) CloseIntent(ctx context.Context, l Lease, in *Intent) (CloseOu
 	return out, nil
 }
 
+// notLog leaves out a log capture, which the compactor never closes: its converter writes its stop (compactor.md §8.2, logfeed.md §15.6).
+const notLog = "(c.capture_method IS NULL OR c.capture_method <> 'log')"
+
 // closeEligible re-reads, under the capture row, the trigger's conditions for in.
 func (c *Catalog) closeEligible(ctx context.Context, tx *sqlx.Tx, in *Intent, row captureRow) (bool, error) {
 	if row.State != StateOpen || row.StopSeen {
 		return false, nil
 	}
 	var seen int64
-	if err := tx.GetContext(ctx, &seen, `SELECT `+registeredOrSeen+` FROM captures c WHERE c.capture_id = ?`, in.Capture[:]); err != nil {
+	err := tx.GetContext(ctx, &seen, `SELECT `+registeredOrSeen+` FROM captures c WHERE c.capture_id = ? AND `+notLog, in.Capture[:])
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil // a log capture: its converter writes its stop (compactor.md §8.2)
+	}
+	if err != nil {
 		return false, err
 	}
 	switch in.Trigger {
@@ -299,7 +307,7 @@ func (c *Catalog) PublishClose(ctx context.Context, l Lease, p *Pack, horizonHou
 			state = "published"
 		case Tombstoned, BeyondHorizon:
 			state = "abandoned"
-		case FoundAdopted, UnadmittedCapture, LostToTermination:
+		case FoundAdopted, UnadmittedCapture, LostToTermination, LogOrphan:
 			// Outcomes of evidence or of an adoption, which a close's registration has neither.
 			return fmt.Errorf("unexpected registration outcome %d", out)
 		default:

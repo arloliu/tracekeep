@@ -139,6 +139,11 @@ func (c *Catalog) RequestCompaction(ctx context.Context, kind string, capture tr
 	var id tracepack.UUID
 	_, _ = rand.Read(id[:])
 	err := c.inTx(ctx, func(tx *sqlx.Tx) error {
+		if kind == RequestClose {
+			if err := refuseLogCapture(ctx, tx, capture); err != nil {
+				return err
+			}
+		}
 		_, err := tx.ExecContext(ctx, `INSERT INTO compact_requests (request_id, kind, capture_id, hour, requested_by, requested_at, state)
 			VALUES (?, ?, ?, ?, ?, ?, 'pending')`, id[:], kind, capture[:], hour, actor, c.now())
 		if err != nil {
@@ -156,6 +161,23 @@ func (c *Catalog) RequestCompaction(ctx context.Context, kind string, capture tr
 	}
 
 	return id, nil
+}
+
+// ErrLogCapture refuses an operator's close or termination of a log capture, which only its stop ends (operations.md §10.4); nothing was written.
+var ErrLogCapture = errors.New("catalog: a log capture, which capture stop ends")
+
+// refuseLogCapture returns ErrLogCapture for a log capture.
+func refuseLogCapture(ctx context.Context, tx *sqlx.Tx, capture tracepack.UUID) error {
+	var method sql.NullString
+	err := tx.GetContext(ctx, &method, `SELECT capture_method FROM captures WHERE capture_id = ?`, capture[:])
+	if errors.Is(err, sql.ErrNoRows) || err == nil && method.String != tracepack.CaptureMethodLog.String() {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+
+	return ErrLogCapture
 }
 
 // PendingRequests lists the requests not yet executed, oldest first.
