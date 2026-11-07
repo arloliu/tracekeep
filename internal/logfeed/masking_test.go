@@ -24,7 +24,7 @@ import (
 )
 
 // Under the baseline, every carrier's secret is masked before its record is written: the data records an item rule names,
-// and the text of an unparsed-entry and an unrecognised-line, which an annotation rule in domain source-text zeroes (logfeed.md §15.8).
+// and the text of an unparsed-entry, an encrypted body's included, and an unrecognised-line, which an annotation rule in domain source-text zeroes (logfeed.md §15.8).
 func TestConverterMasks(t *testing.T) {
 	t.Parallel()
 	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
@@ -59,6 +59,7 @@ func TestConverterMasks(t *testing.T) {
 		}
 		f := &fixture{t: t}
 		var secrets [][]byte
+		var encrypted []byte
 		for _, cr := range carriers {
 			secrets = append(secrets, cr.Secrets...)
 			switch {
@@ -79,6 +80,7 @@ func TestConverterMasks(t *testing.T) {
 				h.receive(&fakeMsg{data: f.raw(map[string]any{"kind": KindUnclassified, "text": string(cr.Secrets[0])})})
 			case cr.Name == tracepack.AnnotationKindUnparsedEntry.String():
 				h.receive(&fakeMsg{data: f.raw(map[string]any{"kind": KindBody, "sxfy": "S9F9", "text": string(cr.Secrets[0])})})
+				encrypted = cr.Secrets[0]
 			default: // an annotation kind a log capture never writes
 			}
 		}
@@ -89,7 +91,8 @@ func TestConverterMasks(t *testing.T) {
 			t.Fatal(ok, err)
 		}
 		redacted := 0
-		for _, r := range h.records(cp.ID) {
+		recs := h.records(cp.ID)
+		for _, r := range recs {
 			for _, s := range secrets {
 				if bytes.Contains(r.Payload, s) {
 					t.Errorf("seq %d (%v) holds the secret %q", r.Seq, r.Kind, s)
@@ -102,7 +105,25 @@ func TestConverterMasks(t *testing.T) {
 		if redacted == 0 {
 			t.Error("no record carries quality.redacted")
 		}
+
+		encryptedMasked(t, h, f, cp.ID, len(recs), encrypted)
 	})
+}
+
+// encryptedMasked checks an encrypted body, an unparsed-entry holding its ciphertext as logged, is zeroed as the other annotations are (§15.9):
+// its flush adds one redacted annotation to the capture's had records, without the ciphertext.
+func encryptedMasked(t *testing.T, h *harness, f *fixture, capture tracepack.UUID, had int, ciphertext []byte) {
+	t.Helper()
+	h.receive(&fakeMsg{data: f.raw(map[string]any{"kind": KindEncrypted, "sxfy": "S9F9", "text": string(ciphertext)})})
+	h.tick(2 * time.Second)
+	h.tick(10 * time.Second)
+	more := h.records(capture)
+	if len(more) != had+1 || more[had].Kind != tracepack.KindAnnotation {
+		t.Fatalf("%d records after the encrypted body, want one annotation more than %d", len(more), had)
+	}
+	if last := more[had]; bytes.Contains(last.Payload, ciphertext) || !last.Quality.HasAny(tracepack.QualityRedacted) {
+		t.Errorf("the encrypted body's annotation holds its ciphertext or is not redacted: %+v", last)
+	}
 }
 
 func itoa(v uint8) string { return strconv.Itoa(int(v)) }

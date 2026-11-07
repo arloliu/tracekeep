@@ -1,6 +1,6 @@
 # Host log feed
 
-Status: active (2026-11-07) — step 10, the gate
+Status: active (2026-11-07) — step 10a, the gate's correctness cases
 
 The work that delivers the host log feed, `docs/specs/tracekeep/logfeed.md` (§15), as T-60 shapes it,
 with its two riskiest costs measured before the converter is built (T-63): the feed's load on the bus, and its registration's on the catalog writer.
@@ -19,11 +19,33 @@ The design is the spec's and the rationale the decision log's; this plan only or
 | 7 — lease groups and wiring | taking, renewing and losing group leases, the consumer's re-creation and the fetch loop, giving up and taking again, the heartbeat, the stage started by `ingest` with its readiness and metrics (§15.4, §15.5 *Taking a lease*) | done (#108) |
 | 8 — reads and admin | the reads' method fields, `capture stop`, `tracekeep status`'s feed lines (§15.8, §15.11) | done (#109) |
 | 9 — web UI and operations | the UI's method filter and badge; alerts, metrics, runbook, configuration and pipeline guides (§15.8, §15.11) | done (#110) |
-| 10 — the gate | the gate cases below | in-progress |
+| 10a — the gate's correctness | every gate case below but the load, through the converter or the stage, on both engines | in-progress |
+| 10b — the gate's load | the load case: the step 1 harness running the stage itself, beside traffic, on SQLite then MariaDB | pending |
 
 Each step is one pull request.
 Steps 1 and 2 record their numbers here before step 5 starts;
 a number past its budget stops the plan for the owner's decision.
+
+## Step 10a — the gate's correctness
+
+Most gate cases were met piecemeal by steps 2 to 9, at the catalog or the pure part; step 10a meets the rest through the converter, or the stage where the bus is the case,
+"converted once" read back from the registered packs alone, with the file's watermark and each capture's `highest_seq`:
+
+| Gate case | Test |
+|---|---|
+| a two-device, two-hour flush refused by a lost fence and by a guard; a failed put; a commit's answer lost, committed and not; a committed flush retried | `TestGateFlushRefusedAndRecovered`: nothing acknowledged, a new converter converting the redeliveries once, those of a committed registration stale; a registration replaced through the converter's test seam, as ingest's flusher's is |
+| a crash after the put, before the registration | the same test counts the puts left unregistered for the reconciler, which deletes a log capture's orphan (`TestLogOrphanDeleted`) |
+| a crash after the commit, before the acknowledgements | the same test's lost committed answer: every redelivery stale |
+| a takeover with older pending entries and a newer backlog | `TestGateTakeoverWithHeldEntriesAndBacklog`; the old holder's late acknowledgements rest on step 1's measured takeover and on a converter acknowledging nothing after its lease (`TestConverterAcknowledgesNothingAfterItsLease`) |
+| admission waiting for a masking baseline | `TestGateAdmissionWaitsForABaseline` |
+| a rotation's tail inside the window, and past it | `TestGateRotation`; `TestConverterStops` |
+| an entry of a stopped file from a device the file never had | `TestGateRotation`, to the converter that stopped the file and to a new one |
+| an idle stop racing another group's registration after a change of G | `TestLogIdleStopRacesAnotherGroup`, both orders under a barrier |
+| `capture stop` with the lease held and lapsed | `TestStopLogCapture`, `TestCaptureStop`, `TestConverterStops` |
+| duplicates by redelivery and by a retried publish | `TestConverterEndToEnd`, `TestConverterMetrics`; `TestGateRetriedPublish` |
+| an unreadable entry against a malformed one; pairing's failures | `TestDecode`, `TestPairer`, `TestBuildAnnotations`, `TestConverterEndToEnd`, `TestConverterMetrics` |
+| an entry beyond retention; DST fall-back and spring-forward | `TestGateEntries` |
+| an encrypted body's, an unparsed-entry's and an unrecognised-line's text zeroed | `TestConverterMasks` |
 
 ## Gate cases
 

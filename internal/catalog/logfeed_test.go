@@ -708,3 +708,65 @@ func TestStatusSilentLogEquipment(t *testing.T) {
 		}
 	})
 }
+
+// After a change of G, the old group's idle stop of a file and the new group's registration of it race under a barrier (logfeed.md §15.6):
+// whichever commits first wins, and the other is refused writing nothing; an idle stop first leaves the file stopped and the new group's flush refused,
+// a registration first leaves the stop refused for its moved watermark, the file open.
+func TestLogIdleStopRacesAnotherGroup(t *testing.T) {
+	t.Parallel()
+	for _, stopFirst := range []bool{true, false} {
+		t.Run(map[bool]string{true: "stop first", false: "registration first"}[stopFirst], func(t *testing.T) {
+			t.Parallel()
+			engines(t, func(t *testing.T, c *Catalog) { idleStopRace(t, c, stopFirst) })
+		})
+	}
+}
+
+func idleStopRace(t *testing.T, c *Catalog, stopFirst bool) {
+	t.Helper()
+	ctx := t.Context()
+	gate(t, c)
+	old := logGroup(t, c)
+	a := admitLog(t, c, old, "eqp")
+	if out, err := c.RegisterLogFlush(ctx, old, &LogFlush{Packs: []*Pack{segment(t, a, 5, 0, 9)}, Files: []LogFileMark{{LogFile: logFile, Watermark: 100}}}); err != nil || out != Registered {
+		t.Fatal(out, err)
+	}
+	if err := c.EnsureLogGroups(ctx, 4); err != nil {
+		t.Fatal(err)
+	}
+	moved, ok, err := c.TakeLease(ctx, LogGroupLease(3), "b", ttl)
+	if err != nil || !ok {
+		t.Fatal(ok, err)
+	}
+	read := int64(100)
+	idle := &LogFlush{Packs: []*Pack{segment(t, a, 5, 10, 10)}, Files: []LogFileMark{{LogFile: logFile, Watermark: 100, Stop: true, IdleSince: &read}}}
+	next := &LogFlush{Packs: []*Pack{segment(t, a, 5, 10, 14)}, Files: []LogFileMark{{LogFile: logFile, Watermark: 200}}}
+	firstLease, first, secondLease, second := old, idle, moved, next
+	if !stopFirst {
+		firstLease, first, secondLease, second = moved, next, old, idle
+	}
+	h := heldFlush(t, c, firstLease, first, hookBeforeCommit)
+	waits := c.write.Stats().WaitCount
+	var err2 error
+	raced := run(func() { _, err2 = c.RegisterLogFlush(ctx, secondLease, second) })
+	waitBlocked(t, c, waits, "INSERT INTO captures", 1)
+	close(h.release)
+	<-h.done
+	<-raced
+	w, stopped := watermark(t, c, logFile)
+	if stopFirst {
+		if h.err != nil || h.out != Registered || !errors.Is(err2, ErrFileStopped) || !stopped || w != 100 {
+			t.Errorf("idle stop first = %v, %v; the new group's flush %v; file %d stopped %v; want the stop, ErrFileStopped, 100 stopped", h.out, h.err, err2, w, stopped)
+		}
+		if n := packCount(t, c, next.Packs[0].ID); n != 0 {
+			t.Error("the refused flush registered its segment")
+		}
+	} else {
+		if h.err != nil || h.out != Registered || !errors.Is(err2, ErrWatermarkMoved) || stopped || w != 200 {
+			t.Errorf("registration first = %v, %v; the idle stop %v; file %d stopped %v; want registered, ErrWatermarkMoved, 200 open", h.out, h.err, err2, w, stopped)
+		}
+		if n := packCount(t, c, idle.Packs[0].ID); n != 0 {
+			t.Error("the refused stop registered its segment")
+		}
+	}
+}

@@ -109,7 +109,7 @@ func (h *harness) tick(after time.Duration) {
 	}
 }
 
-// records reads every pack of capture back with tracepack's reader, in seq order, after verifying each.
+// records reads every registered pack of capture back with tracepack's reader, in seq order, after verifying each.
 func (h *harness) records(capture tracepack.UUID) []tracepack.Record {
 	h.t.Helper()
 	ctx := h.t.Context()
@@ -117,6 +117,10 @@ func (h *harness) records(capture tracepack.UUID) []tracepack.Record {
 	err := h.store.List(ctx, "", func(o store.ObjectInfo) error {
 		if !strings.Contains(o.Key, capture.String()) {
 			return nil
+		}
+		// Only a registered pack is converted; an unregistered put is the reconciler's orphan.
+		if st, err := h.c.KeyStanding(ctx, o.Key); err != nil || st != catalog.KeyRegistered {
+			return err
 		}
 		obj, err := h.store.Open(ctx, o.Key)
 		if err != nil {

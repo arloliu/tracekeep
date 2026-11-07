@@ -73,6 +73,9 @@ type Converter struct {
 	Log         *slog.Logger
 	Metrics     *metrics.Logfeed
 
+	// register, a test seam, is called in place of the catalog's RegisterLogFlush when set.
+	register func(context.Context, catalog.Lease, *catalog.LogFlush) (catalog.PackOutcome, error)
+
 	equipment map[string]*equipmentState
 
 	// mu guards held, every delivery the converter holds unacknowledged, which the heartbeat keeps in progress from its own goroutine.
@@ -729,7 +732,11 @@ func (c *Converter) flush(ctx context.Context, eq *equipmentState, requests []tr
 		}
 		reg.Packs = append(reg.Packs, p)
 	}
-	out, err := c.Catalog.RegisterLogFlush(ctx, c.Lease, reg)
+	register := c.Catalog.RegisterLogFlush
+	if c.register != nil {
+		register = c.register
+	}
+	out, err := register(ctx, c.Lease, reg)
 	if err != nil {
 		return fmt.Errorf("%w: register: %w", ErrGiveUp, err)
 	}

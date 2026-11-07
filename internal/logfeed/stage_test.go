@@ -215,3 +215,68 @@ func checkCaptures(t *testing.T, c *catalog.Catalog, n int, highest int64) {
 		}
 	}
 }
+
+// ackPending is the entries the feed's group consumers delivered and hold unacknowledged.
+func (e *stageEnv) ackPending() int {
+	n := 0
+	l := e.s.ListConsumers(e.t.Context())
+	for ci := range l.Info() {
+		n += ci.NumAckPending
+	}
+	if err := l.Err(); err != nil {
+		e.t.Fatal(err)
+	}
+
+	return n
+}
+
+// A replica stopped holding every group's entries unflushed is taken over (logfeed.md §15.5 *Taking a lease*):
+// the replica taking the groups gets those older entries again with a newer backlog, and converts each once.
+func TestGateTakeoverWithHeldEntriesAndBacklog(t *testing.T) {
+	t.Parallel()
+	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
+		ctx := t.Context()
+		e := newStageEnv(t, c)
+		a := e.stage("a", time.Hour)
+		a.Base.Flush = time.Hour // a holds what it receives
+		var wg sync.WaitGroup
+		t.Cleanup(wg.Wait)
+		stopA := run(ctx, &wg, a)
+		e.eventually("a takes every group", func() bool { return len(a.Held()) == e.feed.Groups })
+		e.publish(8, 0)
+		e.eventually("a holds the entries", func() bool { return e.ackPending() == 24 })
+		stopA()
+		if err := c.Leave(ctx, "a"); err != nil {
+			t.Fatal(err)
+		}
+		e.publish(8, 1)
+		b := e.stage("b", time.Hour)
+		run(ctx, &wg, b)
+		e.eventually("b drains the older entries and the backlog", e.drained)
+		checkCaptures(t, c, 8, 6)
+	})
+}
+
+// A publish retried under its message id is stored once, and converted once (logfeed.md §15.3).
+func TestGateRetriedPublish(t *testing.T) {
+	t.Parallel()
+	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
+		ctx := t.Context()
+		e := newStageEnv(t, c)
+		f := &fixture{t: e.t}
+		raw := f.raw(map[string]any{"equipment_id": "EQ0", "kind": KindUnclassified, "text": "line", "ts": time.Now().UTC().Format("2006-01-02 15:04:05.000"), "tz": "UTC"})
+		for range 2 {
+			if _, err := e.js.Publish(ctx, "tklog.EQ0", raw, jetstream.WithMsgID("feed-a/EQ0/host-20261107.log/0")); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if info, err := e.s.Info(ctx); err != nil || info.State.Msgs != 1 {
+			t.Fatalf("stream state %+v, %v; want the retried publish stored once", info.State, err)
+		}
+		var wg sync.WaitGroup
+		t.Cleanup(wg.Wait)
+		run(ctx, &wg, e.stage("a", time.Hour))
+		e.eventually("the feed drained", e.drained)
+		checkCaptures(t, c, 1, 1)
+	})
+}
