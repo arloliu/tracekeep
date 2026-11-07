@@ -949,3 +949,18 @@ The heap held the deliveries' wire messages, 5.5 GB, beside the built records, 1
 flushes its equipment with the most batched bytes first; a held delivery keeps only its reply subject.
 **The cost**: the fast equipment's segments are smaller and more frequent than F's, more registrations and more merge inputs; F stays the slow equipment's interval.
 Considered and not taken: a shorter F for the whole feed, which multiplies every equipment's registrations; a replica-wide budget, which shares state across the groups' goroutines.
+
+### T-66 — the gate's load judged on a bus of its own, the burst on what it sent (2026-11-07)
+
+The owner chose, on 2026-11-07, from step 10b of the host log feed's plan, how the gate judges the fleet's load.
+**The traffic**: in one process holding the three bus servers, dev and the harness, the traffic's cycle verdict beside the fleet failed in three runs of four,
+its minima sloping −56, +41, +377 and +98 records a second against a bound of 8, while every traffic record was acknowledged within F and 7 seconds;
+a control with the fleet idle sustained. With the servers as processes of their own, pinned to the host's other CCD and their stores on another disk,
+the traffic sustained beside the fleet on both catalog engines, its minima flat. The gate's environment is that one (`scripts/load-feed.sh`), its criterion unchanged.
+**The burst**: one stream of one replica lives on one server, which took the fleet's 95 MB/s with every publish stored,
+but the burst's 117 MB/s more waited: its publishers made 65% to 89% of its rate, and raising their publishes in flight only queued them past their timeout.
+The gate judges what the burst sent: digested within two flushes of its end, every entry accounted for once; its rate is reported, not judged.
+A peak is the forwarders' buffers' to hold, as the owner accepted that a peak need not be converted in real time (`docs/guides/log-pipeline.md` *Peaks*).
+Considered and not taken: splitting the feed into several streams, so their leaders spread over the servers, judged no-go on 2026-11-07:
+the requirement asks no faster intake of a peak than the forwarders' buffers give, the ceiling's cause is unprofiled (the stream's single inbound loop, its disk, or the traffic stream on the same server),
+and the split's choices (how many streams, which groups each, changing their number, the leaders' placement) were undecided.

@@ -85,6 +85,15 @@ and `jetstream.headers.message_id` sets the message id from a field the transfor
 its `request.concurrency` defaults to one request in flight for the whole sink, so raise it to the fleet's rate,
 and bound its retries and its buffer's delay below the windows above.
 
+## Peaks
+
+The feed is one stream, whose publishes one server takes in turn (`logfeed.md` §15.10, T-66):
+a fleet's steady rate it takes, but a peak above it, many pieces of equipment logging large messages at once, is acknowledged more slowly,
+and every forwarder of the fleet waits on its acknowledgements meanwhile.
+So the forwarder's buffer holds a peak's worth of entries, its rate above the steady one times its length, and sends them in its equipment's order once the stream catches up;
+waiting in order is harmless, since each entry still arrives within the reorder window of the next one tailed for its equipment.
+A buffer set to block stops the tailer when it fills, and the files on disk resume from its checkpoint; one set to drop loses entries, which show only as missing records.
+
 ## Checking a pipeline
 
 1. Publish a few entries of a test equipment to a non-production tracekeep with `logfeed.enabled`.

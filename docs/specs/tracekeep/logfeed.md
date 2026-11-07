@@ -364,6 +364,10 @@ Measured at ingest's own times on a three-node cluster in one process beside the
 the feed sustained with a publish latency of 4.3 ms at the 99th percentile, the traffic sustained, the process at about two cores and 43 MiB/s of disk writes,
 the busiest group holding about 21,000 entries and each server's store about 700 MiB.
 Header and body are separate messages, and the forwarder's sink cannot batch, so the count is the entries'.
+At the owner's fleet (`docs/plans/host-log-feed.md` step 10b, T-66), about 24,750 entries and 95 MB/s a second, one stream of one replica took the fleet with every publish stored;
+a burst of 117 MB/s more waited: the stream is the work of one server, which takes its publishes and acknowledgements in turn,
+so the publishes were acknowledged in about 0.9 s at the 99th percentile and the forwarders held what waited, the stage digesting it within four minutes of the burst's end.
+A peak is the forwarders' buffers' to hold (`docs/guides/log-pipeline.md`), not a second stream's.
 **`max_bytes`** = the outage tolerated × 10.1 GB/h, logical bytes: `logfeed.max_bytes` defaults to 40 GiB, about 4 h.
 When the stream is full, the forwarder's publish fails and its buffer fills; with its buffer set to block, backpressure reaches the tailer, which stops tailing,
 and the files on disk resume from its checkpoint, provided the host program keeps them longer than the outage.
