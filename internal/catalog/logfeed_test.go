@@ -50,7 +50,7 @@ func admitLog(t *testing.T, c *Catalog, l Lease, device string) tracepack.UUID {
 	return id
 }
 
-func watermark(t *testing.T, c *Catalog, f LogFile) (int64, bool) {
+func watermark(t testing.TB, c *Catalog, f LogFile) (int64, bool) {
 	t.Helper()
 	var row struct {
 		Watermark int64 `db:"watermark"`
@@ -423,6 +423,96 @@ func TestStopLogCaptureHoldsATakeover(t *testing.T) {
 		}
 		if s := captureState(t, c, a); s != StateStopped {
 			t.Errorf("the capture the new holder reads is %s, want stopped", s)
+		}
+	})
+}
+
+// held is a flush held at a hook: release lets it go on, done closes when it ended with out and err.
+type held struct {
+	release chan struct{}
+	done    <-chan struct{}
+	out     PackOutcome
+	err     error
+}
+
+// heldFlush starts f under l, held at hook id until release is closed; it returns once the hook holds it.
+func heldFlush(t *testing.T, c *Catalog, l Lease, f *LogFlush, id int) *held {
+	t.Helper()
+	at, release := holdAt(c, id)
+	h := &held{release: release}
+	h.done = run(func() { h.out, h.err = c.RegisterLogFlush(t.Context(), l, f) })
+	<-at
+
+	return h
+}
+
+// Barrier schedules of the log transactions' lock order (logfeed.md §15.7), none retried:
+// a flush naming its captures in the other order waits on the lowest capture the first holds, holding nothing before it;
+// an admission under another group waits on the file's row a flush holds; a stop waits on the capture row a flush holds.
+func TestLogLockOrderSchedules(t *testing.T) {
+	t.Parallel()
+	engines(t, func(t *testing.T, c *Catalog) {
+		ctx := t.Context()
+		gate(t, c)
+		l := logGroup(t, c)
+		a, b := admitLog(t, c, l, "eqp"), admitLog(t, c, l, "lp1")
+		lo, hi := a, b
+		if compareUUID(b, a) < 0 {
+			lo, hi = b, a
+		}
+		var retries atomic.Int64
+		c.retried = func(string) { retries.Add(1) }
+		mark := func(seq uint64) []LogFileMark { return []LogFileMark{{LogFile: logFile, Watermark: int64(seq)}} } //nolint:gosec // small test seqs
+
+		// The first flush names hi first and holds lo, the lowest of its captures; the second names them the other way and waits there.
+		h := heldFlush(t, c, l, &LogFlush{Packs: []*Pack{segment(t, hi, 5, 0, 4), segment(t, lo, 5, 0, 4)}, Files: mark(10)}, hookLocked)
+		waits := c.write.Stats().WaitCount
+		var out2 PackOutcome
+		var err2 error
+		second := run(func() {
+			out2, err2 = c.RegisterLogFlush(ctx, l, &LogFlush{Packs: []*Pack{segment(t, lo, 5, 5, 9), segment(t, hi, 5, 5, 9)}, Files: mark(20)})
+		})
+		waitBlocked(t, c, waits, "INSERT INTO captures", 1)
+		close(h.release)
+		<-h.done
+		<-second
+		if h.err != nil || h.out != Registered || err2 != nil || out2 != Registered {
+			t.Fatalf("flushes in opposite orders = %v, %v and %v, %v", h.out, h.err, out2, err2)
+		}
+
+		// An admission under group 2 to the file a group 1 flush holds waits on the file's row.
+		l2, ok, terr := c.TakeLease(ctx, LogGroupLease(2), "a", ttl)
+		if terr != nil || !ok {
+			t.Fatal(terr)
+		}
+		h = heldFlush(t, c, l, &LogFlush{Packs: []*Pack{segment(t, a, 5, 10, 14)}, Files: mark(30)}, hookBeforeCommit)
+		waits = c.write.Stats().WaitCount
+		var admitErr error
+		admitted := run(func() {
+			_, admitErr = c.AdmitLog(ctx, l2, LogKey{LogFile: logFile, Device: "lp2"}, newID(t), logDescriptor(t, "lp2"), nil)
+		})
+		waitBlocked(t, c, waits, "INSERT INTO logfeed_files", 1)
+		close(h.release)
+		<-h.done
+		<-admitted
+		if h.err != nil || h.out != Registered || admitErr != nil {
+			t.Fatalf("a flush and another group's admission to its file = %v, %v and %v", h.out, h.err, admitErr)
+		}
+
+		// A stop of a capture a flush holds waits on its row.
+		h = heldFlush(t, c, l, &LogFlush{Packs: []*Pack{segment(t, b, 5, 15, 19)}, Files: mark(40)}, hookBeforeCommit)
+		waits = c.write.Stats().WaitCount
+		var stopErr error
+		stopped := run(func() { _, stopErr = c.StopLogCapture(ctx, b) })
+		waitBlocked(t, c, waits, "INSERT INTO captures", 1)
+		close(h.release)
+		<-h.done
+		<-stopped
+		if h.err != nil || h.out != Registered || stopErr != nil {
+			t.Fatalf("a flush and a stop of its capture = %v, %v and %v", h.out, h.err, stopErr)
+		}
+		if n := retries.Load(); n != 0 {
+			t.Errorf("%d transactions retried, want none", n)
 		}
 	})
 }
