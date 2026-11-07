@@ -1,6 +1,7 @@
 package logfeed
 
 import (
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -64,6 +65,31 @@ func TestConverterMetrics(t *testing.T) {
 		}
 		if t.Failed() {
 			t.Log(got)
+		}
+	})
+}
+
+// A flush registered whose acknowledgement fails still counts its entries: their redeliveries are stale, never converted again.
+func TestConverterCountsARegisteredFlushWhoseAcknowledgementFails(t *testing.T) {
+	t.Parallel()
+	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
+		h := newHarness(t, c)
+		s := metrics.NewServer()
+		m, err := metrics.NewLogfeed(s)
+		if err != nil {
+			t.Fatal(err)
+		}
+		h.conv.Metrics = m
+		hd, bd := pairMsgs(t, &fixture{t: t}, 6, 11, true, 1)
+		bd.ackErr = errors.New("connection closed")
+		h.receive(hd, bd)
+		h.tick(2 * time.Second)
+		h.now = h.now.Add(10 * time.Second)
+		if err := h.conv.Tick(t.Context(), h.now); err == nil {
+			t.Fatal("a flush whose acknowledgement failed succeeded")
+		}
+		if got := scrape(t, s); !strings.Contains(got, `tracekeep_logfeed_entries_total{equipment_id="T1",outcome="record"} 2`+"\n") {
+			t.Errorf("the registered flush's entries uncounted:\n%s", got)
 		}
 	})
 }

@@ -736,6 +736,8 @@ func (c *Converter) flush(ctx context.Context, eq *equipmentState, requests []tr
 	if out != catalog.Registered && out != catalog.AlreadyRegistered {
 		return fmt.Errorf("%w: register: outcome %d", ErrGiveUp, out)
 	}
+	// Counted once registered, before the acknowledgements: a failed one leaves the redeliveries stale, never converted again.
+	c.counted(eq)
 	for _, k := range keys {
 		for _, h := range eq.batches[k].handles {
 			if err := c.ackAll(ctx, h); err != nil {
@@ -744,7 +746,6 @@ func (c *Converter) flush(ctx context.Context, eq *equipmentState, requests []tr
 		}
 	}
 	eq.batches, eq.parts, eq.bytes, eq.meta = map[batchKey]*batch{}, map[batchKey]int{}, 0, 0
-	c.counted(eq)
 	c.settle(eq)
 
 	return nil
