@@ -543,33 +543,93 @@ func TestLogCaptureProtections(t *testing.T) {
 			t.Errorf("the orphan's key = %v, %v; want tombstoned", standing, err)
 		}
 
-		later := c.now() + int64(1000*inactivity)
-		for _, cand := range candidates(t, c, later) {
-			if cand.Capture == a {
-				t.Errorf("the log capture is a close candidate by %s", cand.Trigger)
-			}
+		logClosesRefused(t, c, l, lease, a)
+		logOperatorRefusals(t, c, l, lease, a, gw)
+	})
+}
+
+// logClosesRefused checks that the compactor's close leaves the log capture a out under every trigger, a successor of its series included.
+func logClosesRefused(t *testing.T, c *Catalog, l, lease Lease, a tracepack.UUID) {
+	t.Helper()
+	ctx := t.Context()
+	// A successor of a's series, registered long before the trigger's time, would make a a successor candidate were it not a log capture.
+	var instance []byte
+	if err := c.read.GetContext(ctx, &instance, `SELECT recorder_instance_id FROM captures WHERE capture_id = ?`, a[:]); err != nil {
+		t.Fatal(err)
+	}
+	next := LogFile{Source: logFile.Source, EquipmentID: logFile.EquipmentID, File: "host-20261108.log"}
+	succ, sd := newID(t), logDescriptor(t, "eqp")
+	sd.RecorderInstanceID, sd.OriginNS = tracepack.UUID(instance), 2
+	if _, err := c.AdmitLog(ctx, l, LogKey{LogFile: next, Device: "eqp"}, succ, sd, nil); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := c.RegisterLogFlush(ctx, l, &LogFlush{Packs: []*Pack{segment(t, succ, 5, 0, 9)}, Files: []LogFileMark{{LogFile: next, Watermark: 10}}}); err != nil || out != Registered {
+		t.Fatal(out, err)
+	}
+	later := c.now() + int64(1000*inactivity)
+	for _, cand := range candidates(t, c, later) {
+		if cand.Capture == a || cand.Capture == succ {
+			t.Errorf("a log capture is a close candidate by %s", cand.Trigger)
 		}
-		for _, trigger := range []string{CloseOperator, CloseInactivity} {
-			if out := closeIntent(t, c, lease, intentOf(t, a, trigger, later)); out != CloseIneligible {
-				t.Errorf("a %s close intent of the log capture = %v, want ineligible", trigger, out)
-			}
+	}
+	for _, trigger := range []string{CloseOperator, CloseInactivity, CloseSuccessor} {
+		if out := closeIntent(t, c, lease, intentOf(t, a, trigger, later)); out != CloseIneligible {
+			t.Errorf("a %s close intent of the log capture = %v, want ineligible", trigger, out)
 		}
-		if s := captureState(t, c, a); s != StateOpen {
-			t.Errorf("the log capture is %s after the refused closes, want open", s)
+	}
+	if s := captureState(t, c, a); s != StateOpen {
+		t.Errorf("the log capture is %s after the refused closes, want open", s)
+	}
+}
+
+// logOperatorRefusals checks that an operator's close request and termination of the log capture a are refused, writing nothing,
+// that gw's close request is not, and that a close request queued before its capture was admitted as a log capture ends failed.
+func logOperatorRefusals(t *testing.T, c *Catalog, l, lease Lease, a, gw tracepack.UUID) {
+	t.Helper()
+	ctx := t.Context()
+	rows := func() (n int) {
+		for _, q := range []string{`SELECT COUNT(*) FROM compact_requests`, `SELECT COUNT(*) FROM audit_log`, `SELECT COUNT(*) FROM termination_orders`} {
+			var k int
+			if err := c.read.GetContext(ctx, &k, q); err != nil {
+				t.Fatal(err)
+			}
+			n += k
 		}
 
-		if _, err := c.RequestCompaction(ctx, RequestClose, a, nil, "op"); !errors.Is(err, ErrLogCapture) {
-			t.Errorf("an operator's close request of a log capture = %v, want ErrLogCapture", err)
+		return n
+	}
+	before := rows()
+	if _, err := c.RequestCompaction(ctx, RequestClose, a, nil, "op"); !errors.Is(err, ErrLogCapture) {
+		t.Errorf("an operator's close request of a log capture = %v, want ErrLogCapture", err)
+	}
+	if _, err := c.RequestCompaction(ctx, RequestClose, gw, nil, "op"); err != nil {
+		t.Errorf("an operator's close request of a gateway's capture = %v", err)
+	}
+	if _, err := c.TerminateCapture(ctx, a, 1, 10, "op", "act-1"); !errors.Is(err, ErrLogCapture) {
+		t.Errorf("a termination of a log capture = %v, want ErrLogCapture", err)
+	}
+	if after := rows(); after != before+2 { // the gateway's close request and its audit row
+		t.Errorf("the refused close and termination wrote %d rows, want none", after-before-2)
+	}
+
+	// A close request accepted before its capture was admitted, which the log stage then admits, ends failed.
+	early := newID(t)
+	if _, err := c.RequestCompaction(ctx, RequestClose, early, nil, "op"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.AdmitLog(ctx, l, LogKey{LogFile: logFile, Device: "lp9"}, early, logDescriptor(t, "lp9"), nil); err != nil {
+		t.Fatal(err)
+	}
+	pending, err := c.PendingRequests(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, q := range pending {
+		if q.Capture != early {
+			continue
 		}
-		if _, err := c.RequestCompaction(ctx, RequestClose, gw, nil, "op"); err != nil {
-			t.Errorf("an operator's close request of a gateway's capture = %v", err)
+		if verdict, _, err := c.DecideRequest(ctx, lease, q); err != nil || verdict != "log-capture" {
+			t.Errorf("the queued close of a log capture = %q, %v; want it ended as log-capture", verdict, err)
 		}
-		if _, err := c.TerminateCapture(ctx, a, 1, 10, "op", "act-1"); !errors.Is(err, ErrLogCapture) {
-			t.Errorf("a termination of a log capture = %v, want ErrLogCapture", err)
-		}
-		var orders int
-		if err := c.read.GetContext(ctx, &orders, `SELECT COUNT(*) FROM termination_orders`); err != nil || orders != 0 {
-			t.Errorf("a refused termination left %d orders (%v)", orders, err)
-		}
-	})
+	}
 }

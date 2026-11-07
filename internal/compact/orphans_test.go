@@ -579,3 +579,39 @@ func TestCloseOrphanAdopted(t *testing.T) {
 		}
 	})
 }
+
+// A log capture's orphan is tombstoned and deleted, never adopted: its entries were never acknowledged, and its redelivery converts them (logfeed.md §15.8).
+func TestLogOrphanDeleted(t *testing.T) {
+	t.Parallel()
+	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
+		ctx := t.Context()
+		f := newFixture(t, c)
+		f.admit(t) // binds a configuration
+		if err := c.EnsureLogGroups(ctx, 1); err != nil {
+			t.Fatal(err)
+		}
+		l, ok, err := c.TakeLease(ctx, catalog.LogGroupLease(0), "converter", time.Hour)
+		if err != nil || !ok {
+			t.Fatal(ok, err)
+		}
+		id := newID(t)
+		d := &catalog.Descriptor{Bytes: []byte("log"), EquipmentID: equipment, RecorderInstanceID: newID(t), Device: "eqp", Source: "feed", OriginNS: 1, CaptureMethod: "log", Vantage: "host"}
+		key := catalog.LogKey{LogFile: catalog.LogFile{Source: "feed", EquipmentID: equipment, File: "host.log"}, Device: "eqp"}
+		if _, err := c.AdmitLog(ctx, l, key, id, d, nil); err != nil {
+			t.Fatal(err)
+		}
+		orphan := segment(t, id, []uint64{1}, false)
+		f.put(t, orphan.key, orphan.data)
+		f.pass(t)
+		rep := f.pass(t)
+		if !slices.Equal(rep.Deleted, []string{orphan.key}) || len(rep.Adopted) != 0 {
+			t.Fatalf("pass = %+v, want the log capture's orphan deleted, not adopted", rep)
+		}
+		if f.present(t, orphan.key) {
+			t.Error("the orphan is still stored")
+		}
+		if got, _ := c.KeyStanding(ctx, orphan.key); got != catalog.KeyTombstoned {
+			t.Errorf("standing %v, want tombstoned", got)
+		}
+	})
+}

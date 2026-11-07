@@ -5,6 +5,7 @@
 package admin
 
 import (
+	"cmp"
 	"context"
 	"crypto/rand"
 	"errors"
@@ -60,6 +61,10 @@ func (a *Admin) ParkedTerminate(ctx context.Context, capture tracepack.UUID, seq
 // read by a fresh Info before the transaction, so no network call happens under the capture row
 // and a publish accepted after the read carries a sequence above the cut-off.
 func (a *Admin) CaptureTerminate(ctx context.Context, capture tracepack.UUID) (Termination, error) {
+	// A log capture is refused before the bus is reached, as the transaction would refuse it (operations.md §10.4).
+	if log, err := a.Catalog.IsLogCapture(ctx, capture); err != nil || log {
+		return Termination{}, cmp.Or(err, catalog.ErrLogCapture)
+	}
 	s, err := a.Bus.Stream(ctx, bus.StreamName(a.Config, catalog.RoleTraffic))
 	if err != nil {
 		return Termination{}, fmt.Errorf("admin: traffic stream: %w", err)
