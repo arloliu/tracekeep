@@ -21,7 +21,7 @@ const (
 // Every method records nothing on a nil *Logfeed, so a converter without metrics needs no check.
 type Logfeed struct {
 	entries, unpaired, annotations *prometheus.CounterVec
-	last                           *prometheus.GaugeVec
+	last, lastOutcome              *prometheus.GaugeVec
 }
 
 // NewLogfeed registers the host log feed's collectors on s.
@@ -36,8 +36,11 @@ func NewLogfeed(s *Server) (*Logfeed, error) {
 		annotations: counter("annotations_total", "Annotations converted, by equipment and kind.", "equipment_id", "kind"),
 		last: prometheus.NewGaugeVec(prometheus.GaugeOpts{Namespace: "tracekeep", Subsystem: "logfeed", Name: "last_entry_timestamp_seconds",
 			Help: "When this replica last received an entry of the equipment, in Unix seconds."}, []string{"equipment_id"}),
+		lastOutcome: prometheus.NewGaugeVec(prometheus.GaugeOpts{Namespace: "tracekeep", Subsystem: "logfeed", Name: "last_outcome_timestamp_seconds",
+			Help: "When this replica last counted an entry of the equipment with the outcome, in Unix seconds: an event no scrape misses."},
+			[]string{"equipment_id", "outcome"}),
 	}
-	for _, c := range []prometheus.Collector{m.entries, m.unpaired, m.annotations, m.last} {
+	for _, c := range []prometheus.Collector{m.entries, m.unpaired, m.annotations, m.last, m.lastOutcome} {
 		if err := s.Registry().Register(c); err != nil {
 			return nil, fmt.Errorf("metrics: logfeed: %w", err)
 		}
@@ -46,28 +49,29 @@ func NewLogfeed(s *Server) (*Logfeed, error) {
 	return m, nil
 }
 
-// Entries counts n entries of equipment disposed with outcome.
-func (m *Logfeed) Entries(equipment, outcome string, n int) {
+// Entries counts n entries of equipment disposed with outcome at at.
+func (m *Logfeed) Entries(equipment, outcome string, n int, at time.Time) {
 	if m == nil {
 		return
 	}
 	m.entries.WithLabelValues(equipment, outcome).Add(float64(n))
+	m.lastOutcome.WithLabelValues(equipment, outcome).Set(float64(at.UnixNano()) / 1e9)
 }
 
-// Unpaired counts an entry of equipment pairing left alone, side header or body.
-func (m *Logfeed) Unpaired(equipment, side string) {
+// Unpaired counts n entries of equipment pairing left alone, side header or body.
+func (m *Logfeed) Unpaired(equipment, side string, n int) {
 	if m == nil {
 		return
 	}
-	m.unpaired.WithLabelValues(equipment, side).Inc()
+	m.unpaired.WithLabelValues(equipment, side).Add(float64(n))
 }
 
-// Annotation counts an annotation of equipment of kind.
-func (m *Logfeed) Annotation(equipment, kind string) {
+// Annotations counts n annotations of equipment of kind.
+func (m *Logfeed) Annotations(equipment, kind string, n int) {
 	if m == nil {
 		return
 	}
-	m.annotations.WithLabelValues(equipment, kind).Inc()
+	m.annotations.WithLabelValues(equipment, kind).Add(float64(n))
 }
 
 // Arrived stamps an entry of equipment received at.

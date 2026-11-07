@@ -431,7 +431,8 @@ On a gateway's capture it is refused.
 **Metrics** (`equipment_id` a label):
 `tracekeep_logfeed_entries_total{outcome=record|annotation|duplicate|stale|beyond-retention|unreadable}`,
 `tracekeep_logfeed_unpaired_total{side=header|body}`, `tracekeep_logfeed_annotations_total{kind}`,
-`tracekeep_logfeed_last_entry_timestamp_seconds`,
+`tracekeep_logfeed_last_entry_timestamp_seconds` (an entry's arrival),
+`tracekeep_logfeed_last_outcome_timestamp_seconds{outcome}` (an outcome's last count, which the unreadable and late alerts read, as no scrape misses it),
 and the feed's backlog beside the traffic stream's.
 
 ### 15.12 What it does not do

@@ -365,20 +365,41 @@ tests:
   - {series: 'tracekeep_ingest_refreshed_timestamp_seconds{instance="a",source="feed"}', values: '0x50'}
   alert_rule_test:
   - {eval_time: 45m, alertname: TracekeepLogFeedSilent, exp_alerts: []}
-- name: an unreadable entry, the counter's first
+- name: a departed lease holder's later stamp still counts
   interval: 1m
   input_series:
-  - {series: 'tracekeep_logfeed_entries_total{instance="a",equipment_id="T1",outcome="unreadable"}', values: '_x4 1x80'}
+  # b held the group and stamped T1 until minute 10, then stopped; a keeps a stamp from minute 0.
+  - {series: 'tracekeep_logfeed_last_entry_timestamp_seconds{instance="a",equipment_id="T1"}', values: '0x40'}
+  - {series: 'tracekeep_logfeed_last_entry_timestamp_seconds{instance="b",equipment_id="T1"}', values: '0+60x10'}
+  alert_rule_test:
+  - {eval_time: 20m, alertname: TracekeepLogFeedSilent, exp_alerts: []}
+- name: the feed's backlog floor grew, then its snapshot went stale
+  interval: 1m
+  input_series:
+  - {series: 'tracekeep_logfeed_stream_backlog_messages{instance="a"}', values: '0+10x30 300x30'}
+  - {series: 'tracekeep_ingest_refreshed_timestamp_seconds{instance="a",source="feed"}', values: '0+60x30 1800x30'}
+  alert_rule_test:
+  - {eval_time: 45m, alertname: TracekeepLogFeedSilent, exp_alerts: []}
+- name: an unreadable entry, stamped
+  interval: 1m
+  input_series:
+  - {series: 'tracekeep_logfeed_last_outcome_timestamp_seconds{instance="a",equipment_id="T1",outcome="unreadable"}', values: '_x4 300x80'}
   alert_rule_test:
   - {eval_time: 3m, alertname: TracekeepLogEntryUnreadable, exp_alerts: []}
   - eval_time: 6m
     alertname: TracekeepLogEntryUnreadable
     exp_alerts: [{exp_labels: {severity: warning, equipment_id: T1}, exp_annotations: {summary: "Equipment T1: the feed carried an entry tracekeep cannot read.", runbook_url: "rb#log-entry-unreadable"}}]
   - {eval_time: 70m, alertname: TracekeepLogEntryUnreadable, exp_alerts: []}
-- name: stale entries growing
+- name: an old unreadable entry first seen by a new Prometheus
   interval: 1m
   input_series:
-  - {series: 'tracekeep_logfeed_entries_total{instance="a",equipment_id="T1",outcome="stale"}', values: '3x70 4x10'}
+  - {series: 'tracekeep_logfeed_last_outcome_timestamp_seconds{instance="a",equipment_id="T1",outcome="unreadable"}', values: '0x80'}
+  alert_rule_test:
+  - {eval_time: 75m, alertname: TracekeepLogEntryUnreadable, exp_alerts: []}
+- name: a stale entry, stamped
+  interval: 1m
+  input_series:
+  - {series: 'tracekeep_logfeed_last_outcome_timestamp_seconds{instance="a",equipment_id="T1",outcome="stale"}', values: '0x70 4200x10'}
   alert_rule_test:
   - {eval_time: 65m, alertname: TracekeepLogEntriesLate, exp_alerts: []}
   - eval_time: 75m
