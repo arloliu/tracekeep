@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/arloliu/go-secs/tracepack"
+	"github.com/arloliu/go-secs/v2/hsms"
 	"github.com/arloliu/go-secs/v2/secs2"
 
 	"github.com/arloliu/tracekeep/internal/catalog"
@@ -74,28 +75,34 @@ func redeliver(ms []*fakeMsg) []*fakeMsg {
 	return out
 }
 
-// convertedOnce checks each capture of keys holds its start and then n data records in one registered copy, seq dense from 0,
-// its highest_seq the last, and the file's watermark the file's last offset.
-func convertedOnce(t *testing.T, h *harness, n int, watermark int64, keys ...catalog.LogKey) {
+// convertedOnce checks each capture holds its start and then the data records of want's system bytes, in order, each in one registered copy,
+// seq dense from 0, its highest_seq the last, and the file's watermark watermark.
+func convertedOnce(t *testing.T, h *harness, watermark int64, want map[catalog.LogKey][]uint32) {
 	t.Helper()
 	ctx := t.Context()
-	for _, k := range keys {
+	for k, sys := range want {
 		cp, ok, err := h.c.LogCaptureOf(ctx, k)
 		if err != nil || !ok {
 			t.Fatalf("%s's capture = %v, %v", k.Device, ok, err)
 		}
 		recs := h.records(cp.ID)
-		if len(recs) != n+1 || !cp.HasHighestSeq || cp.HighestSeq != int64(n) {
-			t.Errorf("%s: %d records, highest_seq %d (%v); want %d and %d", k.Device, len(recs), cp.HighestSeq, cp.HasHighestSeq, n+1, n)
+		if len(recs) != len(sys)+1 || !cp.HasHighestSeq || cp.HighestSeq != int64(len(sys)) {
+			t.Errorf("%s: %d records, highest_seq %d (%v); want %d and %d", k.Device, len(recs), cp.HighestSeq, cp.HasHighestSeq, len(sys)+1, len(sys))
 			continue
 		}
 		for i, r := range recs {
-			want := tracepack.KindData
-			if i == 0 {
-				want = tracepack.KindTransportEvent
+			if r.Seq != uint64(i) { //nolint:gosec // a small index
+				t.Errorf("%s: record %d is seq %d", k.Device, i, r.Seq)
 			}
-			if r.Seq != uint64(i) || r.Kind != want { //nolint:gosec // a small index
-				t.Errorf("%s: record %d is seq %d %v, want seq %d %v", k.Device, i, r.Seq, r.Kind, i, want)
+			if i == 0 {
+				if r.Kind != tracepack.KindTransportEvent {
+					t.Errorf("%s: record 0 is %v, want the start", k.Device, r.Kind)
+				}
+				continue
+			}
+			m, err := hsms.DecodeHSMSMessage(r.Payload)
+			if err != nil || r.Kind != tracepack.KindData || m.SystemBytes() != hsms.ToSystemBytes(sys[i-1]) {
+				t.Errorf("%s: record %d is %v %v (%v), want the data record of system bytes %d", k.Device, i, r.Kind, m, err, sys[i-1])
 			}
 		}
 	}
@@ -103,6 +110,9 @@ func convertedOnce(t *testing.T, h *harness, n int, watermark int64, keys ...cat
 		t.Errorf("file state = %+v, %v; want watermark %d", st, err, watermark)
 	}
 }
+
+// bothDevices is twoDevicesTwoHours' records by capture.
+var bothDevices = map[catalog.LogKey][]uint32{gateEqp: {1, 11}, gateLp1: {2, 12}}
 
 // failingPut fails every put while fail is set, storing nothing.
 type failingPut struct {
@@ -118,6 +128,26 @@ func (s *failingPut) Put(ctx context.Context, key string, r io.ReadSeeker, size 
 	return s.ObjectStore.Put(ctx, key, r, size)
 }
 
+// failedUnacknowledged checks a failed flush acknowledged none of ms and left orphans puts unregistered, the reconciler's.
+func failedUnacknowledged(t *testing.T, h *harness, ms []*fakeMsg, orphans int) {
+	t.Helper()
+	for i, m := range ms {
+		if m.acked() != 0 {
+			t.Errorf("entry %d acknowledged by a flush that failed", i)
+		}
+	}
+	n := 0
+	_ = h.store.List(t.Context(), "", func(o store.ObjectInfo) error {
+		if st, _ := h.c.KeyStanding(t.Context(), o.Key); st == catalog.KeyUnknown {
+			n++
+		}
+		return nil
+	})
+	if n != orphans {
+		t.Errorf("%d unregistered puts, want %d for the reconciler", n, orphans)
+	}
+}
+
 // One flush of two devices across two hours, refused or lost at each point of its registration (logfeed.md §15.7):
 // the converter gives up with nothing acknowledged, and a new one converts the redeliveries once,
 // a registration committed under a lost answer leaving them stale; a committed registration retried answers as registered.
@@ -130,9 +160,18 @@ func TestGateFlushRefusedAndRecovered(t *testing.T) {
 		fails   bool
 		orphans int
 	}{
-		{name: "lost fence", fails: true, inject: func(t *testing.T, h *harness) func() catalog.Lease {
-			if err := h.c.ReleaseLease(t.Context(), h.conv.Lease); err != nil {
-				t.Fatal(err)
+		{name: "lost fence", fails: true, orphans: 4, inject: func(t *testing.T, h *harness) func() catalog.Lease {
+			// The lease is lost after every segment was put, as the registration starts.
+			h.conv.register = func(ctx context.Context, l catalog.Lease, f *catalog.LogFlush) (catalog.PackOutcome, error) {
+				if err := h.c.ReleaseLease(ctx, l); err != nil {
+					t.Fatal(err)
+				}
+				out, err := h.c.RegisterLogFlush(ctx, l, f)
+				if !errors.Is(err, catalog.ErrLeaseLost) || len(f.Packs) != 4 {
+					t.Errorf("a fenced registration of %d segments = %v, %v; want ErrLeaseLost", len(f.Packs), out, err)
+				}
+
+				return out, err
 			}
 
 			return func() catalog.Lease {
@@ -192,7 +231,8 @@ func TestGateFlushRefusedAndRecovered(t *testing.T) {
 				h := newHarness(t, c)
 				h.conv.Devices = Devices{Main: "eqp", Rules: []DeviceRule{{Token: "1", Device: "eqp"}, {Token: "2", Device: "lp1"}}}
 				first := twoDevicesTwoHours(t)
-				h.receive(first...)
+				dup := &fakeMsg{data: first[0].data} // a redelivery joining its held entry, acknowledged only with it
+				h.receive(append(first, dup)...)
 				restore := tc.inject(t, h)
 				var err error
 				for _, after := range []time.Duration{2 * time.Second, 10 * time.Second} {
@@ -205,25 +245,14 @@ func TestGateFlushRefusedAndRecovered(t *testing.T) {
 					t.Fatalf("the flush = %v, want failing %v", err, tc.fails)
 				}
 				if !tc.fails {
-					convertedOnce(t, h, 2, 700, gateEqp, gateLp1)
+					convertedOnce(t, h, 700, bothDevices)
+					if dup.acked() != 1 || first[0].acked() != 1 {
+						t.Errorf("an entry and its duplicate acknowledged %d and %d times, want once each", first[0].acked(), dup.acked())
+					}
 
 					return
 				}
-				for i, m := range first {
-					if m.acked() != 0 {
-						t.Errorf("entry %d acknowledged by a flush that failed", i)
-					}
-				}
-				orphans := 0
-				_ = h.store.List(t.Context(), "", func(o store.ObjectInfo) error {
-					if st, _ := c.KeyStanding(t.Context(), o.Key); st == catalog.KeyUnknown {
-						orphans++
-					}
-					return nil
-				})
-				if orphans != tc.orphans {
-					t.Errorf("%d unregistered puts, want %d for the reconciler", orphans, tc.orphans)
-				}
+				failedUnacknowledged(t, h, append(first, dup), tc.orphans)
 
 				h.conv.Abandon()
 				l := restore()
@@ -238,7 +267,7 @@ func TestGateFlushRefusedAndRecovered(t *testing.T) {
 						t.Errorf("redelivered entry %d acknowledged %d times, want once", i, m.acked())
 					}
 				}
-				convertedOnce(t, h, 2, 700, gateEqp, gateLp1)
+				convertedOnce(t, h, 700, bothDevices)
 			})
 		})
 	}
@@ -266,7 +295,7 @@ func TestGateAdmissionWaitsForABaseline(t *testing.T) {
 		h.receive(redeliver([]*fakeMsg{hd, bd})...)
 		h.tick(2 * time.Second)
 		h.tick(10 * time.Second)
-		convertedOnce(t, h, 1, 100, gateEqp)
+		convertedOnce(t, h, 100, map[catalog.LogKey][]uint32{gateEqp: {1}})
 	})
 }
 
@@ -289,14 +318,26 @@ func TestGateRotation(t *testing.T) {
 		h.now = h.now.Add(500 * time.Millisecond)
 		tail := line(gateFile.File, "tail") // within the reorder window of the next file's first entry
 		h.receive(tail)
-		h.tick(2 * time.Second) // the next file's entry leaves the window: the old file stops at this flush, its tail first
+		// The next file's entry has left its window and the tail has not: the old file stays open, the tail held.
+		h.tick(700 * time.Millisecond)
+		if st, _ := c.LogFileState(ctx, gateFile); st.Stopped || tail.acked() != 0 {
+			t.Fatalf("the old file stopped %v, its tail acknowledged %d, with the tail still in its window", st.Stopped, tail.acked())
+		}
+		h.tick(800 * time.Millisecond) // the tail leaves its window: the old file stops at this flush, its tail first
 		cp, _, err := c.LogCaptureOf(ctx, gateEqp)
 		if err != nil {
 			t.Fatal(err)
 		}
 		kinds := make([]tracepack.Kind, 0, 4)
+		var texts []string
 		for _, r := range h.records(cp.ID) {
 			kinds = append(kinds, r.Kind)
+			if a, err := tracepack.UnmarshalAnnotation(r.Payload); r.Kind == tracepack.KindAnnotation && err == nil && a.Text != nil {
+				texts = append(texts, *a.Text)
+			}
+		}
+		if len(texts) != 2 || texts[0] != "first" || texts[1] != "tail" {
+			t.Errorf("the old capture's annotations %q, want first then tail", texts)
 		}
 		want := []tracepack.Kind{tracepack.KindTransportEvent, tracepack.KindAnnotation, tracepack.KindAnnotation, tracepack.KindTransportEvent}
 		if len(kinds) != len(want) || kinds[2] != want[2] || kinds[3] != want[3] || tail.acked() != 1 {

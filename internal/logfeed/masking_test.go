@@ -121,8 +121,14 @@ func encryptedMasked(t *testing.T, h *harness, f *fixture, capture tracepack.UUI
 	if len(more) != had+1 || more[had].Kind != tracepack.KindAnnotation {
 		t.Fatalf("%d records after the encrypted body, want one annotation more than %d", len(more), had)
 	}
-	if last := more[had]; bytes.Contains(last.Payload, ciphertext) || !last.Quality.HasAny(tracepack.QualityRedacted) {
-		t.Errorf("the encrypted body's annotation holds its ciphertext or is not redacted: %+v", last)
+	last := more[had]
+	a, err := tracepack.UnmarshalAnnotation(last.Payload)
+	if err != nil || a.AnnotationKind != tracepack.AnnotationKindUnparsedEntry || a.Text == nil {
+		t.Fatalf("the encrypted body's record = %+v, %v; want an unparsed-entry", a, err)
+	}
+	// Zeroing keeps the text's length and clears every byte (the policy's source-text rule).
+	if *a.Text != string(make([]byte, len(ciphertext))) || !last.Quality.HasAny(tracepack.QualityRedacted) {
+		t.Errorf("the encrypted body's text = %q, redacted %v; want %d zero bytes, redacted", *a.Text, last.Quality.HasAny(tracepack.QualityRedacted), len(ciphertext))
 	}
 }
 

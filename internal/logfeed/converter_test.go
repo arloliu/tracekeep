@@ -134,8 +134,8 @@ func (h *harness) records(capture tracepack.UUID) []tracepack.Record {
 		if rep, err := r.Verify(ctx); err != nil || rep.Outcome != tracepack.VerifyOutcomeFinalizedConsistent {
 			return fmt.Errorf("verify %s: %+v, %w", o.Key, rep, err)
 		}
-		_, err = r.Iterate(ctx, tracepack.Query{}, func(it *tracepack.Item) error {
-			out = append(out, it.Record)
+		_, err = r.Iterate(ctx, tracepack.Query{Payloads: true}, func(it *tracepack.Item) error {
+			out = append(out, it.Clone().Record) // the read reuses its buffers
 			return nil
 		})
 

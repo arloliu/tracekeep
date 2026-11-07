@@ -3,6 +3,7 @@ package logfeed
 import (
 	"context"
 	"fmt"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -10,6 +11,7 @@ import (
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 
+	"github.com/arloliu/go-secs/tracepack"
 	"github.com/arloliu/tracekeep/internal/bus"
 	"github.com/arloliu/tracekeep/internal/catalog"
 	"github.com/arloliu/tracekeep/internal/catalog/catalogtest"
@@ -87,8 +89,8 @@ func (e *stageEnv) publish(n, round int) {
 	ts := time.Now().In(taipei).Format("2006-01-02 15:04:05.000")
 	for eq := range n {
 		f := &fixture{t: e.t, offset: int64(round) * 1000}
-		for range 3 {
-			raw := f.raw(map[string]any{"equipment_id": fmt.Sprintf("EQ%d", eq), "kind": KindUnclassified, "text": "line", "ts": ts})
+		for k := range 3 {
+			raw := f.raw(map[string]any{"equipment_id": fmt.Sprintf("EQ%d", eq), "kind": KindUnclassified, "text": fmt.Sprintf("r%d-%d", round, k), "ts": ts})
 			if _, err := e.js.Publish(e.t.Context(), fmt.Sprintf("tklog.EQ%d", eq), raw); err != nil {
 				e.t.Fatal(err)
 			}
@@ -149,7 +151,7 @@ func TestStageSharesAndTakesOver(t *testing.T) {
 		e.publish(8, 1)
 		e.eventually("b drains the feed alone", e.drained)
 		e.eventually("b holds every group", func() bool { return len(b.Held()) == e.feed.Groups })
-		checkCaptures(t, c, 8, 6)
+		e.converted(8, 2, 3)
 	})
 }
 
@@ -170,7 +172,7 @@ func TestStageRebalancesForAJoiner(t *testing.T) {
 		e.eventually("the groups shared two and two", func() bool { return len(a.Held()) == 2 && len(b.Held()) == 2 })
 		e.publish(8, 0)
 		e.eventually("the feed drained", e.drained)
-		checkCaptures(t, c, 8, 3)
+		e.converted(8, 1, 3)
 	})
 }
 
@@ -204,56 +206,86 @@ func TestStageRestoresOpenCaptures(t *testing.T) {
 	})
 }
 
-// checkCaptures checks that each of n equipment's capture holds its start and its entries up to seq highest.
-func checkCaptures(t *testing.T, c *catalog.Catalog, n int, highest int64) {
-	t.Helper()
+// converted checks each of n equipment's capture holds its start, then the first perRound entries of each round publish published, in order, each once,
+// and its file's watermark the last one's offset.
+func (e *stageEnv) converted(n, rounds, perRound int) {
+	e.t.Helper()
+	ctx := e.t.Context()
+	h := &harness{t: e.t, c: e.c, store: e.st}
 	for eq := range n {
-		key := catalog.LogKey{LogFile: catalog.LogFile{Source: "feed-a", EquipmentID: fmt.Sprintf("EQ%d", eq), File: "host-20261107.log"}, Device: "eqp"}
-		cp, ok, err := c.LogCaptureOf(t.Context(), key)
-		if err != nil || !ok || !cp.HasHighestSeq || cp.HighestSeq != highest {
-			t.Errorf("EQ%d's capture = %+v, %v, %v; want its entries up to seq %d", eq, cp.Capture, ok, err, highest)
+		file := catalog.LogFile{Source: "feed-a", EquipmentID: fmt.Sprintf("EQ%d", eq), File: "host-20261107.log"}
+		cp, ok, err := e.c.LogCaptureOf(ctx, catalog.LogKey{LogFile: file, Device: "eqp"})
+		if err != nil || !ok {
+			e.t.Errorf("EQ%d's capture = %v, %v", eq, ok, err)
+			continue
+		}
+		var got []string
+		want := make([]string, 0, rounds*perRound)
+		for r := range rounds {
+			for k := range perRound {
+				want = append(want, fmt.Sprintf("r%d-%d", r, k))
+			}
+		}
+		for _, r := range h.records(cp.ID) {
+			if a, err := tracepack.UnmarshalAnnotation(r.Payload); r.Kind == tracepack.KindAnnotation && err == nil && a.Text != nil {
+				got = append(got, *a.Text)
+			}
+		}
+		if !slices.Equal(got, want) || cp.HighestSeq != int64(len(want)) {
+			e.t.Errorf("EQ%d's entries %v, highest_seq %d; want %v", eq, got, cp.HighestSeq, want)
+		}
+		w := int64(rounds-1)*1000 + int64(perRound-1)*100
+		if st, err := e.c.LogFileState(ctx, file); err != nil || st.Watermark != w {
+			e.t.Errorf("EQ%d's file state = %+v, %v; want watermark %d", eq, st, err, w)
 		}
 	}
 }
 
-// ackPending is the entries the feed's group consumers delivered and hold unacknowledged.
-func (e *stageEnv) ackPending() int {
-	n := 0
-	l := e.s.ListConsumers(e.t.Context())
-	for ci := range l.Info() {
-		n += ci.NumAckPending
-	}
-	if err := l.Err(); err != nil {
-		e.t.Fatal(err)
-	}
-
-	return n
-}
-
-// A replica stopped holding every group's entries unflushed is taken over (logfeed.md §15.5 *Taking a lease*):
-// the replica taking the groups gets those older entries again with a newer backlog, and converts each once.
+// A replica that died holding every group's deliveries unacknowledged is taken over (logfeed.md §15.5 *Taking a lease*):
+// the replica taking the groups once their leases lapse re-creates each consumer, so the held entries come back at once, ahead of the newer backlog,
+// not after ack_wait; each is converted once, and the dead holder's acknowledgements arriving late change nothing.
 func TestGateTakeoverWithHeldEntriesAndBacklog(t *testing.T) {
 	t.Parallel()
 	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
 		ctx := t.Context()
 		e := newStageEnv(t, c)
-		a := e.stage("a", time.Hour)
-		a.Base.Flush = time.Hour // a holds what it receives
-		var wg sync.WaitGroup
-		t.Cleanup(wg.Wait)
-		stopA := run(ctx, &wg, a)
-		e.eventually("a takes every group", func() bool { return len(a.Held()) == e.feed.Groups })
+		for n := range e.feed.Groups {
+			if _, ok, err := c.TakeLease(ctx, catalog.LogGroupLease(n), "dead", 900*time.Millisecond); err != nil || !ok {
+				t.Fatal(ok, err)
+			}
+		}
 		e.publish(8, 0)
-		e.eventually("a holds the entries", func() bool { return e.ackPending() == 24 })
-		stopA()
-		if err := c.Leave(ctx, "a"); err != nil {
-			t.Fatal(err)
+		var held []jetstream.Msg
+		for n := range e.feed.Groups {
+			cons, err := e.s.Consumer(ctx, bus.FeedConsumer(n))
+			if err != nil {
+				t.Fatal(err)
+			}
+			batch, err := cons.Fetch(100, jetstream.FetchMaxWait(time.Second))
+			if err != nil {
+				t.Fatal(err)
+			}
+			for m := range batch.Messages() {
+				held = append(held, m)
+			}
+		}
+		if len(held) != 24 {
+			t.Fatalf("the dead holder holds %d entries, want 24", len(held))
 		}
 		e.publish(8, 1)
+		start := time.Now()
 		b := e.stage("b", time.Hour)
+		var wg sync.WaitGroup
+		t.Cleanup(wg.Wait)
 		run(ctx, &wg, b)
-		e.eventually("b drains the older entries and the backlog", e.drained)
-		checkCaptures(t, c, 8, 6)
+		e.eventually("b drains the held entries and the backlog", e.drained)
+		if took := time.Since(start); took >= e.feed.AckWait {
+			t.Errorf("the held entries came back after %v, not before ack_wait %v: the consumer was not re-created", took, e.feed.AckWait)
+		}
+		for _, m := range held {
+			_ = m.Ack()
+		}
+		e.converted(8, 2, 3)
 	})
 }
 
@@ -264,7 +296,7 @@ func TestGateRetriedPublish(t *testing.T) {
 		ctx := t.Context()
 		e := newStageEnv(t, c)
 		f := &fixture{t: e.t}
-		raw := f.raw(map[string]any{"equipment_id": "EQ0", "kind": KindUnclassified, "text": "line", "ts": time.Now().UTC().Format("2006-01-02 15:04:05.000"), "tz": "UTC"})
+		raw := f.raw(map[string]any{"equipment_id": "EQ0", "kind": KindUnclassified, "text": "r0-0", "ts": time.Now().UTC().Format("2006-01-02 15:04:05.000"), "tz": "UTC"})
 		for range 2 {
 			if _, err := e.js.Publish(ctx, "tklog.EQ0", raw, jetstream.WithMsgID("feed-a/EQ0/host-20261107.log/0")); err != nil {
 				t.Fatal(err)
@@ -277,6 +309,6 @@ func TestGateRetriedPublish(t *testing.T) {
 		t.Cleanup(wg.Wait)
 		run(ctx, &wg, e.stage("a", time.Hour))
 		e.eventually("the feed drained", e.drained)
-		checkCaptures(t, c, 1, 1)
+		e.converted(1, 1, 1)
 	})
 }

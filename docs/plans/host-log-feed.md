@@ -29,23 +29,23 @@ a number past its budget stops the plan for the owner's decision.
 ## Step 10a — the gate's correctness
 
 Most gate cases were met piecemeal by steps 2 to 9, at the catalog or the pure part; step 10a meets the rest through the converter, or the stage where the bus is the case,
-"converted once" read back from the registered packs alone, with the file's watermark and each capture's `highest_seq`:
+"converted once" read back from the registered packs alone, payloads included, each record matched to its entry (its system bytes or its text), with the file's watermark and each capture's `highest_seq`:
 
 | Gate case | Test |
 |---|---|
-| a two-device, two-hour flush refused by a lost fence and by a guard; a failed put; a commit's answer lost, committed and not; a committed flush retried | `TestGateFlushRefusedAndRecovered`: nothing acknowledged, a new converter converting the redeliveries once, those of a committed registration stale; a registration replaced through the converter's test seam, as ingest's flusher's is |
+| a two-device, two-hour flush refused by a lost fence and by a guard; a failed put; a commit's answer lost, committed and not; a committed flush retried | `TestGateFlushRefusedAndRecovered`: nothing acknowledged, a duplicate included, a new converter converting the redeliveries once, those of a committed registration stale; a registration replaced through the converter's test seam, as ingest's flusher's is, the fence lost once every segment was put |
 | a crash after the put, before the registration | the same test counts the puts left unregistered for the reconciler, which deletes a log capture's orphan (`TestLogOrphanDeleted`) |
 | a crash after the commit, before the acknowledgements | the same test's lost committed answer: every redelivery stale |
-| a takeover with older pending entries and a newer backlog | `TestGateTakeoverWithHeldEntriesAndBacklog`; the old holder's late acknowledgements rest on step 1's measured takeover and on a converter acknowledging nothing after its lease (`TestConverterAcknowledgesNothingAfterItsLease`) |
+| a takeover with older pending entries, a newer backlog and the old holder's late acknowledgements | `TestGateTakeoverWithHeldEntriesAndBacklog`: a dead holder's deliveries pending, a new replica getting them back before ack_wait by re-creating the consumer, the late acknowledgements after; a live converter acknowledges nothing after its lease (`TestConverterAcknowledgesNothingAfterItsLease`) |
 | admission waiting for a masking baseline | `TestGateAdmissionWaitsForABaseline` |
 | a rotation's tail inside the window, and past it | `TestGateRotation`; `TestConverterStops` |
 | an entry of a stopped file from a device the file never had | `TestGateRotation`, to the converter that stopped the file and to a new one |
 | an idle stop racing another group's registration after a change of G | `TestLogIdleStopRacesAnotherGroup`, both orders under a barrier |
 | `capture stop` with the lease held and lapsed | `TestStopLogCapture`, `TestCaptureStop`, `TestConverterStops` |
-| duplicates by redelivery and by a retried publish | `TestConverterEndToEnd`, `TestConverterMetrics`; `TestGateRetriedPublish` |
-| an unreadable entry against a malformed one; pairing's failures | `TestDecode`, `TestPairer`, `TestBuildAnnotations`, `TestConverterEndToEnd`, `TestConverterMetrics` |
+| duplicates by redelivery and by a retried publish | `TestGateFlushRefusedAndRecovered` (a duplicate acknowledged only with its entry's registration), `TestConverterEndToEnd`, `TestConverterMetrics`; `TestGateRetriedPublish` |
+| an unreadable entry against a malformed one; pairing's failures | `TestDecode`, `TestPairer`, `TestBuild` (a reply logged under its primary's header), `TestBuildAnnotations`, `TestConverterEndToEnd`, `TestConverterMetrics` |
 | an entry beyond retention; DST fall-back and spring-forward | `TestGateEntries` |
-| an encrypted body's, an unparsed-entry's and an unrecognised-line's text zeroed | `TestConverterMasks` |
+| an encrypted body's, an unparsed-entry's and an unrecognised-line's text zeroed | `TestConverterMasks`, the encrypted body's whole text checked zero |
 
 ## Gate cases
 
