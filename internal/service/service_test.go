@@ -99,7 +99,8 @@ func TestMigrateFeed(t *testing.T) {
 	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
 		ctx := t.Context()
 		e := env(t, c)
-		e.Config.Logfeed.Enabled, e.Config.Logfeed.LeaseGroups = true, 4
+		// A small limit: JetStream reserves a stream's max_bytes, and a test server's storage is far below the default 40 GiB.
+		e.Config.Logfeed.Enabled, e.Config.Logfeed.LeaseGroups, e.Config.Logfeed.MaxBytes = true, 4, 64<<20
 		for range 2 {
 			if err := Migrate(ctx, e); err != nil {
 				t.Fatalf("Migrate with the feed = %v", err)
