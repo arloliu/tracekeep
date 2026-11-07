@@ -242,6 +242,23 @@ func (m *Ingest) Refresh(ctx context.Context, cat Catalog, cons Consumer) error 
 	return err
 }
 
+// RefreshFeed reads the host log feed's stream backlog (logfeed.md §15.11) as Refresh reads the traffic stream's,
+// stamping refreshed_timestamp_seconds{source="feed"}; a failure keeps the previous values and counts in refresh_failures_total.
+func (m *Ingest) RefreshFeed(ctx context.Context, feed Consumer) error {
+	if m == nil {
+		return nil
+	}
+	st, err := feed.State(ctx)
+	if err != nil {
+		m.refreshFailures.Inc()
+
+		return err
+	}
+	m.snap.setFeed(st)
+
+	return nil
+}
+
 // catalogState is the catalog's part of a refresh.
 type catalogState struct {
 	parked, captures, gaps, unknownTail map[string]int
@@ -281,11 +298,11 @@ func readCatalog(ctx context.Context, cat Catalog) (catalogState, error) {
 
 // snapshot holds the gauges Refresh reads, each source's replaced whole under the mutex, so a scrape never sees a refresh half done.
 type snapshot struct {
-	mu           sync.Mutex
-	bus          BusState
-	cat          catalogState
-	busAt, catAt time.Time
-	now          func() time.Time
+	mu                   sync.Mutex
+	bus, feed            BusState
+	cat                  catalogState
+	busAt, catAt, feedAt time.Time
+	now                  func() time.Time
 }
 
 var (
@@ -298,6 +315,8 @@ var (
 		"Messages the traffic consumer delivered and holds unacknowledged.", nil, nil)
 	backlogMessagesDesc = prometheus.NewDesc("tracekeep_ingest_stream_backlog_messages", "Messages on the traffic stream.", nil, nil)
 	backlogBytesDesc    = prometheus.NewDesc("tracekeep_ingest_stream_backlog_bytes", "Bytes on the traffic stream.", nil, nil)
+	feedMessagesDesc    = prometheus.NewDesc("tracekeep_logfeed_stream_backlog_messages", "Messages on the host log feed's stream.", nil, nil)
+	feedBytesDesc       = prometheus.NewDesc("tracekeep_logfeed_stream_backlog_bytes", "Bytes on the host log feed's stream.", nil, nil)
 	refreshedDesc       = prometheus.NewDesc("tracekeep_ingest_refreshed_timestamp_seconds",
 		"When a source's refreshed gauges were last read whole, in Unix seconds, by source.", []string{"source"}, nil)
 )
@@ -308,6 +327,12 @@ func (s *snapshot) setBus(b BusState) {
 	s.bus, s.busAt = b, s.now()
 }
 
+func (s *snapshot) setFeed(b BusState) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.feed, s.feedAt = b, s.now()
+}
+
 func (s *snapshot) setCatalog(c catalogState) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -316,7 +341,9 @@ func (s *snapshot) setCatalog(c catalogState) {
 
 // Describe implements prometheus.Collector.
 func (s *snapshot) Describe(ch chan<- *prometheus.Desc) {
-	for _, d := range []*prometheus.Desc{parkedDesc, capturesOpenDesc, openGapsDesc, unknownTailDesc, ackPendingDesc, backlogMessagesDesc, backlogBytesDesc, refreshedDesc} {
+	for _, d := range []*prometheus.Desc{
+		parkedDesc, capturesOpenDesc, openGapsDesc, unknownTailDesc, ackPendingDesc, backlogMessagesDesc, backlogBytesDesc, feedMessagesDesc, feedBytesDesc, refreshedDesc,
+	} {
 		ch <- d
 	}
 }
@@ -324,7 +351,7 @@ func (s *snapshot) Describe(ch chan<- *prometheus.Desc) {
 // Collect implements prometheus.Collector.
 func (s *snapshot) Collect(ch chan<- prometheus.Metric) {
 	s.mu.Lock()
-	b, c, busAt, catAt := s.bus, s.cat, s.busAt, s.catAt
+	b, f, c, busAt, catAt, feedAt := s.bus, s.feed, s.cat, s.busAt, s.catAt, s.feedAt
 	s.mu.Unlock()
 	gauge := func(d *prometheus.Desc, v float64, labels ...string) {
 		ch <- prometheus.MustNewConstMetric(d, prometheus.GaugeValue, v, labels...)
@@ -334,6 +361,11 @@ func (s *snapshot) Collect(ch chan<- prometheus.Metric) {
 		gauge(backlogMessagesDesc, float64(b.Messages))
 		gauge(backlogBytesDesc, float64(b.Bytes))
 		gauge(refreshedDesc, float64(busAt.UnixNano())/1e9, "bus")
+	}
+	if !feedAt.IsZero() {
+		gauge(feedMessagesDesc, float64(f.Messages))
+		gauge(feedBytesDesc, float64(f.Bytes))
+		gauge(refreshedDesc, float64(feedAt.UnixNano())/1e9, "feed")
 	}
 	if !catAt.IsZero() {
 		gauge(refreshedDesc, float64(catAt.UnixNano())/1e9, "catalog")

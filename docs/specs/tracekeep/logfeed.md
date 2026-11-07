@@ -5,7 +5,7 @@ Status: draft (2026-11-07) — from P3 as T-60 accepted it and T-62 settled its 
 Covers the host log feed: a log pipeline parses the SECS traffic a host program prints to its text log,
 and tracekeep pairs the entries, builds the frames and writes `capture_method = log` captures as they arrive.
 New text, section 15, written from P3 (host log feed), T-59, T-60 and T-62; [README.md](README.md) maps each section to its file.
-Read before touching `internal/logfeed`, the feed's stream or its configuration, or the pipeline guide,
+Read before touching `internal/logfeed`, the feed's stream or its configuration, or the pipeline guide (`docs/guides/log-pipeline.md`),
 and before changing a part of another spec this one names.
 
 ## Interface

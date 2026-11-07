@@ -164,6 +164,31 @@ test("devices and sources are filtered independently, as the selector intersects
   await waitFor(() => { expect(asked.captures.at(-1)?.selector).toMatchObject({ devices: [], sources: ["b"] }); });
 });
 
+test("a method selects its series' sources, and a log series is marked reconstructed, claiming no coverage", async () => {
+  const asked = fresh();
+  const rows = [
+    { name: "eqp", source: "gw", captureMethod: "raw-stream" },
+    { name: "eqp", source: "feed-a", captureMethod: "log" },
+    { name: "lp1", source: "feed-a", captureMethod: "log" },
+    { name: "lp1", source: "feed-b", captureMethod: "log" },
+  ];
+  const { router } = renderApp("/?equipment=T-1", machine(asked, rows));
+  await userEvent.click(await screen.findByRole("checkbox", { name: "Method log" }));
+  await waitFor(() => { expect(router.state.location.search).toMatchObject({ sources: ["feed-a", "feed-b"] }); });
+  expect(covered()).toEqual([["eqp", "feed-a"], ["lp1", "feed-a"], ["lp1", "feed-b"]]);
+  expect(screen.getByRole("checkbox", { name: "Method raw-stream" })).not.toBeChecked();
+  const badges = within(screen.getByRole("table", { name: "Series" })).getAllByText("log · reconstructed");
+  expect(badges).toHaveLength(3);
+  expect(badges[0]).toHaveAttribute("title", expect.stringMatching(/claims no coverage/));
+
+  await userEvent.click(screen.getByRole("checkbox", { name: "Source feed-b" }));
+  expect(screen.getByRole("checkbox", { name: "Method log" })).not.toBeChecked();
+  await userEvent.click(screen.getByRole("checkbox", { name: "Method log" }));
+  await waitFor(() => { expect(router.state.location.search).toMatchObject({ sources: ["feed-a", "feed-b"] }); });
+  await userEvent.click(screen.getByRole("checkbox", { name: "Method log" }));
+  await waitFor(() => { expect(router.state.location.search.sources).toBeUndefined(); });
+});
+
 test("a series is told apart by its device and source whatever they hold", async () => {
   const error = vi.spyOn(console, "error");
   renderApp("/?equipment=T-1&sources=%5B%22c%22%2C%22b%7Cc%22%5D", machine(fresh(), [{ name: "a|b", source: "c" }, { name: "a", source: "b|c" }]));

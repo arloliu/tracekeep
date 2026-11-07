@@ -402,7 +402,7 @@ func TestRefreshFailureLoggedSafe(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		(&Env{Log: log.logger()}).refresh(ctx, m, cat, bus)
+		(&Env{Log: log.logger()}).refresh(ctx, m, cat, bus, nil)
 	}()
 	line, before := log.next(t, "metrics: refresh")
 	cancel()
