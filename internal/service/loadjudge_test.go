@@ -1,6 +1,7 @@
 package service
 
 import (
+	"cmp"
 	"errors"
 	"fmt"
 	"math"
@@ -186,7 +187,7 @@ type cycleVerdict struct {
 	// offered, made and published are forwards, forwards and records a second from the first cycle's start to the last's end.
 	offered, made, published float64
 	dropped                  uint64
-	// minima are the observed cycles' backlog minima, each read at its time.
+	// minima are the observed cycles' backlog minima, each at its flush's settling.
 	minima []cycleMin
 	// The slopes are records a second of rise through the cycles' backlog minima and queue maxima against elapsed time, bound their limit.
 	backlogSlope, ringSlope, reservedSlope float64
@@ -196,7 +197,7 @@ type cycleVerdict struct {
 	why               string
 }
 
-// cycleMin is a cycle's backlog minimum and when it was read.
+// cycleMin is a cycle's backlog minimum and when it was.
 type cycleMin struct {
 	at      time.Time
 	backlog float64
@@ -206,8 +207,10 @@ type cycleMin struct {
 // so the samples before the first pass and after the last, an incomplete cycle each, are left out.
 // A flush can settle in more than one pass, a few captures' batches opened a pass after the rest's and due that much later,
 // so passes within half the flush interval of a flush's first are that flush's, and its last ends the cycle.
-// A cycle's observation is the backlog's minimum among its samples, at that sample's time, and its queues' maxima;
-// a cycle no sample fell in, two passes within a sampling period, has none and is not counted.
+// A cycle's observation is its backlog minimum, the backlog when the flush that began it settled, and its queues' maxima.
+// The minimum is read from the cycle's first sample, not taken as its least, which lags the settling by up to a sampling period
+// and holds the records published meanwhile: at a flush of seconds, enough to swing the slope past the bound by itself.
+// A cycle no sample fell in, two passes within a sampling period, has none and is not counted.
 // It is sustained as judgeLoad's windows are, the drift allowance a rate: made within 2% of offered, nothing dropped, no pass failed,
 // and the least-squares rise of the minima, and of the queue maxima, against elapsed time each below 0.5% of the published rate a second,
 // which is judgeLoad's 0.5% of a window's records a window, whatever the window; fewer than least observed cycles leave it unjudged.
@@ -231,7 +234,7 @@ func judgeSpan(offered float64, origin loadSample, samples []loadSample, passes 
 	var xs, mins, ring, reserved []float64
 	var first, last *loadSample
 	for i := 1; i < len(ends); i++ {
-		lo, at, observed := math.Inf(1), time.Time{}, false
+		observed := false
 		var r, q float64
 		for j := range samples {
 			s := &samples[j]
@@ -242,16 +245,14 @@ func judgeSpan(offered float64, origin loadSample, samples []loadSample, passes 
 				first = s
 			}
 			last, observed = s, true
-			if float64(s.backlog) < lo {
-				lo, at = float64(s.backlog), s.at
-			}
 			r, q = max(r, s.ring), max(q, s.reserved)
 		}
 		if !observed {
 			continue
 		}
-		v.minima = append(v.minima, cycleMin{at: at, backlog: lo})
-		xs = append(xs, at.Sub(samples[0].at).Seconds())
+		lo := trough(samples, ends[i-1])
+		v.minima = append(v.minima, cycleMin{at: ends[i-1], backlog: lo})
+		xs = append(xs, ends[i-1].Sub(samples[0].at).Seconds())
 		mins, ring, reserved = append(mins, lo), append(ring, r), append(reserved, q)
 	}
 	if len(v.minima) < least {
@@ -284,6 +285,21 @@ func judgeSpan(offered float64, origin loadSample, samples []loadSample, passes 
 	}
 
 	return v
+}
+
+// trough is the backlog when a flush settled at end, a sample at or after it:
+// acknowledgements come only in passes, so the first sample from end holds the flush's acknowledged records,
+// and the records published by end are interpolated between it and the sample before.
+func trough(samples []loadSample, end time.Time) float64 {
+	j := slices.IndexFunc(samples, func(s loadSample) bool { return !s.at.Before(end) })
+	s := samples[j]
+	published := float64(s.published)
+	if j > 0 && s.at.After(end) {
+		a := samples[j-1]
+		published = float64(a.published) + float64(s.published-a.published)*end.Sub(a.at).Seconds()/s.at.Sub(a.at).Seconds()
+	}
+
+	return published - (float64(s.published) - float64(s.backlog))
 }
 
 // flushEnds are the times the flushes settled from one sample to the other: a flush's last pass,
@@ -589,9 +605,11 @@ type drainRun struct {
 	flush    time.Duration
 	upload   func(k int) time.Duration
 	leak     float64
+	// every is the sampling period, a second when zero.
+	every time.Duration
 }
 
-// run returns the samples, every second over span from start, and every pass completed by then.
+// run returns the samples, every period over span from start, and every pass completed by then.
 func (r drainRun) run(start, span time.Duration) ([]loadSample, []settledPass) {
 	type capture struct{ opened, taken time.Duration }
 	type drain struct {
@@ -628,8 +646,9 @@ func (r drainRun) run(start, span time.Duration) ([]loadSample, []settledPass) {
 	for _, d := range drains {
 		passes = append(passes, settledPass{at: t0.Add(d.at)})
 	}
+	every := cmp.Or(r.every, time.Second)
 	var samples []loadSample
-	for at := start; at <= start+span; at += time.Second {
+	for at := start; at <= start+span; at += every {
 		published, acked := r.rate*at.Seconds(), 0.0
 		for _, d := range drains {
 			if d.at <= at {
@@ -723,7 +742,7 @@ func TestJudgeCyclesBounds(t *testing.T) {
 
 // A flush whose batches settle in two passes a second apart, a few captures' batches opened a pass after the rest's, is one cycle:
 // a cycle between the two would hold the flush's peak or its trough alone, and its minimum swing the slope.
-// Wherever the samples end, between a flush's two passes included, every minimum is a drain's trough.
+// Wherever the samples end, between a flush's two passes included, every minimum is the backlog at a flush's last pass.
 func TestJudgeCyclesSplitFlush(t *testing.T) {
 	t.Parallel()
 	const rate = 1600.0
@@ -733,12 +752,6 @@ func TestJudgeCyclesSplitFlush(t *testing.T) {
 		for end := 72 * time.Second; end < 72*time.Second+r.flush+r.upload(0); end += 250 * time.Millisecond {
 			samples, passes := r.run(time.Minute+500*time.Millisecond, end)
 			whole := judgeCycles(rate/2, loadSample{}, samples, passes, r.flush, 5)
-			var drained []cycleMin // each drain's trough, the first sample after its pass
-			for _, p := range passes {
-				if i := slices.IndexFunc(samples, func(s loadSample) bool { return !s.at.Before(p.at) }); i >= 0 {
-					drained = append(drained, cycleMin{at: samples[i].at, backlog: float64(samples[i].backlog)})
-				}
-			}
 			if whole.sustained != (rise < 1) {
 				t.Fatalf("rising %v of the allowance, one pass a flush, ending at %s: sustained %v (%s)", rise, end, whole.sustained, whole.why)
 			}
@@ -749,17 +762,47 @@ func TestJudgeCyclesSplitFlush(t *testing.T) {
 				}
 				slices.SortFunc(split, func(a, b settledPass) int { return a.at.Compare(b.at) })
 				v := judgeCycles(rate/2, loadSample{}, samples, split, r.flush, 5)
-				troughs := 0
-				for _, m := range v.minima {
-					if slices.Contains(drained, m) {
-						troughs++
-					}
-				}
-				if troughs != len(v.minima) || len(v.minima) < len(whole.minima)-1 || v.sustained != whole.sustained {
-					t.Errorf("rising %v of the allowance, a second pass %s apart, ending at %s: minima %v, sustained %v (%s); want drain troughs, at least %d, sustained %v",
+				if troughs := settledTroughs(r, time.Minute+500*time.Millisecond, end, split, v.minima); troughs != len(v.minima) || len(v.minima) < len(whole.minima)-1 || v.sustained != whole.sustained {
+					t.Errorf("rising %v of the allowance, a second pass %s apart, ending at %s: minima %v, sustained %v (%s); want the backlog at a flush's last pass, at least %d, sustained %v",
 						rise, apart, end, v.minima, v.sustained, v.why, len(whole.minima)-1, whole.sustained)
 				}
 			}
 		}
 	}
+}
+
+// Passes that fall ever later between two samples, the flush's work a little longer than whole seconds, change no minimum:
+// a cycle's least sample would hold the records published since the pass, a share of a sampling period growing every cycle,
+// and rise with them past the bound when nothing rises.
+func TestJudgeCyclesSamplingPhase(t *testing.T) {
+	t.Parallel()
+	const rate = 1600.0
+	start, span := time.Minute+100*time.Millisecond, 80*time.Second
+	r := drainRun{rate: rate, captures: 1, flush: 10 * time.Second, upload: cycled(1150 * time.Millisecond)}
+	for _, rise := range []float64{0, 4} {
+		r.leak = rise * 0.005 * rate
+		samples, passes := r.run(start, span)
+		v := judgeCycles(rate/2, loadSample{}, samples, passes, r.flush, 6)
+		if troughs := settledTroughs(r, start, span, passes, v.minima); v.sustained != (rise < 1) || troughs != len(v.minima) {
+			t.Errorf("rising %v of the allowance: minima %v, %d of them the backlog at a flush's last pass, sustained %v (%s) at %.2f/s, the bound %.2f/s",
+				rise, v.minima, troughs, v.sustained, v.why, v.backlogSlope, v.bound)
+		}
+	}
+}
+
+// settledTroughs counts the minima that are the backlog at a flush's last pass, read from r's run sampled every 10 ms:
+// each at a pass no other follows within half a flush, its backlog the one sampled there.
+func settledTroughs(r drainRun, start, span time.Duration, passes []settledPass, minima []cycleMin) int {
+	r.every = 10 * time.Millisecond
+	fine, _ := r.run(start, span)
+	n := 0
+	for _, m := range minima {
+		p := slices.IndexFunc(passes, func(p settledPass) bool { return p.at.Equal(m.at) })
+		s := slices.IndexFunc(fine, func(s loadSample) bool { return !s.at.Before(m.at) })
+		if p >= 0 && (p == len(passes)-1 || passes[p+1].at.Sub(m.at) >= r.flush/2) && s >= 0 && math.Abs(float64(fine[s].backlog)-m.backlog) <= 1 {
+			n++
+		}
+	}
+
+	return n
 }
