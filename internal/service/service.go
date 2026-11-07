@@ -33,6 +33,7 @@ import (
 	"github.com/arloliu/tracekeep/internal/config"
 	"github.com/arloliu/tracekeep/internal/ingest"
 	"github.com/arloliu/tracekeep/internal/keys"
+	"github.com/arloliu/tracekeep/internal/logfeed"
 	"github.com/arloliu/tracekeep/internal/metrics"
 	"github.com/arloliu/tracekeep/internal/records"
 	"github.com/arloliu/tracekeep/internal/safetext"
@@ -464,6 +465,14 @@ func Ingest(ctx context.Context, e *Env) error {
 	if err != nil {
 		return err
 	}
+	stage, err := logStage(ctx, e, gs[0])
+	if err != nil {
+		for _, g := range gs {
+			e.leave(g.Replica)
+		}
+
+		return err
+	}
 	states := make([]busState, len(gs))
 	for i, g := range gs {
 		states[i] = e.busState(g)
@@ -473,6 +482,9 @@ func Ingest(ctx context.Context, e *Env) error {
 			if _, err := s.State(ctx); err != nil {
 				return err
 			}
+		}
+		if stage != nil {
+			return stage.Ready(ctx)
 		}
 
 		return nil
@@ -493,7 +505,56 @@ func Ingest(ctx context.Context, e *Env) error {
 		}()
 	}
 
-	return run(ctx, e, gs)
+	return run(ctx, e, gs, stage)
+}
+
+// logStage builds the host log feed's stage from the traffic ingester's configurations, keys and store, nil with the feed disabled (logfeed.md §15.4).
+func logStage(ctx context.Context, e *Env, g *ingest.Ingester) (*logfeed.Stage, error) {
+	c := e.Config
+	if !c.Logfeed.Enabled {
+		return nil, nil //nolint:nilnil // no stage is not an error
+	}
+	traffic, err := e.JS.Stream(ctx, bus.StreamName(e.Bus(), catalog.RoleTraffic))
+	if err != nil {
+		return nil, fmt.Errorf("service: traffic stream: %w", err)
+	}
+	s, err := e.JS.Stream(ctx, c.Logfeed.Stream)
+	if err != nil {
+		return nil, fmt.Errorf("service: feed stream: %w", err)
+	}
+	dir, err := ownWorkDir(c.Ingest.WorkDir, "logfeed", c.Replica)
+	if err != nil {
+		return nil, err
+	}
+	if err := ingest.CleanWorkDir(dir); err != nil {
+		return nil, err
+	}
+	l := &c.Logfeed
+	rules := func(rs []config.DeviceRule) []logfeed.DeviceRule {
+		out := make([]logfeed.DeviceRule, len(rs))
+		for i, r := range rs {
+			out[i] = logfeed.DeviceRule{Token: r.Token, Session: r.Session, Device: r.Device}
+		}
+
+		return out
+	}
+	overrides := map[string][]logfeed.DeviceRule{}
+	for eq, rs := range l.DeviceOverrides {
+		overrides[eq] = rules(rs)
+	}
+
+	return &logfeed.Stage{
+		Catalog: e.Catalog, Stream: s, Feed: e.Feed(traffic.CachedInfo().Config.Replicas), Replica: c.Replica,
+		LeaseTTL: c.Ingest.Lease, FetchBatch: c.Ingest.FetchBatch, Pause: c.Ingest.Lease, Log: e.Log.With("role", "logfeed"),
+		Base: &logfeed.Converter{
+			Catalog: e.Catalog, Store: e.Store, KeyPrefix: c.Store.KeyPrefix, WorkDir: dir, Writer: writerName,
+			Configs: g.Executor.Configs, Bindable: g.Executor.Bindable, Keys: g.Executor.Keys,
+			Devices: logfeed.Devices{Main: l.MainDevice, Rules: rules(l.Devices), Overrides: overrides},
+			Flush:   l.Flush(c.Ingest.FlushInterval), Reorder: l.ReorderWindow, Idle: l.IdlePeriod, AckWait: c.Ingest.AckWait, Pairing: l.PairingWindow,
+			MaxBatchBytes: int(c.Ingest.BatchMaxBytes.Int64()), HorizonHour: func() int64 { return ingest.HourOf(e.horizon()) }, Now: e.now,
+			Log: e.Log.With("role", "logfeed"),
+		},
+	}, nil
 }
 
 // refresh reads ingest's catalog and bus gauges every refreshInterval until ctx ends, each pass bounded by the interval.
@@ -545,7 +606,7 @@ func (b busState) State(ctx context.Context) (metrics.BusState, error) {
 }
 
 // run runs the joined ingesters until ctx ends, and ends their memberships.
-func run(ctx context.Context, e *Env, gs []*ingest.Ingester) error {
+func run(ctx context.Context, e *Env, gs []*ingest.Ingester, stage *logfeed.Stage) error {
 	g, gctx := errgroup.WithContext(ctx)
 	for _, ig := range gs {
 		g.Go(func() error {
@@ -553,6 +614,9 @@ func run(ctx context.Context, e *Env, gs []*ingest.Ingester) error {
 
 			return ig.Run(gctx)
 		})
+	}
+	if stage != nil {
+		g.Go(func() error { return stage.Run(gctx) })
 	}
 
 	return g.Wait()

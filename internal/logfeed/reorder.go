@@ -101,19 +101,6 @@ func (w *Window[T]) Settle(watermark int64) {
 // Forget drops a released entry resolved without a flush, so a redelivery of it is stale.
 func (w *Window[T]) Forget(offset int64) { delete(w.unsettled, offset) }
 
-// All is every item the window holds or keeps unsettled: what a holder of the file keeps in progress and returns when it gives up.
-func (w *Window[T]) All() []T {
-	out := make([]T, 0, len(w.held)+len(w.unsettled))
-	for _, h := range w.held {
-		out = append(out, h.item)
-	}
-	for _, it := range w.unsettled {
-		out = append(out, it)
-	}
-
-	return out
-}
-
 // Held is the number of entries in the window.
 func (w *Window[T]) Held() int { return len(w.held) }
 

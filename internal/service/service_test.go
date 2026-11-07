@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"io/fs"
 	"log/slog"
 	"net/http"
@@ -146,6 +147,48 @@ func TestMigrateFeed(t *testing.T) {
 	})
 }
 
+// With the feed enabled, ingest runs the log stage: entries published on the feed become a log capture.
+func TestIngestConvertsTheFeed(t *testing.T) {
+	t.Parallel()
+	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
+		ctx := t.Context()
+		e := env(t, c)
+		l := &e.Config.Logfeed
+		l.Enabled, l.LeaseGroups, l.MaxBytes, l.ReorderWindow, l.FlushInterval = true, 2, 64<<20, 100*time.Millisecond, 200*time.Millisecond
+		if err := Migrate(ctx, e); err != nil {
+			t.Fatal(err)
+		}
+		run, stop := context.WithCancel(ctx)
+		done := make(chan error, 1)
+		go func() { done <- Ingest(run, e) }()
+		defer func() {
+			stop()
+			<-done //nolint:errcheck // the role's end, its result not checked here
+		}()
+		entry := `{"v":1,"equipment_id":"T1","source":"feed-a","tz":"UTC","file":"host.log","offset":%d,"ts":"2026-11-07 08:00:0%d","kind":"unclassified","text":"line"}`
+		for i := range 3 {
+			if _, err := e.JS.Publish(ctx, "tklog.T1", fmt.Appendf(nil, entry, 100*i, i)); err != nil {
+				t.Fatal(err)
+			}
+		}
+		key := catalog.LogKey{LogFile: catalog.LogFile{Source: "feed-a", EquipmentID: "T1", File: "host.log"}, Device: "eqp"}
+		deadline := time.Now().Add(20 * time.Second)
+		for {
+			cp, ok, err := c.LogCaptureOf(ctx, key)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if ok && cp.HasHighestSeq && cp.HighestSeq == 3 {
+				return
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("the feed's capture = %+v, %v after 20 s; want its start and 3 entries registered", cp.Capture, ok)
+			}
+			time.Sleep(50 * time.Millisecond)
+		}
+	})
+}
+
 // With the feed enabled, a role refuses to start until migrate has made the feed's stream.
 func TestRolesNeedTheFeed(t *testing.T) {
 	t.Parallel()
@@ -213,7 +256,7 @@ func TestIngestJoinsBothConsumers(t *testing.T) {
 		}
 		stopped, cancel := context.WithCancel(ctx)
 		cancel()
-		if err := run(stopped, e, gs); err != nil {
+		if err := run(stopped, e, gs, nil); err != nil {
 			t.Errorf("run stopped = %v", err)
 		}
 		// Both memberships left: a configuration neither executes is bindable, which a live member lacking it would prevent.

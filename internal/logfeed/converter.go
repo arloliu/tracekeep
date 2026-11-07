@@ -11,6 +11,7 @@ import (
 	"os"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/arloliu/go-secs/tracepack"
@@ -70,6 +71,10 @@ type Converter struct {
 	Log         *slog.Logger
 
 	equipment map[string]*equipmentState
+
+	// mu guards held, every delivery the converter holds unacknowledged, which the heartbeat keeps in progress from its own goroutine.
+	mu   sync.Mutex
+	held map[Msg]struct{}
 }
 
 // handle is an entry's acknowledgement handles: its delivery's and its duplicates'.
@@ -146,30 +151,35 @@ type batch struct {
 // Receive takes one delivery at now (logfeed.md §15.5): an unreadable, beyond-retention or stale entry is acknowledged at once,
 // a duplicate joins its held entry, and any other waits in its file's window.
 func (c *Converter) Receive(ctx context.Context, m Msg, now time.Time) error {
+	if err := ctx.Err(); err != nil {
+		return err // the lease lost: nothing more is acknowledged
+	}
 	token := m.Subject()[strings.LastIndexByte(m.Subject(), '.')+1:]
 	e, err := Decode(token, m.Data())
 	if errors.Is(err, ErrUnreadable) {
-		return ack(m)
+		return c.ack(ctx, m)
 	}
 	malformed := errors.Is(err, ErrMalformed)
 	if ingest.HourOf(e.UTCNs) < c.HorizonHour() {
-		return ack(m)
+		return c.ack(ctx, m)
 	}
 	f, err := c.file(ctx, e, now)
 	if err != nil {
 		return err
 	}
 	if f.stopped {
-		return ack(m)
+		return c.ack(ctx, m)
 	}
 	f.lastArrival = now
 	p := &pend{e: e, malformed: malformed, h: &handle{msgs: []Msg{m}}}
 	switch d, held := f.window.Add(e.At(), now, p); d {
 	case Duplicate:
 		held.h.msgs = append(held.h.msgs, m)
+		c.track(m)
 	case Stale:
-		return ack(m)
+		return c.ack(ctx, m)
 	case Held:
+		c.track(m)
 	default:
 		return fmt.Errorf("logfeed: disposition %d", d)
 	}
@@ -177,12 +187,28 @@ func (c *Converter) Receive(ctx context.Context, m Msg, now time.Time) error {
 	return nil
 }
 
-func ack(m Msg) error {
+// ack acknowledges m unless ctx ended, as it does when the group's lease is lost (logfeed.md §15.4).
+func (c *Converter) ack(ctx context.Context, m Msg) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if err := m.Ack(); err != nil {
 		return fmt.Errorf("logfeed: acknowledge: %w", err)
 	}
+	c.mu.Lock()
+	delete(c.held, m)
+	c.mu.Unlock()
 
 	return nil
+}
+
+func (c *Converter) track(m Msg) {
+	c.mu.Lock()
+	if c.held == nil {
+		c.held = map[Msg]struct{}{}
+	}
+	c.held[m] = struct{}{}
+	c.mu.Unlock()
 }
 
 // file is e's file, read from the catalog when first seen; a file of the source dated later becomes the successor of the source's files before it.
@@ -326,7 +352,7 @@ func (c *Converter) convert(ctx context.Context, eq *equipmentState, f *fileStat
 		if cs.stopped {
 			// A stopped capture's key takes nothing more: its entries are stale (§15.11), and a redelivery of one is stale too.
 			for _, e := range it.Entries() {
-				if err := ackAll(f.pends[e].h); err != nil {
+				if err := c.ackAll(ctx, f.pends[e].h); err != nil {
 					return err
 				}
 				f.window.Forget(e.At())
@@ -369,9 +395,9 @@ func (c *Converter) classify(cs *captureState, r tracepack.Record) tracepack.Rec
 	return r
 }
 
-func ackAll(h *handle) error {
+func (c *Converter) ackAll(ctx context.Context, h *handle) error {
 	for _, m := range h.msgs {
-		if err := ack(m); err != nil {
+		if err := c.ack(ctx, m); err != nil {
 			return err
 		}
 	}
@@ -404,6 +430,9 @@ func (c *Converter) capture(ctx context.Context, eq *equipmentState, f *fileStat
 	if ok {
 		// Started once a record of it is registered: one admitted before a crash and never flushed writes its start at seq 0.
 		cs.id, cs.configID, cs.started, meta.PreviousCaptureID = found.ID, found.ConfigID, found.HasHighestSeq, found.Previous
+		if found.TZ != "" {
+			meta.SourceTZ = &found.TZ
+		}
 		cs.stopped = found.State != catalog.StateOpen
 		if found.HasHighestSeq {
 			cs.next = uint64(found.HighestSeq) + 1 //nolint:gosec // a stored seq is below 2^63
@@ -422,7 +451,7 @@ func (c *Converter) capture(ctx context.Context, eq *equipmentState, f *fileStat
 	// No descriptor bytes: a bus descriptor serves bus captures only, and each segment carries the capture's metadata (logfeed.md §15.6).
 	d := &catalog.Descriptor{EquipmentID: key.EquipmentID, RecorderInstanceID: meta.RecorderInstanceID, Device: device,
 		Source: key.Source, OriginNS: first.UTCNs, PreviousCaptureID: meta.PreviousCaptureID,
-		CaptureMethod: tracepack.CaptureMethodLog.String(), Vantage: tracepack.VantageHost.String(), SourceDialect: Dialect}
+		CaptureMethod: tracepack.CaptureMethodLog.String(), Vantage: tracepack.VantageHost.String(), SourceDialect: Dialect, SourceTZ: first.TZ}
 	res, err := c.Catalog.AdmitLog(ctx, c.Lease, key, id, d, c.Bindable)
 	if errors.Is(err, catalog.ErrNoBindableConfig) || errors.Is(err, catalog.ErrLeaseLost) || errors.Is(err, catalog.ErrFileStopped) {
 		// No masking configuration yet, the lease lost, or the file stopped by another holder: the entries wait for a new start.
@@ -642,7 +671,7 @@ func (c *Converter) flush(ctx context.Context, eq *equipmentState, requests []tr
 	}
 	for _, k := range keys {
 		for _, h := range eq.batches[k].handles {
-			if err := ackAll(h); err != nil {
+			if err := c.ackAll(ctx, h); err != nil {
 				return err
 			}
 		}
@@ -795,49 +824,77 @@ func runs(records []tracepack.Record) []catalog.Range {
 	return out
 }
 
-// Heartbeat keeps every held delivery in progress, as ingest's heartbeat does (architecture.md §3.1).
+// Heartbeat keeps every held delivery in progress, as ingest's heartbeat does (architecture.md §3.1); it may run beside the converter's own goroutine.
 func (c *Converter) Heartbeat() {
-	for _, eq := range c.equipment {
-		for _, f := range eq.files {
-			for _, p := range f.window.All() {
-				for _, m := range p.h.msgs {
-					_ = m.InProgress()
-				}
-			}
-		}
-		for _, b := range eq.batches {
-			for _, h := range b.handles {
-				for _, m := range h.msgs {
-					_ = m.InProgress()
-				}
-			}
-		}
+	c.mu.Lock()
+	ms := make([]Msg, 0, len(c.held))
+	for m := range c.held {
+		ms = append(ms, m)
+	}
+	c.mu.Unlock()
+	for _, m := range ms {
+		_ = m.InProgress()
 	}
 }
 
 // Abandon negatively acknowledges every held delivery, which the stream redelivers, and drops every state: the converter gives up its lease.
 func (c *Converter) Abandon() {
-	seen := map[*handle]bool{}
-	nak := func(h *handle) {
-		if h == nil || seen[h] {
-			return
-		}
-		seen[h] = true
-		for _, m := range h.msgs {
-			_ = m.Nak()
-		}
-	}
-	for _, eq := range c.equipment {
-		for _, f := range eq.files {
-			for _, p := range f.window.All() {
-				nak(p.h)
-			}
-		}
-		for _, b := range eq.batches {
-			for _, h := range b.handles {
-				nak(h)
-			}
-		}
+	c.mu.Lock()
+	held := c.held
+	c.held = nil
+	c.mu.Unlock()
+	for m := range held {
+		_ = m.Nak()
 	}
 	c.equipment = nil
+}
+
+// Load restores the open log captures a converter taking its group's lease finds, so their files' idle stops and their stop requests
+// are written though no entry of them arrives (logfeed.md §15.5 *Taking a lease*, §15.6); a file's last arrival is its last record's time.
+func (c *Converter) Load(opens []catalog.OpenLog) error {
+	if c.equipment == nil {
+		c.equipment = map[string]*equipmentState{}
+	}
+	now := c.Now()
+	for i := range opens {
+		o := &opens[i]
+		eq := c.equipment[o.Key.EquipmentID]
+		if eq == nil {
+			eq = &equipmentState{id: o.Key.EquipmentID, files: map[fileKey]*fileState{}, captures: map[catalog.LogKey]*captureState{},
+				batches: map[batchKey]*batch{}, parts: map[batchKey]int{}, nextFlush: now.Add(c.Flush)}
+			c.equipment[o.Key.EquipmentID] = eq
+		}
+		k := fileKey{source: o.Key.Source, file: o.Key.File}
+		if eq.files[k] == nil {
+			eq.files[k] = &fileState{key: o.Key.LogFile, window: NewWindow[*pend](c.Reorder, o.Watermark), pairer: NewPairer(c.Pairing),
+				pends: map[*Entry]*pend{}, settled: o.Watermark, high: o.Watermark}
+			eq.linkSuccessors(o.Key.Source)
+		}
+		// A file's last arrival is its most recent capture's last record, whichever device it is.
+		if last := time.Unix(0, o.LastNS); last.After(eq.files[k].lastArrival) {
+			eq.files[k].lastArrival = last
+		}
+		if err := c.executable(o.ConfigID); err != nil {
+			return err
+		}
+		meta := c.descriptor(o.Key, &Entry{TZ: o.TZ})
+		meta.PreviousCaptureID = o.Previous
+		cs := &captureState{id: o.ID, key: o.Key, configID: o.ConfigID, started: o.HasHighestSeq, meta: meta}
+		if o.HasHighestSeq {
+			cs.next = uint64(o.HighestSeq) + 1 //nolint:gosec // a stored seq is below 2^63
+		}
+		eq.captures[o.Key] = cs
+	}
+
+	return nil
+}
+
+// clone is a fresh converter of c's settings under lease l of group n, holding nothing.
+func (c *Converter) clone(l catalog.Lease, n int) *Converter {
+	return &Converter{
+		Lease: l, Group: n, Catalog: c.Catalog, Store: c.Store, KeyPrefix: c.KeyPrefix, WorkDir: c.WorkDir, Writer: c.Writer,
+		Configs: c.Configs, Bindable: c.Bindable, Keys: c.Keys, Devices: c.Devices, Flush: c.Flush, Reorder: c.Reorder, Idle: c.Idle,
+		AckWait: c.AckWait, Pairing: c.Pairing, MaxBatchBytes: c.MaxBatchBytes, MetaBytes: c.MetaBytes, HorizonHour: c.HorizonHour,
+		Now: c.Now, Log: c.Log,
+	}
 }
