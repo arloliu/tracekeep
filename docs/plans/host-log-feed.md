@@ -1,6 +1,6 @@
 # Host log feed
 
-Status: active (2026-11-07) — step 5, conversion
+Status: active (2026-11-07) — step 6, the converter
 
 The work that delivers the host log feed, `docs/specs/tracekeep/logfeed.md` (§15), as T-60 shapes it,
 with its two riskiest costs measured before the converter is built (T-63): the feed's load on the bus, and its registration's on the catalog writer.
@@ -14,8 +14,8 @@ The design is the spec's and the rationale the decision log's; this plan only or
 | 2 — the catalog | `logfeed_captures`, `logfeed_files` and the `captures` columns; `AdmitLog`, `RegisterLogFlush`, `StopLogCapture`, on both engines; their benchmarks and first baselines, judged against §15.10's writer budget | done (#103) |
 | 3 — protections | the reconciler deletes a log capture's orphan; the compactor's close leaves log captures out; `capture close` and `capture terminate` refuse one; retirement's stop-only quiescence (§15.8) | done (#104) |
 | 4 — stream, configuration and preflight | `migrate` ensures the stream and consumers, a change of G included; the `logfeed.*` configuration; the prefix and overlap checks (§15.4, §15.11) | done (#105) |
-| 5 — conversion | `internal/logfeed`'s pure part: entry decoding, reorder, duplicates and stale entries, pairing, devices, time, records and annotations (§15.3, §15.5) | in-progress |
-| 6 — the converter | batches, flush and registration, lease groups and the consumer's re-creation, file stops, the service's wiring; `internal/logfeed` in a `scripts/catalog.sh` leg (§15.6, §15.7) | pending |
+| 5 — conversion | `internal/logfeed`'s pure part: entry decoding, reorder, duplicates and stale entries, pairing, devices, time, records and annotations (§15.3, §15.5) | done (#106) |
+| 6 — the converter | batches, flush and registration, lease groups and the consumer's re-creation, file stops, the service's wiring; `internal/logfeed` in a `scripts/catalog.sh` leg (§15.6, §15.7) | in-progress |
 | 7 — reads and admin | the reads' method fields, `capture stop`, `tracekeep status`'s feed lines (§15.8, §15.11) | pending |
 | 8 — web UI and operations | the UI's method filter and badge; alerts, metrics, runbook, configuration and pipeline guides (§15.8, §15.11) | pending |
 | 9 — the gate | the gate cases below | pending |
@@ -24,19 +24,16 @@ Each step is one pull request.
 Steps 1 and 2 record their numbers here before step 5 starts;
 a number past its budget stops the plan for the owner's decision.
 
-## Step 5 — conversion
+## Step 6 — the converter
 
-`internal/logfeed`'s part that holds no delivery, catalog or bus, each piece a pure function or a type driven by its tests:
+The log stage in the `ingest` role with `logfeed.enabled`, built on step 5's part (`logfeed.md` §15.4–§15.8):
 
-- **Entries** (§15.3): a message decoded into an entry; an entry it cannot place or time told from one whose kind's fields are malformed;
-  `source` and `file` of at most 128 characters; the subject's token checked against `equipment_id`.
-- **Order, duplicates and stale entries** (§15.5): a file's reorder window releasing entries in offset order after their wait;
-  a duplicate joining its held entry; an entry at or below the watermark, or below one released, stale.
-- **Devices** (§15.5): the global rule table and the per-equipment overrides, a token before a session, the main device otherwise, a reply taking its primary's device.
-- **Pairing and trust** (§15.5): the pending header per SxFy and TID, the pairing window, a second header ending the first, the W bit, session ID and system bytes trusted only from a header naming the body's stream and function.
-- **Time** (§15.5): `ts` read in `tz`, the earlier reading of an ambiguous or missing wall time marked `ordering-uncertain`.
-- **Records and annotations** (§15.5 *What becomes what*): `sml.Parse` non-strict to one frame as a `reconstructed` `data` record, and each other case its annotation, built as tracepack's `SegmentWriter.Append` takes them.
-- **Tests** from go-secs messages encoded as SML, beside hand-written synthetic edge cases, never real traffic (`.agents/rules/300-testing.md`).
+- **Lease groups**: a replica takes free group leases up to its share of the live members, renews them, and on taking one reads the group's open log captures and watermarks, then deletes and re-creates the group's consumer before fetching (§15.5 *Taking a lease*); a lost lease, a given-up flush or an outcome it cannot resolve stops the group's converter and takes the lease again.
+- **Consumption**: each delivery decoded, its file's window and pairer fed, a duplicate's handle joined to its held entry, a stale, unreadable or beyond-retention entry acknowledged at once; held entries kept in progress by ingest's heartbeat, a converted entry keeping only its handle.
+- **Captures**: `AdmitLog` on a key's first entry, waiting while no configuration holding the masking baseline is active; seq assigned densely per capture from its `highest_seq`; the start boundary with the first record; a file stopped once its successor's first entry has left the window, or idle past the period, its windows drained and pending headers ended; `capture stop` requests written at the next flush.
+- **Flush**: every batch of an equipment at once, classified, masked and written with tracepack's segment writer (`DurableRecorder`, `flush_interval_ns`, the log capture's descriptor), put under `staging/`, registered by `RegisterLogFlush`, then each entry acknowledged with its duplicates; the flush bounded as `ingest.md` §6.2 bounds it.
+- **Wiring**: the stage started by `ingest` beside the traffic consumer, its readiness and metrics; `internal/logfeed` joins a `scripts/catalog.sh` leg.
+- **Tests** on the embedded bus and both engines: a feed of synthetic entries converted end to end into packs a tracepack reader reads back, and the gate cases this step owns, each with its barriers.
 
 ## Gate cases
 
@@ -109,3 +106,5 @@ Each run's history is its own iterations: a flush row registered 1,356 to 2,565 
 **Step 3** (#104): `RetireConfig` takes the quiescent captures from its caller, and no command computes them yet, so the stop-only rule for a log capture lands with that command.
 
 **Step 4** (#105): no measurement.
+
+**Step 5** (#106): no measurement.
