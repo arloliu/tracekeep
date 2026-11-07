@@ -210,7 +210,8 @@ type cycleMin struct {
 // A cycle's observation is its backlog minimum, the backlog when the flush that began it settled, and its queues' maxima.
 // The minimum is read from the cycle's first sample, not taken as its least, which lags the settling by up to a sampling period
 // and holds the records published meanwhile: at a flush of seconds, enough to swing the slope past the bound by itself.
-// A cycle no sample fell in, two passes within a sampling period, has none and is not counted.
+// A cycle no sample fell in, or whose first sample follows the next flush's first pass, a pass within a sampling period of the flush's end,
+// has none and is not counted.
 // It is sustained as judgeLoad's windows are, the drift allowance a rate: made within 2% of offered, nothing dropped, no pass failed,
 // and the least-squares rise of the minima, and of the queue maxima, against elapsed time each below 0.5% of the published rate a second,
 // which is judgeLoad's 0.5% of a window's records a window, whatever the window; fewer than least observed cycles leave it unjudged.
@@ -247,10 +248,10 @@ func judgeSpan(offered float64, origin loadSample, samples []loadSample, passes 
 			last, observed = s, true
 			r, q = max(r, s.ring), max(q, s.reserved)
 		}
-		if !observed {
+		lo, settled := trough(samples, passes, ends[i-1])
+		if !observed || !settled {
 			continue
 		}
-		lo := trough(samples, ends[i-1])
 		v.minima = append(v.minima, cycleMin{at: ends[i-1], backlog: lo})
 		xs = append(xs, ends[i-1].Sub(samples[0].at).Seconds())
 		mins, ring, reserved = append(mins, lo), append(ring, r), append(reserved, q)
@@ -289,17 +290,21 @@ func judgeSpan(offered float64, origin loadSample, samples []loadSample, passes 
 
 // trough is the backlog when a flush settled at end, a sample at or after it:
 // acknowledgements come only in passes, so the first sample from end holds the flush's acknowledged records,
-// and the records published by end are interpolated between it and the sample before.
-func trough(samples []loadSample, end time.Time) float64 {
+// and the records published by end are interpolated between it and the sample before, the traffic steady within a sampling period.
+// A pass after end and by that sample, the next flush's, has acknowledged more, so the trough is not read.
+func trough(samples []loadSample, passes []settledPass, end time.Time) (float64, bool) {
 	j := slices.IndexFunc(samples, func(s loadSample) bool { return !s.at.Before(end) })
 	s := samples[j]
+	if slices.ContainsFunc(passes, func(p settledPass) bool { return p.at.After(end) && !p.at.After(s.at) }) {
+		return 0, false
+	}
 	published := float64(s.published)
 	if j > 0 && s.at.After(end) {
 		a := samples[j-1]
 		published = float64(a.published) + float64(s.published-a.published)*end.Sub(a.at).Seconds()/s.at.Sub(a.at).Seconds()
 	}
 
-	return published - (float64(s.published) - float64(s.backlog))
+	return published - (float64(s.published) - float64(s.backlog)), true
 }
 
 // flushEnds are the times the flushes settled from one sample to the other: a flush's last pass,
@@ -771,9 +776,9 @@ func TestJudgeCyclesSplitFlush(t *testing.T) {
 	}
 }
 
-// Passes that fall ever later between two samples, the flush's work a little longer than whole seconds, change no minimum:
-// a cycle's least sample would hold the records published since the pass, a share of a sampling period growing every cycle,
-// and rise with them past the bound when nothing rises.
+// Passes that fall at another point between two samples every cycle, the flush's work a little longer than whole seconds, change no minimum:
+// a cycle's least sample would hold the records published since the pass, a share of a sampling period changing every cycle,
+// and swing the slope past the bound when nothing rises.
 func TestJudgeCyclesSamplingPhase(t *testing.T) {
 	t.Parallel()
 	const rate = 1600.0
@@ -805,4 +810,22 @@ func settledTroughs(r drainRun, start, span time.Duration, passes []settledPass,
 	}
 
 	return n
+}
+
+// A trough is read at a flush's last pass between two samples, but not when the next flush's pass falls before the sample after it.
+func TestTrough(t *testing.T) {
+	t.Parallel()
+	t0 := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	// 1,000 records a second published, 1,000 acknowledged at 1.25 s.
+	samples := []loadSample{{at: t0, published: 0, backlog: 0}, {at: t0.Add(time.Second), published: 1000, backlog: 1000}, {at: t0.Add(2 * time.Second), published: 2000, backlog: 1000}}
+	end := t0.Add(1250 * time.Millisecond)
+	if lo, ok := trough(samples, []settledPass{{at: end}}, end); !ok || lo != 250 {
+		t.Errorf("at a pass between samples: %v, %v; want 250, true", lo, ok)
+	}
+	if lo, ok := trough(samples, []settledPass{{at: end}}, t0.Add(time.Second)); !ok || lo != 1000 {
+		t.Errorf("at a sample: %v, %v; want 1000, true", lo, ok)
+	}
+	if _, ok := trough(samples, []settledPass{{at: t0.Add(1100 * time.Millisecond)}, {at: end}}, t0.Add(1100*time.Millisecond)); ok {
+		t.Error("another pass before the sample after the flush's end: read, want not")
+	}
 }
