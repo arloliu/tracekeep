@@ -57,6 +57,9 @@ jobs:
         - group: retention
           packages: ./internal/catalog/
           bench: ^Benchmark(AuditWhileRegistering|PruneEvents|DeleteCandidates|EvictHour|EvictMerges)$
+        - group: logfeed
+          packages: ./internal/catalog/
+          bench: ^Benchmark(RegisterLogFlush|AdmitLog|StopLogCapture)$
         - group: metrics
           packages: ./internal/metrics/
           bench: ^BenchmarkReadCatalog$
