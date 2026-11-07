@@ -74,7 +74,8 @@ tracekeep holds each file's entries for `logfeed.reorder_window` (30 s) to put t
 an entry arriving after a later one of its file has been registered is stale, counted and dropped (`log-entries-late`).
 So, for every entry:
 
-- the time from reading it to its stored publish, retries included, stays below `logfeed.reorder_window`;
+- the time from sending it to its stored publish, retries included, stays below `logfeed.reorder_window`:
+  a wait in a first-in, first-out buffer before it is sent delays the entries tailed after it alike, so it does not count (*Peaks*);
 - the retry duration stays below `logfeed.duplicate_window` (2 min), or a late retry is stored twice;
 - publishes run concurrently enough to reach the fleet's rate: one publish in flight reaches about 1,200 entries a second, far below a large fleet's;
   concurrent publishes may reorder an equipment's entries, which tracekeep puts back in order as long as each stays within the reorder window
@@ -83,16 +84,18 @@ So, for every entry:
 With Vector, for example, a `nats` sink with `jetstream.enabled` awaits each acknowledgement and retries every error,
 and `jetstream.headers.message_id` sets the message id from a field the transform built;
 its `request.concurrency` defaults to one request in flight for the whole sink, so raise it to the fleet's rate,
-and bound its retries and its buffer's delay below the windows above.
+and bound its retries below the windows above, its buffer first-in, first-out.
 
 ## Peaks
 
 The feed is one stream, whose publishes one server takes in turn (`logfeed.md` §15.10, T-66):
 a fleet's steady rate it takes, but a peak above it, many pieces of equipment logging large messages at once, is acknowledged more slowly,
 and every forwarder of the fleet waits on its acknowledgements meanwhile.
-So the forwarder's buffer holds a peak's worth of entries, its rate above the steady one times its length, and sends them in its equipment's order once the stream catches up;
-waiting in order is harmless, since each entry still arrives within the reorder window of the next one tailed for its equipment.
+So the forwarder's buffer holds a peak's worth of entries, its rate above the steady one times its length, and sends them once the stream catches up.
+An entry is stale only when it arrives behind an entry of its file the converter has already released, one that arrived a reorder window or more before it (`logfeed.md` §15.5):
+a first-in, first-out buffer delays an entry and the entries after it alike, however long it waits, so only the time from sending to the stored publish, retries included, stays within the window.
 A buffer set to block stops the tailer when it fills, and the files on disk resume from its checkpoint; one set to drop loses entries, which show only as missing records.
+Holding a whole peak this way is the design's, not yet measured: T-66's runs delayed publishes by about a second, never by the reorder window.
 
 ## Checking a pipeline
 

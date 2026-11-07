@@ -959,8 +959,11 @@ a control with the fleet idle sustained. With the servers as processes of their 
 the traffic sustained beside the fleet on both catalog engines, its minima flat. The gate's environment is that one (`scripts/load-feed.sh`), its criterion unchanged.
 **The burst**: one stream of one replica lives on one server, which took the fleet's 95 MB/s with every publish stored,
 but the burst's 117 MB/s more waited: its publishers made 65% to 89% of its rate, and raising their publishes in flight only queued them past their timeout.
-The gate judges what the burst sent: digested within two flushes of its end, every entry accounted for once; its rate is reported, not judged.
-A peak is the forwarders' buffers' to hold, as the owner accepted that a peak need not be converted in real time (`docs/guides/log-pipeline.md` *Peaks*).
+The gate judges what the burst sent: digested within two flushes of its end, every entry accounted for once; its rate is reported, not judged,
+and the publishers' rate is judged before the burst, the bus setting it during the burst and while the publishers catch up after it.
+A peak is the forwarders' buffers' to hold, as the owner accepted that a peak need not be converted in real time (`docs/guides/log-pipeline.md` *Peaks*):
+a first-in, first-out buffer delays an entry and its successors alike, so only the time from sending to the stored publish stays within the reorder window;
+a buffer holding a whole peak is not yet measured, the runs' publishes waiting about a second.
 Considered and not taken: splitting the feed into several streams, so their leaders spread over the servers, judged no-go on 2026-11-07:
 the requirement asks no faster intake of a peak than the forwarders' buffers give, the ceiling's cause is unprofiled (the stream's single inbound loop, its disk, or the traffic stream on the same server),
 and the split's choices (how many streams, which groups each, changing their number, the leaders' placement) were undecided.

@@ -7,23 +7,25 @@
 # Environment:
 #   BUS_CPUS, TEST_CPUS   taskset CPU lists for the servers and for the test, unpinned when unset;
 #                         on a two-CCD host, one CCD each, so neither shares a cache or a core with the other
-#   BUS_DIR               where the servers keep their stores, a disk other than the test's temporary directory's at best;
-#                         a new temporary directory when unset, removed afterwards
+#   BUS_DIR               the directory under which the servers keep their stores, in a new directory of their own removed afterwards,
+#                         a disk other than the test's temporary directory's at best; the system's temporary directory when unset
 #   BUS_GOMEMLIMIT        each server's GOMEMLIMIT (7GiB)
 #   GOMEMLIMIT, TRACEKEEP_LOAD_ENGINE, TRACEKEEP_MARIADB_DSN, TRACEKEEP_LOAD_PROFILES are the test's, passed through
 set -euo pipefail
 
 mode=${1:-feed-convert}
 work=$(mktemp -d)
-bus=${BUS_DIR:-$work/bus}
 pids=()
+bus=
 cleanup() {
 	for p in "${pids[@]}"; do kill "$p" 2>/dev/null || true; done
 	wait 2>/dev/null || true
 	rm -rf -- "$work"
-	[ -z "${BUS_DIR:-}" ] || rm -rf -- "$BUS_DIR"/tb-0 "$BUS_DIR"/tb-1 "$BUS_DIR"/tb-2
+	# Only the stores' directory this run made: never what BUS_DIR held before.
+	[ -z "$bus" ] || rm -rf -- "$bus"
 }
 trap cleanup EXIT
+bus=$(mktemp -d "${BUS_DIR:-${TMPDIR:-/tmp}}/load-feed-bus.XXXXXX")
 
 # The commands' CPU pinning, empty when unpinned: a prefix, not a function, so a server started in the background is its own process, which cleanup stops.
 bus_pin=()
