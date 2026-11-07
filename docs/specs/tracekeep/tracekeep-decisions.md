@@ -886,7 +886,7 @@ Considered and not taken: running `-race` only on some packages or jobs, though 
 a pool of MariaDB databases reset between tests, whose isolation a trigger or a connection a test leaves behind breaks;
 cloning a MariaDB database for every test (0.8 s); keeping `-count 10`.
 
-### T-62 — the host log feed's performance and payload (2026-11-07)
+### T-62 — the host log feed's performance and payload (2026-11-07) (compression superseded by T-64)
 
 The owner settled, on 2026-11-07, how the host log feed bears its load, from measured payload costs and the forwarder's sink as its documentation and source state it (`logfeed.md` §15.10).
 **Measured**: entries generated from go-secs messages, sized to the sample's 570 B, encode in JSON at 1.31 times the log text, about 750 B an entry, and 880 B in the stream's accounting with its subject, message-id header and record;
@@ -918,3 +918,20 @@ the feed stream's load on a three-node cluster at the fleet's rate, held and ack
 and the catalog writer's cost of the feed's registration on both engines.
 `logfeed.md` §15.10 rests both on estimates: the bus's from message counts and phase 5's in-progress acknowledgements, the writer's from `RegisterPack`'s baselines, with no MariaDB figure.
 A number past its budget stops the plan for the owner's decision, before the converter's cost is spent.
+
+### T-64 — the feed stream uncompressed, its consumers' state in memory (2026-11-07)
+
+The owner chose, on 2026-11-07, from step 1 of the host log feed's plan, which T-63 stopped for this decision,
+to store the feed stream without compression and to keep its group consumers' state in memory, superseding T-62's S2.
+**Measured** at ingest's own times (F 300 s, `ack_wait` 7 min, reorder window 30 s) on a three-node cluster in one process, the feed at 3,200 entries a second beside the traffic at K = 100:
+as T-62 specified it, the feed was judged sustained with its publish latency at 620 ms at the 99th percentile and its publishers' queue rising each cycle,
+the traffic beside it fell behind in one run of two, and the process took 4.1 cores and 16 GB.
+Its profiles showed two costs of the bus servers:
+a work queue's acknowledgement into an S2 block decompresses the whole block, 3.4 GB of the heap across the three servers;
+and a file consumer encodes its whole pending state up to ten times a second on each replica, 36% to 46% of the process's CPU with about a million entries pending, the feed's and the traffic's.
+Without compression, the feed's latency fell to 51 ms and the decompression's memory went, but the traffic still fell behind;
+with its consumers' state in memory as well, the feed and the traffic both sustained, the latency 4.3 ms, the process two cores and its disk writes from 147 to 43 MiB/s.
+**The cost**: each replica holds the stream's logical bytes, a 40 GiB backlog taking 40 GiB of its disk;
+and a consumer lost with the whole cluster is re-created, delivering every unacknowledged message again from the oldest, as a takeover does (`logfeed.md` §15.5).
+The traffic consumer's own state, about 476,000 pending entries at its production budget, is the remaining encoding cost; it is not the feed's to change.
+Considered and not taken: keeping S2 for its disk, about a quarter, at a gigabyte a server and the latency; consumers of one replica, which a work queue refuses; measuring on separate hosts first.
