@@ -93,6 +93,31 @@ func TestMigrate(t *testing.T) {
 	})
 }
 
+// With the feed enabled, migrate also ensures the feed's stream, its group consumers and the groups' lease rows, and can run again.
+func TestMigrateFeed(t *testing.T) {
+	t.Parallel()
+	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
+		ctx := t.Context()
+		e := env(t, c)
+		e.Config.Logfeed.Enabled, e.Config.Logfeed.LeaseGroups = true, 4
+		for range 2 {
+			if err := Migrate(ctx, e); err != nil {
+				t.Fatalf("Migrate with the feed = %v", err)
+			}
+		}
+		s, err := e.JS.Stream(ctx, e.Config.Logfeed.Stream)
+		if err != nil {
+			t.Fatalf("feed stream: %v", err)
+		}
+		if _, err := s.Consumer(ctx, bus.FeedConsumer(3)); err != nil {
+			t.Errorf("group 3's consumer: %v", err)
+		}
+		if _, ok, err := c.TakeLease(ctx, catalog.LogGroupLease(3), "r", time.Minute); err != nil || !ok {
+			t.Errorf("group 3's lease = %v, %v; want its row", ok, err)
+		}
+	})
+}
+
 // Migrate, ingest and compact refuse to start against a traffic stream that allows direct gets, or a stream the catalog does not record.
 func TestRolesRefuseToStart(t *testing.T) {
 	t.Parallel()

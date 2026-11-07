@@ -55,6 +55,19 @@ The static token for services stays in `<data>/api-token`.
 | `ingest.stop_timeout` | `20s` | `TRACEKEEP_INGEST_STOP_TIMEOUT` | the budget the batches still due share when ingest stops; keep it below the platform's grace period (Kubernetes' default 30 s); a batch not flushed within it is redelivered (`ingest.md` §6.2); at most 10 min |
 | `ingest.work_dir` | the system's temporary directory | `TRACEKEEP_INGEST_WORK_DIR` | holds a segment's working file until its put returns, and a merge's archive likewise, each role of each replica in a directory `tracekeep-<role>-<replica>-<digest of the replica>` of its own, cleaned at start; masked bytes only |
 | `ingest.max_frame_len` | `0` | `TRACEKEEP_INGEST_MAX_FRAME_LEN` | the processing configuration's `max_frame_len`, 0 for no ceiling; a change makes another configuration, which a start stages and `tracekeep admin config activate` activates, and only then do captures bind it, once every member executes it (`rollouts.md` §6.4); a replica executes every active one, and new captures bind the newest until it is retired, so changing back takes that retirement |
+| `logfeed.enabled` | `false` | `TRACEKEEP_LOGFEED_ENABLED` | runs the host log feed's stage in the `ingest` role and makes `migrate` ensure its stream (`logfeed.md` §15) |
+| `logfeed.stream` | `TRACEKEEP_LOGFEED` | `TRACEKEEP_LOGFEED_STREAM` | the feed's stream, on the traffic cluster |
+| `logfeed.prefix` | `tklog` | `TRACEKEEP_LOGFEED_PREFIX` | the feed's subject prefix; its first token must differ from the traffic and parking prefixes' |
+| `logfeed.lease_groups` | `32` | `TRACEKEEP_LOGFEED_LEASE_GROUPS` | G, the stream's partitions and the lease groups; changing it is a `migrate` run on a drained stream with every log stage stopped (§15.4) |
+| `logfeed.max_bytes` | `40GiB` | `TRACEKEEP_LOGFEED_MAX_BYTES` | the stream's limit in logical bytes, discard-new, about 4 hours of a 2,000-equipment fleet; each replica's disk holds it uncompressed (T-64) |
+| `logfeed.duplicate_window` | `2m` | `TRACEKEEP_LOGFEED_DUPLICATE_WINDOW` | the stream's duplicate window, longer than `logfeed.reorder_window` and the pipeline's retry cap; it costs the servers memory per message id |
+| `logfeed.max_ack_pending` | `100000` | `TRACEKEEP_LOGFEED_MAX_ACK_PENDING` | each group consumer's; above its group's held entries, its rate times F and the reorder window, or delivery stalls |
+| `logfeed.reorder_window` | `30s` | `TRACEKEEP_LOGFEED_REORDER_WINDOW` | how long an entry waits for its file's earlier ones (T-62); the pipeline's in-flight time stays below it, and a later entry is stale |
+| `logfeed.pairing_window` | `3` | `TRACEKEEP_LOGFEED_PAIRING_WINDOW` | the entries of its file a header waits for its body |
+| `logfeed.flush_interval` | `ingest.flush_interval` | `TRACEKEEP_LOGFEED_FLUSH_INTERVAL` | the feed's F; below `ingest.ack_wait`; shorter costs the catalog's writer more registrations (§15.10) |
+| `logfeed.idle_period` | `24h` | `TRACEKEEP_LOGFEED_IDLE_PERIOD` | a file its equipment sent nothing of for this long is stopped |
+| `logfeed.main_device` | `eqp` | `TRACEKEEP_LOGFEED_MAIN_DEVICE` | the device of an entry no rule matches |
+| `logfeed.devices`, `logfeed.device_overrides` | none | — | the rule table, each rule a `token` or a `session` and its `device`, and per `equipment_id` a table replacing it |
 | `parking.enabled` | `true` | `TRACEKEEP_PARKING_ENABLED` | off, an indefinite deferral is nak'd and can fill `max_ack_pending` for every capture (`parking.md`); the parked consumer works either way |
 | `parking.redelivery_delay` | `60s` | `TRACEKEEP_PARKING_REDELIVERY_DELAY` | how soon a parked copy is tried again; the completion signal is `parked list`, not a time |
 | `compact.lease_ttl` | `1m` | `TRACEKEEP_COMPACT_LEASE_TTL` | the compactor lease: renewed every third of it while a cycle runs; a standby takes over once it lapses |

@@ -633,3 +633,33 @@ func logOperatorRefusals(t *testing.T, c *Catalog, l, lease Lease, a, gw tracepa
 		}
 	}
 }
+
+// A change of G retires the old groups: every remaining group's fence moves and its lease lapses, so its old holder registers nothing more,
+// the groups at or above the new G lose their rows, and the missing ones gain theirs.
+func TestRegroupLogGroups(t *testing.T) {
+	t.Parallel()
+	engines(t, func(t *testing.T, c *Catalog) {
+		ctx := t.Context()
+		gate(t, c)
+		l := logGroup(t, c) // groups 0 to 3, group 1 held
+		a := admitLog(t, c, l, "eqp")
+		if err := c.RegroupLogGroups(ctx, 2); err != nil {
+			t.Fatal(err)
+		}
+		var names []string
+		if err := c.read.SelectContext(ctx, &names, `SELECT name FROM leases WHERE name LIKE 'logfeed/%' ORDER BY name`); err != nil || len(names) != 2 || names[0] != "logfeed/0" || names[1] != "logfeed/1" {
+			t.Errorf("the lease groups after the change = %v, %v; want logfeed/0 and logfeed/1", names, err)
+		}
+		f := &LogFlush{Packs: []*Pack{segment(t, a, 5, 0, 9)}, Files: []LogFileMark{{LogFile: logFile, Watermark: 10}}}
+		if _, err := c.RegisterLogFlush(ctx, l, f); !errors.Is(err, ErrLeaseLost) {
+			t.Errorf("the old holder's flush after the change = %v, want ErrLeaseLost", err)
+		}
+		nl, ok, err := c.TakeLease(ctx, LogGroupLease(1), "b", ttl)
+		if err != nil || !ok || nl.Fence <= l.Fence {
+			t.Fatalf("taking group 1 after the change = %+v, %v, %v; want a later fence than %d", nl, ok, err, l.Fence)
+		}
+		if out, err := c.RegisterLogFlush(ctx, nl, f); err != nil || out != Registered {
+			t.Errorf("the new holder's flush = %v, %v", out, err)
+		}
+	})
+}

@@ -1,6 +1,6 @@
 # Host log feed
 
-Status: active (2026-11-07) — step 4, stream, configuration and preflight
+Status: active (2026-11-07) — step 5, conversion
 
 The work that delivers the host log feed, `docs/specs/tracekeep/logfeed.md` (§15), as T-60 shapes it,
 with its two riskiest costs measured before the converter is built (T-63): the feed's load on the bus, and its registration's on the catalog writer.
@@ -13,8 +13,8 @@ The design is the spec's and the rationale the decision log's; this plan only or
 | 1 — the feed stream's load | the feed's stream and group consumers under the fleet's rate on a three-node cluster, beside traffic, before any converter exists | done (#102) |
 | 2 — the catalog | `logfeed_captures`, `logfeed_files` and the `captures` columns; `AdmitLog`, `RegisterLogFlush`, `StopLogCapture`, on both engines; their benchmarks and first baselines, judged against §15.10's writer budget | done (#103) |
 | 3 — protections | the reconciler deletes a log capture's orphan; the compactor's close leaves log captures out; `capture close` and `capture terminate` refuse one; retirement's stop-only quiescence (§15.8) | done (#104) |
-| 4 — stream, configuration and preflight | `migrate` ensures the stream and consumers, a change of G included; the `logfeed.*` configuration; the prefix and overlap checks (§15.4, §15.11) | in-progress |
-| 5 — conversion | `internal/logfeed`'s pure part: entry decoding, reorder, duplicates and stale entries, pairing, devices, time, records and annotations (§15.3, §15.5) | pending |
+| 4 — stream, configuration and preflight | `migrate` ensures the stream and consumers, a change of G included; the `logfeed.*` configuration; the prefix and overlap checks (§15.4, §15.11) | done (#105) |
+| 5 — conversion | `internal/logfeed`'s pure part: entry decoding, reorder, duplicates and stale entries, pairing, devices, time, records and annotations (§15.3, §15.5) | in-progress |
 | 6 — the converter | batches, flush and registration, lease groups and the consumer's re-creation, file stops, the service's wiring; `internal/logfeed` in a `scripts/catalog.sh` leg (§15.6, §15.7) | pending |
 | 7 — reads and admin | the reads' method fields, `capture stop`, `tracekeep status`'s feed lines (§15.8, §15.11) | pending |
 | 8 — web UI and operations | the UI's method filter and badge; alerts, metrics, runbook, configuration and pipeline guides (§15.8, §15.11) | pending |
@@ -24,17 +24,19 @@ Each step is one pull request.
 Steps 1 and 2 record their numbers here before step 5 starts;
 a number past its budget stops the plan for the owner's decision.
 
-## Step 4 — stream, configuration and preflight
+## Step 5 — conversion
 
-- **The configuration**: the `logfeed.*` keys of `logfeed.md` §15.11 with their defaults, each validated at load:
-  the log prefix's first token unlike the traffic and parking prefixes', positive windows, periods and limits, at least one lease group, and device rules naming a token or a session.
-- **`migrate`**, with the feed enabled: the stream as §15.4 specifies it (work-queue, file storage uncompressed, `max_bytes` with discard-new, the duplicate window, the partition transform),
-  its group consumers with their state in memory, `ingest`'s `ack_wait` and the feed's `max_ack_pending`, and the groups' lease rows;
-  a stream or consumer found unlike its specification updated, or refused where JetStream cannot update it.
-- **A change of G**: refused while the stream holds a message;
-  otherwise the transform and the consumers changed, every `logfeed/<n>` lease's fence incremented, and the rows of retired groups deleted.
-- **Preflight**: the feed stream's subjects checked against the traffic and parking streams', in the service, never in the SDK's `busconfig`.
-- Tests on the embedded bus, single and clustered: a fresh `migrate`, a second one changing nothing, a change of G on an empty stream and its refusal on a full one, and each refused configuration.
+`internal/logfeed`'s part that holds no delivery, catalog or bus, each piece a pure function or a type driven by its tests:
+
+- **Entries** (§15.3): a message decoded into an entry; an entry it cannot place or time told from one whose kind's fields are malformed;
+  `source` and `file` of at most 128 characters; the subject's token checked against `equipment_id`.
+- **Order, duplicates and stale entries** (§15.5): a file's reorder window releasing entries in offset order after their wait;
+  a duplicate joining its held entry; an entry at or below the watermark, or below one released, stale.
+- **Devices** (§15.5): the global rule table and the per-equipment overrides, a token before a session, the main device otherwise, a reply taking its primary's device.
+- **Pairing and trust** (§15.5): the pending header per SxFy and TID, the pairing window, a second header ending the first, the W bit, session ID and system bytes trusted only from a header naming the body's stream and function.
+- **Time** (§15.5): `ts` read in `tz`, the earlier reading of an ambiguous or missing wall time marked `ordering-uncertain`.
+- **Records and annotations** (§15.5 *What becomes what*): `sml.Parse` non-strict to one frame as a `reconstructed` `data` record, and each other case its annotation, built as tracepack's `SegmentWriter.Append` takes them.
+- **Tests** from go-secs messages encoded as SML, beside hand-written synthetic edge cases, never real traffic (`.agents/rules/300-testing.md`).
 
 ## Gate cases
 
@@ -105,3 +107,5 @@ A flush's cost is its segments', one a device, not its entries'.
 Each run's history is its own iterations: a flush row registered 1,356 to 2,565 flushes on SQLite and 156 to 381 on MariaDB, so its catalog held at most about 7,700 packs.
 
 **Step 3** (#104): `RetireConfig` takes the quiescent captures from its caller, and no command computes them yet, so the stop-only rule for a log capture lands with that command.
+
+**Step 4** (#105): no measurement.

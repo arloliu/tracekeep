@@ -392,8 +392,35 @@ func Migrate(ctx context.Context, e *Env) error {
 			return err
 		}
 	}
+	if e.Config.Logfeed.Enabled {
+		return e.migrateFeed(ctx, traffic.CachedInfo().Config, parked.CachedInfo().Config)
+	}
 
 	return nil
+}
+
+// Feed is the host log feed's stream and consumers as the configuration names them, on the traffic stream's replicas (logfeed.md §15.4).
+func (e *Env) Feed(replicas int) bus.Feed {
+	l := &e.Config.Logfeed
+
+	return bus.Feed{
+		Stream: l.Stream, Prefix: l.Prefix, Groups: l.LeaseGroups, MaxBytes: l.MaxBytes.Int64(), Duplicates: l.DuplicateWindow,
+		Replicas: replicas, AckWait: e.Config.Ingest.AckWait, MaxAckPending: l.MaxAckPending,
+	}
+}
+
+// migrateFeed ensures the feed's stream, its group consumers and the groups' lease rows; a change of the groups retires the old ones' leases.
+// The feed has no incarnation row: nothing is ever parked from it (T-60).
+func (e *Env) migrateFeed(ctx context.Context, traffic, parked jetstream.StreamConfig) error {
+	_, regrouped, err := bus.EnsureFeed(ctx, e.JS, e.Feed(traffic.Replicas), traffic, parked)
+	if err != nil {
+		return err
+	}
+	if regrouped {
+		return e.Catalog.RegroupLogGroups(ctx, e.Config.Logfeed.LeaseGroups)
+	}
+
+	return e.Catalog.EnsureLogGroups(ctx, e.Config.Logfeed.LeaseGroups)
 }
 
 // streams opens the traffic and parking streams and refuses either when it allows direct gets or is not the catalog's incarnation.

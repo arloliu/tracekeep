@@ -71,6 +71,36 @@ func (c *Catalog) EnsureLogGroups(ctx context.Context, groups int) error {
 	return nil
 }
 
+// RegroupLogGroups makes groups the lease groups after a change of G, on a drained stream with every log stage stopped (logfeed.md §15.4):
+// every lease group's fence incremented and its lease lapsed, so no converter of the old G registers again, the rows of groups at or above groups deleted,
+// and the missing rows of groups below it inserted.
+func (c *Catalog) RegroupLogGroups(ctx context.Context, groups int) error {
+	err := c.inTx(ctx, func(tx *sqlx.Tx) error {
+		var names []string
+		if err := tx.SelectContext(ctx, &names, `SELECT name FROM leases WHERE name LIKE 'logfeed/%'`); err != nil {
+			return err
+		}
+		for _, name := range names {
+			n, err := logGroupOf(Lease{Name: name})
+			if err == nil && n < groups {
+				_, err = tx.ExecContext(ctx, `UPDATE leases SET holder = '', fence_token = fence_token + 1, until_ns = 0 WHERE name = ?`, name)
+			} else {
+				_, err = tx.ExecContext(ctx, `DELETE FROM leases WHERE name = ?`, name)
+			}
+			if err != nil {
+				return err
+			}
+		}
+
+		return nil
+	})
+	if err != nil {
+		return fmt.Errorf("catalog: regroup log groups: %w", err)
+	}
+
+	return c.EnsureLogGroups(ctx, groups)
+}
+
 // LogAdmission is AdmitLog's outcome: the capture of the key, new or found, and the configuration it is bound to.
 type LogAdmission struct {
 	Capture tracepack.UUID
