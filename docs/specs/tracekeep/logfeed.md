@@ -1,6 +1,6 @@
 # tracekeep — host log feed
 
-Status: draft (2026-11-07) — from P3 as T-60 accepted it and T-62 settled its performance
+Status: current (2026-11-07) — from P3 as T-60 accepted it, delivered by the host log feed plan (#101–#112)
 
 Covers the host log feed: a log pipeline parses the SECS traffic a host program prints to its text log,
 and tracekeep pairs the entries, builds the frames and writes `capture_method = log` captures as they arrive.
@@ -360,11 +360,11 @@ The limits are the catalog writer, the bus's message count and the held entries.
 **The bus.**
 3,200 publishes a second, each acknowledged by the stream, 3,200 acknowledgements and about 3,700 in-progress acknowledgements a second,
 beside the traffic stream's own.
-Measured at ingest's own times on a three-node cluster in one process beside the traffic at K = 100 (`docs/plans/host-log-feed.md` step 1, T-64):
+Measured at ingest's own times on a three-node cluster in one process beside the traffic at K = 100 (the host log feed plan's step 1, `git show 3c11e5e:docs/plans/host-log-feed.md`, T-64):
 the feed sustained with a publish latency of 4.3 ms at the 99th percentile, the traffic sustained, the process at about two cores and 43 MiB/s of disk writes,
 the busiest group holding about 21,000 entries and each server's store about 700 MiB.
 Header and body are separate messages, and the forwarder's sink cannot batch, so the count is the entries'.
-At the owner's fleet (`docs/plans/host-log-feed.md` step 10b, T-66), about 24,750 entries and 95 MB/s a second, one stream of one replica took the fleet with every publish stored;
+At the owner's fleet (the host log feed plan's step 10b, `git show 3c11e5e:docs/plans/host-log-feed.md`, T-66), about 24,750 entries and 95 MB/s a second, one stream of one replica took the fleet with every publish stored;
 a burst of 117 MB/s more waited: the stream is the work of one server, which takes its publishes and acknowledgements in turn,
 so the publishes were acknowledged in about 0.9 s at the 99th percentile, the harness's publishers made 65% to 89% of the burst's rate,
 and the stage digested what they published within 2m19s to 4m03s of the burst's end.

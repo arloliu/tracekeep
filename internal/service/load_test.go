@@ -29,7 +29,7 @@ package service
 //   - recovery measures a recovery backlog's drain (loadrecovery_test.go): K = 100 at 800 fwd/s on dev's 10 s flush, max_ack_pending 600,000 on both consumers,
 //     one more equipment's capture rejected by a refused descriptor and its start and M data records parked, then released and drained,
 //     M from TRACEKEEP_LOAD_RECOVERY_M (1000, 10000 or 100000); an unknown condition runs the episode again, at most three episodes;
-//   - feed measures the host log feed's stream (loadfeed_test.go, docs/plans/host-log-feed.md step 1) on a three-node cluster beside production's traffic:
+//   - feed measures the host log feed's stream (loadfeed_test.go, the host log feed plan's step 1, last text at 3c11e5e) on a three-node cluster beside production's traffic:
 //     2,000 equipment at 3,200 entries a second through 32 partitioned group consumers at ingest's times scaled by 1/30, then its controls (about 10 minutes);
 //     feed-real runs the same at ingest's own times, for the plan's numbers (about an hour);
 //   - feed-convert is the host log feed's gate load (loadconvert_test.go, step 10b): the same feed converted by dev's own log stage beside K = 100 traffic,

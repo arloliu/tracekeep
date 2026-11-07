@@ -20,7 +20,7 @@ The review reports, the owner's decision brief and the seed's last text (v21) ar
 | `masking-keys.md` | living | draft | policy, keys, bindings, providers, restore and digest |
 | `api.md` | living | draft | machine API, auth and roles, frontend |
 | `operations.md` | living | draft | admin commands, runbook, tunables, metrics, health |
-| `logfeed.md` | living | draft | the host log feed: pipeline contract, stream, conversion, log captures, sizing |
+| `logfeed.md` | living | current | the host log feed: pipeline contract, stream, conversion, log captures, sizing |
 | `glossary.md` | living | draft | terms and tunables, with their defining sections |
 | `tracekeep-decisions.md` | living | draft | rulings relied on, the owner's decisions T-1 onward, service defaults |
 | `proposals/p1-parked-replay.md` | finite | deferred | an early retry of a capture's parked messages, withdrawn by T-40 |

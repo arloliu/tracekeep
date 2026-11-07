@@ -57,7 +57,7 @@ Milestones the owner set after seed v21 §12's (T-52).
 
 ## Active plans
 
-- [Host log feed](plans/host-log-feed.md), the phase that delivers `specs/tracekeep/logfeed.md` (P3, T-60, T-62), its bus and catalog-writer load measured first (T-63)
+None.
 
 Phase 0 is done (#1, #3, #4, #7, #8).
 Phase 1 is done (#9, #11, #13, #14, #16, #17, #18, #19).
@@ -71,6 +71,8 @@ Like phase 2's, the commits its step tables and measurements name are the branch
 The capture identity (T-59: equipment, source and device) is done (#91, #92, #93; `producer/v0.6.0`); its closed plan's last text is at ab976c3.
 The test efficiency (T-61) is done (#96, #97, #98 and the pull request that closed its plan); its closed plan's last text, with its measurements, is at 10803c8.
 CI's `ci` job went from 9–14 min to about 8.5 min and its `catalog` job from 10–14 min to about 4 min, its packages in four legs.
+The host log feed (P3; T-60, T-62 to T-66) is done (#100, #101, #102, #103, #104, #105, #106, #107, #108, #109, #110, #111, #112), `specs/tracekeep/logfeed.md` current;
+its closed plan's last text, with its measurements and the gate's runs, is at 3c11e5e.
 
 ## Open items
 

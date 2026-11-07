@@ -34,7 +34,7 @@ import (
 	"github.com/arloliu/tracekeep/internal/testbus"
 )
 
-// The feed mode measures the host log feed's stream before its converter exists (docs/plans/host-log-feed.md step 1):
+// The feed mode measures the host log feed's stream before its converter exists (the host log feed plan's step 1, last text at 3c11e5e):
 // the stream and group consumers of docs/specs/tracekeep/logfeed.md §15.4 on a three-node cluster shared with production's traffic,
 // publishers awaiting each publish's acknowledgement, and consumers that hold each entry for the reorder window and its equipment's flush as the converter will.
 
