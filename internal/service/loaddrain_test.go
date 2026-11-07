@@ -27,6 +27,8 @@ import (
 const (
 	// drainCycles are the completed cycles a drain's traffic is judged over; fewer leave its verdict unknown.
 	drainCycles = 3
+	// drainFlush is the drain schedules' flush interval, dev's.
+	drainFlush = 10 * time.Second
 	// drainCalls are the PackURL calls a p99 is read over; fewer leave it unknown.
 	drainCalls = 200
 	// ackShare and compactorCycle: the acknowledgement's condition is its share of the drain, at least ackShare, in a drain longer than a compactor cycle.
@@ -55,14 +57,14 @@ func (c cond) String() string { return [...]string{"unknown", "false", "true"}[c
 // the offered, made and published rates and the drops are counted from the release's and completion's samples, the slope through whole cycles.
 // A failed pass counts only between them, never one before the release or after the completion.
 // A drain with too few samples or cycles is not judged, never judged over a shorter span.
-func judgeDrain(offered float64, samples []loadSample, passes []settledPass) cycleVerdict {
+func judgeDrain(offered float64, samples []loadSample, passes []settledPass, flush time.Duration) cycleVerdict {
 	if len(samples) < 2 {
 		return cycleVerdict{offered: offered, why: fmt.Sprintf("sampling: %d samples, want the release's and the completion's at least", len(samples))}
 	}
 	from, to := samples[0].at, samples[len(samples)-1].at
 	passes = slices.DeleteFunc(slices.Clone(passes), func(p settledPass) bool { return p.at.Before(from) || p.at.After(to) })
 
-	return judgeSpan(offered, samples[0], samples, passes, drainCycles, true)
+	return judgeSpan(offered, samples[0], samples, passes, flush, drainCycles, true)
 }
 
 // drainEpisode is one episode's drain: its time from the release to completion, the traffic judged within it,
@@ -272,9 +274,9 @@ func effective(name string, got jetstream.ConsumerConfig, want config.Ingest) er
 	return nil
 }
 
-// drainSchedule is a sustained traffic schedule beside a drain: dev's 10 s flush over one capture, a steady upload.
+// drainSchedule is a sustained traffic schedule beside a drain: dev's flush over one capture, a steady upload.
 func drainSchedule(captures int, leak float64) drainRun {
-	return drainRun{rate: 1600, captures: captures, flush: 10 * time.Second, upload: cycled(time.Second), leak: leak}
+	return drainRun{rate: 1600, captures: captures, flush: drainFlush, upload: cycled(time.Second), leak: leak}
 }
 
 // The traffic beside a drain is judged over the drain's completed flush cycles:
@@ -286,22 +288,22 @@ func TestJudgeDrain(t *testing.T) {
 		for phase := time.Duration(0); phase < 10*time.Second; phase += time.Second { // every starting phase of a 10 s flush
 			start := time.Minute + phase
 			samples, passes := drainSchedule(captures, 0).run(start, 2*time.Minute)
-			if v := judgeDrain(rate/2, samples, passes); !v.judged || !v.sustained {
+			if v := judgeDrain(rate/2, samples, passes, drainFlush); !v.judged || !v.sustained {
 				t.Errorf("a bounded sawtooth over %d captures from %s: judged %v, sustained %v (%s)", captures, phase, v.judged, v.sustained, v.why)
 			}
 			// Four times the allowance, 0.5% of the published rate a second.
 			samples, passes = drainSchedule(captures, 4*0.005*rate).run(start, 2*time.Minute)
-			if v := judgeDrain(rate/2, samples, passes); !v.judged || v.sustained || !strings.Contains(v.why, "backlog minima rise") {
+			if v := judgeDrain(rate/2, samples, passes, drainFlush); !v.judged || v.sustained || !strings.Contains(v.why, "backlog minima rise") {
 				t.Errorf("rising floors over %d captures from %s: judged %v, sustained %v (%s)", captures, phase, v.judged, v.sustained, v.why)
 			}
 		}
 	}
 	// A drain of two flushes holds fewer than three completed cycles; one sample is too few to judge.
 	samples, passes := drainSchedule(1, 0).run(time.Minute, 25*time.Second)
-	if v := judgeDrain(rate/2, samples, passes); v.judged || v.sustained || !strings.Contains(v.why, "cycles") {
+	if v := judgeDrain(rate/2, samples, passes, drainFlush); v.judged || v.sustained || !strings.Contains(v.why, "cycles") {
 		t.Errorf("a drain of two flushes: judged %v, sustained %v (%s); want not judged, naming cycles", v.judged, v.sustained, v.why)
 	}
-	if v := judgeDrain(rate/2, samples[:1], passes); v.judged || v.sustained {
+	if v := judgeDrain(rate/2, samples[:1], passes, drainFlush); v.judged || v.sustained {
 		t.Errorf("one sample: judged %v, sustained %v (%s); want not judged", v.judged, v.sustained, v.why)
 	}
 }
@@ -336,12 +338,12 @@ func TestJudgeDrainEnds(t *testing.T) {
 	} {
 		s := slices.Clone(samples)
 		tc.edit(s)
-		v := judgeDrain(rate/2, s, passes)
+		v := judgeDrain(rate/2, s, passes, drainFlush)
 		if !v.judged || v.sustained != (tc.why == "") || !strings.Contains(v.why, tc.why) {
 			t.Errorf("%s: judged %v, sustained %v (%s); want naming %q", name, v.judged, v.sustained, v.why, tc.why)
 		}
 		if tc.why != "" {
-			if w := judgeCycles(rate/2, s[0], s, passes, drainCycles); !w.sustained && !strings.Contains(w.why, "dropped") {
+			if w := judgeCycles(rate/2, s[0], s, passes, drainFlush, drainCycles); !w.sustained && !strings.Contains(w.why, "dropped") {
 				t.Errorf("%s: judgeCycles, reading the cycles alone, not sustained (%s)", name, w.why)
 			}
 		}
@@ -357,7 +359,7 @@ func episode(t *testing.T, r drainRun, span time.Duration, calls int, latency, a
 		cs[i] = latency
 	}
 
-	return drainEpisode{drain: span, traffic: judgeDrain(r.rate/2, samples, passes), calls: cs, ack: ack}
+	return drainEpisode{drain: span, traffic: judgeDrain(r.rate/2, samples, passes, r.flush), calls: cs, ack: ack}
 }
 
 // The decision's three states on synthetic episodes: any condition true admits, every one false closes, and an unknown,
@@ -413,7 +415,7 @@ func TestDrainOfItsInterval(t *testing.T) {
 		calls.record(packAttempt{began: clock.Add(time.Duration(i) * 300 * time.Millisecond), took: 50 * time.Millisecond})
 	}
 	within := slices.DeleteFunc(slices.Clone(passes), func(p settledPass) bool { return p.at.Before(clock) || p.at.After(end) })
-	base := drainOf(rate/2, clock, end, all[:k+1], within, &calls, nil)
+	base := drainOf(rate/2, clock, end, all[:k+1], within, drainFlush, &calls, nil)
 	if !base.traffic.judged || !base.traffic.sustained || len(base.calls) != 300 {
 		t.Fatalf("the drain alone: judged %v, sustained %v (%s), %d calls; want sustained over 300", base.traffic.judged, base.traffic.sustained, base.traffic.why, len(base.calls))
 	}
@@ -451,7 +453,7 @@ func TestDrainOfItsInterval(t *testing.T) {
 		t.Errorf("the drain's samples run from %s to %s, want exactly the release's %s and the completion's %s", got[0].at, got[len(got)-1].at, clock, end)
 	}
 	outside := failedAt(passes, clock.Add(-5*time.Second), clock.Add(-250*time.Microsecond), end.Add(250*time.Microsecond), all[k+5].at)
-	late := drainOf(rate/2, clock, end, observed, outside, new(failing(calls, end.Add(time.Microsecond))), nil)
+	late := drainOf(rate/2, clock, end, observed, outside, drainFlush, new(failing(calls, end.Add(time.Microsecond))), nil)
 	if late.drain != base.drain || !reflect.DeepEqual(late.traffic, base.traffic) || !slices.Equal(late.calls, base.calls) ||
 		decide([]drainEpisode{late}).outcome() != decide([]drainEpisode{base}).outcome() {
 		t.Errorf("with observations outside the drain: drain %s, judged %v, sustained %v (%s), %d calls, p99 %s; want %s, sustained, %d calls, p99 %s",
@@ -459,14 +461,14 @@ func TestDrainOfItsInterval(t *testing.T) {
 	}
 
 	for name, ep := range map[string]drainEpisode{
-		"a drop":        drainOf(rate/2, clock, end, dropped(all[:k+1], k), within, &calls, nil),
-		"a failed pass": drainOf(rate/2, clock, end, all[:k+1], failedAt(within, all[k-5].at), &calls, nil),
+		"a drop":        drainOf(rate/2, clock, end, dropped(all[:k+1], k), within, drainFlush, &calls, nil),
+		"a failed pass": drainOf(rate/2, clock, end, all[:k+1], failedAt(within, all[k-5].at), drainFlush, &calls, nil),
 	} {
 		if !ep.traffic.judged || ep.traffic.sustained {
 			t.Errorf("%s within the drain: judged %v, sustained %v (%s); want not sustained", name, ep.traffic.judged, ep.traffic.sustained, ep.traffic.why)
 		}
 	}
-	if ep := drainOf(rate/2, clock, end, all[:k+1], within, new(failing(calls, end.Add(-time.Second))), nil); len(ep.calls) != 310 || percentile(ep.calls, 0.99) != failedCall {
+	if ep := drainOf(rate/2, clock, end, all[:k+1], within, drainFlush, new(failing(calls, end.Add(-time.Second))), nil); len(ep.calls) != 310 || percentile(ep.calls, 0.99) != failedCall {
 		t.Errorf("failed calls within the drain: %d calls, p99 %s; want 310, failed", len(ep.calls), percentile(ep.calls, 0.99))
 	}
 }

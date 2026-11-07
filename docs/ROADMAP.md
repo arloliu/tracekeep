@@ -91,11 +91,6 @@ its closed plan's last text, with its measurements and the gate's runs, is at 3c
     fewer allocations in the item walker.
   - tracekeep: a capture key derived once per fetch batch, or a derived-key cache, was closed by phase 5 on its numbers
     (masking adds about 4 µs a message, `Dispose` 31 against 27 µs; T-56), `masking-keys.md` §9 unchanged.
-- The load harness's cycle judge splits a flush into two cycles when its passes settle a second apart,
-  so a short drain can read not sustained while its floors stay flat (the recovery drain at 10,000 parked records);
-  the traffic beside the host log feed's fleet met it too, a high minimum a second before a low one, in one of three runs on a bus of its own and in runs sharing one process (T-66),
-  while every traffic record was acknowledged within F and 7 seconds;
-  merging passes closer than a flush into one cycle would fix it, checked against the production-timing records it also judges.
 - go-secs is asked to export a filtered JSONL writer; until it does, `StartExport` refuses `kind=filtered` (T-48).
 - Configuration retirement waits for the first release that needs it.
 - The veq branch `docs/ve/log-service-decisions` (commit 7b8a019) carries the LS-row amendments and V-35;
