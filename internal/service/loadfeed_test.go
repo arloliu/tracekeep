@@ -749,10 +749,12 @@ type feedPublishers struct {
 	started                      time.Time
 	rate                         float64
 	made, acked, failed, retried atomic.Uint64
-	mu                           sync.Mutex
-	lat                          []feedLatency
-	cancel                       context.CancelFunc
-	wg                           sync.WaitGroup
+	// burstMade counts the feed-convert mode's entries published by the burst's equipment during it.
+	burstMade atomic.Uint64
+	mu        sync.Mutex
+	lat       []feedLatency
+	cancel    context.CancelFunc
+	wg        sync.WaitGroup
 }
 
 // feedLatency is one acknowledged publish: when its acknowledgement arrived and how long after its publish.

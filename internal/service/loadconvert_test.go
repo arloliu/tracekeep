@@ -63,15 +63,38 @@ func (s fleetShape) rate() float64 {
 	return float64(s.equipment-s.heavy)*s.normalRate + float64(s.heavy)*s.heavyRate
 }
 
-// isHeavy and inBurst spread the heavy equipment and the burst's over the publishers' connections;
-// the heavy equipment's IDs hash into 16 of the 32 groups, at most three in one, as random IDs about do.
+// isHeavy spreads the heavy equipment over the publishers' connections;
+// their IDs hash into 16 of the 32 groups, at most three in one, as random IDs about do.
 func (s fleetShape) isHeavy(eq int) bool { return eq%89 == 0 && eq/89 < s.heavy }
 
-func (s fleetShape) inBurst(eq int) bool {
-	return !s.isHeavy(eq) && eq%10 == 7 && eq/10 < s.burstEquipment
+// burstSet marks exactly burstEquipment of the equipment that are not heavy, evenly spread over the IDs and so over the connections.
+func (s fleetShape) burstSet() []bool {
+	in := make([]bool, s.equipment)
+	step := (s.equipment - s.heavy) / s.burstEquipment
+	n, light := 0, 0
+	for eq := 0; eq < s.equipment && n < s.burstEquipment; eq++ {
+		if s.isHeavy(eq) {
+			continue
+		}
+		if light%step == step/2 {
+			in[eq] = true
+			n++
+		}
+		light++
+	}
+	if n != s.burstEquipment {
+		panic(fmt.Sprintf("load: a burst of %d equipment, want %d", n, s.burstEquipment))
+	}
+
+	return in
 }
 
-// loadFeedConvert runs the fleet through dev's log stage beside production's traffic, its burst after the warm-up,
+// burstEntries is the entries the burst's equipment publish during it, every message of theirs then the burst's.
+func (s fleetShape) burstEntries() float64 {
+	return 2 * float64(s.burstEquipment) * (s.normalRate + s.burstRate) * s.burstFor.Seconds()
+}
+
+// loadFeedConvert runs the fleet through dev's log stage beside production's traffic, its burst inside the traffic's judged cycles,
 // then drains the feed and checks every entry's account.
 func loadFeedConvert(t *testing.T, smoke bool) {
 	ft := feedModeTimes(smoke, !smoke)
@@ -112,7 +135,8 @@ func loadFeedConvert(t *testing.T, smoke bool) {
 	defer h.stopEquipment(equipment)
 	cpu0 := processCPU(t)
 	start := time.Now()
-	burstAt := start.Add(ft.flush + ft.reorder)
+	// The traffic's cycles are judged after a warm-up of F and ack_wait: the burst starts half a flush into them.
+	burstAt := start.Add(ft.flush + ft.ackWait + ft.flush/2)
 	pubs := publishFleet(ctx, url, fs, pool, burstPool, burstAt)
 	backlog := sampleBacklog(ctx, s)
 	progress(ctx, t, h, s, pubs)
@@ -145,8 +169,12 @@ func loadFeedConvert(t *testing.T, smoke bool) {
 		fmt.Sprintf("| %.0f | %.0f | %d | %d | %s | %s | %s | %s | %s | %.2f |", 2*fs.rate(), made, pubs.failed.Load(), pubs.retried.Load(),
 			p99.Round(time.Microsecond), base, peak, digested.Round(time.Second), time.Since(stopped).Round(time.Millisecond), cpu))
 	h.log(append([]string{""}, acc.table()...)...)
+	h.log("", fmt.Sprintf("the burst's equipment made %d entries during it, of %.0f offered", pubs.burstMade.Load(), fs.burstEntries()))
 	if pubs.failed.Load() != 0 || made < 0.98*2*fs.rate() {
 		t.Errorf("the publishers: %d failed, %.0f entries made a second of %.0f offered", pubs.failed.Load(), made, 2*fs.rate())
+	}
+	if float64(pubs.burstMade.Load()) < 0.98*fs.burstEntries() {
+		t.Errorf("the burst: %d entries made of %.0f offered", pubs.burstMade.Load(), fs.burstEntries())
 	}
 	if digested < 0 || digested > 2*ft.flush {
 		t.Errorf("the burst was not digested within two flushes of its end: %s", digested)
@@ -284,14 +312,24 @@ func (p *feedPool) pairBytes() int {
 func publishFleet(ctx context.Context, url string, fs fleetShape, pool, burstPool *feedPool, burstAt time.Time) *feedPublishers {
 	ctx, cancel := context.WithCancel(ctx)
 	p := &feedPublishers{started: time.Now(), rate: 2 * fs.rate(), cancel: cancel}
+	fp := &fleetPlan{fleetShape: fs, pool: pool, burstPool: burstPool, inBurst: fs.burstSet(), burstAt: burstAt}
 	for c := range feedConns {
-		p.wg.Go(func() { publishConn(ctx, url, c, fs, pool, burstPool, burstAt, p) })
+		p.wg.Go(func() { publishConn(ctx, url, c, fp, p) })
 	}
 
 	return p
 }
 
-func publishConn(ctx context.Context, url string, c int, fs fleetShape, pool, burstPool *feedPool, burstAt time.Time, p *feedPublishers) {
+// fleetPlan is what each connection publishes: the fleet, its two pools, the burst's equipment and its start.
+type fleetPlan struct {
+	fleetShape
+	pool, burstPool *feedPool
+	inBurst         []bool
+	burstAt         time.Time
+}
+
+func publishConn(ctx context.Context, url string, c int, fp *fleetPlan, p *feedPublishers) {
+	fs, pool, burstPool, inBurst, burstAt := fp.fleetShape, fp.pool, fp.burstPool, fp.inBurst, fp.burstAt
 	nc, err := nats.Connect(url)
 	if err != nil {
 		p.failed.Add(1)
@@ -351,7 +389,7 @@ func publishConn(ctx context.Context, url string, c int, fs fleetShape, pool, bu
 				if fs.isHeavy(eq) {
 					rate = fs.heavyRate
 				}
-				if burst && fs.inBurst(eq) {
+				if burst && inBurst[eq] {
 					rate, from = rate+fs.burstRate, burstPool
 				}
 				credit[i] += rate * dt
@@ -363,6 +401,9 @@ func publishConn(ctx context.Context, url string, c int, fs fleetShape, pool, bu
 						offset[i]++
 						m := from.message(feedPrefix, eq, offset[i], n+k)
 						p.made.Add(1)
+						if from == burstPool {
+							p.burstMade.Add(1)
+						}
 						fut, err := js.PublishMsgAsync(m)
 						if err != nil {
 							// A stalled publish is retried once, as one whose acknowledgement failed is.
