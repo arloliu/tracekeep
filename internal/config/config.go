@@ -140,6 +140,8 @@ type Logfeed struct {
 	DuplicateWindow time.Duration `yaml:"duplicate_window" default:"2m" env:"TRACEKEEP_LOGFEED_DUPLICATE_WINDOW" validate:"gte=100ms"`
 	// MaxAckPending is each group consumer's.
 	MaxAckPending int `yaml:"max_ack_pending" default:"100000" env:"TRACEKEEP_LOGFEED_MAX_ACK_PENDING" validate:"gt=0"`
+	// GroupMaxBytes bounds a group's batched payload: past it, or past half of MaxAckPending's entries, its largest equipment flushes first (§15.7).
+	GroupMaxBytes fuda.ByteSize `yaml:"group_max_bytes" default:"128MiB" env:"TRACEKEEP_LOGFEED_GROUP_MAX_BYTES" validate:"gt=0"`
 	// ReorderWindow is how long an entry waits before it is released in its file's offset order (§15.5).
 	ReorderWindow time.Duration `yaml:"reorder_window" default:"30s" env:"TRACEKEEP_LOGFEED_REORDER_WINDOW" validate:"gt=0"`
 	// PairingWindow is the entries of its file a header waits for its body.

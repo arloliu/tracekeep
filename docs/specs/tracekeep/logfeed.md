@@ -299,7 +299,12 @@ records are written with `SegmentWriter.Append` (fidelity `reconstructed`, `deco
   a remote call's error is an unknown outcome, and an object it may have put is left to the reconciler (§15.8).
 - **The acknowledgement rule** is ingest's: an entry is acknowledged once every record or annotation it went into is in a registered pack, its duplicates with it;
   a stale, beyond-retention or unreadable entry at once.
-- **Held entries keep no payload**: once converted, an entry keeps only its acknowledgement handle until its pack registers (§15.10).
+- **Held entries keep no payload**: once decoded, a delivery keeps only its acknowledgement handle, its reply subject, until its pack registers (§15.10).
+- **The group's bound** (T-65): a group whose batches hold more payload bytes than `logfeed.group_max_bytes`, or which holds more deliveries than half its consumer's `max_ack_pending`,
+  flushes its equipment with the most batched bytes first, again until it is back under both.
+  Without it a converter held everything its group received for F, bounded only by `max_ack_pending`, which counts messages, never bytes:
+  an equipment logging fast, or a burst of large messages, filled its group's consumer and stalled every equipment of the group until F.
+  The bound keeps a group's batches within `logfeed.group_max_bytes`, whatever the messages' sizes; its reorder windows hold its rate times the reorder window beside them.
 - **Delivery and validation** follow T-60: one phase of five steps, synthetic test entries, and a gate of 2,000 simulated pieces of equipment beside traffic at K = 100 on both catalog engines.
 - **Crash points** are ingest's (`ingest.md` §6.3), except that an orphan is deleted, never adopted (§15.8).
 - `internal/logfeed` shares with `internal/ingest` only what holds no delivery: batching, masking and the flush's writer and bound, never the disposition classifier or delivery evidence (T-60).
@@ -379,7 +384,8 @@ a merged segment's deletion about 0.6 ms (`RegisterPack/miss`, unmeasured for de
   F = 10 s needs MariaDB.
   F defaults to ingest's 300 s (T-25).
   The per-entry part, about 96 ms/s, does not shrink with F.
-- **Held entries** = 3,200/s × (F + the reorder window), split across the groups' consumers: about 33,000 a consumer at F = 300 s, under `logfeed.max_ack_pending`.
+- **Held entries** = 3,200/s × (F + the reorder window), split across the groups' consumers: about 33,000 a consumer at F = 300 s, under `logfeed.max_ack_pending`;
+  a faster fleet flushes before F by the group's bound (§15.7, T-65), and `max_ack_pending` stays above twice its group's rate times the reorder window.
 - **Leases**: G group rows renewed every 10 s, 3.2 commits a second at G = 32, whatever the fleet.
 - **The overlap probe** scans one capture's ranges, a capture being one dated file: at most 86,400 / F ranges.
 - **Objects**: the segments above, plus 2,000 archives an hour; the compactor merges 2,000 scopes an hour.
@@ -403,6 +409,7 @@ a merged segment's deletion about 0.6 ms (`RegisterPack/miss`, unmeasured for de
 | `logfeed.max_bytes` | 40 GiB | the stream's limit, discard-new |
 | `logfeed.duplicate_window` | 2 min | the stream's duplicate window, longer than the pipeline's retry cap |
 | `logfeed.max_ack_pending` | 100,000 | each group consumer's |
+| `logfeed.group_max_bytes` | 128 MiB | a group's batched payload before its largest equipment flushes (§15.7 *The group's bound*) |
 | `logfeed.reorder_window` | 30 s | §15.5 *Order*; the pipeline's in-flight bound stays below it |
 | `logfeed.pairing_window` | 3 entries | §15.5 *Pairing* |
 | `logfeed.flush_interval` | ingest's F | F |
