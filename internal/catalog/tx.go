@@ -69,6 +69,8 @@ type dialect struct {
 	duplicate func(error) bool
 	// nowNS is the database's clock in UTC nanoseconds, which judges every lease (rollouts.md §6.4, T-32).
 	nowNS string
+	// logFileUpsert inserts a log file's row with no watermark, or updates the existing row to itself, in one statement that locks it (logfeed.md §15.7).
+	logFileUpsert string
 }
 
 var sqliteDialect = dialect{
@@ -77,6 +79,8 @@ var sqliteDialect = dialect{
 	insertIgnore: "INSERT OR IGNORE",
 	prologue: `INSERT INTO captures (capture_id, state, data_revision, created_at) VALUES (?, 'pending', 1, ?)
 		ON CONFLICT (capture_id) DO UPDATE SET data_revision = data_revision + 1`,
+	logFileUpsert: `INSERT INTO logfeed_files (source, equipment_id, file, watermark, stopped) VALUES (?, ?, ?, -1, false)
+		ON CONFLICT (source, equipment_id, file) DO UPDATE SET watermark = watermark`,
 	nowNS: "CAST(unixepoch('subsec') * 1000000000 AS INTEGER)",
 	retryable: func(err error) bool {
 		var e *sqlite.Error
@@ -99,6 +103,8 @@ var mariadbDialect = dialect{
 	insertIgnore: "INSERT IGNORE",
 	prologue: `INSERT INTO captures (capture_id, state, data_revision, created_at) VALUES (?, 'pending', 1, ?)
 		ON DUPLICATE KEY UPDATE data_revision = data_revision + 1`,
+	logFileUpsert: `INSERT INTO logfeed_files (source, equipment_id, file, watermark, stopped) VALUES (?, ?, ?, -1, false)
+		ON DUPLICATE KEY UPDATE watermark = watermark`,
 	nowNS: "CAST(UNIX_TIMESTAMP(NOW(6)) * 1000000000 AS SIGNED)",
 	retryable: func(err error) bool {
 		var e *mysql.MySQLError

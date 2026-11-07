@@ -304,7 +304,10 @@ func (x *Executor) admit(ctx context.Context, d *Delivery) error {
 	}
 	desc := &catalog.Descriptor{
 		Bytes: d.Record.Descriptor, EquipmentID: meta.EquipmentID, RecorderInstanceID: meta.RecorderInstanceID,
-		PreviousCaptureID: meta.PreviousCaptureID,
+		PreviousCaptureID: meta.PreviousCaptureID, CaptureMethod: meta.CaptureMethod.String(), Vantage: meta.Vantage.String(),
+	}
+	if meta.SourceDialect != nil {
+		desc.SourceDialect = *meta.SourceDialect
 	}
 	// AcceptedDescriptor has checked both, so neither is nil here.
 	if meta.Device != nil && meta.RecorderInstanceName != nil {

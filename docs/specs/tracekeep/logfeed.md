@@ -99,9 +99,9 @@ The contract between the pipeline and tracekeep is a versioned field schema, one
 |---|---|
 | `v` | the schema version, 1 |
 | `equipment_id` | the equipment the host program drives, as `equipment_id` names it everywhere (T-59) |
-| `source` | the feed deployment's name (T-59), stable across restarts, never a host or pod name |
+| `source` | the feed deployment's name (T-59), stable across restarts, never a host or pod name; at most 128 characters |
 | `tz` | the IANA time zone the host program logs in |
-| `file` | the file's base name, dated by the host program |
+| `file` | the file's base name, dated by the host program; at most 128 characters |
 | `offset` | the entry's byte offset in its file, as the tailer reports it |
 | `ts` | the entry's logged local wall time, rewritten to `YYYY-MM-DD HH:MM:SS[.fraction]` without a zone; the pipeline changes its layout, never its value |
 | `kind` | `header`, `body`, `encrypted` or `unclassified` |
@@ -117,7 +117,7 @@ The contract between the pipeline and tracekeep is a versioned field schema, one
 - **Message id** (`Nats-Msg-Id`): `<source>/<token>/<file>/<offset>`, so the stream drops a retried publish within its duplicate window (T-62).
 - **Size**: an entry carries the extracted fields and one text, never the raw lines beside the SML text, which would add about 500 B an entry.
 - **An entry tracekeep cannot read** is counted (`outcome="unreadable"`, §15.11), acknowledged and never converted when tracekeep cannot place or time it:
-  JSON that does not parse, an unknown `v`, a missing or malformed `equipment_id`, `source`, `file`, `offset` or `ts`, a `tz` that names no zone, or a token that does not spell the equipment.
+  JSON that does not parse, an unknown `v`, a missing or malformed `equipment_id`, `source`, `file`, `offset` or `ts` (a `source` or `file` of more than 128 characters included, which the catalog's keys cannot hold), a `tz` that names no zone, or a token that does not spell the equipment.
   One it can place and time, whose kind's own fields are missing or malformed, is an `unrecognised-line` annotation holding the message as received, in its file's capture of the main device.
   Neither holds the equipment's conversion.
 

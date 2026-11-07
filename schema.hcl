@@ -88,6 +88,24 @@ table "captures" {
     type = varchar(255)
     null = true
   }
+  # The descriptor's capture_method, vantage and source_dialect, decoded at admission (logfeed.md §15.8); none on a pending row.
+  column "capture_method" {
+    type = varchar(32)
+    null = true
+  }
+  column "vantage" {
+    type = varchar(16)
+    null = true
+  }
+  column "source_dialect" {
+    type = varchar(64)
+    null = true
+  }
+  # An operator's capture stop of a log capture, which its converter writes as the stop (logfeed.md §15.11).
+  column "stop_requested_at" {
+    type = bigint
+    null = true
+  }
   primary_key {
     columns = [column.capture_id]
   }
@@ -1093,5 +1111,64 @@ table "termination_orders" {
   }
   check "termination_orders_state" {
     expr = "state IN ('active', 'spent')"
+  }
+}
+
+# A log capture's key (logfeed.md §15.6): the capture of a source's file of one device of one piece of equipment, never deleted, as captures are not.
+# source and file are at most 128 characters, so the key fits MariaDB's index limit.
+table "logfeed_captures" {
+  schema = schema.main
+  column "source" {
+    type = varchar(128)
+  }
+  column "equipment_id" {
+    type = varchar(255)
+  }
+  column "device" {
+    type = varchar(255)
+  }
+  column "file" {
+    type = varchar(128)
+  }
+  column "capture_id" {
+    type = sql(var.uuid)
+  }
+  # The lease group that last registered the capture.
+  column "lease_group" {
+    type = int
+  }
+  primary_key {
+    columns = [column.source, column.equipment_id, column.device, column.file]
+  }
+  index "logfeed_captures_capture" {
+    unique  = true
+    columns = [column.capture_id]
+  }
+  index "logfeed_captures_group" {
+    columns = [column.lease_group]
+  }
+}
+
+# A log file's watermark, the offset its conversion has settled up to, and whether it is stopped (logfeed.md §15.5); never deleted, so a stopped file never reopens.
+table "logfeed_files" {
+  schema = schema.main
+  column "source" {
+    type = varchar(128)
+  }
+  column "equipment_id" {
+    type = varchar(255)
+  }
+  column "file" {
+    type = varchar(128)
+  }
+  column "watermark" {
+    type = bigint
+  }
+  column "stopped" {
+    type    = bool
+    default = false
+  }
+  primary_key {
+    columns = [column.source, column.equipment_id, column.file]
   }
 }

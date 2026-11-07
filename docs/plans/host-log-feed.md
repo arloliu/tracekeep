@@ -1,6 +1,6 @@
 # Host log feed
 
-Status: active (2026-11-07) — step 2, the catalog
+Status: active (2026-11-07) — step 3, protections
 
 The work that delivers the host log feed, `docs/specs/tracekeep/logfeed.md` (§15), as T-60 shapes it,
 with its two riskiest costs measured before the converter is built (T-63): the feed's load on the bus, and its registration's on the catalog writer.
@@ -11,8 +11,8 @@ The design is the spec's and the rationale the decision log's; this plan only or
 | Step | Work | State |
 |---|---|---|
 | 1 — the feed stream's load | the feed's stream and group consumers under the fleet's rate on a three-node cluster, beside traffic, before any converter exists | done (#102) |
-| 2 — the catalog | `logfeed_captures`, `logfeed_files` and the `captures` columns; `AdmitLog`, `RegisterLogFlush`, `StopLogCapture`, on both engines; their benchmarks and first baselines, judged against §15.10's writer budget | in-progress |
-| 3 — protections | the reconciler deletes a log capture's orphan; the compactor's close leaves log captures out; `capture close` and `capture terminate` refuse one; retirement's stop-only quiescence (§15.8) | pending |
+| 2 — the catalog | `logfeed_captures`, `logfeed_files` and the `captures` columns; `AdmitLog`, `RegisterLogFlush`, `StopLogCapture`, on both engines; their benchmarks and first baselines, judged against §15.10's writer budget | done (#103) |
+| 3 — protections | the reconciler deletes a log capture's orphan; the compactor's close leaves log captures out; `capture close` and `capture terminate` refuse one; retirement's stop-only quiescence (§15.8) | in-progress |
 | 4 — stream, configuration and preflight | `migrate` ensures the stream and consumers, a change of G included; the `logfeed.*` configuration; the prefix and overlap checks (§15.4, §15.11) | pending |
 | 5 — conversion | `internal/logfeed`'s pure part: entry decoding, reorder, duplicates and stale entries, pairing, devices, time, records and annotations (§15.3, §15.5) | pending |
 | 6 — the converter | batches, flush and registration, lease groups and the consumer's re-creation, file stops, the service's wiring; `internal/logfeed` in a `scripts/catalog.sh` leg (§15.6, §15.7) | pending |
@@ -24,19 +24,14 @@ Each step is one pull request.
 Steps 1 and 2 record their numbers here before step 5 starts;
 a number past its budget stops the plan for the owner's decision.
 
-## Step 2 — the catalog
+## Step 3 — protections
 
-- **The schema**, one migration on both engines (`make migrate-diff`, `make migrate-check`):
-  `captures` gains `capture_method`, `vantage`, `source_dialect` and `stop_requested_at`, written by every admission, a gateway's included;
-  `logfeed_captures` and `logfeed_files` as `catalog.md` §7.1 states them.
-- **The transactions** `AdmitLog`, `RegisterLogFlush` and `StopLogCapture` as `catalog.md` §7.2 states them, each tested on both engines (`catalogtest.Engines`):
-  the lock order, a lost fence, a guard rolling a multi-device, multi-hour flush back whole, a committed flush retried, a watermark never lowered,
-  a stopped file refusing a flush and an admission, an idle stop refused for a moved watermark, a stop with the lease held and with it lapsed.
-- **The benchmarks**, `-count 5` on SQLite and MariaDB:
-  `RegisterLogFlush` at 16, 96 and 480 entries in all, over one device and over three, each a fresh registration, never the idempotent path;
-  `AdmitLog`; `StopLogCapture`.
-  Their first run is their baseline, recorded here with each engine's durability settings and added to the benchmark workflow's groups.
-  **Budget**: a fresh 480-entry flush within 16.4 ms on SQLite, so 6.7 flushes a second take at most 110 ms of its writer (§15.10).
+Each refuses or leaves out a capture whose `capture_method` is `log`, tested on both engines, before any converter can write one:
+
+- **The reconciler** (`storage.md` §5.4): a log capture's orphan is tombstoned and its object deleted after the commit, never adopted.
+- **The compactor's close** (`compactor.md` §8.2): `CloseCandidates` and `CloseIntent` leave log captures out.
+- **`capture close` and `capture terminate`** (`operations.md` §10.4): refused for a log capture, the request or the termination writing nothing.
+- **Retirement's quiescence** (`rollouts.md` §6.4): a log capture is quiescent once its row is `stopped`, whichever stop wrote it, and neither stream is observed for it.
 
 ## Gate cases
 
@@ -86,3 +81,21 @@ Controls: a publisher capped at half the rate failed the rate budget; one connec
 a full 64 MiB stream refused the 69,997th publish with error 10077, evicted nothing, and took it after a drain;
 a publish retried after a lost acknowledgement was stored once.
 The duplicate window's 384,000 ids cost about 180 MiB of heap across the three servers at T-61's times; at ingest's own, the difference was lost in the process's 2.9 GB heap.
+
+**Step 2** (#103): the transactions' first baselines, `-count 5`, the median of each row, in ms;
+SQLite in WAL with `synchronous(FULL)` on an ext4 disk, MariaDB at its defaults with its data on its container's disk.
+
+| Benchmark | SQLite | MariaDB |
+|---|---|---|
+| `RegisterLogFlush`, 16 entries, one device | 0.47 | 3.7 |
+| `RegisterLogFlush`, 96 entries, one device | 0.46 | 3.5 |
+| `RegisterLogFlush`, 480 entries, one device | 0.47 | 3.7 |
+| `RegisterLogFlush`, 16 entries, three devices | 0.81 | 7.3 |
+| `RegisterLogFlush`, 96 entries, three devices | 0.82 | 7.4 |
+| `RegisterLogFlush`, 480 entries, three devices | 0.83 | 7.4 |
+| `AdmitLog` | 0.38 | 2.9 |
+| `StopLogCapture` | 0.26 | 2.1 |
+
+A fresh 480-entry flush takes 0.47 ms on SQLite over one device and 0.83 ms over three, within its 16.4 ms budget:
+6.7 flushes a second take about 6 ms a second of SQLite's writer.
+A flush's cost is its segments', one a device, not its entries'.

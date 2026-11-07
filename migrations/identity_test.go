@@ -4,8 +4,11 @@ import (
 	"database/sql"
 	"errors"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
+
+	"ariga.io/atlas/sql/migrate"
 
 	"github.com/arloliu/tracekeep/migrations"
 )
@@ -17,10 +20,11 @@ func TestIdentityResetRefusedOnACatalogWithCaptures(t *testing.T) {
 	t.Parallel()
 	engines(t, func(t *testing.T, db *sql.DB, engine string) {
 		all := files(t, engine)
-		if !strings.HasSuffix(all[len(all)-1].Name(), "_equipment_identity.sql") {
-			t.Fatalf("the last migration is %s, want the identity reset", all[len(all)-1].Name())
+		reset := slices.IndexFunc(all, func(f migrate.File) bool { return strings.HasSuffix(f.Name(), "_equipment_identity.sql") })
+		if reset < 0 {
+			t.Fatal("no identity reset among the migrations")
 		}
-		if err := migrations.ApplyDir(t.Context(), db, engine, dirOf(t, all[:len(all)-1])); err != nil {
+		if err := migrations.ApplyDir(t.Context(), db, engine, dirOf(t, all[:reset])); err != nil {
 			t.Fatal(err)
 		}
 		before := revisions(t, db)

@@ -62,6 +62,8 @@ type Descriptor struct {
 	Device, Source    string
 	OriginNS          int64
 	PreviousCaptureID *tracepack.UUID
+	// CaptureMethod and Vantage are the descriptor's in tracepack's spelling ("raw-stream", "log"; "host"), SourceDialect its source_dialect, empty when absent.
+	CaptureMethod, Vantage, SourceDialect string
 }
 
 // Result is an admission's or a rejection's outcome, with the configuration the capture is bound to when it is admitted.
@@ -137,22 +139,30 @@ func (c *Catalog) AdmitWhere(ctx context.Context, dv *Identity, d *Descriptor, b
 		if !ok {
 			return ErrNoBindableConfig
 		}
-		var prev []byte
-		if d.PreviousCaptureID != nil {
-			prev = d.PreviousCaptureID[:]
-		}
-		_, err = tx.ExecContext(ctx, `UPDATE captures SET state = 'open', descriptor = ?, equipment_id = ?, recorder_instance_id = ?, device = ?,
-			source = ?, origin_ns = ?, previous_capture_id = ?, config_id = ? WHERE capture_id = ?`,
-			d.Bytes, d.EquipmentID, d.RecorderInstanceID[:], d.Device, d.Source, d.OriginNS, prev, cfg, id[:])
 		res = Result{Outcome: Admitted, ConfigID: cfg}
 
-		return err
+		return c.openCapture(ctx, tx, id, d, cfg)
 	})
 	if err = outcome(err); err != nil {
 		return Result{}, fmt.Errorf("catalog: admit %s: %w", id, err)
 	}
 
 	return res, nil
+}
+
+// openCapture writes the admission of id with d, bound to the configuration cfg.
+func (c *Catalog) openCapture(ctx context.Context, tx *sqlx.Tx, id tracepack.UUID, d *Descriptor, cfg int64) error {
+	var prev []byte
+	if d.PreviousCaptureID != nil {
+		prev = d.PreviousCaptureID[:]
+	}
+	null := func(s string) sql.NullString { return sql.NullString{String: s, Valid: s != ""} }
+	_, err := tx.ExecContext(ctx, `UPDATE captures SET state = 'open', descriptor = ?, equipment_id = ?, recorder_instance_id = ?, device = ?,
+		source = ?, origin_ns = ?, previous_capture_id = ?, config_id = ?, capture_method = ?, vantage = ?, source_dialect = ? WHERE capture_id = ?`,
+		d.Bytes, d.EquipmentID, d.RecorderInstanceID[:], d.Device, d.Source, d.OriginNS, prev, cfg,
+		null(d.CaptureMethod), null(d.Vantage), null(d.SourceDialect), id[:])
+
+	return err
 }
 
 // Reject records that the start descriptor of the delivery dv's capture is not accepted (catalog.md §7.2 `Reject`),
