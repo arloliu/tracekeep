@@ -25,24 +25,27 @@ cleanup() {
 }
 trap cleanup EXIT
 
-pin() { # pin <cpus> <command...>: run the command on cpus, or unpinned without them
-	local cpus=$1
-	shift
-	if [ -n "$cpus" ]; then taskset -c "$cpus" "$@"; else "$@"; fi
-}
+# The commands' CPU pinning, empty when unpinned: a prefix, not a function, so a server started in the background is its own process, which cleanup stops.
+bus_pin=()
+test_pin=()
+[ -z "${BUS_CPUS:-}" ] || bus_pin=(taskset -c "$BUS_CPUS")
+[ -z "${TEST_CPUS:-}" ] || test_pin=(taskset -c "$TEST_CPUS")
 
 go build -o "$work/nats-server" github.com/nats-io/nats-server/v2
 routes=nats-route://127.0.0.1:6310,nats-route://127.0.0.1:6311,nats-route://127.0.0.1:6312
 for i in 0 1 2; do
 	mkdir -p "$bus/tb-$i"
-	GOMEMLIMIT=${BUS_GOMEMLIMIT:-7GiB} pin "${BUS_CPUS:-}" "$work/nats-server" -n "tb-$i" -a 127.0.0.1 -p "431$i" -m "822$i" \
+	GOMEMLIMIT=${BUS_GOMEMLIMIT:-7GiB} "${bus_pin[@]}" "$work/nats-server" -n "tb-$i" -a 127.0.0.1 -p "431$i" -m "822$i" \
 		-js -sd "$bus/tb-$i" --cluster_name testbus --cluster "nats://127.0.0.1:631$i" --routes "$routes" >"$work/server-$i.log" 2>&1 &
 	pids+=($!)
 done
-# Ready once every server reports JetStream healthy: the meta leader elected and the server current with it.
+# Ready once every server started here is running and reports JetStream healthy: the meta leader elected and the server current with it.
 for _ in $(seq 60); do
 	ready=0
-	for i in 0 1 2; do curl -sf --max-time 2 "http://127.0.0.1:822$i/healthz" >/dev/null && ready=$((ready + 1)); done
+	for i in 0 1 2; do
+		kill -0 "${pids[$i]}" 2>/dev/null || { echo "load-feed: server $i exited:" >&2; cat "$work/server-$i.log" >&2; exit 1; }
+		curl -sf --max-time 2 "http://127.0.0.1:822$i/healthz" >/dev/null && ready=$((ready + 1))
+	done
 	[ "$ready" -eq 3 ] && break
 	sleep 1
 done
@@ -52,4 +55,4 @@ if [ "$ready" -ne 3 ]; then
 fi
 
 TRACEKEEP_LOAD_BUS=nats://127.0.0.1:4310,nats://127.0.0.1:4311,nats://127.0.0.1:4312 TRACEKEEP_LOAD="$mode" \
-	pin "${TEST_CPUS:-}" go test ./internal/service/ -run '^TestLoad$' -count=1 -v -timeout 150m
+	"${test_pin[@]}" go test ./internal/service/ -run '^TestLoad$' -count=1 -v -timeout 150m
