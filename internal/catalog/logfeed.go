@@ -425,3 +425,93 @@ func (c *Catalog) StopLogCapture(ctx context.Context, id tracepack.UUID) (LogSto
 
 	return out, nil
 }
+
+// FileState is a log file's watermark and whether it is stopped; Found is false for a file no admission created, whose watermark is NoWatermark.
+type FileState struct {
+	Watermark      int64 `db:"watermark"`
+	Stopped, Found bool
+}
+
+// LogFileState is f's state.
+func (c *Catalog) LogFileState(ctx context.Context, f LogFile) (FileState, error) {
+	var row struct {
+		Watermark int64 `db:"watermark"`
+		Stopped   bool  `db:"stopped"`
+	}
+	err := c.read.GetContext(ctx, &row, `SELECT watermark, stopped FROM logfeed_files WHERE source = ? AND equipment_id = ? AND file = ?`,
+		f.Source, f.EquipmentID, f.File)
+	if errors.Is(err, sql.ErrNoRows) {
+		return FileState{Watermark: NoWatermark}, nil
+	}
+	if err != nil {
+		return FileState{}, fmt.Errorf("catalog: log file %s/%s: %w", f.Source, f.File, err)
+	}
+
+	return FileState{Watermark: row.Watermark, Stopped: row.Stopped, Found: true}, nil
+}
+
+// LogCapture is a log capture as its converter reads it back: the capture, and its predecessor, which its segments name.
+type LogCapture struct {
+	Capture
+	Previous *tracepack.UUID
+}
+
+// LogCaptureOf is the capture key names, false when no admission created it.
+func (c *Catalog) LogCaptureOf(ctx context.Context, key LogKey) (LogCapture, bool, error) {
+	var row struct {
+		ID       []byte `db:"capture_id"`
+		Previous []byte `db:"previous_capture_id"`
+	}
+	err := c.read.GetContext(ctx, &row, `SELECT k.capture_id, c.previous_capture_id FROM logfeed_captures k JOIN captures c ON c.capture_id = k.capture_id
+		WHERE k.source = ? AND k.equipment_id = ? AND k.device = ? AND k.file = ?`, key.Source, key.EquipmentID, key.Device, key.File)
+	if errors.Is(err, sql.ErrNoRows) {
+		return LogCapture{}, false, nil
+	}
+	if err != nil {
+		return LogCapture{}, false, fmt.Errorf("catalog: log capture key: %w", err)
+	}
+	cp, err := c.Capture(ctx, tracepack.UUID(row.ID))
+	if err != nil {
+		return LogCapture{}, false, err
+	}
+	lc := LogCapture{Capture: cp}
+	if row.Previous != nil {
+		p := tracepack.UUID(row.Previous)
+		lc.Previous = &p
+	}
+
+	return lc, true, nil
+}
+
+// LogPredecessor is the latest capture of the series (equipment, instance) admitted with an origin before origin, nil for none:
+// the previous_capture_id a log capture of the series' next file names (logfeed.md §15.6).
+func (c *Catalog) LogPredecessor(ctx context.Context, equipment string, instance tracepack.UUID, origin int64) (*tracepack.UUID, error) {
+	var ids [][]byte
+	err := c.read.SelectContext(ctx, &ids, `SELECT capture_id FROM captures WHERE equipment_id = ? AND recorder_instance_id = ? AND origin_ns < ?
+		ORDER BY origin_ns DESC LIMIT 1`, equipment, instance[:], origin)
+	if err != nil {
+		return nil, fmt.Errorf("catalog: log predecessor: %w", err)
+	}
+	if len(ids) == 0 {
+		return nil, nil //nolint:nilnil // no predecessor is not an error
+	}
+	id := tracepack.UUID(ids[0])
+
+	return &id, nil
+}
+
+// LogStopRequests are the open log captures of group with an operator's stop request, which its converter writes at its next flush (§15.11).
+func (c *Catalog) LogStopRequests(ctx context.Context, group int) ([]tracepack.UUID, error) {
+	var ids [][]byte
+	err := c.read.SelectContext(ctx, &ids, `SELECT c.capture_id FROM captures c JOIN logfeed_captures k ON k.capture_id = c.capture_id
+		WHERE k.lease_group = ? AND c.state = 'open' AND c.stop_requested_at IS NOT NULL`, group)
+	if err != nil {
+		return nil, fmt.Errorf("catalog: log stop requests: %w", err)
+	}
+	out := make([]tracepack.UUID, len(ids))
+	for i, id := range ids {
+		out[i] = tracepack.UUID(id)
+	}
+
+	return out, nil
+}

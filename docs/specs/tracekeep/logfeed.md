@@ -257,8 +257,10 @@ records are written with `SegmentWriter.Append` (fidelity `reconstructed`, `deco
   A capture of a series' next file names its predecessor in `previous_capture_id` ([FMT I-7]).
 - **Admission**: the converter admits a capture with `AdmitLog` (§15.7) on the first entry of its key,
   only while an active processing configuration holds the masking baseline; until then nothing is admitted or acknowledged and the entries wait in the stream within its `max_bytes` (T-60).
-- **The descriptor**: `capture_method` `log`, vantage `host`, `time_source` `source-log`, `equipment_id`, `device`, the series' recorder fields, and `notes` saying it claims no coverage;
+- **The descriptor**, the capture-level metadata every segment of the capture carries: `capture_method` `log`, vantage `host`, `time_source` `source-log`, `equipment_id`, `device`, the series' recorder fields, `source_tz`, and `notes` saying it claims no coverage;
   no HSMS session fields (`device_id`, endpoint, timers), which a log does not give, and no `capture_origin_*` or `clock_step_tolerance_ns` ([FMT §5]).
+  The capture's row holds no descriptor bytes, since a bus descriptor serves bus captures only and tracepack refuses one of `capture_method` `log`;
+  its `origin_ns` is its first record's time.
 - `source_ref`: `<source>/<file>`, since dated base names repeat across sources and a pack read outside tracekeep must say whose file it was;
   `source_dialect`: `host-sml-feed/1`, the suffix being the schema version.
 - **Boundaries**: the converter writes the start with the capture's first record,

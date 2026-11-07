@@ -52,6 +52,16 @@ func (b *Batch) parked() bool { return len(b.Entries) > 0 && b.Entries[0].D.Msg.
 // the estimate's margin, and room for the rest of the metadata.
 const DefaultBatchMetaBytes = tracepack.DefaultMaxPackMetadataLen / 2
 
+// RedactionBytes bounds the encoded size of entries, as a batch counts its metadata against the reader's budget (ingest.md §6.2).
+func RedactionBytes(entries []tracepack.RedactionEntry) int {
+	n := 0
+	for i := range entries {
+		n += redactionEntryBytes(&entries[i])
+	}
+
+	return n
+}
+
 // redactionEntryBytes bounds the encoded size of one redaction entry:
 // each of its six fields and the entry itself is an 8-byte TLV header, the seq 8 bytes and each masked range 16,
 // with 8 bytes over for an array's own length.

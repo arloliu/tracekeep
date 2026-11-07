@@ -21,7 +21,7 @@ PASSWORD=tracekeep
 declare -A LEGS=(
 	[catalog]="./internal/catalog/..."
 	[compact-api]="./internal/compact/... ./internal/api/..."
-	[ingest-service]="./internal/ingest/... ./internal/service/..."
+	[ingest-service]="./internal/ingest/... ./internal/service/... ./internal/logfeed/..."
 	[rest]="./migrations/ ./internal/bus/... ./internal/admin/... ./internal/keys/... ./internal/metrics/..."
 )
 PACKAGES="${LEGS[*]}"

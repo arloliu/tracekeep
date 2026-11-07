@@ -62,8 +62,8 @@ type replyKey struct {
 	tid     string
 }
 
-// keys are the keys an item's transaction is remembered or looked up by, for the primary's direction dir.
-func keys(it *Item, b *Built, dir string) []replyKey {
+// replyKeys are the keys an item's transaction is remembered or looked up by, for the primary's direction dir.
+func replyKeys(it *Item, b *Built, dir string) []replyKey {
 	var ks []replyKey
 	if b.Trusted {
 		ks = append(ks, replyKey{dir: dir, session: b.Session, sb: b.SystemBytes})
@@ -90,7 +90,7 @@ func (r *Replies) Device(d *Devices, it *Item, b *Built) string {
 		return d.Main
 	}
 	if it.Kind == Pair && b.Record.Kind == tracepack.KindData && !b.Primary {
-		for _, k := range keys(it, b, opposite(h.Dir)) {
+		for _, k := range replyKeys(it, b, opposite(h.Dir)) {
 			if dev, ok := r.devices[k]; ok {
 				return dev
 			}
@@ -114,7 +114,7 @@ func (r *Replies) Remember(it *Item, b *Built, device string) {
 	if r.devices == nil {
 		r.devices = map[replyKey]string{}
 	}
-	for _, k := range keys(it, b, it.Header.Dir) {
+	for _, k := range replyKeys(it, b, it.Header.Dir) {
 		r.devices[k] = device
 		r.order = append(r.order, k)
 	}

@@ -1,6 +1,6 @@
 # Host log feed
 
-Status: active (2026-11-07) — step 6, the converter
+Status: active (2026-11-07) — step 7, lease groups and wiring
 
 The work that delivers the host log feed, `docs/specs/tracekeep/logfeed.md` (§15), as T-60 shapes it,
 with its two riskiest costs measured before the converter is built (T-63): the feed's load on the bus, and its registration's on the catalog writer.
@@ -15,25 +15,24 @@ The design is the spec's and the rationale the decision log's; this plan only or
 | 3 — protections | the reconciler deletes a log capture's orphan; the compactor's close leaves log captures out; `capture close` and `capture terminate` refuse one; retirement's stop-only quiescence (§15.8) | done (#104) |
 | 4 — stream, configuration and preflight | `migrate` ensures the stream and consumers, a change of G included; the `logfeed.*` configuration; the prefix and overlap checks (§15.4, §15.11) | done (#105) |
 | 5 — conversion | `internal/logfeed`'s pure part: entry decoding, reorder, duplicates and stale entries, pairing, devices, time, records and annotations (§15.3, §15.5) | done (#106) |
-| 6 — the converter | batches, flush and registration, lease groups and the consumer's re-creation, file stops, the service's wiring; `internal/logfeed` in a `scripts/catalog.sh` leg (§15.6, §15.7) | in-progress |
-| 7 — reads and admin | the reads' method fields, `capture stop`, `tracekeep status`'s feed lines (§15.8, §15.11) | pending |
-| 8 — web UI and operations | the UI's method filter and badge; alerts, metrics, runbook, configuration and pipeline guides (§15.8, §15.11) | pending |
-| 9 — the gate | the gate cases below | pending |
+| 6 — the converter | a lease group's converter: deliveries through windows and pairing into admitted captures, seq, masking, batches, segments, `RegisterLogFlush`, acknowledgements, file stops and stop requests; `internal/logfeed` in a `scripts/catalog.sh` leg (§15.5–§15.7) | done (#107) |
+| 7 — lease groups and wiring | taking, renewing and losing group leases, the consumer's re-creation and the fetch loop, giving up and taking again, the heartbeat, the stage started by `ingest` with its readiness and metrics (§15.4, §15.5 *Taking a lease*) | in-progress |
+| 8 — reads and admin | the reads' method fields, `capture stop`, `tracekeep status`'s feed lines (§15.8, §15.11) | pending |
+| 9 — web UI and operations | the UI's method filter and badge; alerts, metrics, runbook, configuration and pipeline guides (§15.8, §15.11) | pending |
+| 10 — the gate | the gate cases below | pending |
 
 Each step is one pull request.
 Steps 1 and 2 record their numbers here before step 5 starts;
 a number past its budget stops the plan for the owner's decision.
 
-## Step 6 — the converter
+## Step 7 — lease groups and wiring
 
-The log stage in the `ingest` role with `logfeed.enabled`, built on step 5's part (`logfeed.md` §15.4–§15.8):
-
-- **Lease groups**: a replica takes free group leases up to its share of the live members, renews them, and on taking one reads the group's open log captures and watermarks, then deletes and re-creates the group's consumer before fetching (§15.5 *Taking a lease*); a lost lease, a given-up flush or an outcome it cannot resolve stops the group's converter and takes the lease again.
-- **Consumption**: each delivery decoded, its file's window and pairer fed, a duplicate's handle joined to its held entry, a stale, unreadable or beyond-retention entry acknowledged at once; held entries kept in progress by ingest's heartbeat, a converted entry keeping only its handle.
-- **Captures**: `AdmitLog` on a key's first entry, waiting while no configuration holding the masking baseline is active; seq assigned densely per capture from its `highest_seq`; the start boundary with the first record; a file stopped once its successor's first entry has left the window, or idle past the period, its windows drained and pending headers ended; `capture stop` requests written at the next flush.
-- **Flush**: every batch of an equipment at once, classified, masked and written with tracepack's segment writer (`DurableRecorder`, `flush_interval_ns`, the log capture's descriptor), put under `staging/`, registered by `RegisterLogFlush`, then each entry acknowledged with its duplicates; the flush bounded as `ingest.md` §6.2 bounds it.
-- **Wiring**: the stage started by `ingest` beside the traffic consumer, its readiness and metrics; `internal/logfeed` joins a `scripts/catalog.sh` leg.
-- **Tests** on the embedded bus and both engines: a feed of synthetic entries converted end to end into packs a tracepack reader reads back, and the gate cases this step owns, each with its barriers.
+- **Lease groups**: an `ingest` replica with the feed enabled takes free group leases up to its share of the live members, renews each, and stops a group's converter at once when its lease is lost.
+- **Taking a lease** (§15.5): the converter built fresh, the group's consumer deleted and re-created before the first fetch.
+- **The fetch loop**: deliveries given to the converter, ticked every tenth of the reorder window, its held deliveries kept in progress every `ack_wait / 3`;
+  an `ErrGiveUp` or any other failure negatively acknowledges everything held, drops the converter and takes the lease again after a pause.
+- **Wiring**: the stage started by `ingest` beside the traffic consumer, ready once each held group fetches, its metrics (§15.11).
+- **Tests** on the embedded bus and both engines: two replicas sharing the groups, a lease lost mid-flush and taken by the other replica with its consumer re-created, and a feed converted end to end through `ingest`.
 
 ## Gate cases
 
@@ -108,3 +107,5 @@ Each run's history is its own iterations: a flush row registered 1,356 to 2,565 
 **Step 4** (#105): no measurement.
 
 **Step 5** (#106): no measurement.
+
+**Step 6** (#107): no measurement.
