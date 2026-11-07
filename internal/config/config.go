@@ -4,6 +4,7 @@
 package config
 
 import (
+	"cmp"
 	"errors"
 	"fmt"
 	neturl "net/url"
@@ -13,6 +14,8 @@ import (
 	"time"
 
 	"github.com/arloliu/fuda"
+
+	"github.com/arloliu/tracekeep/producer/busconfig"
 )
 
 // Config is the configuration of every role.
@@ -21,6 +24,7 @@ type Config struct {
 	Bus     Bus     `yaml:"bus"`
 	Store   Store   `yaml:"store"`
 	Ingest  Ingest  `yaml:"ingest"`
+	Logfeed Logfeed `yaml:"logfeed"`
 	Parking Parking `yaml:"parking"`
 	Compact Compact `yaml:"compact"`
 	Metrics Metrics `yaml:"metrics"`
@@ -120,6 +124,46 @@ type Ingest struct {
 	// a change makes another configuration (rollouts.md §6.4).
 	MaxFrameLen uint64 `yaml:"max_frame_len" env:"TRACEKEEP_INGEST_MAX_FRAME_LEN"`
 }
+
+// Logfeed is the host log feed (logfeed.md §15.11): its stream, its lease groups and its converter's windows.
+type Logfeed struct {
+	// Enabled runs the log stage in the ingest role and makes migrate ensure the feed's stream.
+	Enabled bool   `yaml:"enabled" default:"false" env:"TRACEKEEP_LOGFEED_ENABLED"`
+	Stream  string `yaml:"stream" default:"TRACEKEEP_LOGFEED" env:"TRACEKEEP_LOGFEED_STREAM" validate:"required"`
+	// Prefix is the feed's subject prefix, whose first token differs from the traffic and parking prefixes'.
+	Prefix string `yaml:"prefix" default:"tklog" env:"TRACEKEEP_LOGFEED_PREFIX" validate:"required"`
+	// LeaseGroups is G, the stream's partitions and the lease groups; changing it is a migrate step on a drained stream (§15.4).
+	LeaseGroups int `yaml:"lease_groups" default:"32" env:"TRACEKEEP_LOGFEED_LEASE_GROUPS" validate:"gt=0,lte=1024"`
+	// MaxBytes is the stream's limit in logical bytes, discard-new.
+	MaxBytes fuda.ByteSize `yaml:"max_bytes" default:"40GiB" env:"TRACEKEEP_LOGFEED_MAX_BYTES" validate:"gt=0"`
+	// DuplicateWindow is the stream's duplicate window, longer than the pipeline's retry cap, which stays below the reorder window.
+	DuplicateWindow time.Duration `yaml:"duplicate_window" default:"2m" env:"TRACEKEEP_LOGFEED_DUPLICATE_WINDOW" validate:"gte=100ms"`
+	// MaxAckPending is each group consumer's.
+	MaxAckPending int `yaml:"max_ack_pending" default:"100000" env:"TRACEKEEP_LOGFEED_MAX_ACK_PENDING" validate:"gt=0"`
+	// ReorderWindow is how long an entry waits before it is released in its file's offset order (§15.5).
+	ReorderWindow time.Duration `yaml:"reorder_window" default:"30s" env:"TRACEKEEP_LOGFEED_REORDER_WINDOW" validate:"gt=0"`
+	// PairingWindow is the entries of its file a header waits for its body.
+	PairingWindow int `yaml:"pairing_window" default:"3" env:"TRACEKEEP_LOGFEED_PAIRING_WINDOW" validate:"gt=0"`
+	// FlushInterval is the feed's F; zero takes ingest.flush_interval.
+	FlushInterval time.Duration `yaml:"flush_interval" env:"TRACEKEEP_LOGFEED_FLUSH_INTERVAL" validate:"gte=0"`
+	// IdlePeriod stops a file its equipment sent no entry of for this long (§15.6).
+	IdlePeriod time.Duration `yaml:"idle_period" default:"24h" env:"TRACEKEEP_LOGFEED_IDLE_PERIOD" validate:"gt=0"`
+	// MainDevice is the device of an entry no rule matches.
+	MainDevice string `yaml:"main_device" default:"eqp" env:"TRACEKEEP_LOGFEED_MAIN_DEVICE" validate:"required"`
+	// Devices is the global rule table; DeviceOverrides replaces it for the equipment it names (§15.5 *Devices*).
+	Devices         []DeviceRule            `yaml:"devices"`
+	DeviceOverrides map[string][]DeviceRule `yaml:"device_overrides"`
+}
+
+// DeviceRule maps a header's device-number token, or else its logged session ID, to a device name; it names one of the two.
+type DeviceRule struct {
+	Token   string  `yaml:"token"`
+	Session *uint16 `yaml:"session"`
+	Device  string  `yaml:"device"`
+}
+
+// Flush is the feed's F: its own, or ingest's.
+func (l *Logfeed) Flush(ingest time.Duration) time.Duration { return cmp.Or(l.FlushInterval, ingest) }
 
 // Parking is parking (parking.md).
 type Parking struct {
@@ -278,6 +322,7 @@ func (c *Config) check(dev bool) error {
 		errs = append(errs, fmt.Errorf("api.public_url %q must be an https URL", c.API.PublicURL))
 	}
 	errs = append(errs, c.checkPeople()...)
+	errs = append(errs, c.checkLogfeed()...)
 	errs = append(errs, c.checkMaxima()...)
 	errs = append(errs, c.checkPairs()...)
 	if err := errors.Join(errs...); err != nil {
@@ -340,6 +385,38 @@ func (c *Config) checkMaxima() []error {
 	}
 	if n := c.Ingest.MaxRecordBytes.Int64(); n > maxRecordBytes {
 		errs = append(errs, fmt.Errorf("ingest.max_record_bytes %d must be at most 4 GiB, HSMS's largest message", n))
+	}
+
+	return errs
+}
+
+// checkLogfeed refuses a feed whose prefix shares a first token with the traffic or parking prefix (the service's check, never the SDK's, T-60),
+// whose F would outlast ingest's ack_wait, whose duplicate window is no longer than its reorder window, and a device rule naming neither a token nor a session, or both.
+func (c *Config) checkLogfeed() []error {
+	l := &c.Logfeed
+	var errs []error
+	park := cmp.Or(c.Bus.ParkPrefix, busconfig.DefaultParkPrefix)
+	for name, other := range map[string]string{"bus.subject_prefix": c.Bus.SubjectPrefix, "bus.park_prefix": park} {
+		if err := busconfig.ValidatePrefixes(other, l.Prefix); err != nil {
+			errs = append(errs, fmt.Errorf("logfeed.prefix %q must start with a token unlike %s's %q", l.Prefix, name, other))
+		}
+	}
+	if f := l.Flush(c.Ingest.FlushInterval); f >= c.Ingest.AckWait {
+		errs = append(errs, fmt.Errorf("logfeed.flush_interval %s must be below ingest.ack_wait %s", f, c.Ingest.AckWait))
+	}
+	if l.DuplicateWindow <= l.ReorderWindow {
+		errs = append(errs, fmt.Errorf("logfeed.duplicate_window %s must exceed logfeed.reorder_window %s", l.DuplicateWindow, l.ReorderWindow))
+	}
+	check := func(where string, rules []DeviceRule) {
+		for i, r := range rules {
+			if (r.Token == "") == (r.Session == nil) || r.Device == "" {
+				errs = append(errs, fmt.Errorf("%s[%d] must name a token or a session, not both, and a device", where, i))
+			}
+		}
+	}
+	check("logfeed.devices", l.Devices)
+	for equipment, rules := range l.DeviceOverrides {
+		check("logfeed.device_overrides."+equipment, rules)
 	}
 
 	return errs

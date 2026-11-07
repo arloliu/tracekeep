@@ -202,3 +202,40 @@ func TestMaxima(t *testing.T) {
 		}
 	}
 }
+
+// The host log feed's defaults are logfeed.md §15.11's, its F ingest's unless set, and its rule table accepted as given.
+func TestLogfeedDefaults(t *testing.T) {
+	t.Parallel()
+	c, err := Load(write(t, yaml("", "", "", "logfeed:\n  devices:\n    - token: \"1\"\n      device: eqp\n    - session: 2\n      device: lp1\n")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	l := c.Logfeed
+	if l.Enabled || l.Stream != "TRACEKEEP_LOGFEED" || l.Prefix != "tklog" || l.LeaseGroups != 32 || l.MaxBytes.Int64() != 40<<30 ||
+		l.DuplicateWindow != 2*time.Minute || l.MaxAckPending != 100_000 || l.ReorderWindow != 30*time.Second || l.PairingWindow != 3 ||
+		l.IdlePeriod != 24*time.Hour || l.MainDevice != "eqp" || l.Flush(c.Ingest.FlushInterval) != 5*time.Minute {
+		t.Errorf("logfeed %+v, want the defaults", l)
+	}
+	if len(l.Devices) != 2 || l.Devices[1].Session == nil || *l.Devices[1].Session != 2 {
+		t.Errorf("devices %+v, want the two rules", l.Devices)
+	}
+}
+
+// A feed is refused whose prefix shares a first token with the traffic or parking prefix, whose F outlasts ingest's ack_wait,
+// whose duplicate window is no longer than its reorder window, and whose device rule names both or neither of a token and a session.
+func TestLogfeedValidation(t *testing.T) {
+	t.Parallel()
+	for name, tc := range map[string]struct{ extra, want string }{
+		"the traffic prefix's token": {"logfeed:\n  prefix: tk.log\n", "bus.subject_prefix"},
+		"the parking prefix's token": {"logfeed:\n  prefix: tkpark\n", "bus.park_prefix"},
+		"F past ack_wait":            {"logfeed:\n  flush_interval: 8m\n", "logfeed.flush_interval"},
+		"a short duplicate window":   {"logfeed:\n  duplicate_window: 30s\n", "logfeed.duplicate_window"},
+		"no lease group":             {"logfeed:\n  lease_groups: 0\n", "LeaseGroups"},
+		"a rule of both":             {"logfeed:\n  devices:\n    - token: \"1\"\n      session: 1\n      device: eqp\n", "logfeed.devices[0]"},
+		"a rule of neither":          {"logfeed:\n  device_overrides:\n    T1:\n      - device: eqp\n", "logfeed.device_overrides.T1[0]"},
+	} {
+		if _, err := Load(write(t, yaml("", "", "", tc.extra))); err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("%s: Load = %v, want an error naming %s", name, err, tc.want)
+		}
+	}
+}
