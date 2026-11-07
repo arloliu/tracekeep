@@ -166,6 +166,20 @@ func (c *Catalog) RequestCompaction(ctx context.Context, kind string, capture tr
 // ErrLogCapture refuses an operator's close or termination of a log capture, which only its stop ends (operations.md §10.4); nothing was written.
 var ErrLogCapture = errors.New("catalog: a log capture, which capture stop ends")
 
+// IsLogCapture reports whether capture is a log capture, false for one the catalog does not know.
+func (c *Catalog) IsLogCapture(ctx context.Context, capture tracepack.UUID) (bool, error) {
+	var method sql.NullString
+	err := c.read.GetContext(ctx, &method, `SELECT capture_method FROM captures WHERE capture_id = ?`, capture[:])
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("catalog: capture %s: %w", capture, err)
+	}
+
+	return method.String == tracepack.CaptureMethodLog.String(), nil
+}
+
 // refuseLogCapture returns ErrLogCapture for a log capture.
 func refuseLogCapture(ctx context.Context, tx *sqlx.Tx, capture tracepack.UUID) error {
 	var method sql.NullString
@@ -213,7 +227,7 @@ const Mergeable = ""
 // DecideRequest ends the pending request q under l when it cannot be executed now,
 // judged under the capture row in the transaction that ends it, so no observation made outside it decides (catalog.md §7.2).
 // A merge request: a settled scope ends it done, a scope without a staged pack or touched by a conflict ends it failed.
-// A close request: a closed capture ends it done, a capture not open or with a stop ends it failed.
+// A close request: a closed capture ends it done, a capture not open or with a stop, or a log capture, ends it failed.
 // Each ending returns its reason; Mergeable, writing nothing, is returned for a request the compactor may execute, and for one already ended.
 // With the verdict of a merge request comes its scope's current revision, read under the capture row, zero for a scope the catalog does not hold;
 // the compactor's backoff compares it with a failed snapshot's (compactor.md §8.1). A close request's is zero.
@@ -234,6 +248,14 @@ func (c *Catalog) DecideRequest(ctx context.Context, l Lease, q Request) (string
 		}
 		if q.Kind == RequestClose {
 			result = closeVerdict(row)
+			if result == Mergeable {
+				// A request accepted before its capture was admitted as a log capture: only capture stop ends one.
+				if err := refuseLogCapture(ctx, tx, q.Capture); errors.Is(err, ErrLogCapture) {
+					result = "log-capture"
+				} else if err != nil {
+					return err
+				}
+			}
 		} else if result, revision, err = c.requestVerdict(ctx, tx, Scope{Capture: q.Capture, Hour: *q.Hour}); err != nil {
 			return err
 		}
