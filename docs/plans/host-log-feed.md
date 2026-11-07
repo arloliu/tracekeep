@@ -99,3 +99,4 @@ SQLite in WAL with `synchronous(FULL)` on an ext4 disk, MariaDB at its defaults 
 A fresh 480-entry flush takes 0.47 ms on SQLite over one device and 0.83 ms over three, within its 16.4 ms budget:
 6.7 flushes a second take about 6 ms a second of SQLite's writer.
 A flush's cost is its segments', one a device, not its entries'.
+Each run's history is its own iterations: a flush row registered 1,356 to 2,565 flushes on SQLite and 156 to 381 on MariaDB, so its catalog held at most about 7,700 packs.
