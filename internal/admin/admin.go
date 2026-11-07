@@ -23,8 +23,9 @@ import (
 type Admin struct {
 	Catalog *catalog.Catalog
 	Bus     jetstream.JetStream
-	// Config names the bus's streams.
+	// Config names the bus's streams, and Feed the host log feed's, empty with it disabled.
 	Config bus.Config
+	Feed   string
 	// Actor names the operator in every audit row.
 	Actor string
 	// Keys resolves the declared keys, for key verify and config stage.
@@ -81,6 +82,21 @@ func (a *Admin) CaptureTerminate(ctx context.Context, capture tracepack.UUID) (T
 	n, err := a.Catalog.TerminateCapture(ctx, capture, inc.ID, int64(info.State.LastSeq), a.Actor, action) //nolint:gosec // a stream sequence fits
 
 	return Termination{ActionID: action, Terminated: n}, err
+}
+
+// Stop is what capture stop did: its action id and outcome.
+type Stop struct {
+	ActionID string
+	Outcome  catalog.LogStop
+}
+
+// CaptureStop is capture stop (logfeed.md §15.11): a log capture's stop, requested of the converter holding its group's lease
+// or written with none holding it; any other capture is refused.
+func (a *Admin) CaptureStop(ctx context.Context, capture tracepack.UUID) (Stop, error) {
+	action := actionID()
+	out, err := a.Catalog.StopLogCapture(ctx, capture, a.Actor, action)
+
+	return Stop{ActionID: action, Outcome: out}, err
 }
 
 // Show is capture show: the capture with its parked versions, their messages, and its termination orders.

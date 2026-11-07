@@ -251,7 +251,7 @@ func TestConverterStops(t *testing.T) {
 		if err != nil || !ok {
 			t.Fatal(ok, err)
 		}
-		if out, err := c.StopLogCapture(ctx, nc.ID); err != nil || out != catalog.StopRequested {
+		if out, err := c.StopLogCapture(ctx, nc.ID, "operator", "stop-1"); err != nil || out != catalog.StopRequested {
 			t.Fatalf("stop request = %v, %v", out, err)
 		}
 		h.tick(time.Second)
@@ -342,7 +342,7 @@ func TestConverterStaleCaptureRedelivery(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err := c.StopLogCapture(ctx, cp.ID); err != nil {
+		if _, err := c.StopLogCapture(ctx, cp.ID, "operator", "stop-1"); err != nil {
 			t.Fatal(err)
 		}
 		h.tick(time.Second)

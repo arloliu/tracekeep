@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"maps"
 	"math"
 	"slices"
 	"testing"
@@ -49,6 +50,7 @@ func described(t testing.TB, c *Catalog, s spec) tracepack.UUID {
 	d := &Descriptor{
 		Bytes: b, EquipmentID: s.equipmentID, RecorderInstanceID: s.instance, Device: s.device, Source: s.source,
 		OriginNS: s.origin, PreviousCaptureID: s.previous,
+		CaptureMethod: tracepack.CaptureMethodRawStream.String(), Vantage: tracepack.VantageHost.String(),
 	}
 	if s.rejectIt {
 		if _, err := c.Reject(t.Context(), start(id), b); err != nil {
@@ -173,6 +175,38 @@ func TestListCapturesSpans(t *testing.T) {
 		}
 		if got[a].State != StateClosed || got[chained].PreviousCaptureID == nil || *got[chained].PreviousCaptureID != named {
 			t.Errorf("state %v, previous %v", got[a].State, got[chained].PreviousCaptureID)
+		}
+	})
+}
+
+// Every read naming a capture names its method, vantage and dialect (logfeed.md §15.8):
+// a log capture reads with its own and no thinning, endpoint or device ID, a gateway's with its descriptor's,
+// and ListDevices gives each series its latest capture's method.
+func TestReadsNameTheCaptureMethod(t *testing.T) {
+	t.Parallel()
+	engines(t, func(t *testing.T, c *Catalog) {
+		gw := described(t, c, spec{instance: newID(t), source: "gw", endpoint: "eq-endpoint", deviceID: 7})
+		lg := admitLog(t, c, logGroup(t, c), "eqp")
+		sel := window(0, math.MaxInt64)
+		got := listCaptures(t, c, sel)
+		g, l := got[gw], got[lg]
+		if g.CaptureMethod != "raw-stream" || g.Vantage != "host" || g.SourceDialect != "" || g.EquipmentEndpoint == nil {
+			t.Errorf("the gateway's capture reads %q %q %q, endpoint %v", g.CaptureMethod, g.Vantage, g.SourceDialect, g.EquipmentEndpoint)
+		}
+		if l.CaptureMethod != "log" || l.Vantage != "host" || l.SourceDialect != "host-sml-feed/1" ||
+			l.Thinning != nil || l.EquipmentEndpoint != nil || l.DeviceID != nil {
+			t.Errorf("the log capture reads %+v", l)
+		}
+		devices, err := c.ListDevices(t.Context(), sel, readQ)
+		if err != nil {
+			t.Fatal(err)
+		}
+		methods := map[string]string{}
+		for _, d := range devices {
+			methods[d.Source] = d.CaptureMethod
+		}
+		if want := map[string]string{"gw": "raw-stream", "feed-a": "log"}; !maps.Equal(methods, want) {
+			t.Errorf("ListDevices' methods by source = %v, want %v", methods, want)
 		}
 	})
 }

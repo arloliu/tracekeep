@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"time"
 
 	"github.com/jmoiron/sqlx"
 
@@ -30,11 +31,20 @@ type EquipmentStatus struct {
 	Deferred int
 }
 
-// Status is what tracekeep status reads of the catalog: the pending captures by id, then each piece of equipment by id.
+// Status is what tracekeep status reads of the catalog: the pending captures by id, then each piece of equipment by id,
+// and the number of equipment whose log captures fell silent (logfeed.md §15.11).
 type Status struct {
 	Pending   []PendingCapture
 	Equipment []EquipmentStatus
+	// SilentLogEquipment counts the equipment whose log captures registered a pack in the past SilentWithin and none for SilentAfter.
+	SilentLogEquipment int
 }
+
+// The windows of Status's silent log equipment.
+const (
+	SilentAfter  = 15 * time.Minute
+	SilentWithin = 24 * time.Hour
+)
 
 // Status reads the catalog's part of tracekeep status from one snapshot.
 func (c *Catalog) Status(ctx context.Context) (Status, error) {
@@ -82,8 +92,12 @@ func (c *Catalog) Status(ctx context.Context) (Status, error) {
 			}
 			out.Equipment = append(out.Equipment, ts)
 		}
+		// shortcut: scans the log captures' rows, an operator's command; index (capture_method, last_registered_at) if status grows slow.
+		now := c.now()
 
-		return nil
+		return tx.GetContext(ctx, &out.SilentLogEquipment, `SELECT COUNT(*) FROM (SELECT equipment_id FROM captures
+			WHERE capture_method = 'log' AND last_registered_at >= ? GROUP BY equipment_id HAVING MAX(last_registered_at) < ?) s`,
+			now-int64(SilentWithin), now-int64(SilentAfter))
 	})
 	if err != nil {
 		return Status{}, fmt.Errorf("catalog: status: %w", err)

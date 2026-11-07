@@ -216,7 +216,9 @@ type Device struct {
 	Overlap           bool                   `protobuf:"varint,5,opt,name=overlap,proto3" json:"overlap,omitempty"`
 	LastRecord        *timestamppb.Timestamp `protobuf:"bytes,6,opt,name=last_record,json=lastRecord,proto3,oneof" json:"last_record,omitempty"`
 	// gap is set when the window holds a gap of a selected capture.
-	Gap           bool `protobuf:"varint,7,opt,name=gap,proto3" json:"gap,omitempty"`
+	Gap bool `protobuf:"varint,7,opt,name=gap,proto3" json:"gap,omitempty"`
+	// capture_method is the latest selected capture's.
+	CaptureMethod string `protobuf:"bytes,9,opt,name=capture_method,json=captureMethod,proto3" json:"capture_method,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -305,6 +307,13 @@ func (x *Device) GetGap() bool {
 		return x.Gap
 	}
 	return false
+}
+
+func (x *Device) GetCaptureMethod() string {
+	if x != nil {
+		return x.CaptureMethod
+	}
+	return ""
 }
 
 type ListCapturesRequest struct {
@@ -412,8 +421,13 @@ type Capture struct {
 	DeviceId           *uint64                 `protobuf:"varint,11,opt,name=device_id,json=deviceId,proto3,oneof" json:"device_id,omitempty"`
 	Overlap            bool                    `protobuf:"varint,12,opt,name=overlap,proto3" json:"overlap,omitempty"`
 	Unregistered       []*UnregisteredInterval `protobuf:"bytes,13,rep,name=unregistered,proto3" json:"unregistered,omitempty"`
-	unknownFields      protoimpl.UnknownFields
-	sizeCache          protoimpl.SizeCache
+	// capture_method, vantage and source_dialect are the capture's (logfeed.md §15.8): a log capture's are log, host and its feed's dialect,
+	// and it has no thinning, equipment_endpoint or device_id.
+	CaptureMethod string `protobuf:"bytes,15,opt,name=capture_method,json=captureMethod,proto3" json:"capture_method,omitempty"`
+	Vantage       string `protobuf:"bytes,16,opt,name=vantage,proto3" json:"vantage,omitempty"`
+	SourceDialect string `protobuf:"bytes,17,opt,name=source_dialect,json=sourceDialect,proto3" json:"source_dialect,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *Capture) Reset() {
@@ -542,6 +556,27 @@ func (x *Capture) GetUnregistered() []*UnregisteredInterval {
 		return x.Unregistered
 	}
 	return nil
+}
+
+func (x *Capture) GetCaptureMethod() string {
+	if x != nil {
+		return x.CaptureMethod
+	}
+	return ""
+}
+
+func (x *Capture) GetVantage() string {
+	if x != nil {
+		return x.Vantage
+	}
+	return ""
+}
+
+func (x *Capture) GetSourceDialect() string {
+	if x != nil {
+		return x.SourceDialect
+	}
+	return ""
 }
 
 // Thinning is one thinned stream and function of the start descriptor;
@@ -4354,7 +4389,7 @@ const file_tracekeep_v1_machine_proto_rawDesc = "" +
 	"\x12ListDevicesRequest\x122\n" +
 	"\bselector\x18\x01 \x01(\v2\x16.tracekeep.v1.SelectorR\bselector\"E\n" +
 	"\x13ListDevicesResponse\x12.\n" +
-	"\adevices\x18\x01 \x03(\v2\x14.tracekeep.v1.DeviceR\adevices\"\xd2\x02\n" +
+	"\adevices\x18\x01 \x03(\v2\x14.tracekeep.v1.DeviceR\adevices\"\xf9\x02\n" +
 	"\x06Device\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x16\n" +
 	"\x06source\x18\b \x01(\tR\x06source\x122\n" +
@@ -4364,7 +4399,8 @@ const file_tracekeep_v1_machine_proto_rawDesc = "" +
 	"\aoverlap\x18\x05 \x01(\bR\aoverlap\x12@\n" +
 	"\vlast_record\x18\x06 \x01(\v2\x1a.google.protobuf.TimestampH\x02R\n" +
 	"lastRecord\x88\x01\x01\x12\x10\n" +
-	"\x03gap\x18\a \x01(\bR\x03gapB\x15\n" +
+	"\x03gap\x18\a \x01(\bR\x03gap\x12%\n" +
+	"\x0ecapture_method\x18\t \x01(\tR\rcaptureMethodB\x15\n" +
 	"\x13_equipment_endpointB\f\n" +
 	"\n" +
 	"_device_idB\x0e\n" +
@@ -4372,7 +4408,7 @@ const file_tracekeep_v1_machine_proto_rawDesc = "" +
 	"\x13ListCapturesRequest\x122\n" +
 	"\bselector\x18\x01 \x01(\v2\x16.tracekeep.v1.SelectorR\bselector\"I\n" +
 	"\x14ListCapturesResponse\x121\n" +
-	"\bcaptures\x18\x01 \x03(\v2\x15.tracekeep.v1.CaptureR\bcaptures\"\xb4\x05\n" +
+	"\bcaptures\x18\x01 \x03(\v2\x15.tracekeep.v1.CaptureR\bcaptures\"\x9c\x06\n" +
 	"\aCapture\x12\x1d\n" +
 	"\n" +
 	"capture_id\x18\x01 \x01(\tR\tcaptureId\x12\x14\n" +
@@ -4390,7 +4426,10 @@ const file_tracekeep_v1_machine_proto_rawDesc = "" +
 	" \x01(\tH\x03R\x11equipmentEndpoint\x88\x01\x01\x12 \n" +
 	"\tdevice_id\x18\v \x01(\x04H\x04R\bdeviceId\x88\x01\x01\x12\x18\n" +
 	"\aoverlap\x18\f \x01(\bR\aoverlap\x12F\n" +
-	"\funregistered\x18\r \x03(\v2\".tracekeep.v1.UnregisteredIntervalR\funregisteredB\x16\n" +
+	"\funregistered\x18\r \x03(\v2\".tracekeep.v1.UnregisteredIntervalR\funregistered\x12%\n" +
+	"\x0ecapture_method\x18\x0f \x01(\tR\rcaptureMethod\x12\x18\n" +
+	"\avantage\x18\x10 \x01(\tR\avantage\x12%\n" +
+	"\x0esource_dialect\x18\x11 \x01(\tR\rsourceDialectB\x16\n" +
 	"\x14_previous_capture_idB\x0e\n" +
 	"\f_last_recordB\f\n" +
 	"\n" +

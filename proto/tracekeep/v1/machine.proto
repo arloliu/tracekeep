@@ -74,6 +74,8 @@ message Device {
   optional google.protobuf.Timestamp last_record = 6;
   // gap is set when the window holds a gap of a selected capture.
   bool gap = 7;
+  // capture_method is the latest selected capture's.
+  string capture_method = 9;
 }
 
 message ListCapturesRequest {
@@ -100,6 +102,11 @@ message Capture {
   optional uint64 device_id = 11;
   bool overlap = 12;
   repeated UnregisteredInterval unregistered = 13;
+  // capture_method, vantage and source_dialect are the capture's (logfeed.md §15.8): a log capture's are log, host and its feed's dialect,
+  // and it has no thinning, equipment_endpoint or device_id.
+  string capture_method = 15;
+  string vantage = 16;
+  string source_dialect = 17;
 }
 
 // Thinning is one thinned stream and function of the start descriptor;
