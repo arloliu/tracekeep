@@ -109,7 +109,8 @@ func (h *harness) tick(after time.Duration) {
 	}
 }
 
-// records reads every registered pack of capture back with tracepack's reader, in seq order, after verifying each.
+// records reads every registered pack of capture back with tracepack's reader, in seq order, after verifying each
+// and checking each record lies in its pack's hour.
 func (h *harness) records(capture tracepack.UUID) []tracepack.Record {
 	h.t.Helper()
 	ctx := h.t.Context()
@@ -134,7 +135,11 @@ func (h *harness) records(capture tracepack.UUID) []tracepack.Record {
 		if rep, err := r.Verify(ctx); err != nil || rep.Outcome != tracepack.VerifyOutcomeFinalizedConsistent {
 			return fmt.Errorf("verify %s: %+v, %w", o.Key, rep, err)
 		}
+		meta := r.Header().Meta
 		_, err = r.Iterate(ctx, tracepack.Query{Payloads: true}, func(it *tracepack.Item) error {
+			if ts := it.Record.TSUTCNs; ts < meta.PeriodStart || ts >= meta.PeriodEnd {
+				return fmt.Errorf("%s: seq %d at %d outside its pack's hour [%d, %d)", o.Key, it.Record.Seq, ts, meta.PeriodStart, meta.PeriodEnd)
+			}
 			out = append(out, it.Clone().Record) // the read reuses its buffers
 			return nil
 		})
