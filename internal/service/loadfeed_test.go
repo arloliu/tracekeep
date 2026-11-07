@@ -15,6 +15,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"runtime/pprof"
 	"slices"
 	"strconv"
 	"strings"
@@ -52,9 +53,8 @@ const (
 	// feedWindows are the judged flush cycles, after one of warm-up; feedControlWindow is a control's window whatever the mode.
 	feedWindows       = 3
 	feedControlWindow = 10 * time.Second
-	// feedP99 is the publish latency budget at the 99th percentile; feedSealedRatio the sealed blocks' budget against their logical bytes.
-	feedP99         = time.Second
-	feedSealedRatio = 1.0 / 3
+	// feedP99 is the publish latency budget at the 99th percentile.
+	feedP99 = time.Second
 	// feedAckTimeout bounds a publish's wait for its acknowledgement, which then fails and is retried once.
 	feedAckTimeout = 5 * time.Second
 	// feedStaleAcks are the takeover's acknowledgements from the old consumer's handles, of its newest held entries.
@@ -120,7 +120,9 @@ func feedMain(t *testing.T, h *loadHarness, srvs []*server.Server, url string, p
 	pubs := f.publish(ctx, pool, ft.rate, feedConns, feedInFlight, true)
 	f.consume(ctx)
 	sampler := f.sample(ctx, srvs, pubs)
-	tv, failed, ackPending := h.cycles(equipment, ft.trafficRate, "")
+	dir := profileDir(t)
+	tv, failed, ackPending := h.cycles(equipment, ft.trafficRate, dir)
+	writeHeapProfile(t, filepath.Join(dir, "feed-heap.pprof"))
 	if span := time.Duration(feedWindows+1) * ft.flush; time.Since(pubs.started) < span+ft.reorder {
 		time.Sleep(span + ft.reorder - time.Since(pubs.started))
 	}
@@ -198,7 +200,7 @@ func feedConstrained(t *testing.T, h *loadHarness, url string, pool *feedPool, f
 }
 
 // feedFull checks a retried publish stored once, then fills a small stream with its consumer paused:
-// publishes fail at the limit and evict nothing, the sealed blocks are judged against their logical bytes, and a drain lets the same publish succeed.
+// publishes fail at the limit and evict nothing, each server's store is reported against the logical bytes, and a drain lets the same publish succeed.
 func feedFull(t *testing.T, h *loadHarness, srvs []*server.Server, url string, pool *feedPool) {
 	ctx := t.Context()
 	ft := feedTimes{flush: time.Minute, ackWait: 2 * time.Minute, dupWindow: 2 * time.Minute, maxAckPending: 1_000_000}
@@ -224,24 +226,13 @@ func feedFull(t *testing.T, h *loadHarness, srvs []*server.Server, url string, p
 	if info.State.Msgs != accepted || info.State.FirstSeq != 1 {
 		t.Errorf("full stream holds %d messages from seq %d, want the %d accepted from seq 1", info.State.Msgs, info.State.FirstSeq, accepted)
 	}
-	time.Sleep(2 * time.Second) // a sealed block compresses asynchronously
 	rows := make([]string, 0, 3+len(srvs))
-	rows = append(rows, "", "| server | sealed blocks | sealed on disk | their logical bytes | ratio | active block |", "|---|---|---|---|---|---|")
-	worst := 0.0
+	rows = append(rows, "", "| server | blocks on disk | other files | logical bytes |", "|---|---|---|---|")
 	for _, s := range srvs {
 		st := streamStore(s, f.name)
-		logical := info.State.Bytes - st.active
-		if st.sealedBlocks == 0 || st.active >= info.State.Bytes {
-			t.Fatalf("full stream: %s holds %d sealed blocks and an active one of %s against %s logical", s.Name(), st.sealedBlocks, mib(st.active), mib(info.State.Bytes))
-		}
-		ratio := float64(st.sealed) / float64(logical)
-		worst = max(worst, ratio)
-		rows = append(rows, fmt.Sprintf("| %s | %d | %s | %s | %.3f | %s |", s.Name(), st.sealedBlocks, mib(st.sealed), mib(logical), ratio, mib(st.active)))
+		rows = append(rows, fmt.Sprintf("| %s | %s | %s | %s |", s.Name(), mib(st.sealed+st.active), mib(st.meta), mib(info.State.Bytes)))
 	}
 	h.log(rows...)
-	if worst > feedSealedRatio {
-		t.Errorf("sealed blocks take %.3f of their logical bytes, the budget %.3f", worst, feedSealedRatio)
-	}
 	feedDrain(t, f)
 	if _, err := f.js.PublishMsg(ctx, refused); err != nil {
 		t.Errorf("the refused publish failed again after the drain: %v", err)
@@ -455,7 +446,7 @@ func newFeed(t *testing.T, url, name, prefix string, ft feedTimes, maxBytes int6
 	}
 	cfg := jetstream.StreamConfig{
 		Name: name, Subjects: []string{prefix + ".*"}, Retention: jetstream.WorkQueuePolicy, Storage: jetstream.FileStorage, Replicas: 3,
-		Compression: jetstream.S2Compression, MaxBytes: maxBytes, Discard: jetstream.DiscardNew, Duplicates: cmp.Or(ft.dupWindow, 2*time.Minute),
+		MaxBytes: maxBytes, Discard: jetstream.DiscardNew, Duplicates: cmp.Or(ft.dupWindow, 2*time.Minute),
 	}
 	groups := 1
 	if partitioned {
@@ -485,11 +476,13 @@ func newFeed(t *testing.T, url, name, prefix string, ft feedTimes, maxBytes int6
 	return f
 }
 
-// consumerConfig is group n's durable consumer: explicit acknowledgements, the mode's ack_wait and pending limit, unlimited deliveries.
+// consumerConfig is group n's durable consumer: explicit acknowledgements, the mode's ack_wait and pending limit, unlimited deliveries,
+// its state in memory (logfeed.md §15.4, T-64).
 func (f *feed) consumerConfig(n int, filter string) jetstream.ConsumerConfig {
 	return jetstream.ConsumerConfig{
 		Durable: fmt.Sprintf("logfeed-%d", n), FilterSubject: filter, AckPolicy: jetstream.AckExplicitPolicy,
 		AckWait: cmp.Or(f.ft.ackWait, time.Minute), MaxAckPending: f.ft.maxAckPending, MaxDeliver: -1,
+		MemoryStorage: true,
 	}
 }
 
@@ -1048,7 +1041,7 @@ type feedStore struct {
 	sealed, active, meta uint64
 }
 
-// streamStore reads srv's store of stream name: the highest-numbered block is the active one, written uncompressed.
+// streamStore reads srv's store of stream name: the highest-numbered block is the active one.
 func streamStore(srv *server.Server, name string) feedStore {
 	var st feedStore
 	var root string
@@ -1119,6 +1112,19 @@ func procField(path, field string) uint64 {
 	}
 
 	return 0
+}
+
+// writeHeapProfile writes the process's heap profile to path, for the held entries' and the servers' share of its memory.
+func writeHeapProfile(t *testing.T, path string) {
+	t.Helper()
+	f, err := os.Create(path) //nolint:gosec // the harness's own profile directory
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	if err := pprof.WriteHeapProfile(f); err != nil {
+		t.Fatal(err)
+	}
 }
 
 // dirSize is the bytes of the files under dir.

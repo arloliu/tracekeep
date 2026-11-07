@@ -18,8 +18,8 @@ Contract changes go through proposals, which the subject [README.md](README.md) 
   A log capture is its own series, never merged with, deduplicated against or compared to a gateway's, and it claims no coverage (§15.1).
 - **The pipeline's contract**: one JSON entry per message on `tklog.<equipment token>`, published with a publish acknowledgement and a message id,
   its in-flight time bounded below the reorder window (§15.2, §15.3).
-- **Stream**: `TRACEKEEP_LOGFEED`, work-queue, file storage with S2 compression, `max_bytes` with discard-new, a duplicate window,
-  and a subject transform that partitions the equipment into lease groups; ensured by `migrate`, no incarnation (§15.4).
+- **Stream**: `TRACEKEEP_LOGFEED`, work-queue, file storage without compression, `max_bytes` with discard-new, a duplicate window,
+  and a subject transform that partitions the equipment into lease groups; group consumers whose state is in memory; ensured by `migrate`, no incarnation (§15.4).
 - **Conversion**: per lease group, under its catalog lease: reorder by offset, join duplicates, drop stale entries below a file's watermark, pair header and body, `sml.Parse`, build the frame, classify, mask, batch (§15.5).
 - **Captures**: one per (source, `equipment_id`, device, file); the converter writes the start and the stop; the compactor never closes one (§15.6).
 - **Registration**: one transaction per equipment's flush, its capture rows locked in `capture_id` order, the group's fence checked, the file watermarks raised;
@@ -128,9 +128,10 @@ The contract between the pipeline and tracekeep is a versioned field schema, one
   and `migrate` and preflight check the feed stream's subjects against both existing streams (`busconfig.SubjectsOverlap`);
   the check is the service's, never the SDK's `busconfig` validation (T-60).
 - Work-queue retention and file storage, as `TRACEKEEP_TRAFFIC`: a message is deleted once acknowledged.
-- **S2 compression** of the store (T-62): the store compresses by block, so a disk holds about a quarter of the stream's bytes (§15.10).
+- **No compression** (T-64): a work queue's acknowledgement into a compressed block makes the server decompress the whole block,
+  which under the fleet's load took about 1.1 GB of memory a server and raised the publish latency's 99th percentile from 51 ms to 620 ms (§15.10).
 - **`max_bytes`** (`logfeed.max_bytes`, §15.10) with discard-new, so a full stream refuses the pipeline's publish instead of losing old entries silently;
-  the limit counts a message's logical bytes, not its compressed ones.
+  the limit counts a message's logical bytes, which the disk holds uncompressed on each replica.
 - **A duplicate window** (`logfeed.duplicate_window`, 2 min) longer than the pipeline's retry cap, which the message id keys (T-62).
 - **Lease groups by partition** (T-62): the stream's subject transform maps `<logprefix>.*` to `<logprefix>.{{partition(G,1)}}.{{wildcard(1)}}`,
   G being `logfeed.lease_groups` (32), so the server assigns each equipment to one group by a deterministic hash of its token,
@@ -144,7 +145,10 @@ The contract between the pipeline and tracekeep is a versioned field schema, one
 - The feed shares the traffic cluster (V-30), never the gateway's bus, never a cluster of its own (T-60).
 - **Consumers**: each takes ingest's `ack_wait` and its in-progress-ack heartbeat (`architecture.md` §3.1, T-60),
   `AckExplicit` and per-message acknowledgements, `max_deliver` unlimited,
-  and `max_ack_pending` (`logfeed.max_ack_pending`, 100,000) above its group's held entries (§15.10).
+  and `max_ack_pending` (`logfeed.max_ack_pending`, 100,000) above its group's held entries (§15.10);
+  their state is kept in memory, at the stream's replicas, which a work queue requires (T-64):
+  a file consumer writes its whole pending state up to ten times a second on each replica, which under the fleet's load took a third or more of the bus servers' CPU,
+  and a consumer lost with the cluster is re-created as a takeover re-creates it (§15.5), delivering every unacknowledged message again from the oldest.
 - **Lease groups**: group n's lease is the `leases` row `logfeed/<n>`, with a fence token, renewed and lost as the compactor's lease is (`compactor.md` §8.1).
   An `ingest` replica with the feed enabled takes free group leases up to its share, the groups divided by the live members of `members` (`rollouts.md` §6.4), rounded up,
   and consumes only the groups it holds; a replica that loses a lease stops that group's converter at once, acknowledging nothing more.
@@ -338,15 +342,18 @@ across the fleet, 1,600 messages/s, **3,200 entries/s**, about 6.6 GB/h of log t
 | JSON decoding | 3 µs an entry | 10 ms/s |
 | `sml.Parse` and the frame's build | 4.6 µs a body | 7 ms/s |
 | the built frame against its SML | 282 B against 893 B | a pack holds about a quarter of the feed's bytes |
-| S2, by store block | × 4 | a sealed block takes about a quarter of its logical bytes; the store appends uncompressed and compresses a block once sealed, so the writes are not reduced |
+| S2, by store block | × 4 | not used (T-64): an acknowledgement into a compressed block decompresses it whole |
 | compression of one message | × 1.7 (S2) to × 2.4 (zstd) | too little to justify a codec in the pipeline |
 
 tracekeep's CPU for the feed is about 2% of one core.
 The limits are the catalog writer, the bus's message count and the held entries.
 
 **The bus.**
-3,200 publishes a second, each acknowledged by the stream, 3,200 acknowledgements and, by phase 5's measure, about 3,300 in-progress acknowledgements a second (T-60),
+3,200 publishes a second, each acknowledged by the stream, 3,200 acknowledgements and about 3,700 in-progress acknowledgements a second,
 beside the traffic stream's own.
+Measured at ingest's own times on a three-node cluster in one process beside the traffic at K = 100 (`docs/plans/host-log-feed.md` step 1, T-64):
+the feed sustained with a publish latency of 4.3 ms at the 99th percentile, the traffic sustained, the process at about two cores and 43 MiB/s of disk writes,
+the busiest group holding about 21,000 entries and each server's store about 700 MiB.
 Header and body are separate messages, and the forwarder's sink cannot batch, so the count is the entries'.
 **`max_bytes`** = the outage tolerated × 10.1 GB/h, logical bytes: `logfeed.max_bytes` defaults to 40 GiB, about 4 h.
 When the stream is full, the forwarder's publish fails and its buffer fills; with its buffer set to block, backpressure reaches the tailer, which stops tailing,
