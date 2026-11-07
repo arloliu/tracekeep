@@ -516,3 +516,60 @@ func TestLogLockOrderSchedules(t *testing.T) {
 		}
 	})
 }
+
+// A log capture is never adopted, closed or terminated (logfeed.md §15.8): the reconciler's orphan of one is tombstoned,
+// the compactor's close leaves it out under every trigger, and an operator's close request and termination are refused, writing nothing.
+func TestLogCaptureProtections(t *testing.T) {
+	t.Parallel()
+	engines(t, func(t *testing.T, c *Catalog) {
+		ctx := t.Context()
+		gate(t, c)
+		l := logGroup(t, c)
+		a := admitLog(t, c, l, "eqp")
+		gw := newID(t)
+		if _, err := c.Admit(ctx, start(gw), descriptor(t, "gw")); err != nil {
+			t.Fatal(err)
+		}
+		lease := benchLease(t, c)
+
+		orphan := segment(t, a, 5, 0, 9)
+		if out := register(t, c, orphan, Registration{Lease: &lease, Adopted: true}); out != LogOrphan {
+			t.Fatalf("the reconciler's orphan of a log capture = %v, want LogOrphan", out)
+		}
+		if n := packCount(t, c, orphan.ID); n != 0 {
+			t.Error("a log capture's orphan was registered")
+		}
+		if standing, err := c.KeyStanding(ctx, orphan.Key); err != nil || standing != KeyTombstoned {
+			t.Errorf("the orphan's key = %v, %v; want tombstoned", standing, err)
+		}
+
+		later := c.now() + int64(1000*inactivity)
+		for _, cand := range candidates(t, c, later) {
+			if cand.Capture == a {
+				t.Errorf("the log capture is a close candidate by %s", cand.Trigger)
+			}
+		}
+		for _, trigger := range []string{CloseOperator, CloseInactivity} {
+			if out := closeIntent(t, c, lease, intentOf(t, a, trigger, later)); out != CloseIneligible {
+				t.Errorf("a %s close intent of the log capture = %v, want ineligible", trigger, out)
+			}
+		}
+		if s := captureState(t, c, a); s != StateOpen {
+			t.Errorf("the log capture is %s after the refused closes, want open", s)
+		}
+
+		if _, err := c.RequestCompaction(ctx, RequestClose, a, nil, "op"); !errors.Is(err, ErrLogCapture) {
+			t.Errorf("an operator's close request of a log capture = %v, want ErrLogCapture", err)
+		}
+		if _, err := c.RequestCompaction(ctx, RequestClose, gw, nil, "op"); err != nil {
+			t.Errorf("an operator's close request of a gateway's capture = %v", err)
+		}
+		if _, err := c.TerminateCapture(ctx, a, 1, 10, "op", "act-1"); !errors.Is(err, ErrLogCapture) {
+			t.Errorf("a termination of a log capture = %v, want ErrLogCapture", err)
+		}
+		var orders int
+		if err := c.read.GetContext(ctx, &orders, `SELECT COUNT(*) FROM termination_orders`); err != nil || orders != 0 {
+			t.Errorf("a refused termination left %d orders (%v)", orders, err)
+		}
+	})
+}

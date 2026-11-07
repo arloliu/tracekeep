@@ -1,6 +1,6 @@
 # Host log feed
 
-Status: active (2026-11-07) — step 3, protections
+Status: active (2026-11-07) — step 4, stream, configuration and preflight
 
 The work that delivers the host log feed, `docs/specs/tracekeep/logfeed.md` (§15), as T-60 shapes it,
 with its two riskiest costs measured before the converter is built (T-63): the feed's load on the bus, and its registration's on the catalog writer.
@@ -12,8 +12,8 @@ The design is the spec's and the rationale the decision log's; this plan only or
 |---|---|---|
 | 1 — the feed stream's load | the feed's stream and group consumers under the fleet's rate on a three-node cluster, beside traffic, before any converter exists | done (#102) |
 | 2 — the catalog | `logfeed_captures`, `logfeed_files` and the `captures` columns; `AdmitLog`, `RegisterLogFlush`, `StopLogCapture`, on both engines; their benchmarks and first baselines, judged against §15.10's writer budget | done (#103) |
-| 3 — protections | the reconciler deletes a log capture's orphan; the compactor's close leaves log captures out; `capture close` and `capture terminate` refuse one; retirement's stop-only quiescence (§15.8) | in-progress |
-| 4 — stream, configuration and preflight | `migrate` ensures the stream and consumers, a change of G included; the `logfeed.*` configuration; the prefix and overlap checks (§15.4, §15.11) | pending |
+| 3 — protections | the reconciler deletes a log capture's orphan; the compactor's close leaves log captures out; `capture close` and `capture terminate` refuse one; retirement's stop-only quiescence (§15.8) | done (#104) |
+| 4 — stream, configuration and preflight | `migrate` ensures the stream and consumers, a change of G included; the `logfeed.*` configuration; the prefix and overlap checks (§15.4, §15.11) | in-progress |
 | 5 — conversion | `internal/logfeed`'s pure part: entry decoding, reorder, duplicates and stale entries, pairing, devices, time, records and annotations (§15.3, §15.5) | pending |
 | 6 — the converter | batches, flush and registration, lease groups and the consumer's re-creation, file stops, the service's wiring; `internal/logfeed` in a `scripts/catalog.sh` leg (§15.6, §15.7) | pending |
 | 7 — reads and admin | the reads' method fields, `capture stop`, `tracekeep status`'s feed lines (§15.8, §15.11) | pending |
@@ -24,14 +24,17 @@ Each step is one pull request.
 Steps 1 and 2 record their numbers here before step 5 starts;
 a number past its budget stops the plan for the owner's decision.
 
-## Step 3 — protections
+## Step 4 — stream, configuration and preflight
 
-Each refuses or leaves out a capture whose `capture_method` is `log`, tested on both engines, before any converter can write one:
-
-- **The reconciler** (`storage.md` §5.4): a log capture's orphan is tombstoned and its object deleted after the commit, never adopted.
-- **The compactor's close** (`compactor.md` §8.2): `CloseCandidates` and `CloseIntent` leave log captures out.
-- **`capture close` and `capture terminate`** (`operations.md` §10.4): refused for a log capture, the request or the termination writing nothing.
-- **Retirement's quiescence** (`rollouts.md` §6.4): a log capture is quiescent once its row is `stopped`, whichever stop wrote it, and neither stream is observed for it.
+- **The configuration**: the `logfeed.*` keys of `logfeed.md` §15.11 with their defaults, each validated at load:
+  the log prefix's first token unlike the traffic and parking prefixes', positive windows, periods and limits, at least one lease group, and device rules naming a token or a session.
+- **`migrate`**, with the feed enabled: the stream as §15.4 specifies it (work-queue, file storage uncompressed, `max_bytes` with discard-new, the duplicate window, the partition transform),
+  its group consumers with their state in memory, `ingest`'s `ack_wait` and the feed's `max_ack_pending`, and the groups' lease rows;
+  a stream or consumer found unlike its specification updated, or refused where JetStream cannot update it.
+- **A change of G**: refused while the stream holds a message;
+  otherwise the transform and the consumers changed, every `logfeed/<n>` lease's fence incremented, and the rows of retired groups deleted.
+- **Preflight**: the feed stream's subjects checked against the traffic and parking streams', in the service, never in the SDK's `busconfig`.
+- Tests on the embedded bus, single and clustered: a fresh `migrate`, a second one changing nothing, a change of G on an empty stream and its refusal on a full one, and each refused configuration.
 
 ## Gate cases
 
@@ -81,6 +84,8 @@ Controls: a publisher capped at half the rate failed the rate budget; one connec
 a full 64 MiB stream refused the 69,997th publish with error 10077, evicted nothing, and took it after a drain;
 a publish retried after a lost acknowledgement was stored once.
 The duplicate window's 384,000 ids cost about 180 MiB of heap across the three servers at T-61's times; at ingest's own, the difference was lost in the process's 2.9 GB heap.
+
+**Step 3** (#104): `RetireConfig` takes the quiescent captures from its caller, and no command computes them yet, so the stop-only rule for a log capture lands with that command.
 
 **Step 2** (#103): the transactions' first baselines, `-count 5`, the median of each row, in ms;
 SQLite in WAL with `synchronous(FULL)` on an ext4 disk, MariaDB at its defaults with its data on its container's disk.

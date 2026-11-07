@@ -362,6 +362,9 @@ func (c *Catalog) TerminateCapture(ctx context.Context, capture tracepack.UUID, 
 		if _, err := c.lockCapture(ctx, tx, capture); err != nil {
 			return err
 		}
+		if err := refuseLogCapture(ctx, tx, capture); err != nil {
+			return err
+		}
 		_, err := tx.ExecContext(ctx, `INSERT INTO termination_orders (action_id, capture_id, incarnation_id, cut_off, state) VALUES (?, ?, ?, ?, 'active')`,
 			action, capture[:], incarnation, cutOff)
 		if err != nil {

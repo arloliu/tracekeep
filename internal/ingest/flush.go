@@ -335,8 +335,8 @@ func (f *Flusher) register(ctx context.Context, b *Batch, capture *catalog.Captu
 	case catalog.BeyondHorizon, catalog.LostToTermination:
 		// The key is tombstoned; the object goes, and so would a put delayed across eviction.
 		return outcome, keyless(f.Store.Delete(ctx, key))
-	case catalog.AlreadyRegistered, catalog.Tombstoned, catalog.UnadmittedCapture:
-		// A fresh pack id meets no earlier registration or tombstone, and its capture is admitted.
+	case catalog.AlreadyRegistered, catalog.Tombstoned, catalog.UnadmittedCapture, catalog.LogOrphan:
+		// A fresh pack id meets no earlier registration or tombstone, its capture is admitted, and only an adoption meets a log orphan.
 		return outcome, fmt.Errorf("ingest: registration of the fresh pack %s returned outcome %d", seg.id, outcome)
 	case catalog.FoundAdopted:
 		// The reconciler adopted the put object while its registration was in flight (ingest.md §6.3):

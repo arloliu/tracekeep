@@ -40,6 +40,9 @@ const (
 	// LostToTermination: a version of the batch is terminated, or an active termination order covers one of its messages (T-32);
 	// the key is now tombstoned, the caller deletes the object and returns the batch for its messages to be decided again.
 	LostToTermination
+	// LogOrphan: the reconciler's orphan belongs to a log capture, which is never adopted (logfeed.md §15.8);
+	// the key is now tombstoned and the caller deletes the object, whose entries were never acknowledged and are converted again.
+	LogOrphan
 )
 
 // The roles a pack plays.
@@ -146,7 +149,7 @@ func (c *Catalog) RegisterPackGaps(ctx context.Context, p *Pack, r Registration)
 		var err error
 		out, gaps = 0, 0
 		out, evs, err = c.registerIn(ctx, tx, p, r, &gaps)
-		if err == nil && out != Registered && out != BeyondHorizon && out != LostToTermination {
+		if err == nil && out != Registered && out != BeyondHorizon && out != LostToTermination && out != LogOrphan {
 			err = errRollback
 		}
 		if err != nil {
@@ -309,6 +312,9 @@ func (c *Catalog) guards(ctx context.Context, tx *sqlx.Tx, p *Pack, r Registrati
 		return out, done, err
 	}
 	if r.Adopted {
+		if out, done, err := c.logOrphanGuard(ctx, tx, p); done || err != nil {
+			return out, done, err
+		}
 		if out, done, err := c.adoptionGuard(ctx, tx, p); done || err != nil {
 			return out, done, err
 		}
@@ -348,6 +354,21 @@ func hourEvicted(ctx context.Context, tx *sqlx.Tx, capture tracepack.UUID, hour 
 	err := tx.GetContext(ctx, &n, `SELECT COUNT(*) FROM evicted_ranges WHERE capture_id = ? AND hour = ?`, capture[:], hour)
 
 	return n > 0, err
+}
+
+// logOrphanGuard refuses the reconciler's orphan of a log capture and tombstones its key in this transaction:
+// an adoption would raise highest_seq without the file's watermark, and the redelivered entries would be converted again under new seqs (logfeed.md §15.8).
+func (c *Catalog) logOrphanGuard(ctx context.Context, tx *sqlx.Tx, p *Pack) (PackOutcome, bool, error) {
+	var method sql.NullString
+	if err := tx.GetContext(ctx, &method, `SELECT capture_method FROM captures WHERE capture_id = ?`, p.Capture[:]); err != nil {
+		return 0, true, err
+	}
+	if method.String != tracepack.CaptureMethodLog.String() {
+		return 0, false, nil
+	}
+	_, err := tx.ExecContext(ctx, c.d.insertIgnore+` INTO tombstones (object_key, reason, at) VALUES (?, 'log-orphan', ?)`, p.Key, c.now())
+
+	return LogOrphan, true, err
 }
 
 // adoptionGuard refuses the reconciler's orphan holding a seq with a terminated parked row, or of a capture with a termination order in any state,
