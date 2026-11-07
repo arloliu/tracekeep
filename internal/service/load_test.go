@@ -40,6 +40,8 @@ package service
 // TRACEKEEP_LOAD_OFFERED, forwards a second, skips the sweep and offers that rate at the largest K, as the gate does with the rate a baseline recorded.
 // TRACEKEEP_LOAD_ENGINE, sqlite (the default) or mariadb, is the catalog's engine; mariadb runs dev on a database of its own on the server
 // TRACEKEEP_MARIADB_DSN names, which it then requires, and reports the SQL counts, read on SQLite only, as unavailable.
+// TRACEKEEP_LOAD_BUS, client URLs joined by commas, runs feed-convert on a cluster of servers outside the test's process, fresh for each run,
+// so the bus keeps its own heap, cores and disk; unset, the three servers run in the test's process.
 // TRACEKEEP_LOAD_PROFILES is the directory the ceiling's and production's profiles are written to, a new temporary one when unset.
 // The harness profiles in-process (runtime/pprof), so it runs without -cpuprofile, and every profile is the whole process's,
 // the embedded bus server, the producers and the loopbacks included: ingest's share is go tool pprof -top -focus 'tracekeep/internal/(ingest|catalog)',

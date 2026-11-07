@@ -96,15 +96,26 @@ func (s fleetShape) burstEntries() float64 {
 
 // loadFeedConvert runs the fleet through dev's log stage beside production's traffic, its burst inside the traffic's judged cycles,
 // then drains the feed and checks every entry's account.
-func loadFeedConvert(t *testing.T, smoke bool) {
+func loadFeedConvert(t *testing.T, smoke bool) { runFeedConvert(t, smoke, false) }
+
+// loadFeedConvertIdle is its control: the same cluster, stage and traffic with the fleet publishing nothing, judged on the traffic alone.
+func loadFeedConvertIdle(t *testing.T, smoke bool) { runFeedConvert(t, smoke, true) }
+
+func runFeedConvert(t *testing.T, smoke, idle bool) {
 	ft := feedModeTimes(smoke, !smoke)
 	fs := fleetOf(smoke)
-	srvs := testbus.StartClusterServers(t, 3)
-	urls := make([]string, len(srvs))
-	for i, s := range srvs {
-		urls[i] = s.ClientURL()
+	if idle {
+		fs.normalRate, fs.heavyRate, fs.burstRate = 0, 0, 0
 	}
-	url := strings.Join(urls, ",")
+	url := os.Getenv("TRACEKEEP_LOAD_BUS")
+	if url == "" {
+		srvs := testbus.StartClusterServers(t, 3)
+		urls := make([]string, len(srvs))
+		for i, s := range srvs {
+			urls[i] = s.ClientURL()
+		}
+		url = strings.Join(urls, ",")
+	}
 	pool, burstPool := newSizedFeedPool(t, fs.body), newSizedFeedPool(t, fs.burstBody)
 	h := newReportingHarness(t, loadSpec{flush: ft.flush, ackWait: ft.ackWait, probed: true, maxAckPending: ft.trafficLimit, bus: url,
 		feed: func(l *config.Logfeed) {
@@ -176,7 +187,7 @@ func loadFeedConvert(t *testing.T, smoke bool) {
 	if float64(pubs.burstMade.Load()) < 0.98*fs.burstEntries() {
 		t.Errorf("the burst: %d entries made of %.0f offered", pubs.burstMade.Load(), fs.burstEntries())
 	}
-	if digested < 0 || digested > 2*ft.flush {
+	if !idle && (digested < 0 || digested > 2*ft.flush) {
 		t.Errorf("the burst was not digested within two flushes of its end: %s", digested)
 	}
 	if !drained || remaining != 0 {
@@ -191,7 +202,9 @@ func loadFeedConvert(t *testing.T, smoke bool) {
 			o["stale"], o["annotation"], o["unreadable"], o["beyond-retention"])
 	}
 	for _, why := range acc.problems {
-		t.Error(why)
+		if !idle { // idle, no equipment has a capture
+			t.Error(why)
+		}
 	}
 }
 

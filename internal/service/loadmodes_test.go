@@ -41,6 +41,8 @@ var loadModes = map[string]func(t *testing.T, smoke bool){
 	"feed":            func(t *testing.T, smoke bool) { loadFeed(t, smoke, false) },
 	"feed-real":       func(t *testing.T, smoke bool) { loadFeed(t, smoke, true) },
 	"feed-convert":    loadFeedConvert,
+	// feed-convert-idle is feed-convert's control: its fleet publishes nothing.
+	"feed-convert-idle": loadFeedConvertIdle,
 }
 
 const (
