@@ -76,13 +76,19 @@ func (e *stageEnv) stage(replica string, idle time.Duration) *Stage {
 	}
 }
 
-// publish publishes 3 unclassified entries for each of n equipment, their offsets from round's.
+// publish publishes 3 unclassified entries for each of n equipment, their offsets from round's, logged now:
+// a replica taking a group over restores a file's last arrival from its last record's time, which a fixed time would leave idle.
 func (e *stageEnv) publish(n, round int) {
 	e.t.Helper()
+	taipei, err := time.LoadLocation("Asia/Taipei")
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	ts := time.Now().In(taipei).Format("2006-01-02 15:04:05.000")
 	for eq := range n {
 		f := &fixture{t: e.t, offset: int64(round) * 1000}
 		for range 3 {
-			raw := f.raw(map[string]any{"equipment_id": fmt.Sprintf("EQ%d", eq), "kind": KindUnclassified, "text": "line"})
+			raw := f.raw(map[string]any{"equipment_id": fmt.Sprintf("EQ%d", eq), "kind": KindUnclassified, "text": "line", "ts": ts})
 			if _, err := e.js.Publish(e.t.Context(), fmt.Sprintf("tklog.EQ%d", eq), raw); err != nil {
 				e.t.Fatal(err)
 			}

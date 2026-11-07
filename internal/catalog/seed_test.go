@@ -111,7 +111,8 @@ func seedCaptureInfos(tb testing.TB, c *Catalog, devices, n int) []CaptureInfo {
 		// and distinct instances spare the listings' oracles every overlap but the one varyListing makes.
 		s := spec{instance: newID(tb), device: fmt.Sprintf("eqp-%d", i%devices), source: fmt.Sprintf("gw-%d", i/devices%2), origin: 1 + int64(i), equipmentID: equipment}
 		rows[i] = []any{id[:], "open", descriptorBytes(tb, s), equipment, s.instance[:], s.device, s.source, s.origin, cfg, 1, 0}
-		infos[i] = CaptureInfo{ID: id, State: StateOpen, Device: s.device, Source: s.source, RecorderInstanceID: s.instance, OriginNS: s.origin, ConfigID: &cfg}
+		infos[i] = CaptureInfo{ID: id, State: StateOpen, Device: s.device, Source: s.source, RecorderInstanceID: s.instance, OriginNS: s.origin, ConfigID: &cfg,
+			CaptureMethod: "raw-stream", Vantage: "host"} // a seeded row holds no method: read from its descriptor
 	}
 	seedRows(tb, c, "captures", []string{"capture_id", "state", "descriptor", "equipment_id", "recorder_instance_id", "device", "source", "origin_ns", "config_id", "data_revision", "created_at"}, rows)
 	if got := count(tb, c, `SELECT COUNT(*) FROM captures WHERE equipment_id = ? AND state = 'open'`, equipment); got < n {
