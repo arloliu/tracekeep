@@ -66,6 +66,14 @@ func BenchmarkRegisterLogFlush(b *testing.B) {
 							b.Fatalf("RegisterLogFlush = %v, %v", out, err)
 						}
 					}
+					// Outside the timing: every flush's segments registered and the watermark at the last one's; the history grows with the iterations, which the plan records.
+					var packs int
+					if err := c.read.GetContext(b.Context(), &packs, `SELECT COUNT(*) FROM packs`); err != nil || packs != b.N*devices {
+						b.Fatalf("%d packs after %d flushes of %d devices (%v)", packs, b.N, devices, err)
+					}
+					if w, _ := watermark(b, c, logFile); w != offset {
+						b.Fatalf("watermark %d, want %d", w, offset)
+					}
 				})
 			})
 		}
