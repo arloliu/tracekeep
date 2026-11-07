@@ -75,9 +75,15 @@ func redeliver(ms []*fakeMsg) []*fakeMsg {
 	return out
 }
 
-// convertedOnce checks each capture holds its start and then the data records of want's system bytes, in order, each in one registered copy,
+// dataRecord is a data record expected: its entry's system bytes and logged time, in UTC.
+type dataRecord struct {
+	sys uint32
+	at  time.Time
+}
+
+// convertedOnce checks each capture holds its start and then want's data records, in order, each in one registered copy at its time,
 // seq dense from 0, its highest_seq the last, and the file's watermark watermark.
-func convertedOnce(t *testing.T, h *harness, watermark int64, want map[catalog.LogKey][]uint32) {
+func convertedOnce(t *testing.T, h *harness, watermark int64, want map[catalog.LogKey][]dataRecord) {
 	t.Helper()
 	ctx := t.Context()
 	for k, sys := range want {
@@ -100,9 +106,10 @@ func convertedOnce(t *testing.T, h *harness, watermark int64, want map[catalog.L
 				}
 				continue
 			}
+			w := sys[i-1]
 			m, err := hsms.DecodeHSMSMessage(r.Payload)
-			if err != nil || r.Kind != tracepack.KindData || m.SystemBytes() != hsms.ToSystemBytes(sys[i-1]) {
-				t.Errorf("%s: record %d is %v %v (%v), want the data record of system bytes %d", k.Device, i, r.Kind, m, err, sys[i-1])
+			if err != nil || r.Kind != tracepack.KindData || m.SystemBytes() != hsms.ToSystemBytes(w.sys) || r.TSUTCNs != w.at.UnixNano() {
+				t.Errorf("%s: record %d is %v at %d %v (%v), want the data record of system bytes %d at %v", k.Device, i, r.Kind, r.TSUTCNs, m, err, w.sys, w.at)
 			}
 		}
 	}
@@ -111,8 +118,15 @@ func convertedOnce(t *testing.T, h *harness, watermark int64, want map[catalog.L
 	}
 }
 
-// bothDevices is twoDevicesTwoHours' records by capture.
-var bothDevices = map[catalog.LogKey][]uint32{gateEqp: {1, 11}, gateLp1: {2, 12}}
+// bothDevices is twoDevicesTwoHours' records by capture, logged at 08:10 and 09:20 in Asia/Taipei.
+var (
+	firstHour   = time.Date(2026, 11, 7, 0, 10, 0, 0, time.UTC)
+	secondHour  = time.Date(2026, 11, 7, 1, 20, 0, 0, time.UTC)
+	bothDevices = map[catalog.LogKey][]dataRecord{
+		gateEqp: {{1, firstHour}, {11, secondHour}},
+		gateLp1: {{2, firstHour}, {12, secondHour}},
+	}
+)
 
 // failingPut fails every put while fail is set, storing nothing.
 type failingPut struct {
@@ -295,7 +309,7 @@ func TestGateAdmissionWaitsForABaseline(t *testing.T) {
 		h.receive(redeliver([]*fakeMsg{hd, bd})...)
 		h.tick(2 * time.Second)
 		h.tick(10 * time.Second)
-		convertedOnce(t, h, 100, map[catalog.LogKey][]uint32{gateEqp: {1}})
+		convertedOnce(t, h, 100, map[catalog.LogKey][]dataRecord{gateEqp: {{1, time.Date(2026, 11, 7, 0, 0, 0, 0, time.UTC)}}})
 	})
 }
 
