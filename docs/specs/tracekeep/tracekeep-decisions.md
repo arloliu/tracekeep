@@ -957,6 +957,8 @@ The owner chose, on 2026-11-07, from step 10b of the host log feed's plan, how t
 its minima sloping −56, +41, +377 and +98 records a second against a bound of 8, while every traffic record was acknowledged within F and 7 seconds;
 a control with the fleet idle sustained. With the servers as processes of their own, pinned to the host's other CCD and their stores on another disk,
 the traffic sustained beside the fleet on both catalog engines, its minima flat. The gate's environment is that one (`scripts/load-feed.sh`), its criterion unchanged.
+A third run there failed the verdict on the cycle judge's known split of a flush into two cycles (`docs/ROADMAP.md` *Open items*), its traffic acknowledged within F and 3 seconds;
+the owner closed the step on the runs and left the judge's fix to that item.
 **The burst**: one stream of one replica lives on one server, which took the fleet's 95 MB/s with every publish stored,
 but the burst's 117 MB/s more waited: its publishers made 65% to 89% of its rate, and raising their publishes in flight only queued them past their timeout.
 The gate judges what the burst sent: digested within two flushes of its end, every entry accounted for once; its rate is reported, not judged,
