@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 
 	"github.com/arloliu/tracekeep/internal/bus"
@@ -265,10 +266,10 @@ func (s *Stage) convert(ctx context.Context, n int, conv *Converter) error {
 	s.mu.Unlock()
 	tick := max(conv.Reorder/10, 50*time.Millisecond)
 	for ctx.Err() == nil {
-		fctx, cancel := context.WithTimeout(ctx, tick)
-		batch, err := cons.Fetch(s.FetchBatch, jetstream.FetchContext(fctx))
+		// The server ends each pull at tick, and every message it sent is read: a pull cut short by the client's context
+		// would drop what was already on its way, redelivered only after ack_wait and then stale (logfeed.md §15.5).
+		batch, err := cons.Fetch(s.FetchBatch, jetstream.FetchMaxWait(tick))
 		if err != nil {
-			cancel()
 			if ctx.Err() != nil {
 				return nil
 			}
@@ -277,13 +278,11 @@ func (s *Stage) convert(ctx context.Context, n int, conv *Converter) error {
 		}
 		for m := range batch.Messages() {
 			if err := conv.Receive(ctx, m, conv.Now()); err != nil {
-				cancel()
 				return err
 			}
 		}
 		berr := batch.Error()
-		cancel()
-		if berr != nil && !errors.Is(berr, jetstream.ErrNoMessages) && !errors.Is(berr, context.DeadlineExceeded) && ctx.Err() == nil {
+		if berr != nil && !errors.Is(berr, jetstream.ErrNoMessages) && !errors.Is(berr, nats.ErrTimeout) && ctx.Err() == nil {
 			return berr
 		}
 		if err := conv.Tick(ctx, conv.Now()); err != nil {
