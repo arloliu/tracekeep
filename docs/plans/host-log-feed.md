@@ -193,5 +193,7 @@ each was converted once and acknowledged with its entry, a duplicate outcome the
 Its traffic verdict failed on two high minima, each a second before a low one (173,202 then 3,565; 372,559 then 3,967), while every traffic record was acknowledged within F and 3 seconds:
 the cycle judge's known split of a flush into two cycles when its passes settle a second apart (`docs/ROADMAP.md` *Open items*), as the control's pairs show too;
 of the three runs on a bus of their own, two sustained and one met the split.
-The step closes on these runs: the feed's conversion, digestion and drain passed in every run, and its account in every run but run 7,
-whose 928 harness duplicates it counted unsettled (+928), a failure of the harness fixed after it, not rerun at full load; the judge's split stays an open item.
+The step closes on these runs: the feed's conversion and digestion passed in every run; its drain in every run but runs 1 and 2,
+whose remainders were their harness's (its cancelled retries, its drain check); and its account in every run but run 7,
+whose 928 harness duplicates it counted unsettled (+928); each harness failure was fixed after its run, run 7's not rerun at full load.
+The judge's split stays an open item.
