@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -110,6 +111,9 @@ func runFeedConvert(t *testing.T, smoke, idle bool) {
 		fs.normalRate, fs.heavyRate, fs.burstRate = 0, 0, 0
 	}
 	url := os.Getenv("TRACEKEEP_LOAD_BUS")
+	if url != "" {
+		requireFreshBus(t, url)
+	}
 	if url == "" {
 		srvs := testbus.StartClusterServers(t, 3)
 		urls := make([]string, len(srvs))
@@ -150,7 +154,15 @@ func runFeedConvert(t *testing.T, smoke, idle bool) {
 	start := time.Now()
 	// The traffic's cycles are judged after a warm-up of F and ack_wait: the burst starts half a flush into them.
 	burstAt := start.Add(ft.flush + ft.ackWait + ft.flush/2)
-	pubs := publishFleet(ctx, url, fs, pool, burstPool, burstAt)
+	pubs := publishFleet(ctx, url, fs, pool, burstPool, burstAt, ft.dupWindow*3/4)
+	// The publishers' rate is judged over the second half of the time before the burst, past their connections' start:
+	// during the burst and after it one server's stream sets it (T-66).
+	var fromSteady, toSteady atomic.Uint64
+	steadyFrom := pubs.started.Add(burstAt.Sub(pubs.started) / 2)
+	atSteady := time.AfterFunc(time.Until(steadyFrom), func() { fromSteady.Store(pubs.made.Load()) })
+	atBurst := time.AfterFunc(time.Until(burstAt), func() { toSteady.Store(pubs.made.Load()) })
+	defer atSteady.Stop()
+	defer atBurst.Stop()
 	backlog := sampleBacklog(ctx, s)
 	progress(ctx, t, h, s, pubs)
 	tv, failed, ackPending := h.cycles(equipment, ft.trafficRate, profileDir(t))
@@ -172,19 +184,20 @@ func runFeedConvert(t *testing.T, smoke, idle bool) {
 
 	base, peak, digested := digest(samples, burstAt, burstEnd)
 	made := float64(pubs.made.Load()) / ran.Seconds()
+	steadyMade := float64(toSteady.Load()-fromSteady.Load()) / burstAt.Sub(steadyFrom).Seconds()
 	lat := pubs.latencies(start, stopped)
 	p99 := time.Duration(0)
 	if len(lat) > 0 {
 		p99 = lat[len(lat)*99/100]
 	}
-	h.log("", "| offered entries/s | made entries/s | failed | retried | publish p99 | backlog before the burst | burst's peak | digested in | drained in | process CPU (cores) |",
-		"|---|---|---|---|---|---|---|---|---|---|",
-		fmt.Sprintf("| %.0f | %.0f | %d | %d | %s | %s | %s | %s | %s | %.2f |", 2*fs.rate(), made, pubs.failed.Load(), pubs.retried.Load(),
+	h.log("", "| offered entries/s | made before the burst | made in all | failed | retried | publish p99 | backlog before the burst | burst's peak | digested in | drained in | process CPU (cores) |",
+		"|---|---|---|---|---|---|---|---|---|---|---|",
+		fmt.Sprintf("| %.0f | %.0f | %.0f | %d | %d | %s | %s | %s | %s | %s | %.2f |", 2*fs.rate(), steadyMade, made, pubs.failed.Load(), pubs.retried.Load(),
 			p99.Round(time.Microsecond), base, peak, digested.Round(time.Second), time.Since(stopped).Round(time.Millisecond), cpu))
 	h.log(append([]string{""}, acc.table()...)...)
 	h.log("", fmt.Sprintf("the burst's equipment made %d entries during it, of %.0f offered", pubs.burstMade.Load(), fs.burstEntries()))
-	if pubs.failed.Load() != 0 || made < 0.98*2*fs.rate() {
-		t.Errorf("the publishers: %d failed, %.0f entries made a second of %.0f offered", pubs.failed.Load(), made, 2*fs.rate())
+	if pubs.failed.Load() != 0 || steadyMade < 0.98*2*fs.rate() {
+		t.Errorf("the publishers: %d failed, %.0f entries made a second before the burst of %.0f offered", pubs.failed.Load(), steadyMade, 2*fs.rate())
 	}
 	if !idle && (digested < 0 || digested > 2*ft.flush) {
 		t.Errorf("the burst was not digested within two flushes of its end: %s", digested)
@@ -269,6 +282,45 @@ func progress(ctx context.Context, t *testing.T, h *loadHarness, s jetstream.Str
 	}()
 }
 
+// requireFreshBus refuses a bus outside the test's process that holds a stream: a stream left by an earlier run
+// keeps its last sequence and its messages, which the account would count against this run's (scripts/load-feed.sh starts a fresh one).
+func requireFreshBus(t *testing.T, url string) {
+	t.Helper()
+	nc, err := nats.Connect(url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer nc.Close()
+	js, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	names := js.StreamNames(t.Context())
+	for name := range names.Name() {
+		t.Fatalf("TRACEKEEP_LOAD_BUS holds stream %s: the load needs a fresh bus", name)
+	}
+	if err := names.Err(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// republish retries m until it is stored, as a forwarder retries every error, for at most retryFor,
+// within the stream's duplicate window so a retry is stored once; it counts the outcome and reports it.
+func (p *feedPublishers) republish(ctx context.Context, js jetstream.JetStream, m *nats.Msg, retryFor time.Duration) bool {
+	deadline := time.Now().Add(retryFor)
+	for {
+		p.retried.Add(1)
+		if _, err := js.PublishMsg(context.WithoutCancel(ctx), m); err == nil {
+			p.acked.Add(1)
+			return true
+		}
+		if time.Now().After(deadline) {
+			p.failed.Add(1)
+			return false
+		}
+	}
+}
+
 func kib(b int) string { return fmt.Sprintf("%.1f KiB", float64(b)/1024) }
 
 // newSizedFeedPool is 50 S6F11 messages whose body's SML text is at least body bytes, each a header entry and a body entry.
@@ -320,11 +372,11 @@ func (p *feedPool) pairBytes() int {
 
 // publishFleet publishes fs's messages from feedConns connections, each its own equipment's, a message being its header entry then its body entry
 // at the next two offsets of its equipment's file; the burst's equipment add their burst's messages from burstAt for fs.burstFor.
-// Every publish awaits its acknowledgement, at most feedInFlight a connection, and a failed one is retried once.
-func publishFleet(ctx context.Context, url string, fs fleetShape, pool, burstPool *feedPool, burstAt time.Time) *feedPublishers {
+// Every publish awaits its acknowledgement, at most feedInFlight a connection, and a failed one is retried until it is stored, within the duplicate window.
+func publishFleet(ctx context.Context, url string, fs fleetShape, pool, burstPool *feedPool, burstAt time.Time, retryFor time.Duration) *feedPublishers {
 	ctx, cancel := context.WithCancel(ctx)
 	p := &feedPublishers{started: time.Now(), rate: 2 * fs.rate(), cancel: cancel}
-	fp := &fleetPlan{fleetShape: fs, pool: pool, burstPool: burstPool, inBurst: fs.burstSet(), burstAt: burstAt}
+	fp := &fleetPlan{fleetShape: fs, pool: pool, burstPool: burstPool, inBurst: fs.burstSet(), burstAt: burstAt, retryFor: retryFor}
 	for c := range feedConns {
 		p.wg.Go(func() { publishConn(ctx, url, c, fp, p) })
 	}
@@ -338,6 +390,8 @@ type fleetPlan struct {
 	pool, burstPool *feedPool
 	inBurst         []bool
 	burstAt         time.Time
+	// retryFor bounds a publish's retries, within the stream's duplicate window.
+	retryFor time.Duration
 }
 
 func publishConn(ctx context.Context, url string, c int, fp *fleetPlan, p *feedPublishers) {
@@ -357,6 +411,7 @@ func publishConn(ctx context.Context, url string, c int, fp *fleetPlan, p *feedP
 		fut  jetstream.PubAckFuture
 		sent time.Time
 	}
+	republish := func(m *nats.Msg) bool { return p.republish(ctx, js, m, fp.retryFor) }
 	pending := make(chan waiting, feedInFlight)
 	var acks sync.WaitGroup
 	acks.Go(func() {
@@ -365,13 +420,10 @@ func publishConn(ctx context.Context, url string, c int, fp *fleetPlan, p *feedP
 			case <-w.fut.Ok():
 				p.acked.Add(1)
 				p.record(time.Since(w.sent))
-			case <-w.fut.Err(): //nolint:errcheck // any failure is retried once
-				p.retried.Add(1)
-				if _, err := js.PublishMsg(context.WithoutCancel(ctx), w.fut.Msg()); err != nil {
-					p.failed.Add(1)
+			case <-w.fut.Err(): //nolint:errcheck // any failure is retried
+				if !republish(w.fut.Msg()) {
 					continue
 				}
-				p.acked.Add(1)
 				p.record(time.Since(w.sent))
 			}
 		}
@@ -416,15 +468,11 @@ func publishConn(ctx context.Context, url string, c int, fp *fleetPlan, p *feedP
 						if from == burstPool {
 							p.burstMade.Add(1)
 						}
-						fut, err := js.PublishMsgAsync(m)
+						// A full window of publishes in flight waits for room, as a forwarder's sink does, before it is retried.
+						fut, err := js.PublishMsgAsync(m, jetstream.WithStallWait(feedAckTimeout))
 						if err != nil {
-							// A stalled publish is retried once, as one whose acknowledgement failed is.
-							p.retried.Add(1)
-							if _, err := js.PublishMsg(context.WithoutCancel(ctx), m); err != nil {
-								p.failed.Add(1)
-							} else {
-								p.acked.Add(1)
-							}
+							// A stalled publish is retried, as one whose acknowledgement failed is.
+							republish(m)
 
 							continue
 						}
