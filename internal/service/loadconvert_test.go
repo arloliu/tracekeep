@@ -373,7 +373,8 @@ func (p *feedPool) pairBytes() int {
 
 // publishFleet publishes fs's messages from feedConns connections, each its own equipment's, a message being its header entry then its body entry
 // at the next two offsets of its equipment's file; the burst's equipment add their burst's messages from burstAt for fs.burstFor.
-// Every publish awaits its acknowledgement, at most feedInFlight a connection, and a failed one is retried until it is stored, within the duplicate window.
+// Every publish awaits its acknowledgement, at most feedInFlight a connection, and a failed one is retried until it is stored, within the duplicate window,
+// by one of the connection's feedRetriers.
 func publishFleet(ctx context.Context, url string, fs fleetShape, pool, burstPool *feedPool, burstAt time.Time, retryFor time.Duration) *feedPublishers {
 	ctx, cancel := context.WithCancel(ctx)
 	p := &feedPublishers{started: time.Now(), rate: 2 * fs.rate(), cancel: cancel}
@@ -414,7 +415,18 @@ func publishConn(ctx context.Context, url string, c int, fp *fleetPlan, p *feedP
 	}
 	republish := func(m *nats.Msg, first time.Time) bool { return p.republish(ctx, js, m, first.Add(fp.retryFor)) }
 	pending := make(chan waiting, feedInFlight)
-	var acks sync.WaitGroup
+	// A failed acknowledgement is retried off the reader, so a burst of failures does not stop it and, behind it, the publishing.
+	failed := make(chan waiting, feedInFlight)
+	var acks, retries sync.WaitGroup
+	for range feedRetriers {
+		retries.Go(func() {
+			for w := range failed {
+				if republish(w.fut.Msg(), w.sent) {
+					p.record(time.Since(w.sent))
+				}
+			}
+		})
+	}
 	acks.Go(func() {
 		for w := range pending {
 			select {
@@ -422,16 +434,15 @@ func publishConn(ctx context.Context, url string, c int, fp *fleetPlan, p *feedP
 				p.acked.Add(1)
 				p.record(time.Since(w.sent))
 			case <-w.fut.Err(): //nolint:errcheck // any failure is retried
-				if !republish(w.fut.Msg(), w.sent) {
-					continue
-				}
-				p.record(time.Since(w.sent))
+				failed <- w
 			}
 		}
 	})
 	defer func() {
 		close(pending)
 		acks.Wait()
+		close(failed)
+		retries.Wait()
 	}()
 	var mine []int
 	for eq := c; eq < fs.equipment; eq += feedConns {

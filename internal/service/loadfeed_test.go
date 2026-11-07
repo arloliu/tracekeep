@@ -42,8 +42,10 @@ const (
 	feedGroups    = 32
 	feedEquipment = 2000
 	feedConns     = 16
-	// feedInFlight is each publisher connection's publishes awaiting their acknowledgement.
+	// feedInFlight is each publisher connection's publishes awaiting their acknowledgement;
+	// feedRetriers are its retries of failed acknowledgements, each one publish awaiting its own.
 	feedInFlight = 256
+	feedRetriers = 16
 	feedStream   = "TRACEKEEP_LOGFEED"
 	feedPrefix   = "tklog"
 	feedSource   = "load-feed"
