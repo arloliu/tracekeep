@@ -39,6 +39,19 @@ type LogKey struct {
 // LogGroupLease is the name of lease group n's lease row.
 func LogGroupLease(n int) string { return fmt.Sprintf("logfeed/%d", n) }
 
+// ErrNotLogGroup refuses a log-feed transaction under a lease that is not a lease group's; nothing was written.
+var ErrNotLogGroup = errors.New("catalog: not a log lease group")
+
+// logGroupOf is the group whose lease l is, so the group a transaction records is the one whose lease it checked.
+func logGroupOf(l Lease) (int, error) {
+	var n int
+	if _, err := fmt.Sscanf(l.Name, "logfeed/%d", &n); err != nil || LogGroupLease(n) != l.Name {
+		return 0, fmt.Errorf("%w: %s", ErrNotLogGroup, l.Name)
+	}
+
+	return n, nil
+}
+
 // EnsureLogGroups inserts the lease rows of groups 0 to groups-1 that are missing; rows of other groups are left.
 func (c *Catalog) EnsureLogGroups(ctx context.Context, groups int) error {
 	err := c.inTx(ctx, func(tx *sqlx.Tx) error {
@@ -66,13 +79,17 @@ type LogAdmission struct {
 	ConfigID int64
 }
 
-// AdmitLog admits id as the capture of key under lease l, the group's, with the descriptor d the log stage built (catalog.md §7.2 AdmitLog):
+// AdmitLog admits id as the capture of key under lease l, its group's, which the key records, with the descriptor d the log stage built (catalog.md §7.2 AdmitLog):
 // the capture row open with the newest configuration bindable admits, the file's row inserted when it has none, and the key's row.
 // A key that names a capture already returns it and writes nothing; a stopped file returns ErrFileStopped,
 // a lost lease ErrLeaseLost, and no bindable configuration ErrNoBindableConfig, each writing nothing.
-func (c *Catalog) AdmitLog(ctx context.Context, l Lease, group int, key LogKey, id tracepack.UUID, d *Descriptor, bindable func(configID int64) bool) (LogAdmission, error) {
+func (c *Catalog) AdmitLog(ctx context.Context, l Lease, key LogKey, id tracepack.UUID, d *Descriptor, bindable func(configID int64) bool) (LogAdmission, error) {
+	group, err := logGroupOf(l)
+	if err != nil {
+		return LogAdmission{}, err
+	}
 	var res LogAdmission
-	err := c.inTx(ctx, func(tx *sqlx.Tx) error {
+	err = c.inTx(ctx, func(tx *sqlx.Tx) error {
 		res = LogAdmission{}
 		if _, err := c.lockCapture(ctx, tx, id); err != nil {
 			return err
@@ -166,20 +183,22 @@ type LogFileMark struct {
 type LogFlush struct {
 	Packs []*Pack
 	Files []LogFileMark
-	// Group is the lease group whose converter flushes; each capture's key moves to it.
-	Group int
 	// HorizonHour is the oldest hour retention keeps, as for RegisterPack.
 	HorizonHour int64
 }
 
 // RegisterLogFlush registers one equipment's flush under lease l in one transaction (catalog.md §7.2 RegisterLogFlush):
 // each segment as RegisterPack registers it without evidence, each file's watermark raised and never lowered, a stopping file stopped,
-// and each capture's key moved to the flush's group.
+// and each capture's key moved to the group whose lease l is.
 // It returns Registered once committed, AlreadyRegistered when the flush committed before (its first pack registered),
 // or the first segment's outcome other than Registered, writing nothing; a lost lease, a stopped file or a moved watermark is an error, writing nothing.
 func (c *Catalog) RegisterLogFlush(ctx context.Context, l Lease, f *LogFlush) (PackOutcome, error) {
 	if len(f.Packs) == 0 {
 		return 0, fmt.Errorf("%w: a flush without a segment", ErrInvalidRegistration)
+	}
+	group, err := logGroupOf(l)
+	if err != nil {
+		return 0, err
 	}
 	// The group's lease, which registerIn checks again per segment under the row this transaction already holds.
 	r := Registration{Lease: &l, HorizonHour: f.HorizonHour}
@@ -199,7 +218,7 @@ func (c *Catalog) RegisterLogFlush(ctx context.Context, l Lease, f *LogFlush) (P
 		return cmp.Or(cmp.Compare(a.Source, b.Source), cmp.Compare(a.EquipmentID, b.EquipmentID), cmp.Compare(a.File, b.File))
 	})
 	var out PackOutcome
-	err := outcome(c.inTx(ctx, func(tx *sqlx.Tx) error {
+	err = outcome(c.inTx(ctx, func(tx *sqlx.Tx) error {
 		out = 0
 		for _, id := range captures {
 			if _, err := c.lockCapture(ctx, tx, id); err != nil {
@@ -232,7 +251,7 @@ func (c *Catalog) RegisterLogFlush(ctx context.Context, l Lease, f *LogFlush) (P
 			}
 			evs = append(evs, e...)
 		}
-		if err := c.settleLogFiles(ctx, tx, files, captures, f.Group); err != nil {
+		if err := c.settleLogFiles(ctx, tx, files, captures, group); err != nil {
 			return err
 		}
 		out = Registered
@@ -320,15 +339,25 @@ func (c *Catalog) StopLogCapture(ctx context.Context, id tracepack.UUID) (LogSto
 			out = StopAlready
 			return errRollback
 		}
-		// Held when its row is live by the database's clock; the update locks the row, so a converter taking the lease waits for this commit.
-		res, err := tx.ExecContext(ctx, `UPDATE leases SET until_ns = until_ns WHERE name = ? AND until_ns >= `+c.d.nowNS, LogGroupLease(int(lc.Group.Int64)))
+		// The group's row locked whatever its state, so a converter taking the lease waits for this commit, then judged held by the database's clock.
+		name := LogGroupLease(int(lc.Group.Int64))
+		res, err := tx.ExecContext(ctx, `UPDATE leases SET until_ns = until_ns WHERE name = ?`, name)
 		held := affected(res, err, ErrLeaseLost)
+		if held == nil {
+			var live int
+			if err := tx.GetContext(ctx, &live, `SELECT COUNT(*) FROM leases WHERE name = ? AND until_ns >= `+c.d.nowNS, name); err != nil {
+				return err
+			}
+			if live == 0 {
+				held = ErrLeaseLost
+			}
+		}
 		switch {
 		case held == nil:
 			out = StopRequested
 			_, err = tx.ExecContext(ctx, `UPDATE captures SET stop_requested_at = ? WHERE capture_id = ?`, c.now(), id[:])
 		case errors.Is(held, ErrLeaseLost):
-			// Lapsed, or a group no lease row names: no converter holds it, so the stop is written here.
+			// Lapsed, or a group no lease row names, which no converter can take: no converter holds it, so the stop is written here.
 			out = StopWritten
 			// stop_seen stays unset: it names a stop boundary in a pack, which this stop has none of.
 			_, err = tx.ExecContext(ctx, `UPDATE captures SET state = 'stopped', stop_requested_at = ? WHERE capture_id = ?`, c.now(), id[:])

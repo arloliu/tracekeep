@@ -27,7 +27,7 @@ func benchLogGroup(b *testing.B, c *Catalog) Lease {
 func benchAdmitLog(b *testing.B, c *Catalog, l Lease, file LogFile, device string) tracepack.UUID {
 	b.Helper()
 	id := newID(b)
-	if _, err := c.AdmitLog(b.Context(), l, 1, LogKey{LogFile: file, Device: device}, id, logDescriptor(b, device), nil); err != nil {
+	if _, err := c.AdmitLog(b.Context(), l, LogKey{LogFile: file, Device: device}, id, logDescriptor(b, device), nil); err != nil {
 		b.Fatal(err)
 	}
 
@@ -46,17 +46,20 @@ func BenchmarkRegisterLogFlush(b *testing.B) {
 					for d := range captures {
 						captures[d] = benchAdmitLog(b, c, l, logFile, fmt.Sprintf("dev%d", d))
 					}
-					records := uint64(max(1, entries/2/devices)) //nolint:gosec // small positive counts
+					// entries/2 records, spread over the devices, the first ones taking the remainder.
+					share := func(d int) uint64 { return uint64(entries/2/devices + min(1, max(0, entries/2%devices-d))) } //nolint:gosec // small counts
 					var seq uint64
 					var offset int64
+					b.ReportAllocs()
 					for b.Loop() {
-						f := &LogFlush{Group: 1}
-						for _, id := range captures {
+						f := &LogFlush{}
+						for d, id := range captures {
+							records := share(d)
 							p := segment(b, id, 5, seq, seq+records-1)
 							p.EquipmentID = logFile.EquipmentID
 							f.Packs = append(f.Packs, p)
+							seq += records
 						}
-						seq += records
 						offset += int64(entries) * 600
 						f.Files = []LogFileMark{{LogFile: logFile, Watermark: offset}}
 						if out, err := c.RegisterLogFlush(b.Context(), l, f); err != nil || out != Registered {
@@ -73,6 +76,7 @@ func BenchmarkRegisterLogFlush(b *testing.B) {
 func BenchmarkAdmitLog(b *testing.B) {
 	benchEngines(b, func(b *testing.B, c *Catalog) {
 		l := benchLogGroup(b, c)
+		b.ReportAllocs()
 		n := 0
 		for b.Loop() {
 			n++
@@ -89,6 +93,7 @@ func BenchmarkStopLogCapture(b *testing.B) {
 		for i := range 2000 {
 			ids = append(ids, benchAdmitLog(b, c, l, logFile, fmt.Sprintf("dev%d", i)))
 		}
+		b.ReportAllocs()
 		i := 0
 		for b.Loop() {
 			// Each capture stays open after a request, so the ids are reused in turn.
