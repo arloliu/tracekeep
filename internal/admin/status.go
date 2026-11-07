@@ -30,6 +30,14 @@ type Equipment struct {
 	Backlog uint64 `json:"backlog_messages"`
 }
 
+// Feed is tracekeep status's host log feed (logfeed.md §15.11): its stream's backlog,
+// and the number of equipment whose log captures registered nothing for catalog.SilentAfter among those that did within catalog.SilentWithin.
+type Feed struct {
+	BacklogMessages uint64 `json:"backlog_messages"`
+	BacklogBytes    uint64 `json:"backlog_bytes"`
+	SilentEquipment int    `json:"silent_equipment"`
+}
+
 // Status is tracekeep status: the pending captures by id first, then each piece of equipment, and the traffic stream's whole backlog,
 // whose bytes no subject divides.
 type Status struct {
@@ -37,6 +45,8 @@ type Status struct {
 	Equipment       []Equipment `json:"equipment"`
 	BacklogMessages uint64      `json:"backlog_messages"`
 	BacklogBytes    uint64      `json:"backlog_bytes"`
+	// Feed is the host log feed's, absent with it disabled.
+	Feed *Feed `json:"feed,omitempty"`
 }
 
 // Status is tracekeep status.
@@ -73,6 +83,17 @@ func (a *Admin) Status(ctx context.Context) (Status, error) {
 			}
 		}
 		out.Equipment = append(out.Equipment, line)
+	}
+	if a.Feed != "" {
+		f, err := a.Bus.Stream(ctx, a.Feed)
+		if err != nil {
+			return Status{}, fmt.Errorf("admin: status: the feed stream: %w", err)
+		}
+		fi, err := f.Info(ctx)
+		if err != nil {
+			return Status{}, fmt.Errorf("admin: status: the feed stream: %w", err)
+		}
+		out.Feed = &Feed{BacklogMessages: fi.State.Msgs, BacklogBytes: fi.State.Bytes, SilentEquipment: st.SilentLogEquipment}
 	}
 
 	return out, nil

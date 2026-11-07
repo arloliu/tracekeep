@@ -105,7 +105,7 @@ func BenchmarkStopLogCapture(b *testing.B) {
 		i := 0
 		for b.Loop() {
 			// Each capture stays open after a request, so the ids are reused in turn.
-			if out, err := c.StopLogCapture(b.Context(), ids[i%len(ids)]); err != nil || out != StopRequested {
+			if out, err := c.StopLogCapture(b.Context(), ids[i%len(ids)], "operator", "stop-1"); err != nil || out != StopRequested {
 				b.Fatalf("StopLogCapture = %v, %v", out, err)
 			}
 			i++

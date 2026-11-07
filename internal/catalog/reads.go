@@ -108,6 +108,9 @@ type CaptureInfo struct {
 	Overlap bool
 	// Unregistered are the capture's unregistered intervals.
 	Unregistered []UnregisteredInterval
+	// CaptureMethod, Vantage and SourceDialect are the capture's (logfeed.md §15.8);
+	// a log capture has no descriptor bytes, so no thinning, endpoint or device ID.
+	CaptureMethod, Vantage, SourceDialect string
 }
 
 // UnregisteredInterval is time before a capture's origin that no capture of its series accounts for:
@@ -132,6 +135,8 @@ type DeviceInfo struct {
 	LastRecordNS *int64
 	// Gap is set when a gap of a selected capture meets the window, an unknown bound counting as meeting it.
 	Gap bool
+	// CaptureMethod is the latest selected capture's.
+	CaptureMethod string
 }
 
 // span is the part of a capture's row its span and its recorder's other captures are computed from.
@@ -193,7 +198,7 @@ func (c *Catalog) ListDevices(ctx context.Context, sel Selector, q time.Duration
 			}
 			if l, ok := latest[k]; !ok || ci.OriginNS > l.OriginNS {
 				latest[k] = ci
-				d.EquipmentEndpoint, d.DeviceID = ci.EquipmentEndpoint, ci.DeviceID
+				d.EquipmentEndpoint, d.DeviceID, d.CaptureMethod = ci.EquipmentEndpoint, ci.DeviceID, ci.CaptureMethod
 			}
 			if ci.State == StateOpen {
 				d.OpenCaptures++
@@ -282,7 +287,8 @@ const admittedStates = `('open', 'stopped', 'closed')`
 // selectCaptures reads the captures sel selects, ordered by device, source, origin and id, with their series' other captures.
 func (c *Catalog) selectCaptures(ctx context.Context, tx *sqlx.Tx, sel Selector, q time.Duration) ([]CaptureInfo, error) {
 	cond, args := sel.where()
-	query := `SELECT capture_id, state, device, source, recorder_instance_id, previous_capture_id, origin_ns, highest_seq_ts, config_id, descriptor
+	query := `SELECT capture_id, state, device, source, recorder_instance_id, previous_capture_id, origin_ns, highest_seq_ts, config_id, descriptor,
+			capture_method, vantage, source_dialect
 		FROM captures WHERE ` + cond
 	var rows []struct {
 		ID         []byte         `db:"capture_id"`
@@ -295,6 +301,9 @@ func (c *Catalog) selectCaptures(ctx context.Context, tx *sqlx.Tx, sel Selector,
 		Last       sql.NullInt64  `db:"highest_seq_ts"`
 		Config     sql.NullInt64  `db:"config_id"`
 		Descriptor []byte         `db:"descriptor"`
+		Method     sql.NullString `db:"capture_method"`
+		Vantage    sql.NullString `db:"vantage"`
+		Dialect    sql.NullString `db:"source_dialect"`
 	}
 	if err := tx.SelectContext(ctx, &rows, query+` ORDER BY device, source, origin_ns, capture_id`, args...); err != nil {
 		return nil, err
@@ -308,6 +317,7 @@ func (c *Catalog) selectCaptures(ctx context.Context, tx *sqlx.Tx, sel Selector,
 		ci := CaptureInfo{
 			ID: tracepack.UUID(r.ID), State: r.State, Device: r.Device.String, Source: r.Source.String, RecorderInstanceID: tracepack.UUID(r.Instance),
 			OriginNS: r.Origin.Int64, LastRecordNS: nullable(r.Last), ConfigID: nullable(r.Config),
+			CaptureMethod: r.Method.String, Vantage: r.Vantage.String, SourceDialect: r.Dialect.String,
 		}
 		if r.Previous != nil {
 			p := tracepack.UUID(r.Previous)

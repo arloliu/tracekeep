@@ -4,9 +4,11 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/arloliu/go-secs/tracepack"
 )
@@ -14,12 +16,12 @@ import (
 // logFile is the test's log file of equipment T1.
 var logFile = LogFile{Source: "feed-a", EquipmentID: "T1", File: "host-20261107.log"}
 
-// logDescriptor is a log capture's descriptor of device.
+// logDescriptor is a log capture's descriptor of device, without bytes as the converter's (logfeed.md §15.6).
 func logDescriptor(t testing.TB, device string) *Descriptor {
 	t.Helper()
 
 	return &Descriptor{
-		Bytes: []byte("log-" + device), EquipmentID: "T1", RecorderInstanceID: newID(t), Device: device, Source: "feed-a", OriginNS: 1,
+		EquipmentID: "T1", RecorderInstanceID: newID(t), Device: device, Source: "feed-a", OriginNS: 1,
 		CaptureMethod: "log", Vantage: "host", SourceDialect: "host-sml-feed/1",
 	}
 }
@@ -305,7 +307,7 @@ func TestStopLogCapture(t *testing.T) {
 		gate(t, c)
 		l := logGroup(t, c)
 		a, b := admitLog(t, c, l, "eqp"), admitLog(t, c, l, "lp1")
-		if out, err := c.StopLogCapture(ctx, a); err != nil || out != StopRequested {
+		if out, err := c.StopLogCapture(ctx, a, "operator", "stop-1"); err != nil || out != StopRequested {
 			t.Fatalf("stop with the lease held = %v, %v; want requested", out, err)
 		}
 		var requested *int64
@@ -317,13 +319,13 @@ func TestStopLogCapture(t *testing.T) {
 		}
 
 		lapse(t, c, `UPDATE leases SET until_ns = 0 WHERE name = 'logfeed/1'`)
-		if out, err := c.StopLogCapture(ctx, b); err != nil || out != StopWritten {
+		if out, err := c.StopLogCapture(ctx, b, "operator", "stop-1"); err != nil || out != StopWritten {
 			t.Fatalf("stop with the lease lapsed = %v, %v; want written", out, err)
 		}
 		if s := captureState(t, c, b); s != StateStopped {
 			t.Errorf("a written stop's capture is %s, want stopped", s)
 		}
-		if out, err := c.StopLogCapture(ctx, b); err != nil || out != StopAlready {
+		if out, err := c.StopLogCapture(ctx, b, "operator", "stop-1"); err != nil || out != StopAlready {
 			t.Errorf("stop of a stopped capture = %v, %v; want already", out, err)
 		}
 
@@ -331,8 +333,16 @@ func TestStopLogCapture(t *testing.T) {
 		if _, err := c.Admit(ctx, start(gw), descriptor(t, "gw")); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := c.StopLogCapture(ctx, gw); !errors.Is(err, ErrNotLogCapture) {
+		if _, err := c.StopLogCapture(ctx, gw, "operator", "stop-1"); !errors.Is(err, ErrNotLogCapture) {
 			t.Errorf("stop of a gateway's capture = %v, want ErrNotLogCapture", err)
+		}
+		// Each outcome commits its audit row; the refusal writes none.
+		for id, want := range map[tracepack.UUID][]string{a: {"requested"}, b: {"already", "written"}, gw: nil} {
+			var details []string
+			err := c.read.SelectContext(ctx, &details, `SELECT detail FROM audit_log WHERE capture_id = ? AND action = 'capture-stop' ORDER BY detail`, id[:])
+			if err != nil || !slices.Equal(details, want) {
+				t.Errorf("capture-stop audit rows of %s = %v, %v; want %v", id, details, err, want)
+			}
 		}
 	})
 }
@@ -376,7 +386,7 @@ func TestLogTransactionsSideBySide(t *testing.T) {
 		})
 		wg.Go(func() {
 			for i := range rounds {
-				if _, err := c.StopLogCapture(ctx, b); err != nil {
+				if _, err := c.StopLogCapture(ctx, b, "operator", "stop-1"); err != nil {
 					errs <- fmt.Errorf("stop %d: %w", i, err)
 				}
 			}
@@ -405,7 +415,7 @@ func TestStopLogCaptureHoldsATakeover(t *testing.T) {
 		held, release := holdAt(c, hookBeforeCommit)
 		var stop LogStop
 		var stopErr error
-		stopped := run(func() { stop, stopErr = c.StopLogCapture(ctx, a) })
+		stopped := run(func() { stop, stopErr = c.StopLogCapture(ctx, a, "operator", "stop-1") })
 		<-held
 		waits := c.write.Stats().WaitCount
 		var took bool
@@ -503,7 +513,7 @@ func TestLogLockOrderSchedules(t *testing.T) {
 		h = heldFlush(t, c, l, &LogFlush{Packs: []*Pack{segment(t, b, 5, 15, 19)}, Files: mark(40)}, hookBeforeCommit)
 		waits = c.write.Stats().WaitCount
 		var stopErr error
-		stopped := run(func() { _, stopErr = c.StopLogCapture(ctx, b) })
+		stopped := run(func() { _, stopErr = c.StopLogCapture(ctx, b, "operator", "stop-1") })
 		waitBlocked(t, c, waits, "INSERT INTO captures", 1)
 		close(h.release)
 		<-h.done
@@ -667,6 +677,34 @@ func TestSyncLogGroups(t *testing.T) {
 		}
 		if out, err := c.RegisterLogFlush(ctx, nl, f); err != nil || out != Registered {
 			t.Errorf("the new holder's flush = %v, %v", out, err)
+		}
+	})
+}
+
+// Status counts the equipment whose log captures registered within the past day and not for 15 minutes:
+// neither one that registered recently, nor one silent all day, nor a gateway's capture (logfeed.md §15.11).
+func TestStatusSilentLogEquipment(t *testing.T) {
+	t.Parallel()
+	engines(t, func(t *testing.T, c *Catalog) {
+		ctx := t.Context()
+		gate(t, c)
+		l := logGroup(t, c)
+		now := c.now()
+		for equipment, ago := range map[string]time.Duration{"S1": time.Hour, "S2": 23 * time.Hour, "R1": time.Minute, "D1": 25 * time.Hour} {
+			id := admitLog(t, c, l, "eqp-"+equipment)
+			exec(t, c, `UPDATE captures SET equipment_id = ?, last_registered_at = ? WHERE capture_id = ?`, equipment, now-int64(ago), id[:])
+		}
+		// R1's other capture fell silent, but R1 registered recently: R1 is not silent.
+		r := admitLog(t, c, l, "eqp-R1b")
+		exec(t, c, `UPDATE captures SET equipment_id = 'R1', last_registered_at = ? WHERE capture_id = ?`, now-int64(time.Hour), r[:])
+		gw := newID(t)
+		if _, err := c.Admit(ctx, start(gw), descriptor(t, "gw")); err != nil {
+			t.Fatal(err)
+		}
+		exec(t, c, `UPDATE captures SET equipment_id = 'G1', last_registered_at = ? WHERE capture_id = ?`, now-int64(time.Hour), gw[:])
+		st, err := c.Status(ctx)
+		if err != nil || st.SilentLogEquipment != 2 {
+			t.Errorf("silent log equipment = %d, %v; want S1 and S2", st.SilentLogEquipment, err)
 		}
 	})
 }

@@ -388,9 +388,14 @@ func (e *Env) Admin(actor string) (*admin.Admin, error) {
 		return nil, err
 	}
 
-	return &admin.Admin{
+	a := &admin.Admin{
 		Catalog: e.Catalog, Bus: e.JS, Config: e.Bus(), Actor: actor, Keys: k, Classifier: builtin.Name, MaxFrameLen: builtin.MaxFrameLen, Dev: e.Dev,
-	}, nil
+	}
+	if e.Config.Logfeed.Enabled {
+		a.Feed = e.Config.Logfeed.Stream
+	}
+
+	return a, nil
 }
 
 // Keys is the process's keys, those this configuration declares over the catalog, built at the first call and shared by every role;

@@ -54,7 +54,7 @@ func operate(ctx context.Context, a *Admin, cmd string, args []string) (any, err
 	case listing(cmd, args):
 		return onList(ctx, a, cmd, args)
 	case cmd == "parked terminate" && (len(args) == 3 || len(args) == 4),
-		slices.Contains([]string{"capture terminate", "capture show", "capture close"}, cmd) && len(args) == 3:
+		slices.Contains([]string{"capture terminate", "capture show", "capture close", "capture stop"}, cmd) && len(args) == 3:
 		return onCapture(ctx, a, cmd, args[2:])
 	case cmd == "bus adopt-stream" && len(args) == 3:
 		if args[2] != catalog.RoleTraffic && args[2] != catalog.RoleParking {
@@ -144,6 +144,8 @@ func onCapture(ctx context.Context, a *Admin, cmd string, args []string) (any, e
 		return a.CaptureShow(ctx, capture)
 	case "capture close":
 		return a.CaptureClose(ctx, capture)
+	case "capture stop":
+		return a.CaptureStop(ctx, capture)
 	default: // parked terminate
 		var seq *uint64
 		if len(args) == 2 {

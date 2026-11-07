@@ -1,6 +1,6 @@
 # Host log feed
 
-Status: active (2026-11-07) — step 8, reads and admin
+Status: active (2026-11-07) — step 9, web UI and operations
 
 The work that delivers the host log feed, `docs/specs/tracekeep/logfeed.md` (§15), as T-60 shapes it,
 with its two riskiest costs measured before the converter is built (T-63): the feed's load on the bus, and its registration's on the catalog writer.
@@ -17,20 +17,23 @@ The design is the spec's and the rationale the decision log's; this plan only or
 | 5 — conversion | `internal/logfeed`'s pure part: entry decoding, reorder, duplicates and stale entries, pairing, devices, time, records and annotations (§15.3, §15.5) | done (#106) |
 | 6 — the converter | a lease group's converter: deliveries through windows and pairing into admitted captures, seq, masking, batches, segments, `RegisterLogFlush`, acknowledgements, file stops and stop requests; `internal/logfeed` in a `scripts/catalog.sh` leg (§15.5–§15.7) | done (#107) |
 | 7 — lease groups and wiring | taking, renewing and losing group leases, the consumer's re-creation and the fetch loop, giving up and taking again, the heartbeat, the stage started by `ingest` with its readiness and metrics (§15.4, §15.5 *Taking a lease*) | done (#108) |
-| 8 — reads and admin | the reads' method fields, `capture stop`, `tracekeep status`'s feed lines (§15.8, §15.11) | in-progress |
-| 9 — web UI and operations | the UI's method filter and badge; alerts, metrics, runbook, configuration and pipeline guides (§15.8, §15.11) | pending |
+| 8 — reads and admin | the reads' method fields, `capture stop`, `tracekeep status`'s feed lines (§15.8, §15.11) | done (#109) |
+| 9 — web UI and operations | the UI's method filter and badge; alerts, metrics, runbook, configuration and pipeline guides (§15.8, §15.11) | in-progress |
 | 10 — the gate | the gate cases below | pending |
 
 Each step is one pull request.
 Steps 1 and 2 record their numbers here before step 5 starts;
 a number past its budget stops the plan for the owner's decision.
 
-## Step 8 — reads and admin
+## Step 9 — web UI and operations
 
-- **Reads** (§15.8, `api.md` §10.1): `ListDevices` and `ListCaptures` carry each capture's `capture_method`, `vantage` and `source_dialect`, in the catalog's reads, the proto and the web client's generated types; a log capture without descriptor bytes reads with no thinning, endpoint or device ID.
-- **`tracekeep admin capture stop <id>`** (§15.11): `StopLogCapture`, audited, its outcome printed; refused for a capture that is not a log capture.
-- **`tracekeep status`**: the feed's backlog, and the number of equipment whose log captures registered nothing for 15 minutes among those that did in the past day.
-- Tests on both engines: each read's new fields for a log and a gateway capture, the command's three outcomes and its refusal, and the status lines.
+- **Web UI** (§15.8): the browser shows each capture's and series' method, marks a log capture as reconstructed, claiming no coverage, and filters by method.
+- **Metrics** (§15.11), `equipment_id` a label: `tracekeep_logfeed_entries_total{outcome}`, `tracekeep_logfeed_unpaired_total{side}`,
+  `tracekeep_logfeed_annotations_total{kind}`, `tracekeep_logfeed_last_entry_timestamp_seconds`, and the feed stream's backlog beside the traffic stream's.
+- **Alerts** (§15.11): `TracekeepLogFeedSilent`, `TracekeepLogEntryUnreadable`, `TracekeepLogEntriesLate` in the chart's rules, each with its runbook section.
+- **Guides**: the runbook's three sections; the configuration guide's `logfeed.*` rows checked against the code;
+  a pipeline guide for the host program's log route, with placeholder patterns only (T-60).
+- Tests: the metrics' outcomes from a converter run, the rules' check (`make alerts-check`), the web client's tests.
 
 ## Gate cases
 

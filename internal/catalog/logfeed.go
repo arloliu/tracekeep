@@ -360,14 +360,32 @@ const (
 	StopRequested LogStop = iota + 1
 	// StopWritten: no converter held the group's lease, and the capture is stopped.
 	StopWritten
-	// StopAlready: the capture was stopped or closed already; nothing was written.
+	// StopAlready: the capture was stopped or closed already; nothing was written but the audit row.
 	StopAlready
 )
 
+// String is the outcome as capture stop prints and audits it.
+func (s LogStop) String() string {
+	switch s {
+	case StopRequested:
+		return "requested"
+	case StopWritten:
+		return "written"
+	case StopAlready:
+		return "already"
+	default:
+		return "unknown"
+	}
+}
+
+// MarshalText prints the outcome by its name.
+func (s LogStop) MarshalText() ([]byte, error) { return []byte(s.String()), nil }
+
 // StopLogCapture records an operator's stop of the log capture id (catalog.md §7.2 StopLogCapture): with its group's lease held,
 // a stop request its converter writes at its next flush; with the lease lapsed, the capture stopped at once.
-// A capture that is not a log capture is ErrNotLogCapture, writing nothing.
-func (c *Catalog) StopLogCapture(ctx context.Context, id tracepack.UUID) (LogStop, error) {
+// The audit row of actor's action commits with it, its outcome its detail;
+// a capture that is not a log capture is ErrNotLogCapture, writing nothing.
+func (c *Catalog) StopLogCapture(ctx context.Context, id tracepack.UUID, actor, action string) (LogStop, error) {
 	var out LogStop
 	err := c.inTx(ctx, func(tx *sqlx.Tx) error {
 		out = 0
@@ -389,7 +407,7 @@ func (c *Catalog) StopLogCapture(ctx context.Context, id tracepack.UUID) (LogSto
 			return ErrNotLogCapture
 		case row.State != StateOpen:
 			out = StopAlready
-			return errRollback
+			return c.auditStop(ctx, tx, id, actor, action, out)
 		}
 		// The group's row locked whatever its state, so a converter taking the lease waits for this commit, then judged held by the database's clock.
 		name := LogGroupLease(int(lc.Group.Int64))
@@ -416,14 +434,22 @@ func (c *Catalog) StopLogCapture(ctx context.Context, id tracepack.UUID) (LogSto
 		default:
 			err = held
 		}
+		if err != nil {
+			return err
+		}
 
-		return err
+		return c.auditStop(ctx, tx, id, actor, action, out)
 	})
 	if err = outcome(err); err != nil {
 		return 0, fmt.Errorf("catalog: stop log capture %s: %w", id, err)
 	}
 
 	return out, nil
+}
+
+// auditStop writes the audit row of capture stop's outcome on id.
+func (c *Catalog) auditStop(ctx context.Context, tx *sqlx.Tx, id tracepack.UUID, actor, action string, out LogStop) error {
+	return c.auditIn(ctx, tx, AuditEntry{Actor: actor, Action: "capture-stop", ActionID: action, Capture: &id, Detail: out.String()})
 }
 
 // FileState is a log file's watermark and whether it is stopped; Found is false for a file no admission created, whose watermark is NoWatermark.

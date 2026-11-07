@@ -47,6 +47,7 @@ commands:
   admin      run an operator command:
                parked list [capture] | parked terminate <capture> [seq]
                capture terminate <capture> | capture show <capture> | capture close <capture>
+               capture stop <capture>
                deferred list [--capture <capture>]
                bus adopt-stream <traffic|parking> | object list [--unattributed|--survivors]
                conflict acknowledge <capture> <seq> | scope exclude-input <pack>

@@ -104,6 +104,7 @@ func captureOf(c *catalog.CaptureInfo) *tkv1.Capture {
 		CaptureId: c.ID.String(), State: c.State, Device: c.Device, Source: c.Source, RecorderInstanceId: c.RecorderInstanceID.String(),
 		PreviousCaptureId: optID(c.PreviousCaptureID), Origin: ts(c.OriginNS), LastRecord: optTS(c.LastRecordNS),
 		ConfigId: c.ConfigID, EquipmentEndpoint: c.EquipmentEndpoint, DeviceId: c.DeviceID, Overlap: c.Overlap,
+		CaptureMethod: c.CaptureMethod, Vantage: c.Vantage, SourceDialect: c.SourceDialect,
 	}
 	for _, th := range c.Thinning {
 		out.Thinning = append(out.Thinning, &tkv1.Thinning{
@@ -120,7 +121,7 @@ func captureOf(c *catalog.CaptureInfo) *tkv1.Capture {
 func deviceOf(d *catalog.DeviceInfo) *tkv1.Device {
 	return &tkv1.Device{
 		Name: d.Name, Source: d.Source, EquipmentEndpoint: d.EquipmentEndpoint, DeviceId: d.DeviceID, OpenCaptures: int64(d.OpenCaptures),
-		Overlap: d.Overlap, LastRecord: optTS(d.LastRecordNS), Gap: d.Gap,
+		Overlap: d.Overlap, LastRecord: optTS(d.LastRecordNS), Gap: d.Gap, CaptureMethod: d.CaptureMethod,
 	}
 }
 
