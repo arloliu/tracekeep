@@ -1,6 +1,6 @@
 # Host log feed
 
-Status: active (2026-11-07) — step 10a, the gate's correctness cases
+Status: active (2026-11-07) — step 10b, the gate's load, its traffic criterion awaiting the owner
 
 The work that delivers the host log feed, `docs/specs/tracekeep/logfeed.md` (§15), as T-60 shapes it,
 with its two riskiest costs measured before the converter is built (T-63): the feed's load on the bus, and its registration's on the catalog writer.
@@ -19,8 +19,8 @@ The design is the spec's and the rationale the decision log's; this plan only or
 | 7 — lease groups and wiring | taking, renewing and losing group leases, the consumer's re-creation and the fetch loop, giving up and taking again, the heartbeat, the stage started by `ingest` with its readiness and metrics (§15.4, §15.5 *Taking a lease*) | done (#108) |
 | 8 — reads and admin | the reads' method fields, `capture stop`, `tracekeep status`'s feed lines (§15.8, §15.11) | done (#109) |
 | 9 — web UI and operations | the UI's method filter and badge; alerts, metrics, runbook, configuration and pipeline guides (§15.8, §15.11) | done (#110) |
-| 10a — the gate's correctness | every gate case below but the load, through the converter or the stage, on both engines | in-progress |
-| 10b — the gate's load | the load case: the step 1 harness running the stage itself, beside traffic, on SQLite then MariaDB | pending |
+| 10a — the gate's correctness | every gate case below but the load, through the converter or the stage, on both engines | done (#111) |
+| 10b — the gate's load | the load case: the owner's fleet through the stage itself, beside traffic, on SQLite then MariaDB | in-progress |
 
 Each step is one pull request.
 Steps 1 and 2 record their numbers here before step 5 starts;
@@ -128,3 +128,38 @@ Each run's history is its own iterations: a flush row registered 1,356 to 2,565 
 **Step 8** (#109): no measurement.
 
 **Step 9** (#110): no measurement.
+
+**Step 10a** (#111): no measurement.
+
+**Step 10b**: the owner's fleet, at ingest's own times (F 300 s, `ack_wait` 7 min, reorder window 30 s), `TRACEKEEP_LOAD=feed-convert`:
+1,980 pieces of equipment at the sampled log rate, 1.2 messages a second of about 6 KB, a message being a header entry and a body entry;
+20 heavy ones at 500 messages a second, about 20 GB a day zipped each, their IDs in 16 of the 32 groups, at most three in one, as random IDs about fall;
+and a burst of 200 at 10 messages of about 53 KB a second for 3 minutes, half a flush into the traffic's judged cycles.
+About 24,750 entries a second, 95 MB/s, the burst's 200 MB/s more, converted by dev's log stage on a three-node cluster in one process beside the traffic at K = 100;
+the feed stream R1, as dev's traffic stream is, where step 1 measured R3; the process run with `GOMEMLIMIT=28GiB`.
+`logfeed.max_ack_pending` at 250,000, above twice the busiest group's entries in a reorder window, about 3,150 a second (§15.10).
+
+Three findings came first, each fixed before the runs below:
+- The stage's pull, cut short by its own context, dropped what the server had already sent: redelivered after `ack_wait`, those entries were stale, acknowledged unconverted.
+  Each pull now ends at the server and every message sent is read.
+- The converter held everything its group received until its equipment's flush, bounded only by `max_ack_pending`, a message count (T-65):
+  past 50 GB in five minutes, eight groups stopped at their 100,000 held entries, the host's CPU 93% idle.
+  A group past `logfeed.group_max_bytes` of batched payload, or holding half its `max_ack_pending`, now flushes its largest equipment first, and a held delivery keeps only its reply subject.
+- The fleet's first heavy IDs hashed five into each of two groups, 5,100 entries a second, whose reorder windows alone held more than 100,000 entries.
+
+| Run | Catalog | Made / offered entries/s | Failed | Publish p99 | Burst made | Burst's backlog peak | Digested after it | Drained | Record entries, all registered | Traffic: minima slope / bound | Traffic ack age max | CPU (cores) |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| 1 | SQLite | 25,095 / 24,752 | 16 | 550 ms | before the judged cycles | — | — | 6 left | 45,273,508 | −56.5 / 8.0, sustained | 5m06s | 4.2 |
+| 2 | SQLite | 25,109 / 24,752 | 0 | 556 ms | before the judged cycles | 17,392 MiB | 2m08s | 964 left | 41,239,386 | +41.1 / 8.0 | 5m06s | 4.1 |
+| 3 | SQLite | 25,129 / 24,752 | 0 | 471 ms | 88.6% | 18,260 MiB | 3m07s | 0 in 5m31s | 42,217,330 | +376.6 / 8.0 | 5m06s | 4.0 |
+| 4 | MariaDB | 25,039 / 24,752 | 0 | 489 ms | 86.4% | 16,356 MiB | 4m03s | 0 in 5m32s | 53,874,944 | +98.4 / 8.0 | 5m07s | 4.3 |
+
+Every run converted every stored entry once, into a registered record of its equipment's capture, with no stale, duplicate, unreadable or late entry and no annotation but run 1's.
+Run 1's 16 failed publishes were the harness's own, retried with the publishers' cancelled context at their stop, each leaving its pair's other entry an annotation or a header held;
+run 2's remainder was the drain check's, which took a remainder unchanged for a second as final while equipment were still to flush, up to the reorder window and F after the publishers stopped.
+Runs 3 and 4 have the final harness; their two failures are the bus's, one process holding three servers, the stage and the traffic:
+- the publishers made 86% to 89% of the burst's rate, the servers acknowledging its 200 MB/s more slowly; what the burst sent was digested within F of its end;
+- the traffic's cycle verdict failed with the burst inside its cycles, its last minimum high (325,054 and 157,717 records), the others near zero,
+  while every traffic record was acknowledged within F and 7 seconds, none redelivered and none dropped.
+Run 2's verdict, its burst before the cycles, failed on one high last minimum as well (130,190), and run 1's passed; the verdict's minima follow where the run's last cycle ends.
+Open for the owner: whether the gate's traffic criterion is this cycle verdict on one host, or the traffic's acknowledgement ages, or a run on separate hosts.
