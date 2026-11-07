@@ -925,7 +925,7 @@ The owner chose, on 2026-11-07, from step 1 of the host log feed's plan, which T
 to store the feed stream without compression and to keep its group consumers' state in memory, superseding T-62's S2.
 **Measured** at ingest's own times (F 300 s, `ack_wait` 7 min, reorder window 30 s) on a three-node cluster in one process, the feed at 3,200 entries a second beside the traffic at K = 100:
 as T-62 specified it, the feed was judged sustained with its publish latency at 620 ms at the 99th percentile and its publishers' queue rising each cycle,
-the traffic beside it fell behind in one run of two, and the process took 4.1 cores and 16 GB.
+the traffic beside it fell behind in one run of two, and the process took 4.1 cores and 16 GiB.
 Its profiles showed two costs of the bus servers:
 a work queue's acknowledgement into an S2 block decompresses the whole block, 3.4 GB of the heap across the three servers;
 and a file consumer encodes its whole pending state up to ten times a second on each replica, 36% to 46% of the process's CPU with about a million entries pending, the feed's and the traffic's.
