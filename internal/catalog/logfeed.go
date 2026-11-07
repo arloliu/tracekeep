@@ -181,8 +181,8 @@ func (c *Catalog) AdmitLog(ctx context.Context, l Lease, key LogKey, id tracepac
 		if err := c.openCapture(ctx, tx, id, d, cfg); err != nil {
 			return err
 		}
-		_, err = tx.ExecContext(ctx, `INSERT INTO logfeed_captures (source, equipment_id, device, file, capture_id, lease_group) VALUES (?, ?, ?, ?, ?, ?)`,
-			key.Source, key.EquipmentID, key.Device, key.File, id[:], group)
+		_, err = tx.ExecContext(ctx, `INSERT INTO logfeed_captures (source, equipment_id, device, file, capture_id, lease_group, tz) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+			key.Source, key.EquipmentID, key.Device, key.File, id[:], group, d.SourceTZ)
 		res = LogAdmission{Capture: id, ConfigID: cfg}
 
 		return err
@@ -450,10 +450,13 @@ func (c *Catalog) LogFileState(ctx context.Context, f LogFile) (FileState, error
 	return FileState{Watermark: row.Watermark, Stopped: row.Stopped, Found: true}, nil
 }
 
-// LogCapture is a log capture as its converter reads it back: the capture, and its predecessor, which its segments name.
+// LogCapture is a log capture as its converter reads it back: the capture, its predecessor and its zone, which its segments name,
+// and the time of its highest registered record.
 type LogCapture struct {
 	Capture
 	Previous *tracepack.UUID
+	TZ       string
+	LastNS   int64
 }
 
 // LogCaptureOf is the capture key names, false when no admission created it.
@@ -461,8 +464,9 @@ func (c *Catalog) LogCaptureOf(ctx context.Context, key LogKey) (LogCapture, boo
 	var row struct {
 		ID       []byte `db:"capture_id"`
 		Previous []byte `db:"previous_capture_id"`
+		TZ       string `db:"tz"`
 	}
-	err := c.read.GetContext(ctx, &row, `SELECT k.capture_id, c.previous_capture_id FROM logfeed_captures k JOIN captures c ON c.capture_id = k.capture_id
+	err := c.read.GetContext(ctx, &row, `SELECT k.capture_id, c.previous_capture_id, k.tz FROM logfeed_captures k JOIN captures c ON c.capture_id = k.capture_id
 		WHERE k.source = ? AND k.equipment_id = ? AND k.device = ? AND k.file = ?`, key.Source, key.EquipmentID, key.Device, key.File)
 	if errors.Is(err, sql.ErrNoRows) {
 		return LogCapture{}, false, nil
@@ -474,7 +478,7 @@ func (c *Catalog) LogCaptureOf(ctx context.Context, key LogKey) (LogCapture, boo
 	if err != nil {
 		return LogCapture{}, false, err
 	}
-	lc := LogCapture{Capture: cp}
+	lc := LogCapture{Capture: cp, TZ: row.TZ}
 	if row.Previous != nil {
 		p := tracepack.UUID(row.Previous)
 		lc.Previous = &p
@@ -511,6 +515,55 @@ func (c *Catalog) LogStopRequests(ctx context.Context, group int) ([]tracepack.U
 	out := make([]tracepack.UUID, len(ids))
 	for i, id := range ids {
 		out[i] = tracepack.UUID(id)
+	}
+
+	return out, nil
+}
+
+// OpenLog is an open log capture a converter taking its group's lease restores: its key and capture, and its file's watermark.
+type OpenLog struct {
+	Key LogKey
+	LogCapture
+	Watermark int64
+}
+
+// OpenLogCaptures are the open log captures group last registered, and with retired, those of groups at or above groups as well,
+// which group 0's converter covers after a change of G (logfeed.md §15.4, §15.6).
+func (c *Catalog) OpenLogCaptures(ctx context.Context, group, groups int, retired bool) ([]OpenLog, error) {
+	var rows []struct {
+		Source      string         `db:"source"`
+		EquipmentID string         `db:"equipment_id"`
+		Device      string         `db:"device"`
+		File        string         `db:"file"`
+		ID          []byte         `db:"capture_id"`
+		TZ          string         `db:"tz"`
+		Config      sql.NullInt64  `db:"config_id"`
+		Highest     sql.NullInt64  `db:"highest_seq"`
+		HighestTS   sql.NullInt64  `db:"highest_seq_ts"`
+		Origin      sql.NullInt64  `db:"origin_ns"`
+		Previous    []byte         `db:"previous_capture_id"`
+		Watermark   int64          `db:"watermark"`
+		Dev         sql.NullString `db:"cdevice"`
+	}
+	err := c.read.SelectContext(ctx, &rows, `SELECT k.source, k.equipment_id, k.device, k.file, k.capture_id, k.tz, c.config_id, c.highest_seq,
+		c.highest_seq_ts, c.origin_ns, c.previous_capture_id, f.watermark, c.device AS cdevice
+		FROM logfeed_captures k JOIN captures c ON c.capture_id = k.capture_id
+		JOIN logfeed_files f ON f.source = k.source AND f.equipment_id = k.equipment_id AND f.file = k.file
+		WHERE c.state = 'open' AND NOT f.stopped AND (k.lease_group = ? OR (? AND k.lease_group >= ?))`, group, retired, groups)
+	if err != nil {
+		return nil, fmt.Errorf("catalog: open log captures: %w", err)
+	}
+	out := make([]OpenLog, len(rows))
+	for i, r := range rows {
+		o := OpenLog{Key: LogKey{LogFile: LogFile{Source: r.Source, EquipmentID: r.EquipmentID, File: r.File}, Device: r.Device}, Watermark: r.Watermark}
+		o.Capture = Capture{ID: tracepack.UUID(r.ID), State: StateOpen, EquipmentID: r.EquipmentID, Device: r.Dev.String, Source: r.Source,
+			ConfigID: r.Config.Int64, HighestSeq: r.Highest.Int64, HasHighestSeq: r.Highest.Valid}
+		o.TZ, o.LastNS = r.TZ, max(r.HighestTS.Int64, r.Origin.Int64)
+		if r.Previous != nil {
+			p := tracepack.UUID(r.Previous)
+			o.Previous = &p
+		}
+		out[i] = o
 	}
 
 	return out, nil

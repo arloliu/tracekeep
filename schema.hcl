@@ -1137,6 +1137,11 @@ table "logfeed_captures" {
   column "lease_group" {
     type = int
   }
+  # The IANA zone its entries were logged in, the source_tz its segments carry (logfeed.md §15.6); last, where adding a column puts it.
+  column "tz" {
+    type    = varchar(64)
+    default = ""
+  }
   primary_key {
     columns = [column.source, column.equipment_id, column.device, column.file]
   }

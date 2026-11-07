@@ -1,6 +1,7 @@
 package logfeed
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"slices"
@@ -395,6 +396,31 @@ func TestConverterBatchParts(t *testing.T) {
 		})
 		if recs := h.records(cp.ID); len(recs) != 5 || packs < 2 {
 			t.Errorf("%d records in %d packs, want 5 records over several packs", len(recs), packs)
+		}
+	})
+}
+
+// Once its context ends, as when the group's lease is lost, the converter acknowledges nothing more; Abandon returns what it holds.
+func TestConverterAcknowledgesNothingAfterItsLease(t *testing.T) {
+	t.Parallel()
+	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
+		h := newHarness(t, c)
+		f := &fixture{t: t}
+		held := msgOf(t, f, map[string]any{"kind": KindUnclassified, "text": "a"})
+		h.receive(held)
+		ctx, cancel := context.WithCancel(t.Context())
+		cancel()
+		unreadable := &fakeMsg{data: []byte("{nope")}
+		if err := h.conv.Receive(ctx, unreadable, h.now); err == nil || unreadable.acked() != 0 {
+			t.Errorf("an unreadable entry after the lease = %v, acked %d; want an error and no acknowledgement", err, unreadable.acked())
+		}
+		h.now = h.now.Add(12 * time.Second)
+		if err := h.conv.Tick(ctx, h.now); err == nil || held.acked() != 0 {
+			t.Errorf("a tick after the lease = %v, acked %d; want an error and no acknowledgement", err, held.acked())
+		}
+		h.conv.Abandon()
+		if held.naks != 1 {
+			t.Errorf("Abandon nak'd the held entry %d times, want once", held.naks)
 		}
 	})
 }

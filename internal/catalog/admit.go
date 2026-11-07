@@ -64,6 +64,8 @@ type Descriptor struct {
 	PreviousCaptureID *tracepack.UUID
 	// CaptureMethod and Vantage are the descriptor's in tracepack's spelling ("raw-stream", "log"; "host"), SourceDialect its source_dialect, empty when absent.
 	CaptureMethod, Vantage, SourceDialect string
+	// SourceTZ is a log capture's zone, which its key's row keeps for the segments it writes later.
+	SourceTZ string
 }
 
 // Result is an admission's or a rejection's outcome, with the configuration the capture is bound to when it is admitted.

@@ -229,3 +229,15 @@ func affected(res sql.Result, err, errNone error) error {
 
 	return nil
 }
+
+// LiveReplicas counts the replicas holding a live membership by the database's clock, each counted once:
+// a replica's parked consumer joins as <replica>/parked, which is not another replica (rollouts.md §6.4).
+func (c *Catalog) LiveReplicas(ctx context.Context) (int, error) {
+	var n int
+	err := c.read.GetContext(ctx, &n, `SELECT COUNT(*) FROM members WHERE lease_until >= `+c.d.nowNS+` AND replica_id NOT LIKE '%/parked'`)
+	if err != nil {
+		return 0, fmt.Errorf("catalog: live replicas: %w", err)
+	}
+
+	return n, nil
+}
