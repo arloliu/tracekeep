@@ -304,21 +304,22 @@ func requireFreshBus(t *testing.T, url string) {
 	}
 }
 
-// republish retries m until it is stored, as a forwarder retries every error, for at most retryFor,
-// within the stream's duplicate window so a retry is stored once; it counts the outcome and reports it.
-func (p *feedPublishers) republish(ctx context.Context, js jetstream.JetStream, m *nats.Msg, retryFor time.Duration) bool {
-	deadline := time.Now().Add(retryFor)
-	for {
+// republish retries m until it is stored, as a forwarder retries every error, until deadline,
+// its first publish's time plus less than the stream's duplicate window, so a retry is stored once; it counts the outcome and reports it.
+func (p *feedPublishers) republish(ctx context.Context, js jetstream.JetStream, m *nats.Msg, deadline time.Time) bool {
+	for time.Now().Before(deadline) {
 		p.retried.Add(1)
-		if _, err := js.PublishMsg(context.WithoutCancel(ctx), m); err == nil {
+		actx, cancel := context.WithDeadline(context.WithoutCancel(ctx), deadline)
+		_, err := js.PublishMsg(actx, m)
+		cancel()
+		if err == nil {
 			p.acked.Add(1)
 			return true
 		}
-		if time.Now().After(deadline) {
-			p.failed.Add(1)
-			return false
-		}
 	}
+	p.failed.Add(1)
+
+	return false
 }
 
 func kib(b int) string { return fmt.Sprintf("%.1f KiB", float64(b)/1024) }
@@ -411,7 +412,7 @@ func publishConn(ctx context.Context, url string, c int, fp *fleetPlan, p *feedP
 		fut  jetstream.PubAckFuture
 		sent time.Time
 	}
-	republish := func(m *nats.Msg) bool { return p.republish(ctx, js, m, fp.retryFor) }
+	republish := func(m *nats.Msg, first time.Time) bool { return p.republish(ctx, js, m, first.Add(fp.retryFor)) }
 	pending := make(chan waiting, feedInFlight)
 	var acks sync.WaitGroup
 	acks.Go(func() {
@@ -421,7 +422,7 @@ func publishConn(ctx context.Context, url string, c int, fp *fleetPlan, p *feedP
 				p.acked.Add(1)
 				p.record(time.Since(w.sent))
 			case <-w.fut.Err(): //nolint:errcheck // any failure is retried
-				if !republish(w.fut.Msg()) {
+				if !republish(w.fut.Msg(), w.sent) {
 					continue
 				}
 				p.record(time.Since(w.sent))
@@ -469,14 +470,15 @@ func publishConn(ctx context.Context, url string, c int, fp *fleetPlan, p *feedP
 							p.burstMade.Add(1)
 						}
 						// A full window of publishes in flight waits for room, as a forwarder's sink does, before it is retried.
+						first := time.Now()
 						fut, err := js.PublishMsgAsync(m, jetstream.WithStallWait(feedAckTimeout))
 						if err != nil {
 							// A stalled publish is retried, as one whose acknowledgement failed is.
-							republish(m)
+							republish(m, first)
 
 							continue
 						}
-						pending <- waiting{fut: fut, sent: time.Now()}
+						pending <- waiting{fut: fut, sent: first}
 					}
 				}
 			}
