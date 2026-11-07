@@ -85,8 +85,6 @@ a full 64 MiB stream refused the 69,997th publish with error 10077, evicted noth
 a publish retried after a lost acknowledgement was stored once.
 The duplicate window's 384,000 ids cost about 180 MiB of heap across the three servers at T-61's times; at ingest's own, the difference was lost in the process's 2.9 GB heap.
 
-**Step 3** (#104): `RetireConfig` takes the quiescent captures from its caller, and no command computes them yet, so the stop-only rule for a log capture lands with that command.
-
 **Step 2** (#103): the transactions' first baselines, `-count 5`, the median of each row, in ms;
 SQLite in WAL with `synchronous(FULL)` on an ext4 disk, MariaDB at its defaults with its data on its container's disk.
 
@@ -105,3 +103,5 @@ A fresh 480-entry flush takes 0.47 ms on SQLite over one device and 0.83 ms over
 6.7 flushes a second take about 6 ms a second of SQLite's writer.
 A flush's cost is its segments', one a device, not its entries'.
 Each run's history is its own iterations: a flush row registered 1,356 to 2,565 flushes on SQLite and 156 to 381 on MariaDB, so its catalog held at most about 7,700 packs.
+
+**Step 3** (#104): `RetireConfig` takes the quiescent captures from its caller, and no command computes them yet, so the stop-only rule for a log capture lands with that command.
