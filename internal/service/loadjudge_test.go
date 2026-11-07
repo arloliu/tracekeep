@@ -202,33 +202,32 @@ type cycleMin struct {
 	backlog float64
 }
 
-// judgeCycles judges a point over completed drain cycles: a cycle runs from one settled pass to the next,
+// judgeCycles judges a point over completed drain cycles: a cycle runs from one flush's settled passes to the next's,
 // so the samples before the first pass and after the last, an incomplete cycle each, are left out.
+// A flush can settle in more than one pass, a few captures' batches opened a pass after the rest's and due that much later,
+// so passes within half the flush interval of a flush's first are that flush's, and its last ends the cycle.
 // A cycle's observation is the backlog's minimum among its samples, at that sample's time, and its queues' maxima;
 // a cycle no sample fell in, two passes within a sampling period, has none and is not counted.
 // It is sustained as judgeLoad's windows are, the drift allowance a rate: made within 2% of offered, nothing dropped, no pass failed,
 // and the least-squares rise of the minima, and of the queue maxima, against elapsed time each below 0.5% of the published rate a second,
 // which is judgeLoad's 0.5% of a window's records a window, whatever the window; fewer than least observed cycles leave it unjudged.
-func judgeCycles(offered float64, origin loadSample, samples []loadSample, passes []settledPass, least int) cycleVerdict {
-	return judgeSpan(offered, origin, samples, passes, least, false)
+func judgeCycles(offered float64, origin loadSample, samples []loadSample, passes []settledPass, flush time.Duration, least int) cycleVerdict {
+	return judgeSpan(offered, origin, samples, passes, flush, least, false)
 }
 
 // judgeSpan is judgeCycles, its rates read from the first and the last sample when fromEnds is set, from the cycles' own otherwise.
-func judgeSpan(offered float64, origin loadSample, samples []loadSample, passes []settledPass, least int, fromEnds bool) cycleVerdict {
+func judgeSpan(offered float64, origin loadSample, samples []loadSample, passes []settledPass, flush time.Duration, least int, fromEnds bool) cycleVerdict {
 	v := cycleVerdict{offered: offered, dropped: samples[len(samples)-1].dropped - origin.dropped}
 	if v.why = sampling(samples, samples, 1, time.Time{}); v.why != "" {
 		return v
 	}
-	var ends []time.Time
 	failed := 0
 	for _, p := range passes {
 		if p.failed { // a failure anywhere in the run, its warm-up included
 			failed++
 		}
-		if !p.at.Before(samples[0].at) && !p.at.After(samples[len(samples)-1].at) {
-			ends = append(ends, p.at)
-		}
 	}
+	ends := flushEnds(passes, samples[0].at, samples[len(samples)-1].at, flush)
 	var xs, mins, ring, reserved []float64
 	var first, last *loadSample
 	for i := 1; i < len(ends); i++ {
@@ -285,6 +284,24 @@ func judgeSpan(offered float64, origin loadSample, samples []loadSample, passes 
 	}
 
 	return v
+}
+
+// flushEnds are the times the flushes settled from one sample to the other: a flush's last pass,
+// passes within half the flush interval of a flush's first being that flush's.
+func flushEnds(passes []settledPass, from, to time.Time, flush time.Duration) []time.Time {
+	var ends []time.Time
+	var first time.Time
+	for _, p := range passes {
+		switch {
+		case p.at.Before(from) || p.at.After(to):
+		case len(ends) > 0 && p.at.Sub(first) < flush/2:
+			ends[len(ends)-1] = p.at
+		default:
+			ends, first = append(ends, p.at), p.at
+		}
+	}
+
+	return ends
 }
 
 // accept passes a PackURL measurement as a valid record or names why it is not one:
@@ -645,7 +662,7 @@ func TestJudgeCycles(t *testing.T) {
 			for _, rise := range []float64{0, 0.5, 4} {
 				r.leak = rise * 0.005 * rate
 				samples, passes := r.run(flush+ackWait+phase, 40*time.Minute)
-				v := judgeCycles(rate/2, loadSample{}, samples, passes, 6)
+				v := judgeCycles(rate/2, loadSample{}, samples, passes, r.flush, 6)
 				if v.sustained != (rise < 1) || (rise > 1 && !strings.Contains(v.why, "backlog minima rise")) {
 					t.Errorf("%s from %s, rising %v of the allowance: sustained %v (%s) over %d cycles, slope %.2f/s, the bound %.2f/s",
 						name, phase, rise, v.sustained, v.why, len(v.minima), v.backlogSlope, v.bound)
@@ -662,7 +679,7 @@ func TestJudgeCyclesBounds(t *testing.T) {
 	const rate = 1600.0
 	r := drainRun{rate: rate, captures: 1, flush: 5 * time.Minute, upload: cycled(10 * time.Second)}
 	samples, passes := r.run(12*time.Minute, 40*time.Minute)
-	whole := judgeCycles(rate/2, loadSample{}, samples, passes, 6)
+	whole := judgeCycles(rate/2, loadSample{}, samples, passes, r.flush, 6)
 	if !whole.sustained {
 		t.Fatalf("the steady schedule: %s", whole.why)
 	}
@@ -677,25 +694,59 @@ func TestJudgeCyclesBounds(t *testing.T) {
 			troughs[i].backlog = 0
 		}
 	}
-	if v := judgeCycles(rate/2, loadSample{}, troughs, passes, 6); !slices.Equal(v.minima, whole.minima) {
+	if v := judgeCycles(rate/2, loadSample{}, troughs, passes, r.flush, 6); !slices.Equal(v.minima, whole.minima) {
 		t.Errorf("minima %v with troughs outside the cycles, want %v", v.minima, whole.minima)
 	}
-	if v := judgeCycles(rate/2, loadSample{}, samples, passes, len(whole.minima)+1); v.sustained || !strings.Contains(v.why, "cycles") {
+	if v := judgeCycles(rate/2, loadSample{}, samples, passes, r.flush, len(whole.minima)+1); v.sustained || !strings.Contains(v.why, "cycles") {
 		t.Errorf("one cycle short: %+v, want unjudged naming cycles", v)
 	}
-	if v := judgeCycles(rate, loadSample{}, samples, passes, 6); v.sustained || !strings.Contains(v.why, "made") {
+	if v := judgeCycles(rate, loadSample{}, samples, passes, r.flush, 6); v.sustained || !strings.Contains(v.why, "made") {
 		t.Errorf("half the offered rate made: %+v, want not sustained naming made", v)
 	}
 	dropping := slices.Clone(samples)
 	for i := range dropping {
 		dropping[i].dropped = 500 + uint64((i+1)/len(dropping)) // the last sample counts one drop past the origin's 500
 	}
-	if v := judgeCycles(rate/2, loadSample{dropped: 500}, dropping, passes, 6); v.sustained || !strings.Contains(v.why, "1 records dropped") {
+	if v := judgeCycles(rate/2, loadSample{dropped: 500}, dropping, passes, r.flush, 6); v.sustained || !strings.Contains(v.why, "1 records dropped") {
 		t.Errorf("a drop since the origin: %+v, want not sustained naming it", v)
 	}
 	failed := slices.Clone(passes)
 	failed[0].failed = true // before the span
-	if v := judgeCycles(rate/2, loadSample{}, samples, failed, 6); v.sustained || !strings.Contains(v.why, "failed") {
+	if v := judgeCycles(rate/2, loadSample{}, samples, failed, r.flush, 6); v.sustained || !strings.Contains(v.why, "failed") {
 		t.Errorf("a failed pass: %+v, want not sustained naming it", v)
+	}
+}
+
+// A flush whose batches settle in two passes a second apart, a few captures' batches opened a pass after the rest's, is one cycle:
+// a cycle between the two would hold the flush's peak or its trough alone, and its minimum swing the slope.
+func TestJudgeCyclesSplitFlush(t *testing.T) {
+	t.Parallel()
+	const rate = 1600.0
+	r := drainRun{rate: rate, captures: 1, flush: 10 * time.Second, upload: cycled(time.Second)}
+	for _, rise := range []float64{0, 4} {
+		r.leak = rise * 0.005 * rate
+		samples, passes := r.run(time.Minute+500*time.Millisecond, 3*time.Minute)
+		whole := judgeCycles(rate/2, loadSample{}, samples, passes, r.flush, 6)
+		if whole.sustained != (rise < 1) {
+			t.Fatalf("rising %v of the allowance, one pass a flush: sustained %v (%s)", rise, whole.sustained, whole.why)
+		}
+		for _, apart := range []time.Duration{-time.Second, time.Second} { // the few captures' pass before the rest's, or after it
+			split := slices.Clone(passes)
+			for _, p := range passes {
+				split = append(split, settledPass{at: p.at.Add(apart)})
+			}
+			slices.SortFunc(split, func(a, b settledPass) int { return a.at.Compare(b.at) })
+			v := judgeCycles(rate/2, loadSample{}, samples, split, r.flush, 6)
+			got, want := v.minima, whole.minima
+			if apart > 0 && len(got) > 0 && len(want) > 0 {
+				// A cycle ends at its flush's last pass, here a second after the drain: the span's first trough falls in no complete cycle,
+				// and the last pass's partner, inside the span, completes one more.
+				got, want = got[:len(got)-1], want[1:]
+			}
+			if !slices.Equal(got, want) || v.sustained != whole.sustained {
+				t.Errorf("rising %v of the allowance, a second pass %s apart: minima %v, sustained %v (%s); want those of %v, %v",
+					rise, apart, v.minima, v.sustained, v.why, whole.minima, whole.sustained)
+			}
+		}
 	}
 }

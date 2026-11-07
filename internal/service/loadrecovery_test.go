@@ -385,7 +385,7 @@ func recoveryEpisode(t *testing.T, spec loadSpec, k int, rate float64, m int, li
 	<-called
 
 	st := h.probe.within(clock, end.at)
-	ep := drainOf(rate, clock, end.at, samples, h.probe.readPasses(), &calls, st)
+	ep := drainOf(rate, clock, end.at, samples, h.probe.readPasses(), c.Ingest.FlushInterval, &calls, st)
 	rows := stageDelta(from, to)
 	for _, s := range ackStages {
 		rows[s] = st[s] // the acknowledgement as the decision reads it
@@ -410,10 +410,10 @@ func recoveryEpisode(t *testing.T, spec loadSpec, k int, rate float64, m int, li
 // read from what was observed within it alone, by each observation's own time:
 // the traffic's counters and rates over the samples from the release's to the completion's, and its passes completed between them;
 // the PackURL attempts begun within the drain; and the parked consumer's acknowledgement in st, its stages' reports begun within the drain.
-func drainOf(rate float64, clock, end time.Time, samples []loadSample, passes []settledPass, calls *packURLResult, st map[string]stageTotal) drainEpisode {
+func drainOf(rate float64, clock, end time.Time, samples []loadSample, passes []settledPass, flush time.Duration, calls *packURLResult, st map[string]stageTotal) drainEpisode {
 	samples = drainSamples(samples, clock, end)
 	passes = slices.DeleteFunc(slices.Clone(passes), func(p settledPass) bool { return p.at.Before(clock) || p.at.After(end) })
-	ep := drainEpisode{drain: end.Sub(clock), traffic: judgeDrain(rate, samples, passes)}
+	ep := drainEpisode{drain: end.Sub(clock), traffic: judgeDrain(rate, samples, passes, flush)}
 	in := calls.within(clock, end)
 	ep.calls = append(ep.calls, in.latencies...)
 	for range in.failed {

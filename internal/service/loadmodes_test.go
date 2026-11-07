@@ -693,7 +693,7 @@ func (h *loadHarness) cycles(equipment []*loadEquipment, rate float64, dir strin
 				failed++
 			}
 		}
-		v = judgeCycles(rate, origin, samples, passes, leastCycles)
+		v = judgeCycles(rate, origin, samples, passes, c.FlushInterval, leastCycles)
 		if span := samples[len(samples)-1].at.Sub(samples[0].at); (len(v.minima) >= leastCycles && span >= c.AckWait) || span >= limit {
 			break
 		}
