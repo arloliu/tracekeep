@@ -76,11 +76,14 @@ So, for every entry:
 
 - the time from reading it to its stored publish, retries included, stays below `logfeed.reorder_window`;
 - the retry duration stays below `logfeed.duplicate_window` (2 min), or a late retry is stored twice;
-- the pipeline holds few entries in flight a file: one publish at a time a file keeps them in order and bounds the delay.
+- publishes run concurrently enough to reach the fleet's rate: one publish in flight reaches about 1,200 entries a second, far below a large fleet's;
+  concurrent publishes may reorder an equipment's entries, which tracekeep puts back in order as long as each stays within the reorder window
+  of the next entry tailed for the equipment, across a file's rotation too (`logfeed.md` §15.2).
 
 With Vector, for example, a `nats` sink with `jetstream.enabled` awaits each acknowledgement and retries every error,
-`jetstream.headers.message_id` sets the message id from a field the transform built, and `request.concurrency` 1 keeps one publish in flight;
-bound its retries and buffer below the windows above.
+and `jetstream.headers.message_id` sets the message id from a field the transform built;
+its `request.concurrency` defaults to one request in flight for the whole sink, so raise it to the fleet's rate,
+and bound its retries and its buffer's delay below the windows above.
 
 ## Checking a pipeline
 

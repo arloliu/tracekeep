@@ -22,8 +22,8 @@ Read when an alert names an incident; each alert the Helm chart ships links its 
 | `equipment-silent` (`TracepubEquipmentSilent`) | the gateway's `tracepub_records_published_total`, `tracepub_bus_connected` | check the equipment's traffic and the gateway's capture | none |
 | `producer-drops` (`TracepubDropping`) | the gateway's `tracepub_records_dropped_total{reason}` | remove the drop's reason at the gateway or the bus | the dropped seqs stay gaps |
 | `log-feed-silent` (`TracekeepLogFeedSilent`) | `tracekeep_logfeed_last_entry_timestamp_seconds{equipment_id}`, `tracekeep_logfeed_stream_backlog_messages`, `tracekeep status`'s `feed` | restore the pipeline's route, or the log stage's throughput | none: past the feed stream's limit, the pipeline's publications are refused |
-| `log-entry-unreadable` (`TracekeepLogEntryUnreadable`) | `tracekeep_logfeed_entries_total{outcome="unreadable"}` | fix the pipeline's entry for the equipment | none: the entry was acknowledged unconverted |
-| `log-entries-late` (`TracekeepLogEntriesLate`) | `tracekeep_logfeed_entries_total{outcome="stale"}` | bound the pipeline's retries and in-flight time below `logfeed.reorder_window` | none: a late entry was acknowledged unconverted |
+| `log-entry-unreadable` (`TracekeepLogEntryUnreadable`) | `tracekeep_logfeed_last_outcome_timestamp_seconds{outcome="unreadable"}`, `tracekeep_logfeed_entries_total{outcome="unreadable"}` | fix the pipeline's entry for the equipment | none: the entry was acknowledged unconverted |
+| `log-entries-late` (`TracekeepLogEntriesLate`) | `tracekeep_logfeed_last_outcome_timestamp_seconds{outcome="stale"}`, `tracekeep_logfeed_entries_total{outcome="stale"}` | bound the pipeline's retries and in-flight time below `logfeed.reorder_window` | none: a late entry was acknowledged unconverted |
 
 ## key-binding-mismatch
 

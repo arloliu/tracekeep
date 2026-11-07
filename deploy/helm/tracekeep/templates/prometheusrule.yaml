@@ -124,48 +124,43 @@ spec:
       annotations:
         summary: Key resolutions have been unavailable for five minutes.
         runbook_url: {{ $runbook }}#keys-unavailable
-    # The host log feed (logfeed.md §15.11). An entry's arrival is stamped by the replica holding its group's lease, which moves:
-    # the latest stamp over the replicas is the equipment's. The feed's backlog holds up to a flush's entries, so its floor over
-    # two flush intervals, not its value, is what grows when the converters fall behind.
+    # The host log feed (logfeed.md §15.11). An entry's arrival is stamped by the replica holding its group's lease, which moves,
+    # and a replica that stopped serves no stamp: the latest stamp over the past day, over every replica, is the equipment's.
+    # The feed's backlog holds up to a flush's entries, so its floor over two flush intervals, not its value, grows when the converters fall behind,
+    # and it is read only while a replica's snapshot of the feed is fresh.
     - alert: TracekeepLogFeedSilent
       expr: |
         (
-          time() - max by (equipment_id) (tracekeep_logfeed_last_entry_timestamp_seconds) > 900
-          and time() - max by (equipment_id) (tracekeep_logfeed_last_entry_timestamp_seconds) < 86400
+          time() - max by (equipment_id) (max_over_time(tracekeep_logfeed_last_entry_timestamp_seconds[1d])) > 900
+          and time() - max by (equipment_id) (max_over_time(tracekeep_logfeed_last_entry_timestamp_seconds[1d])) < 86400
         )
-        or
-          min_over_time(max(
-            tracekeep_logfeed_stream_backlog_messages
-            and on(instance) (time() - tracekeep_ingest_refreshed_timestamp_seconds{source="feed"}) < 600
-          )[10m:1m])
-        > min_over_time(max(
-            tracekeep_logfeed_stream_backlog_messages
-            and on(instance) (time() - tracekeep_ingest_refreshed_timestamp_seconds{source="feed"}) < 600
-          )[10m:1m] offset 15m)
+        or (
+            min_over_time(max(
+              tracekeep_logfeed_stream_backlog_messages
+              and on(instance) (time() - tracekeep_ingest_refreshed_timestamp_seconds{source="feed"}) < 600
+            )[10m:1m])
+          > min_over_time(max(
+              tracekeep_logfeed_stream_backlog_messages
+              and on(instance) (time() - tracekeep_ingest_refreshed_timestamp_seconds{source="feed"}) < 600
+            )[10m:1m] offset 15m)
+          and on() (time() - max(tracekeep_ingest_refreshed_timestamp_seconds{source="feed"})) < 600
+        )
       for: 5m
       labels:
         severity: warning
       annotations:
         summary: "The host log feed is silent or falling behind{{ "{{" }} with $labels.equipment_id {{ "}}" }} (equipment {{ "{{" }} . {{ "}}" }}){{ "{{" }} end {{ "}}" }}."
         runbook_url: {{ $runbook }}#log-feed-silent
-    # A counter's first increment is invisible to increase(), so a series first seen within the hour counts too.
+    # An outcome's last count is stamped, an event no scrape misses, as a counter's first increment or an unsampled reset is missed.
     - alert: TracekeepLogEntryUnreadable
-      expr: |
-        sum by (equipment_id) (increase(tracekeep_logfeed_entries_total{outcome="unreadable"}[1h])) > 0
-        or sum by (equipment_id) (
-          tracekeep_logfeed_entries_total{outcome="unreadable"} unless tracekeep_logfeed_entries_total{outcome="unreadable"} offset 1h
-        ) > 0
+      expr: min by (equipment_id) (time() - tracekeep_logfeed_last_outcome_timestamp_seconds{outcome="unreadable"}) < 3600
       labels:
         severity: warning
       annotations:
         summary: "Equipment {{ "{{" }} $labels.equipment_id {{ "}}" }}: the feed carried an entry tracekeep cannot read."
         runbook_url: {{ $runbook }}#log-entry-unreadable
     - alert: TracekeepLogEntriesLate
-      expr: |
-        sum by (equipment_id) (increase(tracekeep_logfeed_entries_total{outcome="stale"}[1h])) > 0
-        or sum by (equipment_id) (
-          tracekeep_logfeed_entries_total{outcome="stale"} unless tracekeep_logfeed_entries_total{outcome="stale"} offset 1h
-        ) > 0
+      expr: min by (equipment_id) (time() - tracekeep_logfeed_last_outcome_timestamp_seconds{outcome="stale"}) < 3600
       labels:
         severity: warning
       annotations:

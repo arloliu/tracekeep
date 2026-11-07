@@ -99,9 +99,15 @@ type equipmentState struct {
 	nextFlush time.Time
 	// bytes and meta are the batches' payload bytes and redaction entries' bytes, which make a flush due.
 	bytes, meta int
+	// counts are the batches' entries by outcome, annotations by kind and unpaired entries by side, counted once their flush registers:
+	// a flush given up drops its converter, and its entries, converted again, are counted then.
+	counts map[countKey]int
 }
 
 type fileKey struct{ source, file string }
+
+// countKey is a metric of the feed and its label's value.
+type countKey struct{ metric, label string }
 
 type fileState struct {
 	key     catalog.LogFile
@@ -165,13 +171,13 @@ func (c *Converter) Receive(ctx context.Context, m Msg, now time.Time) error {
 	}
 	e, err := Decode(token, m.Data())
 	if errors.Is(err, ErrUnreadable) {
-		c.Metrics.Entries(equipment, metrics.OutcomeUnreadable, 1)
+		c.Metrics.Entries(equipment, metrics.OutcomeUnreadable, 1, now)
 
 		return c.ack(ctx, m)
 	}
 	malformed := errors.Is(err, ErrMalformed)
 	if ingest.HourOf(e.UTCNs) < c.HorizonHour() {
-		c.Metrics.Entries(e.EquipmentID, metrics.OutcomeBeyondRetention, 1)
+		c.Metrics.Entries(e.EquipmentID, metrics.OutcomeBeyondRetention, 1, now)
 
 		return c.ack(ctx, m)
 	}
@@ -180,7 +186,7 @@ func (c *Converter) Receive(ctx context.Context, m Msg, now time.Time) error {
 		return err
 	}
 	if f.stopped {
-		c.Metrics.Entries(e.EquipmentID, metrics.OutcomeStale, 1)
+		c.Metrics.Entries(e.EquipmentID, metrics.OutcomeStale, 1, now)
 
 		return c.ack(ctx, m)
 	}
@@ -188,11 +194,11 @@ func (c *Converter) Receive(ctx context.Context, m Msg, now time.Time) error {
 	p := &pend{e: e, malformed: malformed, h: &handle{msgs: []Msg{m}}}
 	switch d, held := f.window.Add(e.At(), now, p); d {
 	case Duplicate:
-		c.Metrics.Entries(e.EquipmentID, metrics.OutcomeDuplicate, 1)
+		c.Metrics.Entries(e.EquipmentID, metrics.OutcomeDuplicate, 1, now)
 		held.h.msgs = append(held.h.msgs, m)
 		c.track(m)
 	case Stale:
-		c.Metrics.Entries(e.EquipmentID, metrics.OutcomeStale, 1)
+		c.Metrics.Entries(e.EquipmentID, metrics.OutcomeStale, 1, now)
 
 		return c.ack(ctx, m)
 	case Held:
@@ -366,9 +372,9 @@ func (c *Converter) convert(ctx context.Context, eq *equipmentState, f *fileStat
 		for _, e := range it.Entries() {
 			hs = append(hs, f.pends[e].h)
 		}
-		c.count(eq.id, it, &b, cs.stopped)
 		if cs.stopped {
 			// A stopped capture's key takes nothing more: its entries are stale (§15.11), and a redelivery of one is stale too.
+			c.Metrics.Entries(eq.id, metrics.OutcomeStale, len(it.Entries()), c.Now())
 			for _, e := range it.Entries() {
 				if err := c.ackAll(ctx, f.pends[e].h); err != nil {
 					return err
@@ -385,6 +391,7 @@ func (c *Converter) convert(ctx context.Context, eq *equipmentState, f *fileStat
 			if err := c.add(ctx, eq, cs, c.classify(cs, b.Record), hs); err != nil {
 				return err
 			}
+			eq.tally(it, &b)
 		}
 		for _, e := range it.Entries() {
 			f.high = max(f.high, e.At())
@@ -396,33 +403,46 @@ func (c *Converter) convert(ctx context.Context, eq *equipmentState, f *fileStat
 	return nil
 }
 
-// count counts item's entries, built as b, and the annotation and unpaired entry it is (§15.11); a stopped capture's are stale.
-// shortcut: counted at conversion, so a flush given up and converted again after its redeliveries counts twice; count at registration if that skews.
-func (c *Converter) count(equipment string, it *Item, b *Built, stopped bool) {
+// tally notes item's entries, built as b, and the annotation and unpaired entry it is (§15.11), which eq's next registered flush counts.
+func (eq *equipmentState) tally(it *Item, b *Built) {
+	if eq.counts == nil {
+		eq.counts = map[countKey]int{}
+	}
 	n := len(it.Entries())
-	switch {
-	case stopped:
-		c.Metrics.Entries(equipment, metrics.OutcomeStale, n)
-
-		return
-	case b.Record.Kind == tracepack.KindData:
-		c.Metrics.Entries(equipment, metrics.OutcomeRecord, n)
+	if b.Record.Kind == tracepack.KindData {
+		eq.counts[countKey{"entries", metrics.OutcomeRecord}] += n
 
 		return
 	}
-	c.Metrics.Entries(equipment, metrics.OutcomeAnnotation, n)
+	eq.counts[countKey{"entries", metrics.OutcomeAnnotation}] += n
 	kind := tracepack.AnnotationKindUnparsedEntry
 	if it.Kind == Unclassified || it.Kind == Unrecognised {
 		kind = tracepack.AnnotationKindUnrecognisedLine
 	}
-	c.Metrics.Annotation(equipment, kind.String())
+	eq.counts[countKey{"annotations", kind.String()}]++
 	switch {
 	case it.Kind == LoneHeader:
-		c.Metrics.Unpaired(equipment, "header")
+		eq.counts[countKey{"unpaired", "header"}]++
 	case it.Kind == LoneBody || it.Kind == Encrypted && it.Header == nil:
-		c.Metrics.Unpaired(equipment, "body")
+		eq.counts[countKey{"unpaired", "body"}]++
 	default:
 	}
+}
+
+// counted emits eq's tally, its flush registered.
+func (c *Converter) counted(eq *equipmentState) {
+	now := c.Now()
+	for k, n := range eq.counts {
+		switch k.metric {
+		case "entries":
+			c.Metrics.Entries(eq.id, k.label, n, now)
+		case "annotations":
+			c.Metrics.Annotations(eq.id, k.label, n)
+		default:
+			c.Metrics.Unpaired(eq.id, k.label, n)
+		}
+	}
+	eq.counts = nil
 }
 
 // classify judges a data record's frame with the capture's classifier: a frame it finds oversized is so recorded,
@@ -724,6 +744,7 @@ func (c *Converter) flush(ctx context.Context, eq *equipmentState, requests []tr
 		}
 	}
 	eq.batches, eq.parts, eq.bytes, eq.meta = map[batchKey]*batch{}, map[batchKey]int{}, 0, 0
+	c.counted(eq)
 	c.settle(eq)
 
 	return nil
