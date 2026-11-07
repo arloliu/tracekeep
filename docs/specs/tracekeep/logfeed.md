@@ -367,7 +367,7 @@ Header and body are separate messages, and the forwarder's sink cannot batch, so
 At the owner's fleet (`docs/plans/host-log-feed.md` step 10b, T-66), about 24,750 entries and 95 MB/s a second, one stream of one replica took the fleet with every publish stored;
 a burst of 117 MB/s more waited: the stream is the work of one server, which takes its publishes and acknowledgements in turn,
 so the publishes were acknowledged in about 0.9 s at the 99th percentile, the harness's publishers made 65% to 89% of the burst's rate,
-and the stage digested what they published within four minutes of the burst's end.
+and the stage digested what they published within 2m19s to 4m03s of the burst's end.
 A peak is the forwarders' buffers' to hold (`docs/guides/log-pipeline.md` *Peaks*), not a second stream's; a buffer holding a whole peak is the design's, not yet measured.
 **`max_bytes`** = the outage tolerated × 10.1 GB/h, logical bytes: `logfeed.max_bytes` defaults to 40 GiB, about 4 h.
 When the stream is full, the forwarder's publish fails and its buffer fills; with its buffer set to block, backpressure reaches the tailer, which stops tailing,
