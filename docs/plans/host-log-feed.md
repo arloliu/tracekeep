@@ -162,4 +162,21 @@ Runs 3 and 4 have the final harness; their two failures are the bus's, one proce
 - the traffic's cycle verdict failed with the burst inside its cycles, its last minimum high (325,054 and 157,717 records), the others near zero,
   while every traffic record was acknowledged within F and 7 seconds, none redelivered and none dropped.
 Run 2's verdict, its burst before the cycles, failed on one high last minimum as well (130,190), and run 1's passed; the verdict's minima follow where the run's last cycle ends.
-Open for the owner: whether the gate's traffic criterion is this cycle verdict on one host, or the traffic's acknowledgement ages, or a run on separate hosts.
+
+Asked whether the cycle verdict or the feed failed, the owner chose a control first and the bus in processes of its own, pinned to cores.
+The control (`feed-convert-idle`: the same cluster, stage and traffic, the fleet publishing nothing) sustained on SQLite, −161.5/s,
+its minima in the same high-and-low pairs, its last one low.
+With the three servers as processes of their own (`TRACEKEEP_LOAD_BUS`) on the host's second CCD and the projects disk,
+the test, dev and MariaDB on the first CCD and the system disk, each its own heap:
+
+| Run | Catalog | Made / offered entries/s | Failed | Publish p99 | Burst made | Burst's backlog peak | Digested after it | Drained | Record entries, all registered | Traffic: minima slope / bound | Traffic minima (records) | Test process CPU (cores) |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| 5 | SQLite | 24,935 / 24,752 | 0 | 877 ms | 68.3% | 16,803 MiB | 3m10s | 0 in 5m34s | 66,794,238 | −0.32 / 8.0, sustained | 4,119 to 5,339 | 2.2 |
+| 6 | MariaDB | 24,416 / 24,752 | 0 | 949 ms | 64.6% | 17,315 MiB | 3m42s | 0 in 5m33s | 50,832,822 | −196.3 / 8.0, sustained | 301,158 at the warm-up's end, then 3,800 to 7,086 | 2.2 |
+
+Apart, the traffic sustains beside the fleet on both engines and its minima stay flat: the verdict's failures in one process were the shared heap's and cores', not the feed's.
+The burst's shortfall grew instead: one server held every stream, its CPU about one and a half cores of its sixteen, the others idle.
+A stream of one replica lives on one server, which takes its publishes and its acknowledgements in turn: the feed stream takes the fleet's 95 MB/s,
+and the burst's 117 MB/s more waits, its publishes acknowledged in about 0.9 s at the 99th percentile.
+Raising each publishing connection's publishes in flight from 256 to 2,048 made it worse: publishes queued past their 5 s acknowledgement timeout, 59 failed within 20 minutes, and the run was stopped.
+Open for the owner: the burst's criterion, the stream's ceiling being one server's.
