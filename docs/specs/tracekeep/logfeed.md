@@ -124,11 +124,12 @@ The contract between the pipeline and tracekeep is a versioned field schema, one
 ### 15.4 Stream and consumers
 
 - **The stream**, `TRACEKEEP_LOGFEED` by default (`logfeed.stream`), subjects `<logprefix>.*`, `logprefix` `tklog` by default (`logfeed.prefix`).
-  The service refuses a log prefix whose first token equals the traffic or parking prefix's,
+  The service refuses a log prefix whose first token equals the traffic or parking prefix's, and a feed stream named as either stream,
   and `migrate` and preflight check the feed stream's subjects against both existing streams (`busconfig.SubjectsOverlap`);
   the check is the service's, never the SDK's `busconfig` validation (T-60).
 - Work-queue retention and file storage, as `TRACEKEEP_TRAFFIC`: a message is deleted once acknowledged.
-- **No compression** (T-64): a work queue's acknowledgement into a compressed block makes the server decompress the whole block,
+- **No compression** (T-64), which `migrate` cannot change in a running store, so it refuses a compressed feed stream, to be drained, deleted and migrated again:
+  a work queue's acknowledgement into a compressed block makes the server decompress the whole block,
   which under the fleet's load took about 1.1 GB of memory a server and raised the publish latency's 99th percentile from 51 ms to 620 ms (§15.10).
 - **`max_bytes`** (`logfeed.max_bytes`, §15.10) with discard-new, so a full stream refuses the pipeline's publish instead of losing old entries silently;
   the limit counts a message's logical bytes, which the disk holds uncompressed on each replica.
@@ -138,7 +139,8 @@ The contract between the pipeline and tracekeep is a versioned field schema, one
   and group n's durable pull consumer, `logfeed-<n>`, filters `<logprefix>.<n>.>`.
   tracekeep keeps no list of equipment and computes no hash: a group's equipment are those its consumer delivers.
   Changing G is a `migrate` step, run with the pipeline stopped, the feed drained and every replica's log stage stopped; `migrate` refuses it while the stream holds a message.
-  It changes the transform and the consumers, and increments the fence of every `logfeed/<n>` lease, deleting those of retired groups, so no converter of the old G registers again.
+  It changes the transform and the consumers, then, judged from the lease rows alone so a run interrupted between the two completes on the next,
+  increments the fence of every `logfeed/<n>` lease, deleting those of retired groups, so no converter of the old G registers again.
   An open capture keeps the group that last registered it until a converter of its new group registers it (§15.6);
   group 0's converter stops the files of captures a retired group last registered once they are idle (§15.6 *Boundaries*).
 - **No incarnation row**: `migrate` ensures the stream and its consumers, and a recreated stream needs none of parking's checks, since nothing is ever parked from it (T-60).

@@ -112,8 +112,47 @@ func TestMigrateFeed(t *testing.T) {
 		if _, err := s.Consumer(ctx, bus.FeedConsumer(3)); err != nil {
 			t.Errorf("group 3's consumer: %v", err)
 		}
-		if _, ok, err := c.TakeLease(ctx, catalog.LogGroupLease(3), "r", time.Minute); err != nil || !ok {
-			t.Errorf("group 3's lease = %v, %v; want its row", ok, err)
+		old, ok, err := c.TakeLease(ctx, catalog.LogGroupLease(1), "r", time.Minute)
+		if err != nil || !ok {
+			t.Fatalf("group 1's lease = %v, %v; want its row", ok, err)
+		}
+
+		// A change of G whose stream changed and whose catalog did not, as a migrate failing between the two leaves it, completes on the next run.
+		e.Config.Logfeed.LeaseGroups = 2
+		tc := func(role string) jetstream.StreamConfig {
+			s, err := e.JS.Stream(ctx, bus.StreamName(e.Bus(), role))
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			return s.CachedInfo().Config
+		}
+		if _, err := bus.EnsureFeed(ctx, e.JS, e.Feed(1), tc(catalog.RoleTraffic), tc(catalog.RoleParking)); err != nil {
+			t.Fatal(err)
+		}
+		if err := Migrate(ctx, e); err != nil {
+			t.Fatalf("Migrate after the change of G = %v", err)
+		}
+		if err := c.RenewLease(ctx, old, time.Minute); !errors.Is(err, catalog.ErrLeaseLost) {
+			t.Errorf("the old G's holder renewing = %v, want ErrLeaseLost", err)
+		}
+		if _, ok, err := c.TakeLease(ctx, catalog.LogGroupLease(3), "r", time.Minute); !errors.Is(err, catalog.ErrUnknownLease) || ok {
+			t.Errorf("a retired group's lease = %v, %v; want ErrUnknownLease", ok, err)
+		}
+		if _, err := s.Consumer(ctx, bus.FeedConsumer(3)); err == nil {
+			t.Error("a retired group's consumer is left")
+		}
+	})
+}
+
+// With the feed enabled, a role refuses to start until migrate has made the feed's stream.
+func TestRolesNeedTheFeed(t *testing.T) {
+	t.Parallel()
+	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
+		e := env(t, c)
+		e.Config.Logfeed.Enabled = true
+		if err := Compact(t.Context(), e); err == nil || !strings.Contains(err.Error(), "feed stream") {
+			t.Errorf("compact without the feed's stream = %v, want refused", err)
 		}
 	})
 }

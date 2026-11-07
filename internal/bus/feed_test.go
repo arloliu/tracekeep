@@ -66,16 +66,16 @@ func TestEnsureFeed(t *testing.T) {
 	ctx := t.Context()
 	js := jetStream(t)
 	for range 2 {
-		s, regrouped, err := bus.EnsureFeed(ctx, js, feed(4, 1), trafficStream, parkedStream)
-		if err != nil || regrouped {
-			t.Fatalf("EnsureFeed = %v, regrouped %v", err, regrouped)
+		s, err := bus.EnsureFeed(ctx, js, feed(4, 1), trafficStream, parkedStream)
+		if err != nil {
+			t.Fatalf("EnsureFeed = %v", err)
 		}
 		checkFeed(t, s, feed(4, 1))
 	}
 	if _, err := js.Publish(ctx, "tklog.EQ-1", []byte("{}")); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := bus.EnsureFeed(ctx, js, feed(2, 1), trafficStream, parkedStream); !errors.Is(err, bus.ErrFeedNotDrained) {
+	if _, err := bus.EnsureFeed(ctx, js, feed(2, 1), trafficStream, parkedStream); !errors.Is(err, bus.ErrFeedNotDrained) {
 		t.Fatalf("a change of G over a message = %v, want ErrFeedNotDrained", err)
 	}
 	s, err := js.Stream(ctx, "TRACEKEEP_LOGFEED")
@@ -85,16 +85,61 @@ func TestEnsureFeed(t *testing.T) {
 	if err := s.Purge(ctx); err != nil {
 		t.Fatal(err)
 	}
-	s, regrouped, err := bus.EnsureFeed(ctx, js, feed(2, 1), trafficStream, parkedStream)
-	if err != nil || !regrouped {
-		t.Fatalf("a change of G on a drained stream = %v, regrouped %v", err, regrouped)
+	if s, err = bus.EnsureFeed(ctx, js, feed(2, 1), trafficStream, parkedStream); err != nil {
+		t.Fatalf("a change of G on a drained stream = %v", err)
 	}
 	checkFeed(t, s, feed(2, 1))
+	if s, err = bus.EnsureFeed(ctx, js, feed(6, 1), trafficStream, parkedStream); err != nil {
+		t.Fatalf("a growth of G on a drained stream = %v", err)
+	}
+	checkFeed(t, s, feed(6, 1))
 
-	over := feed(2, 1)
-	over.Stream, over.Prefix = "OVERLAP", "tk"
-	if _, _, err := bus.EnsureFeed(ctx, js, over, trafficStream, parkedStream); !errors.Is(err, bus.ErrFeedOverlap) {
-		t.Errorf("a feed over the traffic prefix = %v, want ErrFeedOverlap", err)
+	for name, f := range map[string]func(*bus.Feed){
+		"the traffic prefix":   func(f *bus.Feed) { f.Stream, f.Prefix = "OVERLAP", "tk" },
+		"the parking prefix":   func(f *bus.Feed) { f.Stream, f.Prefix = "OVERLAP", busconfig.DefaultParkPrefix },
+		"the traffic stream":   func(f *bus.Feed) { f.Stream = trafficStream.Name },
+		"the parking's stream": func(f *bus.Feed) { f.Stream = parkedStream.Name },
+	} {
+		over := feed(2, 1)
+		f(&over)
+		if _, err := bus.EnsureFeed(ctx, js, over, trafficStream, parkedStream); !errors.Is(err, bus.ErrFeedOverlap) {
+			t.Errorf("a feed on %s = %v, want ErrFeedOverlap", name, err)
+		}
+	}
+}
+
+// migrate corrects a setting an update can change, a limit included, and refuses one it cannot, the compression's included (T-64).
+func TestEnsureFeedCorrects(t *testing.T) {
+	t.Parallel()
+	ctx := t.Context()
+	js := jetStream(t)
+	if _, err := bus.EnsureFeed(ctx, js, feed(4, 1), trafficStream, parkedStream); err != nil {
+		t.Fatal(err)
+	}
+	drifted := bus.FeedStreamConfig(feed(4, 1))
+	drifted.MaxBytes, drifted.MaxAge, drifted.MaxMsgs = 1<<20, time.Hour, 1000
+	if _, err := js.UpdateStream(ctx, drifted); err != nil {
+		t.Fatal(err)
+	}
+	s, err := bus.EnsureFeed(ctx, js, feed(4, 1), trafficStream, parkedStream)
+	if err != nil {
+		t.Fatalf("migrate over drifted limits = %v", err)
+	}
+	checkFeed(t, s, feed(4, 1))
+	if c := s.CachedInfo().Config; c.MaxAge != 0 || c.MaxMsgs != -1 {
+		t.Errorf("limits after migrate: max_age %s, max_msgs %d; want none", c.MaxAge, c.MaxMsgs)
+	}
+
+	compressed := bus.FeedStreamConfig(feed(4, 1))
+	compressed.Name, compressed.Subjects, compressed.Compression = "COMPRESSED", []string{"tkz.*"}, jetstream.S2Compression
+	compressed.SubjectTransform = &jetstream.SubjectTransformConfig{Source: "tkz.*", Destination: "tkz.{{partition(4,1)}}.{{wildcard(1)}}"}
+	if _, err := js.CreateStream(ctx, compressed); err != nil {
+		t.Fatal(err)
+	}
+	f := feed(4, 1)
+	f.Stream, f.Prefix = "COMPRESSED", "tkz"
+	if _, err := bus.EnsureFeed(ctx, js, f, trafficStream, parkedStream); !errors.Is(err, bus.ErrFeedImmutable) {
+		t.Errorf("migrate over a compressed stream = %v, want ErrFeedImmutable", err)
 	}
 }
 
@@ -114,7 +159,7 @@ func TestEnsureFeedClustered(t *testing.T) {
 	var s jetstream.Stream
 	testbus.Retry(t, func(context.Context) error {
 		var err error
-		s, _, err = bus.EnsureFeed(ctx, js, feed(4, 3), trafficStream, parkedStream)
+		s, err = bus.EnsureFeed(ctx, js, feed(4, 3), trafficStream, parkedStream)
 
 		return err
 	})
@@ -130,4 +175,18 @@ func TestEnsureFeedClustered(t *testing.T) {
 	if m.Subject == "tklog.EQ-1" {
 		t.Errorf("the stored subject %s, want the transformed one", m.Subject)
 	}
+	if _, err := bus.EnsureFeed(ctx, js, feed(2, 3), trafficStream, parkedStream); !errors.Is(err, bus.ErrFeedNotDrained) {
+		t.Errorf("a change of G over a message on the cluster = %v, want ErrFeedNotDrained", err)
+	}
+	if err := s.Purge(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if s, err = bus.EnsureFeed(ctx, js, feed(2, 3), trafficStream, parkedStream); err != nil {
+		t.Fatalf("a change of G on the drained cluster stream = %v", err)
+	}
+	checkFeed(t, s, feed(2, 3))
+	if s, err = bus.EnsureFeed(ctx, js, feed(2, 3), trafficStream, parkedStream); err != nil {
+		t.Fatalf("migrate again on the cluster = %v", err)
+	}
+	checkFeed(t, s, feed(2, 3))
 }

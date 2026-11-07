@@ -233,6 +233,13 @@ func TestLogfeedValidation(t *testing.T) {
 		"no lease group":             {"logfeed:\n  lease_groups: 0\n", "LeaseGroups"},
 		"a rule of both":             {"logfeed:\n  devices:\n    - token: \"1\"\n      session: 1\n      device: eqp\n", "logfeed.devices[0]"},
 		"a rule of neither":          {"logfeed:\n  device_overrides:\n    T1:\n      - device: eqp\n", "logfeed.device_overrides.T1[0]"},
+		"the traffic stream":         {"logfeed:\n  stream: TRACEKEEP_TRAFFIC\n", "bus.stream"},
+		"the parking stream":         {"logfeed:\n  stream: TRACEKEEP_PARKED\n", "bus.parked_stream"},
+		"no pending":                 {"logfeed:\n  max_ack_pending: 0\n", "MaxAckPending"},
+		"no pairing window":          {"logfeed:\n  pairing_window: 0\n", "PairingWindow"},
+		"no reorder window":          {"logfeed:\n  reorder_window: 0s\n", "ReorderWindow"},
+		"a tiny duplicate window":    {"logfeed:\n  duplicate_window: 50ms\n  reorder_window: 10ms\n", "DuplicateWindow"},
+		"no main device":             {"logfeed:\n  main_device: \"\"\n", "MainDevice"},
 	} {
 		if _, err := Load(write(t, yaml("", "", "", tc.extra))); err == nil || !strings.Contains(err.Error(), tc.want) {
 			t.Errorf("%s: Load = %v, want an error naming %s", name, err, tc.want)

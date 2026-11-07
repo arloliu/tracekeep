@@ -412,15 +412,11 @@ func (e *Env) Feed(replicas int) bus.Feed {
 // migrateFeed ensures the feed's stream, its group consumers and the groups' lease rows; a change of the groups retires the old ones' leases.
 // The feed has no incarnation row: nothing is ever parked from it (T-60).
 func (e *Env) migrateFeed(ctx context.Context, traffic, parked jetstream.StreamConfig) error {
-	_, regrouped, err := bus.EnsureFeed(ctx, e.JS, e.Feed(traffic.Replicas), traffic, parked)
-	if err != nil {
+	if _, err := bus.EnsureFeed(ctx, e.JS, e.Feed(traffic.Replicas), traffic, parked); err != nil {
 		return err
 	}
-	if regrouped {
-		return e.Catalog.RegroupLogGroups(ctx, e.Config.Logfeed.LeaseGroups)
-	}
 
-	return e.Catalog.EnsureLogGroups(ctx, e.Config.Logfeed.LeaseGroups)
+	return e.Catalog.SyncLogGroups(ctx, e.Config.Logfeed.LeaseGroups)
 }
 
 // streams opens the traffic and parking streams and refuses either when it allows direct gets or is not the catalog's incarnation.
@@ -440,6 +436,11 @@ func (e *Env) streams(ctx context.Context) (map[string]jetstream.Stream, map[str
 	}
 	if err := bus.CheckParked(tc, pc); err != nil {
 		return nil, nil, err
+	}
+	if e.Config.Logfeed.Enabled {
+		if _, err := bus.OpenFeed(ctx, e.JS, e.Config.Logfeed.Stream, tc, pc); err != nil {
+			return nil, nil, err
+		}
 	}
 	for role, s := range ss {
 		inc, err := bus.Incarnate(ctx, e.Catalog, role, s)

@@ -71,16 +71,30 @@ func (c *Catalog) EnsureLogGroups(ctx context.Context, groups int) error {
 	return nil
 }
 
-// RegroupLogGroups makes groups the lease groups after a change of G, on a drained stream with every log stage stopped (logfeed.md §15.4):
-// every lease group's fence incremented and its lease lapsed, so no converter of the old G registers again, the rows of groups at or above groups deleted,
-// and the missing rows of groups below it inserted.
-func (c *Catalog) RegroupLogGroups(ctx context.Context, groups int) error {
+// SyncLogGroups makes the lease groups' rows those of groups 0 to groups-1, in one transaction, judged from the rows alone (logfeed.md §15.4):
+// with no row, it inserts them; with rows of another set, after a change of G on a drained stream with every log stage stopped,
+// it increments every remaining group's fence and lapses its lease, so no converter of the old G registers again,
+// deletes the rows of groups at or above groups, and inserts the missing ones; with exactly those rows it changes nothing.
+// A migrate whose stream changed and whose catalog did not finds the old rows on its next run and completes the change.
+func (c *Catalog) SyncLogGroups(ctx context.Context, groups int) error {
 	err := c.inTx(ctx, func(tx *sqlx.Tx) error {
 		var names []string
 		if err := tx.SelectContext(ctx, &names, `SELECT name FROM leases WHERE name LIKE 'logfeed/%'`); err != nil {
 			return err
 		}
+		have := map[int]bool{}
 		for _, name := range names {
+			n, err := logGroupOf(Lease{Name: name})
+			if err != nil || n >= groups {
+				n = -1
+			}
+			have[n] = true
+		}
+		same := len(names) == groups && !have[-1]
+		for _, name := range names {
+			if same {
+				break
+			}
 			n, err := logGroupOf(Lease{Name: name})
 			if err == nil && n < groups {
 				_, err = tx.ExecContext(ctx, `UPDATE leases SET holder = '', fence_token = fence_token + 1, until_ns = 0 WHERE name = ?`, name)
@@ -91,14 +105,22 @@ func (c *Catalog) RegroupLogGroups(ctx context.Context, groups int) error {
 				return err
 			}
 		}
+		for n := range groups {
+			if have[n] {
+				continue
+			}
+			if _, err := tx.ExecContext(ctx, `INSERT INTO leases (name, holder, fence_token, until_ns) VALUES (?, '', 0, 0)`, LogGroupLease(n)); err != nil {
+				return err
+			}
+		}
 
 		return nil
 	})
 	if err != nil {
-		return fmt.Errorf("catalog: regroup log groups: %w", err)
+		return fmt.Errorf("catalog: sync log groups: %w", err)
 	}
 
-	return c.EnsureLogGroups(ctx, groups)
+	return nil
 }
 
 // LogAdmission is AdmitLog's outcome: the capture of the key, new or found, and the configuration it is bound to.

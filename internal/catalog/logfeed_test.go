@@ -634,16 +634,23 @@ func logOperatorRefusals(t *testing.T, c *Catalog, l, lease Lease, a, gw tracepa
 	}
 }
 
-// A change of G retires the old groups: every remaining group's fence moves and its lease lapses, so its old holder registers nothing more,
-// the groups at or above the new G lose their rows, and the missing ones gain theirs.
-func TestRegroupLogGroups(t *testing.T) {
+// The lease groups' rows follow G: an unchanged G changes nothing, and a change retires the old groups,
+// every remaining group's fence moving and its lease lapsing, so its old holder registers nothing more,
+// the groups at or above the new G losing their rows, and the missing ones gaining theirs.
+func TestSyncLogGroups(t *testing.T) {
 	t.Parallel()
 	engines(t, func(t *testing.T, c *Catalog) {
 		ctx := t.Context()
 		gate(t, c)
 		l := logGroup(t, c) // groups 0 to 3, group 1 held
 		a := admitLog(t, c, l, "eqp")
-		if err := c.RegroupLogGroups(ctx, 2); err != nil {
+		if err := c.SyncLogGroups(ctx, 4); err != nil {
+			t.Fatal(err)
+		}
+		if err := c.RenewLease(ctx, l, ttl); err != nil {
+			t.Fatalf("the holder's renewal after an unchanged G = %v, want its lease kept", err)
+		}
+		if err := c.SyncLogGroups(ctx, 2); err != nil {
 			t.Fatal(err)
 		}
 		var names []string

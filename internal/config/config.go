@@ -401,6 +401,11 @@ func (c *Config) checkLogfeed() []error {
 			errs = append(errs, fmt.Errorf("logfeed.prefix %q must start with a token unlike %s's %q", l.Prefix, name, other))
 		}
 	}
+	for name, other := range map[string]string{"bus.stream": cmp.Or(c.Bus.Stream, busconfig.DefaultTrafficStream), "bus.parked_stream": cmp.Or(c.Bus.ParkedStream, busconfig.DefaultParkedStream)} {
+		if l.Stream == other {
+			errs = append(errs, fmt.Errorf("logfeed.stream %q must be a stream of its own, not %s", l.Stream, name))
+		}
+	}
 	if f := l.Flush(c.Ingest.FlushInterval); f >= c.Ingest.AckWait {
 		errs = append(errs, fmt.Errorf("logfeed.flush_interval %s must be below ingest.ack_wait %s", f, c.Ingest.AckWait))
 	}
