@@ -40,6 +40,7 @@ var loadModes = map[string]func(t *testing.T, smoke bool){
 	"production-real": func(t *testing.T, smoke bool) { loadProduction(t, smoke, true) },
 	"feed":            func(t *testing.T, smoke bool) { loadFeed(t, smoke, false) },
 	"feed-real":       func(t *testing.T, smoke bool) { loadFeed(t, smoke, true) },
+	"feed-convert":    loadFeedConvert,
 }
 
 const (
