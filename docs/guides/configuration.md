@@ -61,7 +61,8 @@ The static token for services stays in `<data>/api-token`.
 | `logfeed.lease_groups` | `32` | `TRACEKEEP_LOGFEED_LEASE_GROUPS` | G, the stream's partitions and the lease groups; changing it is a `migrate` run on a drained stream with every log stage stopped (§15.4) |
 | `logfeed.max_bytes` | `40GiB` | `TRACEKEEP_LOGFEED_MAX_BYTES` | the stream's limit in logical bytes, discard-new, about 4 hours of a 2,000-equipment fleet; each replica's disk holds it uncompressed (T-64) |
 | `logfeed.duplicate_window` | `2m` | `TRACEKEEP_LOGFEED_DUPLICATE_WINDOW` | the stream's duplicate window, longer than `logfeed.reorder_window` and the pipeline's retry cap; it costs the servers memory per message id |
-| `logfeed.max_ack_pending` | `100000` | `TRACEKEEP_LOGFEED_MAX_ACK_PENDING` | each group consumer's; above its group's held entries, its rate times F and the reorder window, or delivery stalls |
+| `logfeed.max_ack_pending` | `100000` | `TRACEKEEP_LOGFEED_MAX_ACK_PENDING` | each group consumer's; a group holding half of it flushes its largest equipment early, so it stays above twice its group's rate times the reorder window, or delivery stalls |
+| `logfeed.group_max_bytes` | `128MiB` | `TRACEKEEP_LOGFEED_GROUP_MAX_BYTES` | a group's batched payload, past which its equipment with the most batched bytes flushes before F; each replica holds up to its groups times this |
 | `logfeed.reorder_window` | `30s` | `TRACEKEEP_LOGFEED_REORDER_WINDOW` | how long an entry waits for its file's earlier ones (T-62); the pipeline's in-flight time stays below it, and a later entry is stale |
 | `logfeed.pairing_window` | `3` | `TRACEKEEP_LOGFEED_PAIRING_WINDOW` | the entries of its file a header waits for its body |
 | `logfeed.flush_interval` | `ingest.flush_interval` | `TRACEKEEP_LOGFEED_FLUSH_INTERVAL` | the feed's F; below `ingest.ack_wait`; shorter costs the catalog's writer more registrations (§15.10) |

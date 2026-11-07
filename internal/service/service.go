@@ -554,14 +554,14 @@ func logStage(ctx context.Context, e *Env, g *ingest.Ingester) (*logfeed.Stage, 
 	}
 
 	return &logfeed.Stage{
-		Catalog: e.Catalog, Stream: s, Feed: e.Feed(traffic.CachedInfo().Config.Replicas), Replica: c.Replica,
+		Catalog: e.Catalog, Stream: s, Conn: e.JS.Conn(), Feed: e.Feed(traffic.CachedInfo().Config.Replicas), Replica: c.Replica,
 		LeaseTTL: c.Ingest.Lease, FetchBatch: c.Ingest.FetchBatch, Pause: c.Ingest.Lease, Log: e.Log.With("role", "logfeed"),
 		Base: &logfeed.Converter{
 			Catalog: e.Catalog, Store: e.Store, KeyPrefix: c.Store.KeyPrefix, WorkDir: dir, Writer: writerName,
 			Configs: g.Executor.Configs, Bindable: g.Executor.Bindable, Keys: g.Executor.Keys,
 			Devices: logfeed.Devices{Main: l.MainDevice, Rules: rules(l.Devices), Overrides: overrides},
 			Flush:   l.Flush(c.Ingest.FlushInterval), Reorder: l.ReorderWindow, Idle: l.IdlePeriod, AckWait: c.Ingest.AckWait, Pairing: l.PairingWindow,
-			MaxBatchBytes: int(c.Ingest.BatchMaxBytes.Int64()), HorizonHour: func() int64 { return ingest.HourOf(e.horizon()) }, Now: e.now,
+			MaxBatchBytes: int(c.Ingest.BatchMaxBytes.Int64()), GroupBytes: int(l.GroupMaxBytes.Int64()), MaxHeld: l.MaxAckPending, HorizonHour: func() int64 { return ingest.HourOf(e.horizon()) }, Now: e.now,
 			Log: e.Log.With("role", "logfeed"), Metrics: m,
 		},
 	}, nil

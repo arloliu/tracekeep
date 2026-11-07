@@ -935,3 +935,17 @@ with its consumers' state in memory as well, the feed and the traffic both susta
 and a consumer lost with the whole cluster is re-created, delivering every unacknowledged message again from the oldest, as a takeover does (`logfeed.md` §15.5).
 The traffic consumer's own state, about 476,000 pending entries at its production budget, is the remaining encoding cost; it is not the feed's to change.
 Considered and not taken: keeping S2 for its disk, about a quarter, at a gigabyte a server and the latency; consumers of one replica, which a work queue refuses; measuring on separate hosts first.
+
+### T-65 — the log converter's group bound (2026-11-07)
+
+The owner chose, on 2026-11-07, from step 10b of the host log feed's plan, to bound each lease group's converter by bytes and to keep no payload in a held delivery.
+The step's fleet is the owner's sizing: 1,980 pieces of equipment logging about 1.2 messages a second of about 6 KB, 20 logging about 500, about 20 GB a day zipped each,
+and bursts of 200 comparing their recipes for three minutes at 10 messages of 50 KB a second; about 25,000 entries a second in all.
+**Measured** at ingest's own times on a three-node cluster in one process, the converter held everything its group received until its equipment's flush:
+an equipment's own threshold, 64 MiB of batched payload, was never reached by the slow ones, so a group held F's worth, bounded only by `max_ack_pending`, which counts messages.
+Eight of the 32 group consumers stopped at 100,000 held entries, stalling their equipment until F; the process grew past 50 GB in five minutes while 93% of the host's CPU stood idle.
+The heap held the deliveries' wire messages, 5.5 GB, beside the built records, 1.4 GB, though `logfeed.md` §15.7 already held a converted entry to its acknowledgement handle.
+**The rule** (`logfeed.md` §15.7 *The group's bound*): a group past `logfeed.group_max_bytes` (128 MiB) of batched payload, or holding more than half its consumer's `max_ack_pending`,
+flushes its equipment with the most batched bytes first; a held delivery keeps only its reply subject.
+**The cost**: the fast equipment's segments are smaller and more frequent than F's, more registrations and more merge inputs; F stays the slow equipment's interval.
+Considered and not taken: a shorter F for the whole feed, which multiplies every equipment's registrations; a replica-wide budget, which shares state across the groups' goroutines.

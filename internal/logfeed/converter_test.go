@@ -1,6 +1,7 @@
 package logfeed
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -19,8 +20,9 @@ import (
 	"github.com/arloliu/tracekeep/internal/store"
 )
 
-// fakeMsg is a delivery on subject tklog.0.T1 whose acknowledgements are counted.
+// fakeMsg is a delivery on subject tklog.0.T1, or subject, whose acknowledgements are counted.
 type fakeMsg struct {
+	subject              string
 	data                 []byte
 	mu                   sync.Mutex
 	acks, naks, progress int
@@ -28,7 +30,7 @@ type fakeMsg struct {
 	ackErr error
 }
 
-func (m *fakeMsg) Subject() string { return "tklog.0.T1" }
+func (m *fakeMsg) Subject() string { return cmp.Or(m.subject, "tklog.0.T1") }
 func (m *fakeMsg) Data() []byte    { return m.data }
 func (m *fakeMsg) Ack() error {
 	if m.ackErr != nil {
@@ -441,6 +443,73 @@ func TestConverterAcknowledgesNothingAfterItsLease(t *testing.T) {
 		h.conv.Abandon()
 		if held.naks != 1 {
 			t.Errorf("Abandon nak'd the held entry %d times, want once", held.naks)
+		}
+	})
+}
+
+// A group past its bound flushes its largest equipment before F, by batched bytes or by held deliveries, and leaves the rest to F.
+func TestConverterGroupBound(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name                string
+		groupBytes, maxHeld int
+	}{
+		{"bytes", 300, 0},
+		{"held deliveries", 0, 4},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
+				h := newHarness(t, c)
+				h.conv.GroupBytes, h.conv.MaxHeld = tc.groupBytes, tc.maxHeld
+				large, small := &fixture{t: t}, &fixture{t: t}
+				file := "host-20261107.log"
+				big := make([]*fakeMsg, 0, 3)
+				for range 2 {
+					big = append(big, &fakeMsg{data: large.raw(map[string]any{"kind": KindUnclassified, "text": strings.Repeat("x", 200), "file": file})})
+				}
+				little := &fakeMsg{subject: "tklog.0.T2", data: small.raw(map[string]any{"equipment_id": "T2", "kind": KindUnclassified, "text": "y", "file": file})}
+				h.receive(append(big, little)...)
+				h.tick(2 * time.Second) // released and converted, F not reached
+				for _, m := range big {
+					if m.acked() != 1 {
+						t.Errorf("the largest equipment's entry acked %d times before F, want once", m.acked())
+					}
+				}
+				if little.acked() != 0 {
+					t.Errorf("the smaller equipment's entry acked %d times before F, want none", little.acked())
+				}
+				h.tick(10 * time.Second)
+				if little.acked() != 1 {
+					t.Errorf("the smaller equipment's entry acked %d times at F, want once", little.acked())
+				}
+			})
+		})
+	}
+}
+
+// handledMsg is a delivery whose Handle is another fake, as the stage's deliveries keep only their reply subject.
+type handledMsg struct {
+	*fakeMsg
+	h *fakeMsg
+}
+
+func (m handledMsg) Handle() Acker { return m.h }
+
+// A held delivery is acknowledged through its handle, never through the delivery holding its payload.
+func TestConverterHoldsHandles(t *testing.T) {
+	t.Parallel()
+	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
+		h := newHarness(t, c)
+		f := &fixture{t: t}
+		m := handledMsg{fakeMsg: msgOf(t, f, map[string]any{"kind": KindUnclassified, "text": "a"}), h: &fakeMsg{}}
+		if err := h.conv.Receive(t.Context(), m, h.now); err != nil {
+			t.Fatal(err)
+		}
+		h.tick(2 * time.Second)
+		h.tick(10 * time.Second)
+		if m.acked() != 0 || m.h.acked() != 1 {
+			t.Errorf("the delivery acked %d times and its handle %d, want 0 and 1", m.acked(), m.h.acked())
 		}
 	})
 }

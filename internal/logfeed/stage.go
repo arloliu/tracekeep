@@ -26,6 +26,8 @@ const releaseTimeout = 5 * time.Second
 type Stage struct {
 	Catalog *catalog.Catalog
 	Stream  jetstream.Stream
+	// Conn is the stream's connection, which a held delivery's acknowledgement publishes on; nil keeps each delivery whole until acknowledged.
+	Conn    *nats.Conn
 	Feed    bus.Feed
 	Replica string
 	// LeaseTTL is a group lease's lifetime, renewed every third of it.
@@ -277,7 +279,11 @@ func (s *Stage) convert(ctx context.Context, n int, conv *Converter) error {
 			return err
 		}
 		for m := range batch.Messages() {
-			if err := conv.Receive(ctx, m, conv.Now()); err != nil {
+			var d Msg = m
+			if s.Conn != nil {
+				d = delivery{Msg: m, nc: s.Conn}
+			}
+			if err := conv.Receive(ctx, d, conv.Now()); err != nil {
 				return err
 			}
 		}
@@ -292,3 +298,21 @@ func (s *Stage) convert(ctx context.Context, n int, conv *Converter) error {
 
 	return nil
 }
+
+// delivery is a feed message whose held acknowledgement keeps only its reply subject, not its payload (logfeed.md §15.7 *Held entries keep no payload*).
+type delivery struct {
+	jetstream.Msg
+	nc *nats.Conn
+}
+
+func (d delivery) Handle() Acker { return replyAck{subject: d.Reply(), nc: d.nc} }
+
+// replyAck acknowledges a delivery by its reply subject, as jetstream.Msg does: each is one publish of JetStream's acknowledgement.
+type replyAck struct {
+	subject string
+	nc      *nats.Conn
+}
+
+func (a replyAck) Ack() error        { return a.nc.Publish(a.subject, []byte("+ACK")) }
+func (a replyAck) Nak() error        { return a.nc.Publish(a.subject, []byte("-NAK")) }
+func (a replyAck) InProgress() error { return a.nc.Publish(a.subject, []byte("+WPI")) }

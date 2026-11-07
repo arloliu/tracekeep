@@ -35,9 +35,19 @@ const Notes = "a live host log feed's conversion: it claims no byte-exact covera
 type Msg interface {
 	Subject() string
 	Data() []byte
+	Acker
+}
+
+// Acker acknowledges one delivery.
+type Acker interface {
 	Ack() error
 	Nak() error
 	InProgress() error
+}
+
+// Handled is a delivery whose Handle acknowledges it holding no payload, which the converter keeps once the delivery is decoded (§15.7).
+type Handled interface {
+	Handle() Acker
 }
 
 // ErrGiveUp is an outcome the converter cannot resolve: its caller negatively acknowledges every held message,
@@ -67,6 +77,9 @@ type Converter struct {
 	// MaxBatchBytes and MetaBytes make an equipment's flush due once its batches hold that many payload bytes or redaction entries' bytes;
 	// zero takes ingest's defaults.
 	MaxBatchBytes, MetaBytes int
+	// GroupBytes and MaxHeld bound the group (§15.7 *The group's bound*): once its batches hold more payload bytes than GroupBytes,
+	// or it holds more deliveries than half of MaxHeld, its consumer's max_ack_pending, its largest equipment flushes first; zero bounds nothing.
+	GroupBytes, MaxHeld int
 	// HorizonHour returns the oldest hour retention keeps.
 	HorizonHour func() int64
 	Now         func() time.Time
@@ -80,11 +93,11 @@ type Converter struct {
 
 	// mu guards held, every delivery the converter holds unacknowledged, which the heartbeat keeps in progress from its own goroutine.
 	mu   sync.Mutex
-	held map[Msg]struct{}
+	held map[Acker]struct{}
 }
 
 // handle is an entry's acknowledgement handles: its delivery's and its duplicates'.
-type handle struct{ msgs []Msg }
+type handle struct{ msgs []Acker }
 
 // pend is an entry in its file's window, then, once converted, only its handle, which a redelivery joins until its flush is registered.
 type pend struct {
@@ -194,18 +207,27 @@ func (c *Converter) Receive(ctx context.Context, m Msg, now time.Time) error {
 		return c.ack(ctx, m)
 	}
 	f.lastArrival = now
-	p := &pend{e: e, malformed: malformed, h: &handle{msgs: []Msg{m}}}
+	if !malformed && e.Kind != KindHeader {
+		// Only a header, which may end alone, or a malformed entry becomes an annotation of the message as received (record.go's Build).
+		e.Raw = nil
+	}
+	// Held, the delivery keeps only its acknowledgement: the entry decoded holds what it needs of the payload.
+	var a Acker = m
+	if h, ok := m.(Handled); ok {
+		a = h.Handle()
+	}
+	p := &pend{e: e, malformed: malformed, h: &handle{msgs: []Acker{a}}}
 	switch d, held := f.window.Add(e.At(), now, p); d {
 	case Duplicate:
 		c.Metrics.Entries(e.EquipmentID, metrics.OutcomeDuplicate, 1, now)
-		held.h.msgs = append(held.h.msgs, m)
-		c.track(m)
+		held.h.msgs = append(held.h.msgs, a)
+		c.track(a)
 	case Stale:
 		c.Metrics.Entries(e.EquipmentID, metrics.OutcomeStale, 1, now)
 
 		return c.ack(ctx, m)
 	case Held:
-		c.track(m)
+		c.track(a)
 	default:
 		return fmt.Errorf("logfeed: disposition %d", d)
 	}
@@ -214,7 +236,7 @@ func (c *Converter) Receive(ctx context.Context, m Msg, now time.Time) error {
 }
 
 // ack acknowledges m unless ctx ended, as it does when the group's lease is lost (logfeed.md §15.4).
-func (c *Converter) ack(ctx context.Context, m Msg) error {
+func (c *Converter) ack(ctx context.Context, m Acker) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -228,10 +250,10 @@ func (c *Converter) ack(ctx context.Context, m Msg) error {
 	return nil
 }
 
-func (c *Converter) track(m Msg) {
+func (c *Converter) track(m Acker) {
 	c.mu.Lock()
 	if c.held == nil {
-		c.held = map[Msg]struct{}{}
+		c.held = map[Acker]struct{}{}
 	}
 	c.held[m] = struct{}{}
 	c.mu.Unlock()
@@ -317,7 +339,33 @@ func (c *Converter) Tick(ctx context.Context, now time.Time) error {
 		}
 	}
 
-	return nil
+	return c.relieve(ctx, now, requests)
+}
+
+// relieve flushes the group's largest equipment, by batched payload bytes, while the group holds past its bound (§15.7 *The group's bound*):
+// its batches' memory then follows GroupBytes, whatever the messages' sizes, and its consumer does not stop at max_ack_pending until F.
+func (c *Converter) relieve(ctx context.Context, now time.Time, requests []tracepack.UUID) error {
+	for {
+		bytes := 0
+		var largest *equipmentState
+		for _, eq := range c.equipment {
+			bytes += eq.bytes
+			if len(eq.batches) > 0 && (largest == nil || eq.bytes > largest.bytes || eq.bytes == largest.bytes && eq.id < largest.id) {
+				largest = eq
+			}
+		}
+		c.mu.Lock()
+		held := len(c.held)
+		c.mu.Unlock()
+		over := c.GroupBytes > 0 && bytes > c.GroupBytes || c.MaxHeld > 0 && 2*held > c.MaxHeld
+		if !over || largest == nil {
+			return nil
+		}
+		if err := c.flush(ctx, largest, requests); err != nil {
+			return err
+		}
+		largest.nextFlush = now.Add(c.Flush)
+	}
 }
 
 // judgeStop marks f stopping once its successor's first entry has left its window and f's window is empty (§15.6 *Boundaries*),
@@ -903,7 +951,7 @@ func runs(records []tracepack.Record) []catalog.Range {
 // Heartbeat keeps every held delivery in progress, as ingest's heartbeat does (architecture.md §3.1); it may run beside the converter's own goroutine.
 func (c *Converter) Heartbeat() {
 	c.mu.Lock()
-	ms := make([]Msg, 0, len(c.held))
+	ms := make([]Acker, 0, len(c.held))
 	for m := range c.held {
 		ms = append(ms, m)
 	}
@@ -970,7 +1018,8 @@ func (c *Converter) clone(l catalog.Lease, n int) *Converter {
 	return &Converter{
 		Lease: l, Group: n, Catalog: c.Catalog, Store: c.Store, KeyPrefix: c.KeyPrefix, WorkDir: c.WorkDir, Writer: c.Writer,
 		Configs: c.Configs, Bindable: c.Bindable, Keys: c.Keys, Devices: c.Devices, Flush: c.Flush, Reorder: c.Reorder, Idle: c.Idle,
-		AckWait: c.AckWait, Pairing: c.Pairing, MaxBatchBytes: c.MaxBatchBytes, MetaBytes: c.MetaBytes, HorizonHour: c.HorizonHour,
-		Now: c.Now, Log: c.Log, Metrics: c.Metrics,
+		AckWait: c.AckWait, Pairing: c.Pairing, MaxBatchBytes: c.MaxBatchBytes, MetaBytes: c.MetaBytes, GroupBytes: c.GroupBytes, MaxHeld: c.MaxHeld,
+		HorizonHour: c.HorizonHour,
+		Now:         c.Now, Log: c.Log, Metrics: c.Metrics,
 	}
 }

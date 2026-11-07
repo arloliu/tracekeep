@@ -69,7 +69,7 @@ func (e *stageEnv) stage(replica string, idle time.Duration) *Stage {
 	}
 
 	return &Stage{
-		Catalog: e.c, Stream: e.s, Feed: e.feed, Replica: replica, LeaseTTL: 900 * time.Millisecond, FetchBatch: 100, Pause: time.Second,
+		Catalog: e.c, Stream: e.s, Conn: e.js.Conn(), Feed: e.feed, Replica: replica, LeaseTTL: 900 * time.Millisecond, FetchBatch: 100, Pause: time.Second,
 		Base: &Converter{
 			Catalog: e.c, Store: e.st, WorkDir: e.t.TempDir(), Writer: "tracekeep-test", Configs: map[int64]ingest.Config{e.cfg: {Name: "go-secs/v2.8.0"}},
 			Devices: Devices{Main: "eqp"}, Flush: 300 * time.Millisecond, Reorder: 100 * time.Millisecond, Idle: idle, AckWait: e.feed.AckWait,
