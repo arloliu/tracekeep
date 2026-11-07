@@ -24,12 +24,23 @@ type fakeMsg struct {
 	data                 []byte
 	mu                   sync.Mutex
 	acks, naks, progress int
+	// ackErr fails every acknowledgement.
+	ackErr error
 }
 
 func (m *fakeMsg) Subject() string { return "tklog.0.T1" }
 func (m *fakeMsg) Data() []byte    { return m.data }
-func (m *fakeMsg) Ack() error      { m.mu.Lock(); m.acks++; m.mu.Unlock(); return nil }
-func (m *fakeMsg) Nak() error      { m.mu.Lock(); m.naks++; m.mu.Unlock(); return nil }
+func (m *fakeMsg) Ack() error {
+	if m.ackErr != nil {
+		return m.ackErr
+	}
+	m.mu.Lock()
+	m.acks++
+	m.mu.Unlock()
+
+	return nil
+}
+func (m *fakeMsg) Nak() error { m.mu.Lock(); m.naks++; m.mu.Unlock(); return nil }
 func (m *fakeMsg) InProgress() error {
 	m.mu.Lock()
 	m.progress++
