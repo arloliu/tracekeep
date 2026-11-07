@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# The host log feed's gate load (docs/plans/host-log-feed.md step 10b, T-66) on a bus of its own:
+# The host log feed's gate load (the host log feed plan's step 10b, last text at 3c11e5e, T-66) on a bus of its own:
 # three nats-server processes, built from the module's own nats-server version, outside the test's process,
 # so the bus keeps its own heap, cores and disk, and the test, dev and the catalog keep theirs.
 # Usage:

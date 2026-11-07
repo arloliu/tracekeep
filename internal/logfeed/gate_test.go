@@ -17,7 +17,7 @@ import (
 	"github.com/arloliu/tracekeep/internal/store"
 )
 
-// The gate's correctness cases (docs/plans/host-log-feed.md step 10a), each through the converter.
+// The gate's correctness cases (the host log feed plan's step 10a, last text at 3c11e5e), each through the converter.
 
 var errInjected = errors.New("injected")
 

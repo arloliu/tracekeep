@@ -29,7 +29,7 @@ import (
 	"github.com/arloliu/tracekeep/internal/testbus"
 )
 
-// The feed-convert mode is the host log feed's gate load (docs/plans/host-log-feed.md step 10b), at ingest's own times:
+// The feed-convert mode is the host log feed's gate load (the host log feed plan's step 10b, last text at 3c11e5e), at ingest's own times:
 // a fleet shaped as the owner sized it, its feed converted by dev's own log stage on the three-node cluster beside production's traffic.
 // 1,980 equipment log as the sampled ones do, about 1.2 messages a second of about 6 KB each; 20 heavy ones log 20 GB a day zipped, about 3 MB/s;
 // after the warm-up, 200 of them compare their recipes for three minutes, 10 messages of 50 KB a second each, a burst the stream holds for the stage to digest.
