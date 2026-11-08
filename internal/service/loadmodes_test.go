@@ -41,6 +41,8 @@ var loadModes = map[string]func(t *testing.T, smoke bool){
 	"feed":            func(t *testing.T, smoke bool) { loadFeed(t, smoke, false) },
 	"feed-real":       func(t *testing.T, smoke bool) { loadFeed(t, smoke, true) },
 	"feed-convert":    loadFeedConvert,
+	// feed-streams is the fleet on the feed's bus alone, its stream or a stream a group (loadstreams_test.go).
+	"feed-streams": loadFeedStreams,
 	// feed-convert-idle is feed-convert's control: its fleet publishes nothing.
 	"feed-convert-idle": loadFeedConvertIdle,
 }
