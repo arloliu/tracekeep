@@ -176,6 +176,21 @@ func fit(xs, ys []float64) float64 {
 	return (n*sxy - sx*sy) / (n*sxx - sx*sx)
 }
 
+// countSlope is the steepest least-squares rise that an error of a record in each value read at xs can make:
+// a cycle's minimum is a count of records reconstructed to about one, and its maxima are counts too.
+func countSlope(xs []float64) float64 {
+	var mean float64
+	for _, x := range xs {
+		mean += x / float64(len(xs))
+	}
+	signs := make([]float64, len(xs))
+	for i, x := range xs {
+		signs[i] = float64(cmp.Compare(x, mean))
+	}
+
+	return fit(xs, signs)
+}
+
 // settledPass is a flush pass's completion, the ingester's PassSettled signal: when, and whether a batch of it failed.
 type settledPass struct {
 	at     time.Time
@@ -214,7 +229,9 @@ type cycleMin struct {
 // has none and is not counted.
 // It is sustained as judgeLoad's windows are, the drift allowance a rate: made within 2% of offered, nothing dropped, no pass failed,
 // and the least-squares rise of the minima, and of the queue maxima, against elapsed time each below 0.5% of the published rate a second,
-// which is judgeLoad's 0.5% of a window's records a window, whatever the window; fewer than least observed cycles leave it unjudged.
+// which is judgeLoad's 0.5% of a window's records a window, whatever the window, plus countSlope, a record's error in each:
+// at a smoke's tens of records a second, a record over a few short cycles is past 0.5%.
+// Fewer than least observed cycles leave it unjudged.
 func judgeCycles(offered float64, origin loadSample, samples []loadSample, passes []settledPass, flush time.Duration, least int) cycleVerdict {
 	return judgeSpan(offered, origin, samples, passes, flush, least, false)
 }
@@ -266,7 +283,7 @@ func judgeSpan(offered float64, origin loadSample, samples []loadSample, passes 
 	secs := last.at.Sub(first.at).Seconds()
 	v.made, v.published = float64(last.made-first.made)/secs, float64(last.published-first.published)/secs
 	v.backlogSlope, v.ringSlope, v.reservedSlope = fit(xs, mins), fit(xs, ring), fit(xs, reserved)
-	v.bound = 0.005 * v.published
+	v.bound = 0.005*v.published + countSlope(xs)
 	v.judged = true
 	switch {
 	case math.Abs(v.made-offered) > 0.02*offered:
@@ -827,5 +844,16 @@ func TestTrough(t *testing.T) {
 	}
 	if _, ok := trough(samples, []settledPass{{at: t0.Add(1100 * time.Millisecond)}, {at: end}}, t0.Add(1100*time.Millisecond)); ok {
 		t.Error("another pass before the sample after the flush's end: read, want not")
+	}
+}
+
+// A record's error in each of five values two seconds apart can rise 0.3 a second: 4+2+0+2+4 seconds over 16+4+0+4+16 seconds squared.
+func TestCountSlope(t *testing.T) {
+	t.Parallel()
+	if got := countSlope([]float64{0, 2, 4, 6, 8}); math.Abs(got-0.3) > 1e-9 {
+		t.Errorf("countSlope = %v, want 0.3", got)
+	}
+	if got := countSlope([]float64{5}); got != 0 {
+		t.Errorf("countSlope of one value = %v, want 0", got)
 	}
 }
