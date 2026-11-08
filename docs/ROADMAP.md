@@ -103,6 +103,18 @@ its closed plan's last text, with its measurements and the gate's runs, is at 3c
   the group's consumed stream sequence registered in each flush's transaction,
   the stream purged up to it, and a restart resuming from it, the files' watermarks dropping what it reads again (`logfeed.md` §15.5).
   Unmeasured: the purge's cost, the re-read after a restart, and how `logfeed.max_bytes` bounds a stream whose entries leave it by purge.
+- A fleet's flushes align, and their load with them, measured on the same host and day with the log stage:
+  - Spreading them over F, each equipment flushing at its own phase, removes the cold acknowledgements' wave at every F
+    (the bus disk's reads over eight minutes 0.5 against 73 GB, the store's puts and the catalog's commits a second at p99 three to four times lower, their totals unchanged);
+    it does not help after a burst, whose own volume brings the cold reads back.
+  - The hour's change aligns them again, since it flushes every equipment's earlier hour at once (`ingest.md` §6.2, `logfeed.md` §15.7).
+    Leaving an earlier hour's batches to the equipment's next flush took the hour's busiest second from 997 to 32 puts,
+    the catalog's commits a second at p99 from 394 to 72 and its row lock waits from 1,318 to 108, with 30 % fewer packs,
+    since the hour's flush no longer flushes the new hour's batch early as well.
+  - No reader assumes an earlier hour sooner: every bound already allows a batch to wait F (the compactor's Q exceeds F, `ack_wait` and the slack).
+  - To change: the log stage's trigger;
+    ingest's `Batcher.Due`, whose batches of a new hour all open at its start, so a capture needs a flush time of its own, not its batch's opening;
+    and ingest registering a capture's earlier hour first, or the gap alert a `for:`, since a later hour registered first shows the earlier one's tail as a gap for up to F.
 - go-secs is asked to export a filtered JSONL writer; until it does, `StartExport` refuses `kind=filtered` (T-48).
 - Configuration retirement waits for the first release that needs it.
 - The veq branch `docs/ve/log-service-decisions` (commit 7b8a019) carries the LS-row amendments and V-35;
