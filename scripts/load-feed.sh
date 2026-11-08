@@ -10,6 +10,8 @@
 #   BUS_DIR               the directory under which the servers keep their stores, in a new directory of their own removed afterwards,
 #                         a disk other than the test's temporary directory's at best; the system's temporary directory when unset
 #   BUS_GOMEMLIMIT        each server's GOMEMLIMIT (7GiB)
+#   BUS_BLOCK_RATE        the servers' prof_block_rate, Go's block profile rate in nanoseconds, off when unset
+# Server i serves clients on 431i, monitoring on 822i and Go's pprof on 865i (http://127.0.0.1:865i/debug/pprof/).
 #   GOMEMLIMIT, TRACEKEEP_LOAD_ENGINE, TRACEKEEP_MARIADB_DSN, TRACEKEEP_LOAD_PROFILES are the test's, passed through
 set -euo pipefail
 
@@ -35,9 +37,11 @@ test_pin=()
 
 go build -o "$work/nats-server" github.com/nats-io/nats-server/v2
 routes=nats-route://127.0.0.1:6310,nats-route://127.0.0.1:6311,nats-route://127.0.0.1:6312
+# A configuration file only for what has no flag.
+echo "prof_block_rate: ${BUS_BLOCK_RATE:-0}" >"$work/server.conf"
 for i in 0 1 2; do
 	mkdir -p "$bus/tb-$i"
-	GOMEMLIMIT=${BUS_GOMEMLIMIT:-7GiB} "${bus_pin[@]}" "$work/nats-server" -n "tb-$i" -a 127.0.0.1 -p "431$i" -m "822$i" \
+	GOMEMLIMIT=${BUS_GOMEMLIMIT:-7GiB} "${bus_pin[@]}" "$work/nats-server" -c "$work/server.conf" -n "tb-$i" -a 127.0.0.1 -p "431$i" -m "822$i" --profile "865$i" \
 		-js -sd "$bus/tb-$i" --cluster_name testbus --cluster "nats://127.0.0.1:631$i" --routes "$routes" >"$work/server-$i.log" 2>&1 &
 	pids+=($!)
 done
