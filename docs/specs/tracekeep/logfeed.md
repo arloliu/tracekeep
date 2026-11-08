@@ -369,6 +369,17 @@ a burst of 117 MB/s more waited: the stream is the work of one server, which tak
 so the publishes were acknowledged in about 0.9 s at the 99th percentile, the harness's publishers made 65% to 89% of the burst's rate,
 and the stage digested what they published within 2m19s to 4m03s of the burst's end.
 A peak is the forwarders' buffers' to hold (`docs/guides/log-pipeline.md` *Peaks*), not a second stream's; a buffer holding a whole peak is the design's, not yet measured.
+**Why the stream waits**, profiled on 2026-11-08 with the servers' Go profiles (`scripts/load-feed.sh`), every stream of one replica and all of them on one server:
+a work-queue stream whose subjects hold a wildcard removes an acknowledged message only after loading it, to match its subject against the other consumers' filters,
+under the stream's exclusive lock, which storing a publish takes too.
+At the fleet's steady rate the stream's inbound loop waits on that lock about a third of the time; outside a dip, the burst's publishes were stored at about 70% of their rate.
+Once every F the light equipment, which the group's bound never flushes early, flush within the same minute, each flush due F after its previous one (§15.7) and every equipment's due at an hour's change:
+about a million entries held since the previous F are acknowledged within a minute, their messages no longer in the store's cache and each read from disk under the lock, at up to about 660 MB/s;
+the inbound loop is then blocked about 90% of the time, and the stream stores 5,000 to 8,000 publishes a second instead of 24,750 for about a minute, catching up after it.
+The server used about 1.5 of its 16 cores, a quarter of them the garbage collector's, so neither its CPU nor the traffic stream beside it set the ceiling;
+the three servers' stores shared one disk, so the traffic's own acknowledgements at its flush are not told apart from the feed's in the reads.
+A stream a group would split the lock, not the loads; spreading the equipment's flushes over F would spread the reads, not lessen them.
+Streams of three replicas add the replication's work to the leader's, unmeasured.
 **`max_bytes`** = the outage tolerated × 10.1 GB/h, logical bytes: `logfeed.max_bytes` defaults to 40 GiB, about 4 h.
 When the stream is full, the forwarder's publish fails and its buffer fills; with its buffer set to block, backpressure reaches the tailer, which stops tailing,
 and the files on disk resume from its checkpoint, provided the host program keeps them longer than the outage.
