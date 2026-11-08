@@ -41,6 +41,7 @@ func loadFeedStreams(t *testing.T, smoke bool) {
 	ft.maxAckPending = cmp.Or(fs.ackPending, ft.maxAckPending)
 	f := newFeedStreams(t, url, streams, replicas, ft)
 	f.aligned = os.Getenv("TRACEKEEP_LOAD_FLUSHES") != "spread"
+	f.groupBytes, f.maxHeld = 128<<20, ft.maxAckPending // logfeed.group_max_bytes's default and the fleet's max_ack_pending
 	ctx := t.Context()
 	f.consume(ctx)
 	defer f.stop()
@@ -82,10 +83,10 @@ func loadFeedStreams(t *testing.T, smoke bool) {
 			strconv.FormatUint(pubs.failed.Load(), 10), strconv.FormatUint(pubs.retried.Load(), 10), strconv.FormatUint(seq, 10), strconv.FormatUint(msgs, 10),
 			strconv.FormatUint(f.acks.Load(), 10), strconv.Itoa(held)})
 		w.Flush()
-		if last != 0 {
+		if last != 0 && seq >= last {
 			stored = append(stored, float64(seq-last))
 		}
-		last = seq
+		last = max(last, seq)
 		if now.After(end) {
 			break
 		}
