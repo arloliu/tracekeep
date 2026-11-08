@@ -51,7 +51,7 @@ func TestPurgeFreesTheLimitsBound(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := info.State.Subjects; got["p.0.a"] > 1 || got["p.1.b"] < uint64(last)/2-1 {
+	if got := info.State.Subjects; got["p.0.a"] > 1 || got["p.1.b"] < last/2-1 {
 		t.Fatalf("after group 0's purge: %v of %d", got, last)
 	}
 	if _, err := js.Publish(ctx, "p.0.a", body); err != nil {
