@@ -92,28 +92,32 @@ its closed plan's last text, with its measurements and the gate's runs, is at 3c
   - tracekeep: a capture key derived once per fetch batch, or a derived-key cache, was closed by phase 5 on its numbers
     (masking adds about 4 µs a message, `Dispose` 31 against 27 µs; T-56), `masking-keys.md` §9 unchanged.
 - The feed stream's cost is its acknowledgements (`logfeed.md` §15.10):
-  each loads and removes its message under the stream's lock, and a flush acknowledges up to F of held entries at once.
-  Measured on 2026-11-08 on one host with the owner's fleet (the measurements are kept outside the repository):
+  each loads and removes its message under the stream's lock, and a flush acknowledges up to a flush interval's worth of held entries at once.
+  Measured on 2026-11-08 on one host with the owner's fleet, 24,752 entries a second over 32 groups (the measurements are kept outside the repository):
   one stream of one replica carries it with a dip at every flush;
   a stream a group of one replica, the servers' subject mapping partitioning the publishes, removes the dip
-  (lowest ten seconds 22,305 against 5,623 entries/s, publish p99 134 against 712 ms);
-  three replicas carry about a third of it on one stream and 85 % on a stream a group, at about three times the servers' CPU, network and writes.
+  (its lowest ten seconds 22,305 entries a second and its publish p99 134 ms, against 5,623 and 712 ms on one stream).
+  Three replicas carry about a third of the fleet on one stream and 85 % on a stream a group,
+  the latter at about three times the CPU, network and writes of a stream a group of one replica.
   A log-style use may remove the acknowledgement path altogether:
   a stream a group of one replica with no acknowledgement per message,
-  the group's consumed stream sequence registered in each flush's transaction,
-  the stream purged up to it, and a restart resuming from it, the files' watermarks dropping what it reads again (`logfeed.md` §15.5).
+  each flush registering in its transaction the group's checkpoint, the stream sequence below which every entry is settled
+  (registered, or acknowledged as stale or unreadable), so an earlier entry another equipment still holds stays above it,
+  the stream purged below it, and a restart resuming from it, the files' watermarks dropping what it reads again (`logfeed.md` §15.5).
   Unmeasured: the purge's cost, the re-read after a restart, and how `logfeed.max_bytes` bounds a stream whose entries leave it by purge.
 - A fleet's flushes align, and their load with them, measured on the same host and day with the log stage:
-  - Spreading them over F, each equipment flushing at its own phase, removes the cold acknowledgements' wave at every F
+  - Spreading them over the flush interval F, each equipment flushing at its own phase, removes the cold acknowledgements' wave at every F
     (the bus disk's reads over eight minutes 0.5 against 73 GB, the store's puts and the catalog's commits a second at p99 three to four times lower, their totals unchanged);
     it does not help after a burst, whose own volume brings the cold reads back.
   - The hour's change aligns them again, since it flushes every equipment's earlier hour at once (`ingest.md` §6.2, `logfeed.md` §15.7).
     Leaving an earlier hour's batches to the equipment's next flush took the hour's busiest second from 997 to 32 puts,
     the catalog's commits a second at p99 from 394 to 72 and its row lock waits from 1,318 to 108, with 30 % fewer packs,
     since the hour's flush no longer flushes the new hour's batch early as well.
-  - No reader assumes an earlier hour sooner: every bound already allows a batch to wait F (the compactor's Q exceeds F, `ack_wait` and the slack).
+  - No reader assumes an earlier hour sooner: every bound already allows a batch to wait F
+    (`compact.quiet_period` must exceed `ingest.flush_interval` + `ingest.ack_wait` + `compact.redelivery_slack`, and the log stage's F must be below `ingest.ack_wait`).
   - To change: the log stage's trigger;
-    ingest's `Batcher.Due`, whose batches of a new hour all open at its start, so a capture needs a flush time of its own, not its batch's opening;
+    ingest's `Batcher.Due`, due F after a batch's opening, where the batches of every capture active across the hour open together at its start,
+    so a capture needs a flush time of its own;
     and ingest registering a capture's earlier hour first, or the gap alert a `for:`, since a later hour registered first shows the earlier one's tail as a gap for up to F.
 - go-secs is asked to export a filtered JSONL writer; until it does, `StartExport` refuses `kind=filtered` (T-48).
 - Configuration retirement waits for the first release that needs it.
