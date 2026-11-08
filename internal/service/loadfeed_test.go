@@ -419,17 +419,21 @@ func (p *feedPool) message(prefix string, eq int, offset int64, n int) *nats.Msg
 
 // feed is one stream with its group consumers.
 type feed struct {
-	t         *testing.T
-	ft        feedTimes
-	name      string
-	prefix    string
-	nc        *nats.Conn
-	js        jetstream.JetStream
-	stream    jetstream.Stream
+	t      *testing.T
+	ft     feedTimes
+	name   string
+	prefix string
+	nc     *nats.Conn
+	js     jetstream.JetStream
+	stream jetstream.Stream
+	// streams are the feed-streams mode's streams, stream the first of them.
+	streams   []jetstream.Stream
 	consumers []jetstream.Consumer
 	groups    []*feedGroup
-	acks      atomic.Uint64
-	progress  atomic.Uint64
+	// aligned makes an equipment's flush due F after its first entry and each flush, as the log stage's are, not spread over F by its phase.
+	aligned  bool
+	acks     atomic.Uint64
+	progress atomic.Uint64
 }
 
 // newFeed creates the stream logfeed.md §15.4 specifies under name and prefix, R3, with maxBytes, partitioned into feedGroups when partitioned,
@@ -594,6 +598,9 @@ func (g *feedGroup) loop(ctx context.Context) {
 				g.batches[h.eq] = append(g.batches[h.eq], h.m)
 				if _, ok := g.due[h.eq]; !ok {
 					g.due[h.eq] = start.Add(phase(h.eq, ft.flush))
+					if g.f.aligned {
+						g.due[h.eq] = now.Add(ft.flush)
+					}
 				}
 			}
 			g.reorder = slices.Delete(g.reorder, 0, i)
