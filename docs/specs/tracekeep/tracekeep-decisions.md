@@ -968,4 +968,18 @@ a first-in, first-out buffer delays an entry and its successors alike, so only t
 a buffer holding a whole peak is not yet measured, the runs' publishes waiting about a second.
 Considered and not taken: splitting the feed into several streams, so their leaders spread over the servers, judged no-go on 2026-11-07:
 the requirement asks no faster intake of a peak than the forwarders' buffers give, the ceiling's cause is unprofiled (the stream's single inbound loop, its disk, or the traffic stream on the same server),
-and the split's choices (how many streams, which groups each, changing their number, the leaders' placement) were undecided.
+and the split's choices (how many streams, which groups each, changing their number, the leaders' placement) were undecided (superseded by T-67).
+
+### T-67 — the feed's next layout: a stream a group of one replica, acknowledged (2026-11-08)
+
+The owner chose, on 2026-11-08, from the feed stream's measurements on one host (`docs/ROADMAP.md` *Open items*, the measurements kept outside the repository),
+the feed's next layout: a stream a group of one replica, its entries acknowledged one by one as today,
+the servers' subject mapping partitioning the publishes so the publishers name no stream.
+It supersedes T-66's judgement that splitting the feed is no-go: the ceiling's cause is now profiled (each acknowledgement loads and removes its message under the stream's lock, `logfeed.md` §15.10),
+a stream a group of one replica carried the fleet without its dip at every flush, and three replicas carried a third of it on one stream and 85 % on a stream a group at about three times the bus's resources,
+which the feed's service level does not need.
+Its choices (the mapping's owner and form under each account mode, the streams' placement, each stream's limit, the change from one stream) are its plan's.
+Considered and not taken for now: a log-style use, each group's stream purged below a checkpoint the flush registers, unacknowledged,
+which smoothed the publishes but held about F of the fleet in the stream and stalled it for seconds a purge;
+and spreading the flushes over F, which measured worse than aligned flushes on a stream a group, to be explained first.
+

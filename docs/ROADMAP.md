@@ -99,21 +99,24 @@ its closed plan's last text, with its measurements and the gate's runs, is at 3c
   (its lowest ten seconds 22,305 entries a second and its publish p99 134 ms, against 5,623 and 712 ms on one stream).
   Three replicas carry about a third of the fleet on one stream and 85 % on a stream a group,
   the latter at about three times the CPU, network and writes of a stream a group of one replica.
-  The owner chose on 2026-11-08 to take this next: a stream a group of one replica, acknowledged as today,
+  The owner chose on 2026-11-08 to take this next (T-67): a stream a group of one replica, acknowledged as today,
   the servers' subject mapping keeping the publishers unaware of the streams;
   the mapping is so far tried on one server only, not in a cluster or under JWT accounts.
-- A log-style use was measured on the same host and day and is not taken up for now (the owner's choice):
+- A log-style use was measured on the same host and day and is not taken up for now (T-67):
   a stream a group of one replica kept by limits and consumed with no acknowledgement,
   each flush registering in its transaction the group's checkpoint, the stream sequence below which every entry is settled
   (registered, or acknowledged as stale or unreadable), so an earlier entry another equipment still holds stays above it,
   the stream purged below it, and a restart resuming from it, the files' watermarks dropping what it reads again (`logfeed.md` §15.5).
   - It smooths the publishes (the lowest ten seconds about 24,000 entries a second, publish p99 14 to 89 ms) and halves the bus disk's writes.
   - The stream holds everything above the oldest held entry, about F of the fleet: up to 45 GB against up to about 13 GB acknowledged,
-    so `logfeed.max_bytes` must grow by as much to keep its outage margin; at 40 GiB the stream filled and the publishes stalled.
-  - A purge loads the per-subject index of every block it drops, under the stream's lock:
-    with the flushes aligned its p99 was 5 s and 21 purges timed out, with them spread 0.48 s.
-  - The publishes were retried 1.4 to 12.8 million times without one failing, which is not explained.
-  - A purge filtered by subject on one shared stream scans the whole stream under its lock (p99 3 s), so only a stream a group can purge.
+    so `logfeed.max_bytes` must grow by as much to keep its outage margin;
+    at 40 GiB the stream filled, 27,600 publishes failed and 251 million were retried.
+  - A purge loads the per-subject index of every block it drops, under the stream's lock
+    (nats-server v2.15.1 `server/filestore.go`, `compactLocked` calling `ensurePerSubjectInfoLoaded`):
+    with the flushes aligned its p99 was 5 s and 21 purges failed, with them spread 0.48 s and none.
+  - At 120 GiB the publishes were retried 1.4 to 12.8 million times without one failing, which is not explained.
+  - A purge filtered by subject loads every block of the stream and checks each message's subject (`PurgeEx` calling `loadMsgsWithLock`):
+    on one shared stream its p99 was 3 s and 442 purges failed, unsuitable for the fleet on this host.
   - A restart from the checkpoints read 7.9 million entries again, about F of the fleet, and every group caught up within 41 s;
     a converter's decoding of them is not measured.
   - A full stream refuses the publishes and a purge frees it, as discard-new does with acknowledgements.
@@ -123,7 +126,7 @@ its closed plan's last text, with its measurements and the gate's runs, is at 3c
     it does not help after a burst, whose own volume brings the cold reads back.
     On a stream a group with acknowledgements, spreading measured worse than aligned flushes
     (publish p99 461 against 134 ms, the bus disk's reads 417 against 144 MB/s), contrary to the one-stream run;
-    the owner chose to explain that before spreading is taken up.
+    the owner chose to explain that before spreading is taken up (T-67).
   - The hour's change aligns them again, since it flushes every equipment's earlier hour at once (`ingest.md` §6.2, `logfeed.md` §15.7).
     Leaving an earlier hour's batches to the equipment's next flush took the hour's busiest second from 997 to 32 puts,
     the catalog's commits a second at p99 from 394 to 72 and its row lock waits from 1,318 to 108, with 30 % fewer packs,
