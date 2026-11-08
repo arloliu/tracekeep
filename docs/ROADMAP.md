@@ -91,6 +91,18 @@ its closed plan's last text, with its measurements and the gate's runs, is at 3c
     fewer allocations in the item walker.
   - tracekeep: a capture key derived once per fetch batch, or a derived-key cache, was closed by phase 5 on its numbers
     (masking adds about 4 µs a message, `Dispose` 31 against 27 µs; T-56), `masking-keys.md` §9 unchanged.
+- The feed stream's cost is its acknowledgements (`logfeed.md` §15.10):
+  each loads and removes its message under the stream's lock, and a flush acknowledges up to F of held entries at once.
+  Measured on 2026-11-08 on one host with the owner's fleet (the measurements are kept outside the repository):
+  one stream of one replica carries it with a dip at every flush;
+  a stream a group of one replica, the servers' subject mapping partitioning the publishes, removes the dip
+  (lowest ten seconds 22,305 against 5,623 entries/s, publish p99 134 against 712 ms);
+  three replicas carry about a third of it on one stream and 85 % on a stream a group, at about three times the servers' CPU, network and writes.
+  A log-style use may remove the acknowledgement path altogether:
+  a stream a group of one replica with no acknowledgement per message,
+  the group's consumed stream sequence registered in each flush's transaction,
+  the stream purged up to it, and a restart resuming from it, the files' watermarks dropping what it reads again (`logfeed.md` §15.5).
+  Unmeasured: the purge's cost, the re-read after a restart, and how `logfeed.max_bytes` bounds a stream whose entries leave it by purge.
 - go-secs is asked to export a filtered JSONL writer; until it does, `StartExport` refuses `kind=filtered` (T-48).
 - Configuration retirement waits for the first release that needs it.
 - The veq branch `docs/ve/log-service-decisions` (commit 7b8a019) carries the LS-row amendments and V-35;
