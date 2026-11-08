@@ -430,10 +430,13 @@ type feed struct {
 	streams   []jetstream.Stream
 	consumers []jetstream.Consumer
 	groups    []*feedGroup
-	// aligned makes an equipment's flush due F after its first entry and each flush, as the log stage's are, not spread over F by its phase.
-	aligned  bool
-	acks     atomic.Uint64
-	progress atomic.Uint64
+	// aligned makes an equipment's flush due F after its first entry and each flush, as the log stage's are, not spread over F by its phase;
+	// groupBytes and maxHeld bound each group as the log stage's bound does (logfeed.md §15.7): past groupBytes of batched messages,
+	// or holding more than half of maxHeld, its largest equipment flushes first; zero bounds nothing.
+	aligned             bool
+	groupBytes, maxHeld int
+	acks                atomic.Uint64
+	progress            atomic.Uint64
 }
 
 // newFeed creates the stream logfeed.md §15.4 specifies under name and prefix, R3, with maxBytes, partitioned into feedGroups when partitioned,
@@ -531,6 +534,9 @@ type feedGroup struct {
 	batches map[string][]jetstream.Msg
 	due     map[string]time.Time
 	held    int
+	// bytes are each equipment's batched message bytes, total the group's.
+	bytes map[string]int
+	total int
 	// want, during a takeover, is how many deliveries the new consumer's first ones are recorded in order, and allAt when they all arrived.
 	want  int
 	order []uint64
@@ -596,6 +602,11 @@ func (g *feedGroup) loop(ctx context.Context) {
 			for ; i < len(g.reorder) && now.Sub(g.reorder[i].at) >= ft.reorder; i++ {
 				h := g.reorder[i]
 				g.batches[h.eq] = append(g.batches[h.eq], h.m)
+				if g.bytes == nil {
+					g.bytes = map[string]int{}
+				}
+				g.bytes[h.eq] += len(h.m.Data())
+				g.total += len(h.m.Data())
 				if _, ok := g.due[h.eq]; !ok {
 					g.due[h.eq] = start.Add(phase(h.eq, ft.flush))
 					if g.f.aligned {
@@ -608,16 +619,9 @@ func (g *feedGroup) loop(ctx context.Context) {
 				if now.Before(at) {
 					continue
 				}
-				for _, m := range g.batches[eq] {
-					_ = m.Ack()
-					g.f.acks.Add(1)
-				}
-				g.held -= len(g.batches[eq])
-				delete(g.batches, eq)
-				for !g.due[eq].After(now) {
-					g.due[eq] = g.due[eq].Add(max(ft.flush, 50*time.Millisecond))
-				}
+				g.flushEq(eq, now)
 			}
+			g.relieve(now)
 			if !now.Before(nextBeat) {
 				for _, h := range g.reorder {
 					_ = h.m.InProgress()
@@ -632,6 +636,42 @@ func (g *feedGroup) loop(ctx context.Context) {
 			}
 			g.mu.Unlock()
 		}
+	}
+}
+
+// flushEq acknowledges eq's batch and makes its next flush due: F after now when aligned, else at its phase's next time.
+func (g *feedGroup) flushEq(eq string, now time.Time) {
+	for _, m := range g.batches[eq] {
+		_ = m.Ack()
+		g.f.acks.Add(1)
+	}
+	g.held -= len(g.batches[eq])
+	g.total -= g.bytes[eq]
+	delete(g.batches, eq)
+	delete(g.bytes, eq)
+	flush := max(g.f.ft.flush, 50*time.Millisecond)
+	if g.f.aligned {
+		g.due[eq] = now.Add(flush)
+		return
+	}
+	for !g.due[eq].After(now) {
+		g.due[eq] = g.due[eq].Add(flush)
+	}
+}
+
+// relieve flushes g's largest equipment while g holds past its bound.
+func (g *feedGroup) relieve(now time.Time) {
+	for g.f.groupBytes > 0 && g.total > g.f.groupBytes || g.f.maxHeld > 0 && 2*g.held > g.f.maxHeld {
+		largest := ""
+		for eq, b := range g.bytes {
+			if largest == "" || b > g.bytes[largest] || b == g.bytes[largest] && eq < largest {
+				largest = eq
+			}
+		}
+		if largest == "" {
+			return
+		}
+		g.flushEq(largest, now)
 	}
 }
 
