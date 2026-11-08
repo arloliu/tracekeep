@@ -231,6 +231,7 @@ func newLoadHarness(t *testing.T, spec loadSpec) *loadHarness {
 	if got := d.Env.Config.Catalog.Engine; got != engine {
 		t.Fatalf("dev's catalog is %s, want %s", got, engine)
 	}
+	series := installSeries(ctx, t, d)
 	h := &loadHarness{t: t, d: d, spec: spec, engine: engine, put: &putting{ObjectStore: d.Env.Store, put: make(chan string, 64)}}
 	d.Env.Store = h.put
 	if spec.ackWait > 0 {
@@ -291,6 +292,9 @@ func newLoadHarness(t *testing.T, spec loadSpec) *loadHarness {
 	}
 	if spec.probed {
 		h.consumer()
+	}
+	if series != nil && spec.feed != nil {
+		recordSeries(t.Context(), t, h, series)
 	}
 	b, err := os.ReadFile(filepath.Join(dir, DevTokenFile))
 	if err != nil {
