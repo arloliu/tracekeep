@@ -543,3 +543,35 @@ func TestNextFlushKeepsThePhase(t *testing.T) {
 		}
 	}
 }
+
+// An hour's change flushes the earlier hour's batch at once, or, with HoldHours, leaves both hours to the equipment's next flush.
+func TestConverterHoldHours(t *testing.T) {
+	t.Parallel()
+	for _, hold := range []bool{false, true} {
+		t.Run(fmt.Sprint("hold=", hold), func(t *testing.T) {
+			t.Parallel()
+			catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
+				h := newHarness(t, c)
+				h.conv.HoldHours = hold
+				f := &fixture{t: t}
+				for _, ts := range []string{"2026-11-07 08:59:59.000", "2026-11-07 09:00:01.000"} {
+					h.receive(&fakeMsg{data: f.raw(map[string]any{"kind": KindUnclassified, "text": ts, "ts": ts})})
+				}
+				packs := func() int {
+					n := 0
+					_ = h.store.List(t.Context(), "", func(store.ObjectInfo) error { n++; return nil })
+
+					return n
+				}
+				h.tick(2 * time.Second)
+				if got, want := packs(), map[bool]int{false: 2, true: 0}[hold]; got != want {
+					t.Errorf("%d packs after the hour's change, want %d", got, want)
+				}
+				h.tick(10 * time.Second)
+				if got := packs(); got != 2 {
+					t.Errorf("%d packs after the next flush, want 2", got)
+				}
+			})
+		})
+	}
+}

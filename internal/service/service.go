@@ -76,8 +76,10 @@ type Env struct {
 	passSettled func(at time.Time, batches []*ingest.Batch, err error)
 	// logPhase, when not nil, is the log stage's flush phase (logfeed.Converter.Phase), the load harness's spread schedule.
 	logPhase func(equipmentID string) time.Duration
-	accepts  func(descriptor []byte) bool
-	stepping func(ctx context.Context)
+	// logHoldHours is the log stage's logfeed.Converter.HoldHours, the load harness's switch.
+	logHoldHours bool
+	accepts      func(descriptor []byte) bool
+	stepping     func(ctx context.Context)
 	// apiAddr is the api role's bound address; apiBound, when not nil, runs once it is bound, a test's barrier;
 	// apiShutdown and apiIdle, when not zero, replace the api role's shutdown bound and its server's idle timeout.
 	apiAddr atomic.Value
@@ -561,7 +563,7 @@ func logStage(e *Env, g *ingest.Ingester) (*logfeed.Stage, error) {
 			Devices: logfeed.Devices{Main: l.MainDevice, Rules: rules(l.Devices), Overrides: overrides},
 			Flush:   l.Flush(c.Ingest.FlushInterval), Reorder: l.ReorderWindow, Idle: l.IdlePeriod, AckWait: c.Ingest.AckWait, Pairing: l.PairingWindow,
 			MaxBatchBytes: int(c.Ingest.BatchMaxBytes.Int64()), GroupBytes: int(l.GroupMaxBytes.Int64()), MaxHeld: l.MaxAckPending, HorizonHour: func() int64 { return ingest.HourOf(e.horizon()) }, Now: e.now,
-			Log: e.Log.With("role", "logfeed"), Metrics: m, Phase: e.logPhase,
+			Log: e.Log.With("role", "logfeed"), Metrics: m, Phase: e.logPhase, HoldHours: e.logHoldHours,
 		},
 	}, nil
 }

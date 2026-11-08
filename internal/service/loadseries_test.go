@@ -25,11 +25,13 @@ import (
 // The feed-convert mode's resource series, for judging when the fleet's flushes load the store, the catalog and the bus:
 // TRACEKEEP_LOAD_SERIES names a directory that gets series.csv, a row a second (the packs' registration times are the catalog's own);
 // TRACEKEEP_LOAD_S3 (any value) puts the packs in a new bucket of the S3 store TRACEKEEP_S3_ENDPOINT names, as the store tests do;
-// TRACEKEEP_LOAD_PHASE=spread spreads the log stage's flushes over F (logfeed.Converter.Phase).
+// TRACEKEEP_LOAD_PHASE=spread spreads the log stage's flushes over F (logfeed.Converter.Phase);
+// TRACEKEEP_LOAD_HOURS=hold leaves an earlier hour's batches to the equipment's next flush (logfeed.Converter.HoldHours).
 const (
 	envSeries = "TRACEKEEP_LOAD_SERIES"
 	envLoadS3 = "TRACEKEEP_LOAD_S3"
 	envPhase  = "TRACEKEEP_LOAD_PHASE"
+	envHours  = "TRACEKEEP_LOAD_HOURS"
 )
 
 // seriesStore counts the puts of log captures (their keys naming a fleet equipment) and of traffic captures apart.
@@ -106,6 +108,7 @@ func installSeries(ctx context.Context, t *testing.T, d *Dev) *seriesStore {
 	if os.Getenv(envPhase) == "spread" {
 		d.Env.logPhase = spreadPhase(d.Env.Config.Logfeed.Flush(d.Env.Config.Ingest.FlushInterval))
 	}
+	d.Env.logHoldHours = os.Getenv(envHours) == "hold"
 	s := &seriesStore{ObjectStore: d.Env.Store}
 	d.Env.Store = s
 
