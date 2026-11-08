@@ -438,10 +438,69 @@ type feed struct {
 	// purge settles a group by purging its stream below its checkpoint instead of acknowledging each entry (the feed-streams mode's
 	// TRACEKEEP_LOAD_SETTLE=purge): its streams keep messages by limits, its consumers acknowledge nothing,
 	// and its checkpoint is the stream sequence below which it holds nothing; purged times each purge.
-	purge    bool
-	purged   purgeTimes
-	acks     atomic.Uint64
-	progress atomic.Uint64
+	purge  bool
+	purged purgeTimes
+	// restarted, with the feed's purge, is the restart's record: every group resumed from its checkpoint (feed.restart).
+	restarted restartRecord
+	acks      atomic.Uint64
+	progress  atomic.Uint64
+}
+
+// restartRecord is a restart's outcome: when it began, the entries read again (delivered once before it),
+// and each group's time until it delivered past what it had before.
+type restartRecord struct {
+	mu       sync.Mutex
+	at       time.Time
+	groups   int
+	reread   uint64
+	caughtUp []time.Duration
+}
+
+func (r *restartRecord) String() string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.at.IsZero() {
+		return "no restart"
+	}
+	slowest := time.Duration(0)
+	for _, d := range r.caughtUp {
+		slowest = max(slowest, d)
+	}
+
+	return fmt.Sprintf("restart: %d groups, %d entries read again, %d groups caught up, the slowest after %s",
+		r.groups, r.reread, len(r.caughtUp), slowest.Round(time.Millisecond))
+}
+
+// restart stops every group, drops what it holds, and resumes each from its checkpoint on a new consumer, as a restarted converter does.
+func (f *feed) restart(ctx context.Context) {
+	began := time.Now()
+	for _, g := range f.groups {
+		g.halt()
+	}
+	f.restarted.mu.Lock()
+	f.restarted.at, f.restarted.groups = began, len(f.groups)
+	f.restarted.mu.Unlock()
+	for _, g := range f.groups {
+		g.mu.Lock()
+		cp, last := g.checkpoint, g.last
+		g.reorder, g.batches, g.due, g.bytes = nil, map[string][]jetstream.Msg{}, map[string]time.Time{}, map[string]int{}
+		g.held, g.total, g.last = 0, 0, 0
+		g.rereadUpTo, g.restartedAt, g.caught = last, began, false
+		g.mu.Unlock()
+		s := f.streams[g.n%len(f.streams)]
+		cfg := f.consumerConfig(g.n, g.filter)
+		if err := s.DeleteConsumer(ctx, cfg.Durable); err != nil {
+			f.t.Errorf("restart: group %d: %v", g.n, err)
+			continue
+		}
+		cfg.DeliverPolicy, cfg.OptStartSeq = jetstream.DeliverByStartSequencePolicy, max(cp, 1)
+		c, err := s.CreateOrUpdateConsumer(ctx, cfg)
+		if err != nil {
+			f.t.Errorf("restart: group %d: %v", g.n, err)
+			continue
+		}
+		g.start(ctx, c)
+	}
 }
 
 // purgeTimes are the purges' durations and failures.
@@ -594,6 +653,10 @@ type feedGroup struct {
 	last       uint64
 	checkpoint uint64
 	purges     chan uint64
+	// After a restart: deliveries at or below rereadUpTo are read again; caught is set at the first past it.
+	rereadUpTo  uint64
+	restartedAt time.Time
+	caught      bool
 }
 
 type feedHeld struct {
@@ -681,6 +744,18 @@ func (g *feedGroup) add(m jetstream.Msg) {
 		if md, err := m.Metadata(); err == nil {
 			h.seq = md.Sequence.Stream
 			g.last = max(g.last, h.seq)
+			if g.rereadUpTo > 0 && !g.caught {
+				if h.seq <= g.rereadUpTo {
+					g.f.restarted.mu.Lock()
+					g.f.restarted.reread++
+					g.f.restarted.mu.Unlock()
+				} else {
+					g.caught = true
+					g.f.restarted.mu.Lock()
+					g.f.restarted.caughtUp = append(g.f.restarted.caughtUp, time.Since(g.restartedAt))
+					g.f.restarted.mu.Unlock()
+				}
+			}
 		}
 	}
 	g.reorder = append(g.reorder, h)

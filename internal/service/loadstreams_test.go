@@ -23,7 +23,8 @@ import (
 // TRACEKEEP_LOAD_STREAMS is 1, the feed's one partitioned stream, or feedGroups, a stream a group, which the servers' subject mapping
 // partitions the publishes into (scripts/load-feed.sh BUS_FEED_STREAMS), so the publishers name no stream;
 // TRACEKEEP_LOAD_REPLICAS is the streams' replicas, 1 or 3; TRACEKEEP_LOAD_FLUSHES=spread spreads the flushes over F, aligned otherwise;
-// TRACEKEEP_LOAD_SETTLE=purge settles each group by purging below its checkpoint instead of acknowledging each entry (feed.purge).
+// TRACEKEEP_LOAD_SETTLE=purge settles each group by purging below its checkpoint instead of acknowledging each entry (feed.purge),
+// and with it TRACEKEEP_LOAD_RESTART (any value) restarts every group from its checkpoint at 2F (feed.restart).
 // Streams of one replica are placed on the servers in turn by their tags, and a replicated stream's leader too.
 // It needs TRACEKEEP_LOAD_BUS, servers named tb-0, tb-1 and tb-2 tagged with their names, and writes streams.csv under TRACEKEEP_LOAD_SERIES.
 func loadFeedStreams(t *testing.T, smoke bool) {
@@ -52,6 +53,10 @@ func loadFeedStreams(t *testing.T, smoke bool) {
 	end := start.Add(4 * ft.flush)
 	pubs := publishFleet(ctx, url, fs, pool, burstPool, burstAt, ft.dupWindow*3/4)
 	defer pubs.stop()
+	if f.purge && os.Getenv("TRACEKEEP_LOAD_RESTART") != "" {
+		restarting := time.AfterFunc(time.Until(start.Add(2*ft.flush)), func() { f.restart(ctx) })
+		defer restarting.Stop()
+	}
 	dir := cmp.Or(os.Getenv(envSeries), t.TempDir())
 	if err := os.MkdirAll(dir, 0o750); err != nil {
 		t.Fatal(err)
@@ -95,7 +100,7 @@ func loadFeedStreams(t *testing.T, smoke bool) {
 	report := streamsReport(fs, stored, pubs, start, burstAt)
 	settle := "acknowledged"
 	if f.purge {
-		settle = "purged: " + f.purged.String()
+		settle = "purged: " + f.purged.String() + "; " + f.restarted.String()
 	}
 	t.Logf("feed-streams: %d stream(s) of %d replica(s), flushes %s, settled %s, placement %s\n%s", streams, replicas,
 		map[bool]string{true: "aligned", false: "spread"}[f.aligned], settle, f.placement(t), report)
