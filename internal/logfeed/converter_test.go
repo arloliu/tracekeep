@@ -513,3 +513,33 @@ func TestConverterHoldsHandles(t *testing.T) {
 		}
 	})
 }
+
+// A phase keeps an equipment's flushes on the wall clock's times congruent to it modulo F, whenever the previous flush ran;
+// without one, a flush is due F after the previous one.
+func TestNextFlushKeepsThePhase(t *testing.T) {
+	f := 10 * time.Second
+	at := func(s float64) time.Time { return time.Unix(0, int64(s*float64(time.Second))) }
+	c := &Converter{Flush: f}
+	if got := c.nextFlush("A", at(1000.5)); !got.Equal(at(1010.5)) {
+		t.Errorf("without a phase: %v, want F later", got)
+	}
+	c.Phase = func(id string) time.Duration {
+		if id == "A" {
+			return 3 * time.Second
+		}
+		return -time.Second
+	}
+	for _, tc := range []struct {
+		id        string
+		now, want float64
+	}{
+		{"A", 1000.5, 1003}, // its next phase time
+		{"A", 1003, 1013},   // at its phase: the next one, never now
+		{"A", 1007.2, 1013}, // a flush off its phase, such as an hour's change, keeps the phase
+		{"B", 1000.5, 1009}, // a negative phase is taken modulo F
+	} {
+		if got := c.nextFlush(tc.id, at(tc.now)); !got.Equal(at(tc.want)) {
+			t.Errorf("%s at %v: %v, want %v", tc.id, tc.now, got.Sub(at(1000)), at(tc.want).Sub(at(1000)))
+		}
+	}
+}

@@ -82,9 +82,12 @@ type Converter struct {
 	GroupBytes, MaxHeld int
 	// HorizonHour returns the oldest hour retention keeps.
 	HorizonHour func() int64
-	Now         func() time.Time
-	Log         *slog.Logger
-	Metrics     *metrics.Logfeed
+	// Phase, when set, places each equipment's flushes on the wall clock: due at the times congruent to its phase modulo F,
+	// whatever flushed it before, so a fleet's flushes stay spread over F; nil makes a flush due F after the previous one.
+	Phase   func(equipmentID string) time.Duration
+	Now     func() time.Time
+	Log     *slog.Logger
+	Metrics *metrics.Logfeed
 
 	// register, a test seam, is called in place of the catalog's RegisterLogFlush when set.
 	register func(context.Context, catalog.Lease, *catalog.LogFlush) (catalog.PackOutcome, error)
@@ -267,7 +270,7 @@ func (c *Converter) file(ctx context.Context, e *Entry, now time.Time) (*fileSta
 	eq := c.equipment[e.EquipmentID]
 	if eq == nil {
 		eq = &equipmentState{id: e.EquipmentID, files: map[fileKey]*fileState{}, captures: map[catalog.LogKey]*captureState{},
-			batches: map[batchKey]*batch{}, parts: map[batchKey]int{}, nextFlush: now.Add(c.Flush)}
+			batches: map[batchKey]*batch{}, parts: map[batchKey]int{}, nextFlush: c.nextFlush(e.EquipmentID, now)}
 		c.equipment[e.EquipmentID] = eq
 	}
 	k := fileKey{source: e.Source, file: e.File}
@@ -335,7 +338,7 @@ func (c *Converter) Tick(ctx context.Context, now time.Time) error {
 			if err := c.flush(ctx, eq, requests); err != nil {
 				return err
 			}
-			eq.nextFlush = now.Add(c.Flush)
+			eq.nextFlush = c.nextFlush(eq.id, now)
 		}
 	}
 
@@ -364,7 +367,7 @@ func (c *Converter) relieve(ctx context.Context, now time.Time, requests []trace
 		if err := c.flush(ctx, largest, requests); err != nil {
 			return err
 		}
-		largest.nextFlush = now.Add(c.Flush)
+		largest.nextFlush = c.nextFlush(largest.id, now)
 	}
 }
 
@@ -689,6 +692,21 @@ func (c *Converter) limits() (maxBytes, maxMeta int) {
 	return maxBytes, maxMeta
 }
 
+// nextFlush is when an equipment's flush is next due after now: F later, or with Phase the next time on its phase.
+func (c *Converter) nextFlush(equipmentID string, now time.Time) time.Time {
+	if c.Phase == nil || c.Flush <= 0 {
+		return now.Add(c.Flush)
+	}
+	f := int64(c.Flush)
+	nowNs := now.UnixNano()
+	next := nowNs - nowNs%f + (int64(c.Phase(equipmentID))%f+f)%f
+	for next <= nowNs {
+		next += f
+	}
+
+	return time.Unix(0, next)
+}
+
 // full reports eq's batches holding a limit's worth, which makes its flush due.
 func (c *Converter) full(eq *equipmentState) bool {
 	maxBytes, maxMeta := c.limits()
@@ -985,7 +1003,7 @@ func (c *Converter) Load(opens []catalog.OpenLog) error {
 		eq := c.equipment[o.Key.EquipmentID]
 		if eq == nil {
 			eq = &equipmentState{id: o.Key.EquipmentID, files: map[fileKey]*fileState{}, captures: map[catalog.LogKey]*captureState{},
-				batches: map[batchKey]*batch{}, parts: map[batchKey]int{}, nextFlush: now.Add(c.Flush)}
+				batches: map[batchKey]*batch{}, parts: map[batchKey]int{}, nextFlush: c.nextFlush(o.Key.EquipmentID, now)}
 			c.equipment[o.Key.EquipmentID] = eq
 		}
 		k := fileKey{source: o.Key.Source, file: o.Key.File}
@@ -1019,7 +1037,7 @@ func (c *Converter) clone(l catalog.Lease, n int) *Converter {
 		Lease: l, Group: n, Catalog: c.Catalog, Store: c.Store, KeyPrefix: c.KeyPrefix, WorkDir: c.WorkDir, Writer: c.Writer,
 		Configs: c.Configs, Bindable: c.Bindable, Keys: c.Keys, Devices: c.Devices, Flush: c.Flush, Reorder: c.Reorder, Idle: c.Idle,
 		AckWait: c.AckWait, Pairing: c.Pairing, MaxBatchBytes: c.MaxBatchBytes, MetaBytes: c.MetaBytes, GroupBytes: c.GroupBytes, MaxHeld: c.MaxHeld,
-		HorizonHour: c.HorizonHour,
-		Now:         c.Now, Log: c.Log, Metrics: c.Metrics,
+		HorizonHour: c.HorizonHour, Phase: c.Phase,
+		Now: c.Now, Log: c.Log, Metrics: c.Metrics,
 	}
 }
