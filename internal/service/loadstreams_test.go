@@ -24,7 +24,8 @@ import (
 // partitions the publishes into (scripts/load-feed.sh BUS_FEED_STREAMS), so the publishers name no stream;
 // TRACEKEEP_LOAD_REPLICAS is the streams' replicas, 1 or 3; TRACEKEEP_LOAD_FLUSHES=spread spreads the flushes over F, aligned otherwise;
 // TRACEKEEP_LOAD_SETTLE=purge settles each group by purging below its checkpoint instead of acknowledging each entry (feed.purge),
-// and with it TRACEKEEP_LOAD_RESTART (any value) restarts every group from its checkpoint at 2F (feed.restart).
+// and with it TRACEKEEP_LOAD_RESTART (any value) restarts every group from its checkpoint at 2F (feed.restart);
+// TRACEKEEP_LOAD_FEED_GIB, when set, is the streams' max_bytes in all, in GiB, in place of the feed's 40.
 // Streams of one replica are placed on the servers in turn by their tags, and a replicated stream's leader too.
 // It needs TRACEKEEP_LOAD_BUS, servers named tb-0, tb-1 and tb-2 tagged with their names, and writes streams.csv under TRACEKEEP_LOAD_SERIES.
 func loadFeedStreams(t *testing.T, smoke bool) {
@@ -68,17 +69,18 @@ func loadFeedStreams(t *testing.T, smoke bool) {
 	defer out.Close()
 	w := csv.NewWriter(out)
 	defer w.Flush()
-	_ = w.Write([]string{"unix", "made", "published", "failed", "retried", "stored", "msgs", "consumer_acks", "held"})
+	_ = w.Write([]string{"unix", "made", "published", "failed", "retried", "stored", "msgs", "consumer_acks", "held", "bytes"})
 	var stored []float64 // stored publishes a second
 	var last uint64
 	tick := time.NewTicker(time.Second)
 	defer tick.Stop()
 	for now := range tick.C {
-		var seq, msgs uint64
+		var seq, msgs, size uint64
 		for _, s := range f.streams {
 			if si, err := s.Info(ctx); err == nil {
 				seq += si.State.LastSeq
 				msgs += si.State.Msgs
+				size += si.State.Bytes
 			}
 		}
 		held := 0
@@ -87,7 +89,7 @@ func loadFeedStreams(t *testing.T, smoke bool) {
 		}
 		_ = w.Write([]string{strconv.FormatInt(now.Unix(), 10), strconv.FormatUint(pubs.made.Load(), 10), strconv.FormatUint(pubs.acked.Load(), 10),
 			strconv.FormatUint(pubs.failed.Load(), 10), strconv.FormatUint(pubs.retried.Load(), 10), strconv.FormatUint(seq, 10), strconv.FormatUint(msgs, 10),
-			strconv.FormatUint(f.acks.Load(), 10), strconv.Itoa(held)})
+			strconv.FormatUint(f.acks.Load(), 10), strconv.Itoa(held), strconv.FormatUint(size, 10)})
 		w.Flush()
 		if last != 0 && seq >= last {
 			stored = append(stored, float64(seq-last))
@@ -160,10 +162,14 @@ func newFeedStreams(t *testing.T, url string, streams, replicas int, ft feedTime
 		t.Fatal(err)
 	}
 	f := &feed{t: t, ft: ft, name: feedStream, prefix: feedPrefix, nc: nc, js: js, purge: purge}
+	maxBytes := int64(feedMaxBytes)
+	if gib, err := strconv.ParseInt(os.Getenv("TRACEKEEP_LOAD_FEED_GIB"), 10, 64); err == nil && gib > 0 {
+		maxBytes = gib << 30
+	}
 	for n := range streams {
 		cfg := jetstream.StreamConfig{
 			Subjects: []string{feedPrefix + ".*"}, Retention: jetstream.WorkQueuePolicy, Storage: jetstream.FileStorage, Replicas: replicas,
-			MaxBytes: feedMaxBytes / int64(streams), Discard: jetstream.DiscardNew, Duplicates: ft.dupWindow, Name: feedStream,
+			MaxBytes: maxBytes / int64(streams), Discard: jetstream.DiscardNew, Duplicates: ft.dupWindow, Name: feedStream,
 		}
 		if purge {
 			cfg.Retention = jetstream.LimitsPolicy
