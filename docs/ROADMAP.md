@@ -115,7 +115,8 @@ its closed plan's last text, with its measurements and the gate's runs, is at 3c
     (nats-server v2.15.1 `server/filestore.go`, `compactLocked` calling `ensurePerSubjectInfoLoaded`):
     with the flushes aligned its p99 was 5 s and 21 purges failed, with them spread 0.48 s and none.
   - At 120 GiB the publishes were retried 1.4 to 12.8 million times without one failing, which is not explained.
-  - A purge filtered by subject loads every block of the stream and checks each message's subject (`PurgeEx` calling `loadMsgsWithLock`):
+  - A purge filtered by subject loads the blocks in its subject's range and checks each message's subject (`PurgeEx` calling `loadMsgsWithLock`),
+    on the fleet's interleaved groups nearly every block:
     on one shared stream its p99 was 3 s and 442 purges failed, unsuitable for the fleet on this host.
   - A restart from the checkpoints read 7.9 million entries again, about F of the fleet, and every group caught up within 41 s;
     a converter's decoding of them is not measured.
