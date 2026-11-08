@@ -22,7 +22,8 @@ import (
 // until its flush as the log stage does, to judge how the stream's layout bears it:
 // TRACEKEEP_LOAD_STREAMS is 1, the feed's one partitioned stream, or feedGroups, a stream a group, which the servers' subject mapping
 // partitions the publishes into (scripts/load-feed.sh BUS_FEED_STREAMS), so the publishers name no stream;
-// TRACEKEEP_LOAD_REPLICAS is the streams' replicas, 1 or 3; TRACEKEEP_LOAD_FLUSHES=spread spreads the flushes over F, aligned otherwise.
+// TRACEKEEP_LOAD_REPLICAS is the streams' replicas, 1 or 3; TRACEKEEP_LOAD_FLUSHES=spread spreads the flushes over F, aligned otherwise;
+// TRACEKEEP_LOAD_SETTLE=purge settles each group by purging below its checkpoint instead of acknowledging each entry (feed.purge).
 // Streams of one replica are placed on the servers in turn by their tags, and a replicated stream's leader too.
 // It needs TRACEKEEP_LOAD_BUS, servers named tb-0, tb-1 and tb-2 tagged with their names, and writes streams.csv under TRACEKEEP_LOAD_SERIES.
 func loadFeedStreams(t *testing.T, smoke bool) {
@@ -39,7 +40,7 @@ func loadFeedStreams(t *testing.T, smoke bool) {
 	ft := feedModeTimes(smoke, !smoke)
 	fs := fleetOf(smoke)
 	ft.maxAckPending = cmp.Or(fs.ackPending, ft.maxAckPending)
-	f := newFeedStreams(t, url, streams, replicas, ft)
+	f := newFeedStreams(t, url, streams, replicas, ft, os.Getenv("TRACEKEEP_LOAD_SETTLE") == "purge")
 	f.aligned = os.Getenv("TRACEKEEP_LOAD_FLUSHES") != "spread"
 	f.groupBytes, f.maxHeld = 128<<20, ft.maxAckPending // logfeed.group_max_bytes's default and the fleet's max_ack_pending
 	ctx := t.Context()
@@ -92,8 +93,12 @@ func loadFeedStreams(t *testing.T, smoke bool) {
 		}
 	}
 	report := streamsReport(fs, stored, pubs, start, burstAt)
-	t.Logf("feed-streams: %d stream(s) of %d replica(s), flushes %s, placement %s\n%s", streams, replicas,
-		map[bool]string{true: "aligned", false: "spread"}[f.aligned], f.placement(t), report)
+	settle := "acknowledged"
+	if f.purge {
+		settle = "purged: " + f.purged.String()
+	}
+	t.Logf("feed-streams: %d stream(s) of %d replica(s), flushes %s, settled %s, placement %s\n%s", streams, replicas,
+		map[bool]string{true: "aligned", false: "spread"}[f.aligned], settle, f.placement(t), report)
 }
 
 // streamsReport is the run's stored rate before, during and after the burst: its mean and its lowest ten seconds, and the publishes' outcome.
@@ -137,7 +142,7 @@ func streamsReport(fs fleetShape, stored []float64, pubs *feedPublishers, start,
 
 // newFeedStreams creates the feed's streams on url, each of replicas, and a group consumer a group:
 // one stream partitioned into the groups, or a stream a group capturing the subjects the servers' mapping gives it.
-func newFeedStreams(t *testing.T, url string, streams, replicas int, ft feedTimes) *feed {
+func newFeedStreams(t *testing.T, url string, streams, replicas int, ft feedTimes, purge bool) *feed {
 	t.Helper()
 	ctx := t.Context()
 	nc, err := nats.Connect(url)
@@ -149,11 +154,14 @@ func newFeedStreams(t *testing.T, url string, streams, replicas int, ft feedTime
 	if err != nil {
 		t.Fatal(err)
 	}
-	f := &feed{t: t, ft: ft, name: feedStream, prefix: feedPrefix, nc: nc, js: js}
+	f := &feed{t: t, ft: ft, name: feedStream, prefix: feedPrefix, nc: nc, js: js, purge: purge}
 	for n := range streams {
 		cfg := jetstream.StreamConfig{
 			Subjects: []string{feedPrefix + ".*"}, Retention: jetstream.WorkQueuePolicy, Storage: jetstream.FileStorage, Replicas: replicas,
 			MaxBytes: feedMaxBytes / int64(streams), Discard: jetstream.DiscardNew, Duplicates: ft.dupWindow, Name: feedStream,
+		}
+		if purge {
+			cfg.Retention = jetstream.LimitsPolicy
 		}
 		if streams == 1 {
 			cfg.SubjectTransform = &jetstream.SubjectTransformConfig{Source: feedPrefix + ".*",
