@@ -84,10 +84,12 @@ type Converter struct {
 	HorizonHour func() int64
 	// Phase, when set, places each equipment's flushes on the wall clock: due at the times congruent to its phase modulo F,
 	// whatever flushed it before, so a fleet's flushes stay spread over F; nil makes a flush due F after the previous one.
-	Phase   func(equipmentID string) time.Duration
-	Now     func() time.Time
-	Log     *slog.Logger
-	Metrics *metrics.Logfeed
+	Phase func(equipmentID string) time.Duration
+	// HoldHours, when set, leaves an earlier hour's batches to the equipment's next flush instead of flushing them at the hour change.
+	HoldHours bool
+	Now       func() time.Time
+	Log       *slog.Logger
+	Metrics   *metrics.Logfeed
 
 	// register, a test seam, is called in place of the catalog's RegisterLogFlush when set.
 	register func(context.Context, catalog.Lease, *catalog.LogFlush) (catalog.PackOutcome, error)
@@ -333,7 +335,7 @@ func (c *Converter) Tick(ctx context.Context, now time.Time) error {
 				}
 			}
 		}
-		due := now.After(eq.nextFlush) || eq.stopDue() || eq.requested(requests) || c.full(eq) || eq.hourChanged()
+		due := now.After(eq.nextFlush) || eq.stopDue() || eq.requested(requests) || c.full(eq) || !c.HoldHours && eq.hourChanged()
 		if due {
 			if err := c.flush(ctx, eq, requests); err != nil {
 				return err
@@ -1037,7 +1039,7 @@ func (c *Converter) clone(l catalog.Lease, n int) *Converter {
 		Lease: l, Group: n, Catalog: c.Catalog, Store: c.Store, KeyPrefix: c.KeyPrefix, WorkDir: c.WorkDir, Writer: c.Writer,
 		Configs: c.Configs, Bindable: c.Bindable, Keys: c.Keys, Devices: c.Devices, Flush: c.Flush, Reorder: c.Reorder, Idle: c.Idle,
 		AckWait: c.AckWait, Pairing: c.Pairing, MaxBatchBytes: c.MaxBatchBytes, MetaBytes: c.MetaBytes, GroupBytes: c.GroupBytes, MaxHeld: c.MaxHeld,
-		HorizonHour: c.HorizonHour, Phase: c.Phase,
+		HorizonHour: c.HorizonHour, Phase: c.Phase, HoldHours: c.HoldHours,
 		Now: c.Now, Log: c.Log, Metrics: c.Metrics,
 	}
 }
