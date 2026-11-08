@@ -96,6 +96,7 @@ An entry is stale only when it arrives behind an entry of its file the converter
 a first-in, first-out buffer delays an entry and the entries after it alike, however long it waits, so only the time from sending to the stored publish, retries included, stays within the window.
 A buffer set to block stops the tailer when it fills, and the files on disk resume from its checkpoint; one set to drop loses entries, which show only as missing records.
 Holding a whole peak this way is the design's, not yet measured: T-66's runs delayed publishes by about a second, never by the reorder window.
+The stream also slows for about a minute once every flush interval, as the fleet's held entries are acknowledged (`logfeed.md` §15.10), which the buffers hold as they hold a peak.
 
 ## Checking a pipeline
 
