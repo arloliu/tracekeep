@@ -435,8 +435,51 @@ type feed struct {
 	// or holding more than half of maxHeld, its largest equipment flushes first; zero bounds nothing.
 	aligned             bool
 	groupBytes, maxHeld int
-	acks                atomic.Uint64
-	progress            atomic.Uint64
+	// purge settles a group by purging its stream below its checkpoint instead of acknowledging each entry (the feed-streams mode's
+	// TRACEKEEP_LOAD_SETTLE=purge): its streams keep messages by limits, its consumers acknowledge nothing,
+	// and its checkpoint is the stream sequence below which it holds nothing; purged times each purge.
+	purge    bool
+	purged   purgeTimes
+	acks     atomic.Uint64
+	progress atomic.Uint64
+}
+
+// purgeTimes are the purges' durations and failures.
+type purgeTimes struct {
+	mu     sync.Mutex
+	took   []time.Duration
+	failed int
+}
+
+func (p *purgeTimes) add(took time.Duration, err error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if err != nil {
+		p.failed++
+		return
+	}
+	p.took = append(p.took, took)
+}
+
+// String is the purges' count, failures, p50, p99, max and total time.
+func (p *purgeTimes) String() string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	took := slices.Clone(p.took)
+	slices.Sort(took)
+	var total time.Duration
+	for _, d := range took {
+		total += d
+	}
+	q := func(f float64) time.Duration {
+		if len(took) == 0 {
+			return 0
+		}
+		return took[min(len(took)-1, int(float64(len(took))*f))]
+	}
+
+	return fmt.Sprintf("%d purges, %d failed, p50 %s, p99 %s, max %s, total %s", len(took), p.failed,
+		q(.5).Round(time.Microsecond), q(.99).Round(time.Microsecond), q(1).Round(time.Microsecond), total.Round(time.Millisecond))
 }
 
 // newFeed creates the stream logfeed.md §15.4 specifies under name and prefix, R3, with maxBytes, partitioned into feedGroups when partitioned,
@@ -488,6 +531,10 @@ func newFeed(t *testing.T, url, name, prefix string, ft feedTimes, maxBytes int6
 // consumerConfig is group n's durable consumer: explicit acknowledgements, the mode's ack_wait and pending limit, unlimited deliveries,
 // its state in memory (logfeed.md §15.4, T-64).
 func (f *feed) consumerConfig(n int, filter string) jetstream.ConsumerConfig {
+	if f.purge {
+		return jetstream.ConsumerConfig{Durable: fmt.Sprintf("logfeed-%d", n), FilterSubject: filter, AckPolicy: jetstream.AckNonePolicy, MemoryStorage: true}
+	}
+
 	return jetstream.ConsumerConfig{
 		Durable: fmt.Sprintf("logfeed-%d", n), FilterSubject: filter, AckPolicy: jetstream.AckExplicitPolicy,
 		AckWait: cmp.Or(f.ft.ackWait, time.Minute), MaxAckPending: f.ft.maxAckPending, MaxDeliver: -1,
@@ -541,12 +588,19 @@ type feedGroup struct {
 	want  int
 	order []uint64
 	allAt time.Time
+	// With the feed's purge: first is each batched equipment's first stream sequence, last the latest delivered,
+	// checkpoint the latest one handed to the purger through purges.
+	first      map[string]uint64
+	last       uint64
+	checkpoint uint64
+	purges     chan uint64
 }
 
 type feedHeld struct {
-	at time.Time
-	eq string
-	m  jetstream.Msg
+	at  time.Time
+	eq  string
+	m   jetstream.Msg
+	seq uint64
 }
 
 // start consumes c into g and runs g's loop.
@@ -554,7 +608,50 @@ func (g *feedGroup) start(ctx context.Context, c jetstream.Consumer) {
 	ctx, g.cancel = context.WithCancel(ctx)
 	g.done = make(chan struct{})
 	g.subscribe(c)
+	if g.f.purge {
+		g.first, g.purges = map[string]uint64{}, make(chan uint64, 1)
+		go g.purger(ctx)
+	}
 	go g.loop(ctx)
+}
+
+// purger purges g's stream below each checkpoint handed to it, g's subjects alone on a stream it shares.
+func (g *feedGroup) purger(ctx context.Context) {
+	s := g.f.streams[g.n%len(g.f.streams)]
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case cp := <-g.purges:
+			opts := []jetstream.StreamPurgeOpt{jetstream.WithPurgeSequence(cp)}
+			if len(g.f.streams) == 1 {
+				opts = append(opts, jetstream.WithPurgeSubject(g.filter))
+			}
+			began := time.Now()
+			err := s.Purge(ctx, opts...)
+			g.f.purged.add(time.Since(began), err)
+		}
+	}
+}
+
+// settle hands the purger g's checkpoint when it moved: the least stream sequence g holds, or the one after the latest delivered.
+func (g *feedGroup) settle() {
+	cp := g.last + 1
+	if len(g.reorder) > 0 {
+		cp = min(cp, g.reorder[0].seq)
+	}
+	for _, seq := range g.first {
+		cp = min(cp, seq)
+	}
+	if g.last == 0 || cp <= g.checkpoint {
+		return
+	}
+	g.checkpoint = cp
+	select {
+	case <-g.purges:
+	default:
+	}
+	g.purges <- cp
 }
 
 func (g *feedGroup) subscribe(c jetstream.Consumer) {
@@ -579,7 +676,14 @@ func (g *feedGroup) add(m jetstream.Msg) {
 			}
 		}
 	}
-	g.reorder = append(g.reorder, feedHeld{at: time.Now(), eq: eq, m: m})
+	h := feedHeld{at: time.Now(), eq: eq, m: m}
+	if g.f.purge {
+		if md, err := m.Metadata(); err == nil {
+			h.seq = md.Sequence.Stream
+			g.last = max(g.last, h.seq)
+		}
+	}
+	g.reorder = append(g.reorder, h)
 	g.held++
 }
 
@@ -602,6 +706,9 @@ func (g *feedGroup) loop(ctx context.Context) {
 			for ; i < len(g.reorder) && now.Sub(g.reorder[i].at) >= ft.reorder; i++ {
 				h := g.reorder[i]
 				g.batches[h.eq] = append(g.batches[h.eq], h.m)
+				if _, ok := g.first[h.eq]; g.f.purge && !ok {
+					g.first[h.eq] = h.seq
+				}
 				if g.bytes == nil {
 					g.bytes = map[string]int{}
 				}
@@ -622,7 +729,10 @@ func (g *feedGroup) loop(ctx context.Context) {
 				g.flushEq(eq, now)
 			}
 			g.relieve(now)
-			if !now.Before(nextBeat) {
+			if g.f.purge {
+				g.settle()
+			}
+			if !g.f.purge && !now.Before(nextBeat) {
 				for _, h := range g.reorder {
 					_ = h.m.InProgress()
 				}
@@ -642,9 +752,12 @@ func (g *feedGroup) loop(ctx context.Context) {
 // flushEq acknowledges eq's batch and makes its next flush due: F after now when aligned, else at its phase's next time.
 func (g *feedGroup) flushEq(eq string, now time.Time) {
 	for _, m := range g.batches[eq] {
-		_ = m.Ack()
+		if !g.f.purge {
+			_ = m.Ack()
+		}
 		g.f.acks.Add(1)
 	}
+	delete(g.first, eq)
 	g.held -= len(g.batches[eq])
 	g.total -= g.bytes[eq]
 	delete(g.batches, eq)
