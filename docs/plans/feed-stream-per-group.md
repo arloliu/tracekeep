@@ -11,7 +11,7 @@ Out of scope: spreading the flushes over F, leaving an earlier hour to the next 
 
 | Step | Work | State |
 |---|---|---|
-| 1 — probes | the risks the design rests on, on a three-node cluster, before the spec changes: the mapping in a configuration-file account, the streams' placement, a server's loss, each stream's limit | done #PR |
+| 1 — probes | the risks the design rests on, on a three-node cluster, before the spec changes: the mapping in a configuration-file account, the streams' placement, a server's loss, each stream's limit | done #121 |
 | 2 — spec and decision | `logfeed.md` §15.2, §15.4, §15.10 and §15.11 for a stream a group; the owner's answers below and each choice step 1 leaves to the owner as decisions; the pipeline and configuration guides, the servers' mapping with placeholder tokens for the operations team that maintains it | pending |
 | 3 — streams and `migrate` | `logfeed.replicas`; the group streams, their consumers and limits in `internal/bus`; `migrate` replacing the one stream once drained, and changing G with the mapping; preflight's overlap checks over every group stream | pending |
 | 4 — the stage, preflight and status | each group's converter on its own stream; a preflight probe that the mapping routes the feed's subjects; `tracekeep status`, metrics and readiness per stream | pending |
