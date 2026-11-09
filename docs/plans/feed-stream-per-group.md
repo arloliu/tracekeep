@@ -11,8 +11,8 @@ Out of scope: spreading the flushes over F, leaving an earlier hour to the next 
 
 | Step | Work | State |
 |---|---|---|
-| 1 — probes | the risks the design rests on, on a three-node cluster, before the spec changes: the mapping under each account mode, the streams' placement, a server's loss, each stream's limit | pending |
-| 2 — spec and decision | `logfeed.md` §15.2, §15.4, §15.10 and §15.11 for a stream a group; a decision for each choice step 1 leaves to the owner; the pipeline and configuration guides, the servers' mapping with placeholder tokens for the operations team that maintains it | pending |
+| 1 — probes | the risks the design rests on, on a three-node cluster, before the spec changes: the mapping in a configuration-file account, the streams' placement, a server's loss, each stream's limit | pending |
+| 2 — spec and decision | `logfeed.md` §15.2, §15.4, §15.10 and §15.11 for a stream a group; the owner's answers below and each choice step 1 leaves to the owner as decisions; the pipeline and configuration guides, the servers' mapping with placeholder tokens for the operations team that maintains it | pending |
 | 3 — streams and `migrate` | `logfeed.replicas`; the group streams, their consumers and limits in `internal/bus`; `migrate` replacing the one stream once drained, and changing G with the mapping; preflight's overlap checks over every group stream | pending |
 | 4 — the stage, preflight and status | each group's converter on its own stream; a preflight probe that the mapping routes the feed's subjects; `tracekeep status`, metrics and readiness per stream | pending |
 | 5 — the gate | the correctness cases the change touches, on the cluster and both engines; the load case on the new layout, on SQLite then MariaDB | pending |
@@ -38,7 +38,8 @@ Each probe runs on a three-node cluster as `scripts/load-feed.sh` starts it, unl
 
 ## The owner's answers (2026-11-09)
 
-- The clusters' accounts are in the servers' configuration files, and the operations team maintains the mapping in them;
-  tracekeep never writes it, the guide gives the block, and preflight refuses a mapping that does not route the feed's subjects.
-- The feed is deployed nowhere, so `migrate` replaces the one stream once drained instead of moving its messages.
+Step 2 records them in the spec and the decision log; until then they bound the probes and the steps.
+
+- Accounts are in the servers' configuration files, the operations team maintaining the mapping.
+- The feed is deployed nowhere, so `migrate` replaces the one stream once drained.
 - The measurement harness of 2026-11-08 (the feed-streams mode, the flush and series switches) is on an unmerged branch; step 5 takes the parts the gate needs.
