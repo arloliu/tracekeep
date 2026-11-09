@@ -23,8 +23,8 @@ A probe of step 1 that fails, or a choice it leaves open, stops the plan for the
 
 ## Step 1 — probes
 
-The probes ran on three nats-server processes of the module's version, each tagged with its name, in a configuration-file account,
-as `TestFeedGroupProbes` on the unmerged branch `test/feed-group-probes` (9b473af), with the harness's fleet of 2,000 equipment tokens; step 5 takes what the gate needs.
+The probes ran on three nats-server processes of the module's version, each tagged with its name, in a configuration-file account, with the harness's fleet of 2,000 equipment tokens.
+They are `TestFeedGroupProbes` on the unmerged branch `test/feed-group-probes` (9b473af); step 5 takes what the gate needs.
 
 - **The mapping** passes:
   every token's group under the account mapping equals the one the stream transform gives today, for all 2,000 tokens, both being the server's one partition function;
@@ -32,12 +32,13 @@ as `TestFeedGroupProbes` on the unmerged branch `test/feed-group-probes` (9b473a
 - **Placement** needs tags:
   32 streams of one replica with no placement all landed on one server, in every round and every run, the server differing from cluster to cluster;
   tagged round-robin, they landed 11, 11 and 10.
-- **A server lost** loses nothing, and stalls its groups for the outage:
+- **A server lost** and restarted with its storage loses no stored entry, and stalls its groups for the outage:
   a publish to a group on the killed server fails after about 0.5 s (`no response from stream`), and the other servers' groups take theirs meanwhile;
   the group's fetch fails at once with no responders, which the stage's loop does not pass over, so its converter gives up, releases the lease and retries after its pause;
-  restarted, the server is healthy and takes the group's publishes again within about 1.3 s;
+  restarted, the server was healthy after about 1.3 s, and the group's first publish after that was taken;
   the consumer is there, its in-memory state reset, which the stage's start replaces anyway,
-  and the six entries held unacknowledged before the loss are redelivered at once, joining their held copies (the converter's duplicate path), acknowledged at the flush.
+  and the six entries fetched but unacknowledged before the loss are redelivered at once.
+  The probe fetched them itself: the stage, having given the group up, abandons its held entries, and the converter taking the group again converts their redeliveries afresh.
 - **Each stream's limit** is the stream's own:
   a full group's stream refuses publishes (error 10077) while the others take theirs;
   the harness's fleet is uniform, 60 to 66 equipment a group against a mean of 62.5, so the fullest group reaches `logfeed.max_bytes` / G at about 95 % of the total;
@@ -52,8 +53,9 @@ Step 2 starts once the owner chooses:
 - **Each stream's limit**: `logfeed.max_bytes` / G with a headroom factor, or each stream at `logfeed.max_bytes`, the total bounded by the servers' disks.
 - **A server lost**, the cost of one replica: inferred from Vector's source, not measured, the sink's concurrency limit wraps its retries,
   so requests to the lost server's groups, about a third, keep their slots retrying until every slot is theirs,
-  and the whole feed stalls for the outage, its buffer and then the hosts' files holding the entries, none lost;
-  a stream of three replicas rides a server's loss out in seconds.
+  and the whole feed stalls for the outage;
+  the entries wait in its buffer and then in the hosts' files, lost only if the retries are bounded, the buffer drops, the files rotate away, or the server's storage is lost;
+  a stream of three replicas keeps taking publishes once a remaining server leads it.
   The owner accepts it, or asks for the stall measured first.
 
 ## The owner's answers (2026-11-09)
