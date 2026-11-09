@@ -57,7 +57,7 @@ Milestones the owner set after seed v21 §12's (T-52).
 
 ## Active plans
 
-None.
+- [Feed stream a group](plans/feed-stream-per-group.md) — each lease group's own stream of one replica (T-67).
 
 Phase 0 is done (#1, #3, #4, #7, #8).
 Phase 1 is done (#9, #11, #13, #14, #16, #17, #18, #19).
