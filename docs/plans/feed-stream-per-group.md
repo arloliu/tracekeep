@@ -1,6 +1,6 @@
 # Feed stream a group
 
-Status: draft (2026-11-08) — awaiting the owner
+Status: active (2026-11-09) — step 1 next
 
 The work that gives each of the host log feed's lease groups a stream of its own, of one replica, its entries acknowledged one by one as today (T-67),
 the servers' subject mapping partitioning the publishes so the pipeline names no stream.
@@ -12,7 +12,7 @@ Out of scope: spreading the flushes over F, leaving an earlier hour to the next 
 | Step | Work | State |
 |---|---|---|
 | 1 — probes | the risks the design rests on, on a three-node cluster, before the spec changes: the mapping under each account mode, the streams' placement, a server's loss, each stream's limit | pending |
-| 2 — spec and decision | `logfeed.md` §15.2, §15.4, §15.10 and §15.11 for a stream a group; a decision for each choice step 1 leaves to the owner; the pipeline and configuration guides, the servers' mapping with placeholder tokens | pending |
+| 2 — spec and decision | `logfeed.md` §15.2, §15.4, §15.10 and §15.11 for a stream a group; a decision for each choice step 1 leaves to the owner; the pipeline and configuration guides, the servers' mapping with placeholder tokens for the operations team that maintains it | pending |
 | 3 — streams and `migrate` | `logfeed.replicas`; the group streams, their consumers and limits in `internal/bus`; `migrate` replacing the one stream once drained, and changing G with the mapping; preflight's overlap checks over every group stream | pending |
 | 4 — the stage, preflight and status | each group's converter on its own stream; a preflight probe that the mapping routes the feed's subjects; `tracekeep status`, metrics and readiness per stream | pending |
 | 5 — the gate | the correctness cases the change touches, on the cluster and both engines; the load case on the new layout, on SQLite then MariaDB | pending |
@@ -25,9 +25,8 @@ A probe of step 1 that fails, or a choice it leaves open, stops the plan for the
 
 Each probe runs on a three-node cluster as `scripts/load-feed.sh` starts it, unless it says otherwise, and records its outcome here.
 
-- **The mapping under each account mode**:
-  the account mapping `<logprefix>.*` to `<logprefix>.{{partition(G,1)}}.{{wildcard(1)}}` with G group streams,
-  in a configuration-file account and in an operator's JWT account, its mapping in the account's JWT;
+- **The mapping**:
+  the account mapping `<logprefix>.*` to `<logprefix>.{{partition(G,1)}}.{{wildcard(1)}}` with G group streams, in a configuration-file account;
   every publish acknowledged by its group's stream, a retried publish dropped by that stream's duplicate window,
   and each token's group equal to the one the stream transform gives today, which the open captures' `lease_group` rows hold.
 - **Placement**: where 32 streams of one replica land with no placement given, counted per server, and with a placement tag per server;
@@ -37,8 +36,9 @@ Each probe runs on a three-node cluster as `scripts/load-feed.sh` starts it, unl
 - **Each stream's limit**: the fleet's bytes per group, its heavy equipment hashed unevenly, against `logfeed.max_bytes` divided by G;
   whether a group's stream fills first under discard-new while the others have room.
 
-## Open questions for the owner
+## The owner's answers (2026-11-09)
 
-- The account mode of the clusters the feed is deployed to, configuration file or operator JWT, and who maintains the mapping in it.
-- The feed is assumed deployed nowhere, no service release carrying it, so `migrate` replaces the one stream once drained instead of moving its messages.
+- The clusters' accounts are in the servers' configuration files, and the operations team maintains the mapping in them;
+  tracekeep never writes it, the guide gives the block, and preflight refuses a mapping that does not route the feed's subjects.
+- The feed is deployed nowhere, so `migrate` replaces the one stream once drained instead of moving its messages.
 - The measurement harness of 2026-11-08 (the feed-streams mode, the flush and series switches) is on an unmerged branch; step 5 takes the parts the gate needs.
