@@ -5,7 +5,7 @@ Status: current (2026-11-07) — from P3 as T-60 accepted it, delivered by the h
 Covers the host log feed: a log pipeline parses the SECS traffic a host program prints to its text log,
 and tracekeep pairs the entries, builds the frames and writes `capture_method = log` captures as they arrive.
 New text, section 15, written from P3 (host log feed), T-59, T-60 and T-62; [README.md](README.md) maps each section to its file.
-Read before touching `internal/logfeed`, the feed's stream or its configuration, or the pipeline guide (`docs/guides/log-pipeline.md`),
+Read before touching `internal/logfeed`, the feed's streams or their configuration, or the pipeline guide (`docs/guides/log-pipeline.md`),
 and before changing a part of another spec this one names.
 
 ## Interface
@@ -18,8 +18,10 @@ Contract changes go through proposals, which the subject [README.md](README.md) 
   A log capture is its own series, never merged with, deduplicated against or compared to a gateway's, and it claims no coverage (§15.1).
 - **The pipeline's contract**: one JSON entry per message on `tklog.<equipment token>`, published with a publish acknowledgement and a message id,
   its in-flight time bounded below the reorder window (§15.2, §15.3).
-- **Stream**: `TRACEKEEP_LOGFEED`, work-queue, file storage without compression, `max_bytes` with discard-new, a duplicate window,
-  and a subject transform that partitions the equipment into lease groups; group consumers whose state is in memory; ensured by `migrate`, no incarnation (§15.4).
+- **Streams**: one a lease group, `TRACEKEEP_LOGFEED_<n>`, of one replica by default and placed round-robin by the servers' tags,
+  work-queue, file storage without compression, `max_bytes` with discard-new, a duplicate window;
+  the servers' account mapping, which the operations team maintains, partitions the equipment into the groups' subjects;
+  group consumers whose state is in memory; ensured by `migrate`, no incarnation (§15.4).
 - **Conversion**: per lease group, under its catalog lease: reorder by offset, join duplicates, drop stale entries below a file's watermark, pair header and body, `sml.Parse`, build the frame, classify, mask, batch (§15.5).
 - **Captures**: one per (source, `equipment_id`, device, file); the converter writes the start and the stop; the compactor never closes one (§15.6).
 - **Registration**: one transaction per equipment's flush, its capture rows locked in `capture_id` order, the group's fence checked, the file watermarks raised;
@@ -53,7 +55,7 @@ host pod
 forwarder
   route: traffic entries → parse each entry statelessly into fields → NATS, subject tklog.<equipment token>
          every other entry → the deployment's log store
-NATS: TRACEKEEP_LOGFEED, subject transformed to tklog.<group>.<equipment token>
+NATS: the account's mapping tklog.<equipment token> → tklog.<group>.<equipment token>, group n's stream TRACEKEEP_LOGFEED_<n>
 tracekeep ingest, the log stage (logfeed.enabled; one converter per lease group, under its catalog lease)
   reorder by offset → dedup → pair header and body → sml.Parse → build frame → classify + mask
     → batch per (capture, UTC hour) → tracepack writer → ObjectStore.Put (staging/) → register → ack
@@ -84,12 +86,14 @@ Lines of other threads interleaved between a header and its body go to the log s
 - an **in-flight bound**: an entry is published, retries included, within the reorder window (§15.5) of the next entry its source tailed for the equipment being published, across a file's rotation too,
   so concurrent publishes and retries reorder an equipment's entries only inside the window (T-62);
   an entry published later is stale and never converted (§15.5 *Stale entries*);
-- its buffers sized for the outage the feed's stream is sized for (§15.10).
+- its buffers sized for the outages the deployment accepts: a full stream's, and a server's loss, which stalls the whole feed (§15.10).
 
 The forwarder's sink publishes one event a message with no batching or compression,
 awaits each publish's acknowledgement in JetStream mode, retries every failed publish, and holds one request in flight unless configured otherwise,
 so its concurrency is raised to reach the fleet's rate and its retry duration is capped below the reorder window;
 the guide states both.
+A publish to a group whose server is lost fails and is retried, keeping its request's slot,
+so the lost groups' publishes come to hold every slot and the whole feed waits for the server, whatever the concurrency (§15.10).
 
 ### 15.3 The entry
 
@@ -123,27 +127,44 @@ The contract between the pipeline and tracekeep is a versioned field schema, one
 
 ### 15.4 Stream and consumers
 
-- **The stream**, `TRACEKEEP_LOGFEED` by default (`logfeed.stream`), subjects `<logprefix>.*`, `logprefix` `tklog` by default (`logfeed.prefix`).
+- **The streams**, one a lease group (T-67): group n's is `<stream>_<n>`, `logfeed.stream` being `TRACEKEEP_LOGFEED` by default,
+  its subjects `<logprefix>.<n>.*`, `logprefix` being `tklog` by default (`logfeed.prefix`), and n running below G, `logfeed.lease_groups` (32).
   The service refuses a log prefix whose first token equals the traffic or parking prefix's, and a feed stream named as either stream,
-  and `migrate` and preflight check the feed stream's subjects against both existing streams (`busconfig.SubjectsOverlap`);
+  and `migrate` and preflight check every group stream's subjects against both existing streams (`busconfig.SubjectsOverlap`);
   the check is the service's, never the SDK's `busconfig` validation (T-60).
 - Work-queue retention and file storage, as `TRACEKEEP_TRAFFIC`: a message is deleted once acknowledged.
 - **No compression** (T-64), which `migrate` cannot change in a running store, so it refuses a compressed feed stream, to be drained, deleted and migrated again:
   a work queue's acknowledgement into a compressed block makes the server decompress the whole block,
   which under the fleet's load took about 1.1 GB of memory a server and raised the publish latency's 99th percentile from 51 ms to 620 ms (§15.10).
-- **`max_bytes`** (`logfeed.max_bytes`, §15.10) with discard-new, so a full stream refuses the pipeline's publish instead of losing old entries silently;
+- **`max_bytes`**: each stream's is `logfeed.max_bytes` / G × 1.25 (§15.10, T-68), with discard-new, so a full stream refuses the pipeline's publish instead of losing old entries silently;
   the limit counts a message's logical bytes, which the disk holds uncompressed on each replica.
+  `logfeed.max_bytes` is the feed's total, and the streams' limits sum to 1.25 times it, the headroom for a group fuller than the mean;
+  a group past its own limit refuses publishes while the others have room.
+- **Replicas** (`logfeed.replicas`): one by default (T-67), so a server's loss stalls the whole feed for the outage, the entries waiting in the pipeline's buffers (§15.10, T-68).
+  Three keep a group's stream taking publishes once a remaining server leads it, at about three times the bus's resources (T-67).
+- **Placement** (`logfeed.placement_tags`): group n's stream is placed on the server tagged with the list's tag n mod its length, so the streams spread round-robin over the servers;
+  an empty list places none, for a single server, since unplaced streams of one replica all landed on one server (T-68).
+  The operations team tags each server (`server_tags`), each tag naming one server's: two tags on one server put both shares on it.
+  `migrate` places a stream when it creates it; changing the list is a `migrate` step on a drained feed, as changing G is.
 - **A duplicate window** (`logfeed.duplicate_window`, 2 min) longer than the pipeline's retry cap, which the message id keys (T-62).
-- **Lease groups by partition** (T-62): the stream's subject transform maps `<logprefix>.*` to `<logprefix>.{{partition(G,1)}}.{{wildcard(1)}}`,
-  G being `logfeed.lease_groups` (32), so the server assigns each equipment to one group by a deterministic hash of its token,
-  and group n's durable pull consumer, `logfeed-<n>`, filters `<logprefix>.<n>.>`.
+- **The mapping** (T-62, T-67, T-68): the servers' account mapping, in the account the pipeline publishes in,
+  maps `<logprefix>.*` to `<logprefix>.{{partition(G,1)}}.{{wildcard(1)}}`,
+  so the server assigns each equipment to one group by a deterministic hash of its token, and the publish lands on that group's stream.
+  The operations team maintains it in the servers' configuration files (`docs/guides/log-pipeline.md` *The servers*), and tracekeep never writes it;
+  under `tracekeep dev` and in the tests, `internal/testbus` gives the embedded server's account the same mapping.
+  Its partition count is G: a mapping of another count sends some publishes to subjects no stream holds, which the pipeline retries, stalling the whole feed as a lost server does,
+  so preflight checks that the mapping routes the feed's subjects to the group streams (§15.11).
+  Group n's durable pull consumer, `logfeed-<n>`, is on group n's stream.
   tracekeep keeps no list of equipment and computes no hash: a group's equipment are those its consumer delivers.
-  Changing G is a `migrate` step, run with the pipeline stopped, the feed drained and every replica's log stage stopped; `migrate` refuses it while the stream holds a message.
-  It changes the transform and the consumers, then, judged from the lease rows alone so a run interrupted between the two completes on the next,
+- **Changing G** is a `migrate` step with the operations team's change of the mapping's count,
+  run with the pipeline stopped, the feed drained and every replica's log stage stopped; `migrate` refuses it while a group stream holds a message.
+  It creates the new groups' streams and consumers and deletes the retired groups', then, judged from the lease rows alone so a run interrupted between the two completes on the next,
   increments the fence of every `logfeed/<n>` lease, deleting those of retired groups, so no converter of the old G registers again.
   An open capture keeps the group that last registered it until a converter of its new group registers it (§15.6);
   group 0's converter stops the files of captures a retired group last registered once they are idle (§15.6 *Boundaries*).
-- **No incarnation row**: `migrate` ensures the stream and its consumers, and a recreated stream needs none of parking's checks, since nothing is ever parked from it (T-60).
+- **The single stream's replacement**: a store holding the earlier layout's one stream, named `logfeed.stream` with a subject transform,
+  has `migrate` replace it by the group streams once it holds no message, and refuse while it holds one (T-68).
+- **No incarnation row**: `migrate` ensures the streams and their consumers, and a recreated stream needs none of parking's checks, since nothing is ever parked from it (T-60).
 - The feed shares the traffic cluster (V-30), never the gateway's bus, never a cluster of its own (T-60).
 - **Consumers**: each takes ingest's `ack_wait` and its in-progress-ack heartbeat (`architecture.md` §3.1, T-60),
   `AckExplicit` and per-message acknowledgements, `max_deliver` unlimited,
@@ -151,6 +172,8 @@ The contract between the pipeline and tracekeep is a versioned field schema, one
   their state is kept in memory, at the stream's replicas, which a work queue requires (T-64):
   a file consumer writes its whole pending state up to ten times a second on each replica, which under the fleet's load took a third or more of the bus servers' CPU,
   and a consumer lost with the cluster is re-created as a takeover re-creates it (§15.5), delivering every unacknowledged message again from the oldest.
+  A group whose server is lost fails its fetches at once: its converter gives the group up, releasing its lease,
+  and a converter taking it again after its pause, once the server is back with its storage, converts the redelivered entries afresh (T-68).
 - **Lease groups**: group n's lease is the `leases` row `logfeed/<n>`, with a fence token, renewed and lost as the compactor's lease is (`compactor.md` §8.1).
   An `ingest` replica with the feed enabled takes free group leases up to its share, the groups divided by the live members of `members` (`rollouts.md` §6.4), rounded up,
   and consumes only the groups it holds; a replica that loses a lease stops that group's converter at once, acknowledging nothing more.
@@ -368,7 +391,7 @@ At the owner's fleet (the host log feed plan's step 10b, `git show 3c11e5e:docs/
 a burst of 117 MB/s more waited: the stream is the work of one server, which takes its publishes and acknowledgements in turn,
 so the publishes were acknowledged in about 0.9 s at the 99th percentile, the harness's publishers made 65% to 89% of the burst's rate,
 and the stage digested what they published within 2m19s to 4m03s of the burst's end.
-A peak is the forwarders' buffers' to hold (`docs/guides/log-pipeline.md` *Peaks*), not a second stream's; a buffer holding a whole peak is the design's, not yet measured.
+A peak is the forwarders' buffers' to hold (`docs/guides/log-pipeline.md` *Peaks*), as they held a minute of the fleet while a server was lost (*A server lost* below).
 **Why the stream waits**, profiled on 2026-11-08 with the servers' Go profiles (`scripts/load-feed.sh`), every stream of one replica and all of them on one server:
 a work-queue stream whose subjects hold a wildcard removes an acknowledged message only after loading it, to match its subject against the other consumers' filters,
 under the stream's exclusive lock, which storing a publish takes too (nats-server v2.15.1, `server/stream.go`: `ackMsg` → `noInterest` → `checkForInterest`).
@@ -379,10 +402,27 @@ the inbound loop is then blocked about 90% of the time, and the stream stores 5,
 Inferred, not measured: these are the light equipment's entries, which the group's bound rarely flushes early, their flushes due F after their previous ones (§15.7) from a common start, so falling within the same minute.
 The server used about 1.5 of its 16 cores, a quarter of them the garbage collector's, so its cores in all were not the ceiling;
 the traffic stream shared the server and the disk, and these runs do not tell its part apart, neither in the reads nor in the work serialized on one core.
-A stream a group would split the lock, not the loads; spreading the equipment's flushes over F would spread the reloads, and whether it would lessen them is unmeasured.
-Streams of three replicas add the replication's work to the leader's, unmeasured.
+A stream a group splits the lock, not the loads: measured on the same host on 2026-11-08 (`docs/ROADMAP.md` *Open items*, T-67),
+a stream a group of one replica carried the fleet without the dip at every flush, its lowest ten seconds 22,305 entries a second and its publish p99 134 ms, against 5,623 and 712 ms on one stream;
+three replicas carried about a third of the fleet on one stream and 85 % on a stream a group, the latter at about three times the CPU, network and writes.
+Spreading the equipment's flushes over F would spread the reloads, and whether it would lessen them is unmeasured.
+**A server lost**, measured on one host on 2026-11-10 (`git show 41a448c:docs/plans/feed-stream-per-group.md`, T-68):
+three servers, the 32 group streams of one replica placed round-robin by tags, and Vector 0.61 publishing the fleet's rate to all three,
+its retries unbounded and backing off at most 3 s, its buffer a 20 GiB disk buffer blocking when full, its concurrency 256 or adaptive;
+one server killed and restarted with its storage 60 s later, in five runs.
+The whole feed stalled for the outage: the groups on the other servers took nothing in the two runs that killed a server Vector was not connected to,
+and about 500 entries in the minute, against a million before it, in the three that killed the one it was connected to,
+since a publish to a lost group is retried keeping its concurrency slot (§15.2).
+Vector's buffer grew to 1.56 million entries, about 5.8 GiB, for the minute;
+the lost groups took entries 1 s after the server was healthy, and the buffer was below 1,000 entries 11 to 15 s after the restart.
+No entry was discarded or stored twice, none was missing but ten a disk buffer held (`docs/guides/log-pipeline.md` *A server lost*),
+and entries of one file were stored at most 2.9 s out of order.
 **`max_bytes`** = the outage tolerated × 10.1 GB/h, logical bytes: `logfeed.max_bytes` defaults to 40 GiB, about 4 h.
-When the stream is full, the forwarder's publish fails and its buffer fills; with its buffer set to block, backpressure reaches the tailer, which stops tailing,
+Each group's stream holds `max_bytes` / G × 1.25 (§15.4): at the defaults 1.5625 GiB, 50 GiB in all, about 17 GiB on a server holding 11 streams of one replica.
+A group fuller than 1.25 times the mean fills first: the plan's probe, its fleet uniform, put 60 to 66 equipment in a group against a mean of 62.5,
+and a group holds at least its heaviest equipment's share, so one equipment above 1/G of the fleet's bytes fills its stream alone.
+When a group's stream is full, the forwarder's publish to it fails and is retried as a lost server's is, so the whole feed waits, inferred and not measured on the group streams, and its buffer fills;
+with its buffer set to block, backpressure reaches the tailer, which stops tailing,
 and the files on disk resume from its checkpoint, provided the host program keeps them longer than the outage.
 Dropping instead keeps the log store flowing and loses traffic entries, which show only as missing records.
 The deployment chooses; the guide recommends blocking.
@@ -420,10 +460,12 @@ a merged segment's deletion about 0.6 ms (`RegisterPack/miss`, unmeasured for de
 | Key | Default | Meaning |
 |---|---|---|
 | `logfeed.enabled` | false | runs the log stage in the `ingest` role |
-| `logfeed.stream` | `TRACEKEEP_LOGFEED` | the feed's stream |
+| `logfeed.stream` | `TRACEKEEP_LOGFEED` | the feed streams' name: group n's is `<stream>_<n>` |
 | `logfeed.prefix` | `tklog` | its subject prefix |
-| `logfeed.lease_groups` | 32 | G, the stream's partitions and the lease groups; changed only by `migrate` (§15.4) |
-| `logfeed.max_bytes` | 40 GiB | the stream's limit, discard-new |
+| `logfeed.lease_groups` | 32 | G, the lease groups and their streams, the servers' mapping partitioning into as many; changed only by `migrate` with the mapping (§15.4) |
+| `logfeed.max_bytes` | 40 GiB | the feed's total; each group's stream holds `max_bytes` / G × 1.25, discard-new |
+| `logfeed.replicas` | 1 | each group stream's replicas (§15.4) |
+| `logfeed.placement_tags` | none | the servers' tags, group n's stream placed by tag n mod their number (§15.4) |
 | `logfeed.duplicate_window` | 2 min | the stream's duplicate window, longer than the pipeline's retry cap |
 | `logfeed.max_ack_pending` | 100,000 | each group consumer's |
 | `logfeed.group_max_bytes` | 128 MiB | a group's batched payload before its largest equipment flushes (§15.7 *The group's bound*) |
@@ -436,6 +478,8 @@ a merged segment's deletion about 0.6 ms (`RegisterPack/miss`, unmeasured for de
 | `logfeed.device_overrides` | none | per `equipment_id`, rules that replace the table's |
 
 The feed's consumers take `ingest.ack_wait` and its heartbeat.
+Preflight checks that the servers' mapping routes the feed's subjects to the group streams (§15.4);
+`tracekeep status`, the metrics and readiness report each group's stream.
 
 **Admin**:
 `capture stop <id>` on a log capture records a stop request on its `captures` row, which the converter holding the group's lease reads at its next flush and writes as the stop;
@@ -457,7 +501,7 @@ On a gateway's capture it is refused.
 `tracekeep_logfeed_unpaired_total{side=header|body}`, `tracekeep_logfeed_annotations_total{kind}`,
 `tracekeep_logfeed_last_entry_timestamp_seconds` (an entry's arrival),
 `tracekeep_logfeed_last_outcome_timestamp_seconds{outcome}` (an outcome's last count, which the unreadable and late alerts read, as no scrape misses it),
-and the feed's backlog beside the traffic stream's.
+and the feed streams' backlog beside the traffic stream's.
 
 ### 15.12 What it does not do
 

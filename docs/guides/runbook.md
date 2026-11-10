@@ -286,7 +286,7 @@ A panic before a record took its seq faults the capture (`capture_fault`); repor
 ## log-feed-silent
 
 **Alert** `TracekeepLogFeedSilent` (`logfeed.md` §15.11): an equipment whose host log entries arrived in the past day has sent none for 15 minutes,
-or the floor of the feed stream's backlog, what remains between flushes, has grown for 15 minutes.
+or the floor of the feed streams' backlog, what remains between flushes, has grown for 15 minutes.
 
 1. With an `equipment_id`: the host program or its log pipeline for that equipment stopped.
    Equipment that logs nothing, idle or down, sends nothing: check its host program first, then the pipeline's own log and its publications to the bus.

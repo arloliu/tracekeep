@@ -19,7 +19,7 @@ Read when a spec file uses a term you cannot place; the cited section is authori
 | log capture | a capture the log stage converts from the host log feed: `capture_method` `log`, vantage `host`, records `reconstructed`; its own series, claiming no coverage | §15.1, §15.6 |
 | host log feed | the stream of entries a log pipeline parses from a host program's SML text log, one JSON entry a message on `tklog.<equipment token>` | §15.2, §15.3 |
 | source dialect | `source_dialect`, the format a converted capture was read from: `host-sml-feed/<schema version>` for a log capture | §15.6 |
-| lease group | one of the feed stream's partitions of the equipment, converted by the one `ingest` replica holding its catalog lease | §15.4 |
+| lease group | one of the feed's partitions of the equipment, each with a stream of its own, converted by the one `ingest` replica holding its catalog lease | §15.4 |
 | overlap | two captures of one series whose spans intersect, as when two leaders run at once; both are flagged, neither is closed while live | §7.3, §8.2 |
 | seq | a record's position in its capture, from 0, assigned by the producer in capture order; 2^63 − 4 is the last ordinary seq and 2^63 − 1 the close sentinel | §2, §4.2 |
 | gap | a hole in a capture's producer coverage between seq 0 and the frontier, the higher of `highest_seq` and the highest parked seq, that no deferred or terminated seq explains | §7.3 |
