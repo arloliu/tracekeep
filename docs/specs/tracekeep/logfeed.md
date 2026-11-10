@@ -90,7 +90,8 @@ Lines of other threads interleaved between a header and its body go to the log s
 
 The forwarder's sink publishes one event a message with no batching or compression,
 awaits each publish's acknowledgement in JetStream mode, retries every failed publish, and holds one request in flight unless configured otherwise,
-so its concurrency is raised to reach the fleet's rate and its retry duration is capped below the reorder window;
+so its concurrency is raised to reach the fleet's rate, its retries are left unbounded in number, since a bound drops entries,
+and each retry's backoff is capped well below the reorder window, so entries retried through an outage are stored close behind their file's later ones;
 the guide states both.
 A publish to a group whose server is lost fails and is retried, keeping its request's slot,
 so the lost groups' publishes come to hold every slot and the whole feed waits for the server, whatever the concurrency (§15.10).
@@ -145,15 +146,19 @@ The contract between the pipeline and tracekeep is a versioned field schema, one
 - **Placement** (`logfeed.placement_tags`): group n's stream is placed on the server tagged with the list's tag n mod its length, so the streams spread round-robin over the servers;
   an empty list places none, for a single server, since unplaced streams of one replica all landed on one server (T-68).
   The operations team tags each server (`server_tags`), each tag naming one server's: two tags on one server put both shares on it.
+  The list places streams of one replica only: a stream's tags apply to each of its replicas, so a tag naming one server leaves three replicas nowhere to go,
+  and `migrate` refuses a list with `logfeed.replicas` above one, the cluster then spreading each stream's replicas over its servers.
   `migrate` places a stream when it creates it; changing the list is a `migrate` step on a drained feed, as changing G is.
-- **A duplicate window** (`logfeed.duplicate_window`, 2 min) longer than the pipeline's retry cap, which the message id keys (T-62).
+- **A duplicate window** (`logfeed.duplicate_window`, 2 min), which the message id keys (T-62), longer than a retry's delay while the servers answer, the acknowledgement's timeout and the backoff's cap;
+  an outage longer than it can store an entry twice whose first publish was stored but not acknowledged.
 - **The mapping** (T-62, T-67, T-68): the servers' account mapping, in the account the pipeline publishes in,
   maps `<logprefix>.*` to `<logprefix>.{{partition(G,1)}}.{{wildcard(1)}}`,
   so the server assigns each equipment to one group by a deterministic hash of its token, and the publish lands on that group's stream.
   The operations team maintains it in the servers' configuration files (`docs/guides/log-pipeline.md` *The servers*), and tracekeep never writes it;
   under `tracekeep dev` and in the tests, `internal/testbus` gives the embedded server's account the same mapping.
-  Its partition count is G: a mapping of another count sends some publishes to subjects no stream holds, which the pipeline retries, stalling the whole feed as a lost server does,
-  so preflight checks that the mapping routes the feed's subjects to the group streams (§15.11).
+  Its partition count is G: a larger count sends some publishes to subjects no stream holds, which the pipeline retries, stalling the whole feed as a lost server does,
+  and a smaller one leaves the higher groups' streams empty and loads the others more;
+  so preflight checks that the mapping's count is G, its probe publishes reaching every group's stream and no subject without one (§15.11).
   Group n's durable pull consumer, `logfeed-<n>`, is on group n's stream.
   tracekeep keeps no list of equipment and computes no hash: a group's equipment are those its consumer delivers.
 - **Changing G** is a `migrate` step with the operations team's change of the mapping's count,
@@ -420,7 +425,7 @@ and entries of one file were stored at most 2.9 s out of order.
 **`max_bytes`** = the outage tolerated × 10.1 GB/h, logical bytes: `logfeed.max_bytes` defaults to 40 GiB, about 4 h.
 Each group's stream holds `max_bytes` / G × 1.25 (§15.4): at the defaults 1.5625 GiB, 50 GiB in all, about 17 GiB on a server holding 11 streams of one replica.
 A group fuller than 1.25 times the mean fills first: the plan's probe, its fleet uniform, put 60 to 66 equipment in a group against a mean of 62.5,
-and a group holds at least its heaviest equipment's share, so one equipment above 1/G of the fleet's bytes fills its stream alone.
+and a group holds at least its heaviest equipment's share, so one equipment above 1.25/G of the fleet's bytes fills its stream alone before the feed holds `max_bytes`.
 When a group's stream is full, the forwarder's publish to it fails and is retried as a lost server's is, so the whole feed waits, inferred and not measured on the group streams, and its buffer fills;
 with its buffer set to block, backpressure reaches the tailer, which stops tailing,
 and the files on disk resume from its checkpoint, provided the host program keeps them longer than the outage.
@@ -466,7 +471,7 @@ a merged segment's deletion about 0.6 ms (`RegisterPack/miss`, unmeasured for de
 | `logfeed.max_bytes` | 40 GiB | the feed's total; each group's stream holds `max_bytes` / G × 1.25, discard-new |
 | `logfeed.replicas` | 1 | each group stream's replicas (§15.4) |
 | `logfeed.placement_tags` | none | the servers' tags, group n's stream placed by tag n mod their number (§15.4) |
-| `logfeed.duplicate_window` | 2 min | the stream's duplicate window, longer than the pipeline's retry cap |
+| `logfeed.duplicate_window` | 2 min | the stream's duplicate window, longer than a retry's delay while the servers answer |
 | `logfeed.max_ack_pending` | 100,000 | each group consumer's |
 | `logfeed.group_max_bytes` | 128 MiB | a group's batched payload before its largest equipment flushes (§15.7 *The group's bound*) |
 | `logfeed.reorder_window` | 30 s | §15.5 *Order*; the pipeline's in-flight bound stays below it |
@@ -478,7 +483,7 @@ a merged segment's deletion about 0.6 ms (`RegisterPack/miss`, unmeasured for de
 | `logfeed.device_overrides` | none | per `equipment_id`, rules that replace the table's |
 
 The feed's consumers take `ingest.ack_wait` and its heartbeat.
-Preflight checks that the servers' mapping routes the feed's subjects to the group streams (§15.4);
+Preflight checks that the servers' mapping partitions the feed's subjects into G, every group's stream reached (§15.4);
 `tracekeep status`, the metrics and readiness report each group's stream.
 
 **Admin**:

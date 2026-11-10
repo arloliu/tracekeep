@@ -100,7 +100,7 @@ Watch `vector_buffer_size_events` and `component_discarded_events_total`; `compo
 
 **One aggregator a host**: a host's files go through one aggregator, or a delay of one of them reorders a file by that delay.
 fluent-bit's `Upstream` sends each flush to the next node, and `out_forward` runs two workers by default;
-spread over two aggregators, a 40 s stall of one made 138,000 entries stale.
+spread over two aggregators, a 40 s stall of one stored 138,000 entries 30 s or more behind a later entry of their file, which the converter drops as stale.
 Point each host's forward output at one aggregator with `workers 1`, or at a balancer that pins a host's connections.
 
 ## Peaks
@@ -113,7 +113,7 @@ An entry is stale only when it arrives behind an entry of its file the converter
 a first-in, first-out buffer delays an entry and the entries after it alike, however long it waits, so only the time from sending to the stored publish, retries included, stays within the window.
 A buffer set to block stops the tailer when it fills, and the files on disk resume from its checkpoint; one set to drop loses entries, which show only as missing records.
 Measured with Vector 0.61 on 2026-11-08: a 60 s stall at the fleet's rate filled a memory buffer with 1.46 million entries, 6.5 GB;
-they were stored within 20 s of its end, each delayed by at most the stall, none stale, lost or stored twice;
+they were stored within 20 s of its end, each delayed by at most the stall, none 30 s or more behind a later entry of its file, none lost or stored twice;
 a buffer too small for the stall blocked the source, which then caught up at 86,000 entries a second.
 On one stream the feed also slowed for about a minute once every flush interval, as held entries were acknowledged together; a stream a group removes that dip (`logfeed.md` §15.10).
 
@@ -150,10 +150,12 @@ accounts {
 }
 ```
 
-Its count is G exactly: another sends some publishes to subjects no stream holds, which the pipeline retries until the whole feed stalls.
+Its count is G exactly: a larger one sends some publishes to subjects no stream holds, which the pipeline retries until the whole feed stalls,
+and a smaller one leaves the higher groups' streams empty; tracekeep's preflight refuses either.
 Changing G changes the mapping together with a `migrate` run, on a drained feed (`configuration.md`).
 
-The **tags**: each server carries a tag of its own, and `logfeed.placement_tags` lists them, so the groups' streams spread round-robin over the servers:
+The **tags**: with streams of one replica, each server carries a tag of its own, and `logfeed.placement_tags` lists them, so the groups' streams spread round-robin over the servers;
+with three replicas the list stays empty:
 
 ```text
 server_tags: ["<SERVER-TAG>"]

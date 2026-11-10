@@ -315,7 +315,7 @@ not JSON, a field of the envelope missing or of the wrong type, its `equipment_i
 older than their file's registered watermark, or of a file or capture already stopped.
 
 1. Entries retried by the pipeline for longer than `logfeed.reorder_window`, or held in flight longer, arrive past it:
-   cap the pipeline's retry duration and in-flight time below the window (`log-pipeline.md`), or widen the window.
+   cap the pipeline's retry backoff and in-flight time below the window (`log-pipeline.md`), or widen the window.
 2. A replica that crashed after registering a flush and before acknowledging it has its redeliveries counted here once; that needs nothing.
 3. Entries of a file the host program writes again after its next dated file began are stale by design.
 
