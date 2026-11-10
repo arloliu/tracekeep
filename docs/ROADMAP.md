@@ -101,7 +101,7 @@ its closed plan's last text, with its measurements and the gate's runs, is at 3c
   the latter at about three times the CPU, network and writes of a stream a group of one replica.
   The owner chose on 2026-11-08 to take this next (T-67): a stream a group of one replica, acknowledged as today,
   the servers' subject mapping keeping the publishers unaware of the streams;
-  the mapping is so far tried on one server only, not in a cluster or under JWT accounts.
+  the mapping is tried on three servers under configuration-file accounts (T-68), not under JWT accounts.
 - A log-style use was measured on the same host and day and is not taken up for now (T-67):
   a stream a group of one replica kept by limits and consumed with no acknowledgement,
   each flush registering in its transaction the group's checkpoint, the stream sequence below which every entry is settled

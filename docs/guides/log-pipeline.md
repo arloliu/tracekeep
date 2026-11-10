@@ -77,26 +77,87 @@ So, for every entry:
 - the time from sending it to its stored publish, retries included, stays below `logfeed.reorder_window`:
   a wait in a first-in, first-out buffer before it is sent delays the entries tailed after it alike, so it does not count (*Peaks*);
 - the retry duration stays below `logfeed.duplicate_window` (2 min), or a late retry is stored twice;
-- publishes run concurrently enough to reach the fleet's rate: one publish in flight reaches about 1,200 entries a second, far below a large fleet's;
+  Vector cannot bound a retry's total duration, so this holds while an outage is shorter than the window, and a retry past it is unmeasured;
+- publishes run concurrently enough to reach the fleet's rate, the publishes in flight about the rate times the round trip to the bus:
+  one in flight reached 24,750 entries a second at a 40 µs round trip and about 670 at 2 to 3 ms, so the fleet needs about 72 at 3 ms;
   concurrent publishes may reorder an equipment's entries, which tracekeep puts back in order as long as each stays within the reorder window
   of the next entry tailed for the equipment, across a file's rotation too (`logfeed.md` §15.2).
 
 With Vector, for example, a `nats` sink with `jetstream.enabled` awaits each acknowledgement and retries every error,
-and `jetstream.headers.message_id` sets the message id from a field the transform built;
-its `request.concurrency` defaults to one request in flight for the whole sink, so raise it to the fleet's rate,
-and bound its retries below the windows above, its buffer first-in, first-out.
+its acknowledgement timing out after async-nats's 5 s whatever `request.timeout_secs` says,
+and `jetstream.headers.message_id` sets the message id from a field the transform built.
+Measured with Vector 0.61 at the fleet's rate on 2026-11-08 and 2026-11-10 (the measurements kept outside the repository), set:
+
+- `request.concurrency: 256`, fixed, since its default holds one request in flight for the whole sink;
+  `adaptive` also reached the fleet's rate, its limit settling between 36 and 87;
+- `request.retry_attempts` unset, so unlimited, since an exhausted retry drops its entry;
+- `request.retry_max_duration_secs: 3`, which caps each backoff:
+  while a full stream refused publishes, the default 30 s stored entries up to 47 s behind later ones of their file, and 3 s kept them within 5 s;
+- `buffer.type: disk` with `when_full: block`, first-in, first-out, since a memory buffer loses what it holds when Vector restarts, up to millions of entries;
+- `buffer.max_size` for the outage the deployment accepts (*A server lost*).
+
+Watch `vector_buffer_size_events` and `component_discarded_events_total`; `component_errors_total` stays 0 through retries.
+
+**One aggregator a host**: a host's files go through one aggregator, or a delay of one of them reorders a file by that delay.
+fluent-bit's `Upstream` sends each flush to the next node, and `out_forward` runs two workers by default;
+spread over two aggregators, a 40 s stall of one made 138,000 entries stale.
+Point each host's forward output at one aggregator with `workers 1`, or at a balancer that pins a host's connections.
 
 ## Peaks
 
-The feed is one stream, whose publishes one server takes in turn (`logfeed.md` §15.10, T-66):
-a fleet's steady rate it takes, but a peak above it, many pieces of equipment logging large messages at once, is acknowledged more slowly,
+Each lease group's stream is the work of one server, and the streams spread over the servers (`logfeed.md` §15.4, T-67):
+a peak above the fleet's steady rate, many pieces of equipment logging large messages at once, is acknowledged more slowly,
 and every forwarder of the fleet waits on its acknowledgements meanwhile.
-So the forwarder's buffer holds a peak's worth of entries, its rate above the steady one times its length, and sends them once the stream catches up.
+So the forwarder's buffer holds a peak's worth of entries, its rate above the steady one times its length, and sends them once the streams catch up.
 An entry is stale only when it arrives behind an entry of its file the converter has already released, one that arrived a reorder window or more before it (`logfeed.md` §15.5):
 a first-in, first-out buffer delays an entry and the entries after it alike, however long it waits, so only the time from sending to the stored publish, retries included, stays within the window.
 A buffer set to block stops the tailer when it fills, and the files on disk resume from its checkpoint; one set to drop loses entries, which show only as missing records.
-Holding a whole peak this way is the design's, not yet measured: T-66's runs delayed publishes by about a second, never by the reorder window.
-The stream also slows for about a minute once every flush interval, as held entries are acknowledged together (`logfeed.md` §15.10), which the buffers hold as they hold a peak.
+Measured with Vector 0.61 on 2026-11-08: a 60 s stall at the fleet's rate filled a memory buffer with 1.46 million entries, 6.5 GB;
+they were stored within 20 s of its end, each delayed by at most the stall, none stale, lost or stored twice;
+a buffer too small for the stall blocked the source, which then caught up at 86,000 entries a second.
+On one stream the feed also slowed for about a minute once every flush interval, as held entries were acknowledged together; a stream a group removes that dip (`logfeed.md` §15.10).
+
+## A server lost
+
+With each group's stream of one replica (`logfeed.replicas`, the default), a server's loss stalls the whole feed until the server is back (`logfeed.md` §15.10, T-68):
+a publish to a group on the lost server fails and is retried keeping its request's slot,
+so those publishes, about a third of the entries with three servers, come to hold every slot, whether the concurrency is fixed or adaptive.
+Measured with Vector 0.61 at the fleet's rate, 24,700 entries a second, 95 MB/s, on 2026-11-10:
+a minute's outage grew its disk buffer to 1.56 million entries, about 5.8 GiB, and its container's memory, page cache included, to about 6.2 GiB;
+the buffer was below 1,000 entries 11 to 15 s after the server's restart, with nothing discarded or stored twice.
+So size `buffer.max_size` at about 6 GiB a minute of the outage the deployment accepts, at the fleet's rate, and give Vector's host the memory beside it:
+20 GiB holds about 3 minutes.
+Past it the buffer blocks and the tailer stops, resuming from its checkpoint as long as the host program keeps its files.
+
+Vector 0.61's disk buffer can leave a burst's tail unread until the next entry arrives (Vector issues #23456 and #23605, their fixes not merged):
+in bursts of random size to one server with no fault, it held a tail of 1 to 150 entries in 13 and in 17 of 200 bursts, and a memory buffer in none of 200.
+Nothing is lost: under a fleet's traffic the next entry comes within milliseconds, and an aggregator gone idle holds its last entries until one does.
+
+## The servers
+
+The operations team configures the traffic cluster's servers for the feed (`logfeed.md` §15.4, T-68); every value below is a placeholder.
+
+The **mapping**, in the account the pipeline publishes in and tracekeep reads from,
+partitions the feed's subjects into G groups, G being `logfeed.lease_groups` (32), with `logfeed.prefix` (`tklog`) on both sides:
+
+```text
+accounts {
+  <ACCOUNT> {
+    jetstream: enabled
+    users: [{user: <USER>, password: <PASSWORD>}]
+    mappings { "<PREFIX>.*": "<PREFIX>.{{partition(<G>,1)}}.{{wildcard(1)}}" }
+  }
+}
+```
+
+Its count is G exactly: another sends some publishes to subjects no stream holds, which the pipeline retries until the whole feed stalls.
+Changing G changes the mapping together with a `migrate` run, on a drained feed (`configuration.md`).
+
+The **tags**: each server carries a tag of its own, and `logfeed.placement_tags` lists them, so the groups' streams spread round-robin over the servers:
+
+```text
+server_tags: ["<SERVER-TAG>"]
+```
 
 ## Checking a pipeline
 

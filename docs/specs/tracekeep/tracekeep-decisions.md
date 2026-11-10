@@ -984,3 +984,25 @@ Its choices (the mapping's owner and form under each account mode, the streams' 
 Considered and not taken for now: a log-style use, each group's stream purged below a checkpoint the flush registers, unacknowledged,
 which smoothed the publishes but held about F of the fleet in the stream and stalled it for seconds a purge;
 and spreading the flushes over F, which measured worse than aligned flushes on a stream a group, to be explained first.
+
+### T-68 — the feed streams' mapping, placement, limits and one replica's stall (2026-11-10)
+
+The owner chose, on 2026-11-09 and 2026-11-10, from the probes and measurements of the feed-stream-a-group plan (`git show 41a448c:docs/plans/feed-stream-per-group.md`), the choices T-67 left to it.
+**The mapping**: the accounts are in the servers' configuration files, and the operations team maintains the account mapping that partitions the feed's subjects into the groups' (`logfeed.md` §15.4);
+tracekeep never writes it, and preflight checks that it routes the feed's subjects.
+Probed on three servers in a configuration-file account: every token's group under the account mapping equals the one the stream transform gave, for 2,000 tokens,
+the server's one partition function serving both.
+**The change from one stream**: the feed is deployed nowhere, so `migrate` replaces the one stream by the group streams once it holds no message.
+**Placement**: `migrate` places each group's stream by a `logfeed.placement_tags` list of the servers' tags, round-robin over the groups; the operations team tags each server.
+Probed: 32 unplaced streams of one replica all landed on one server, every round; placed by tags, 11, 11 and 10.
+**Each stream's limit**: `logfeed.max_bytes` / G × 1.25, `logfeed.max_bytes` staying the feed's total; the limits sum to 1.25 times it, which the servers' disks hold,
+and a group past its own limit refuses publishes while the others have room.
+**One replica, accepted with its stall**: measured with Vector 0.61 at the fleet's rate, a server's loss stalls the whole feed for the outage,
+a publish to a lost group being retried keeping its concurrency slot whether the concurrency is fixed or adaptive;
+a minute's outage grew Vector's buffer by 1.56 million entries, about 5.8 GiB, discarded none and stored none twice, and the buffer was below 1,000 entries 11 to 15 s after the server's restart.
+Vector's buffer is sized for the outage a deployment accepts, and `logfeed.replicas` remains for one that wants three.
+Found on the way: Vector 0.61's disk buffer can leave a burst's tail unread until the next entry arrives (Vector issues #23456 and #23605, their fixes not merged),
+which the pipeline guide notes: nothing is lost, and an aggregator gone idle holds its last entries until one does.
+Considered and not taken: the operations team placing each stream by hand, which nothing checks;
+each stream at `logfeed.max_bytes`, its total bounded by the servers' disks alone;
+three replicas, at about three times the bus's resources (T-67).
