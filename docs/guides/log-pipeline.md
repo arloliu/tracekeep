@@ -74,10 +74,12 @@ tracekeep holds each file's entries for `logfeed.reorder_window` (30 s) to put t
 an entry arriving after a later one of its file has been registered is stale, counted and dropped (`log-entries-late`).
 So, for every entry:
 
-- the time from sending it to its stored publish, retries included, stays below `logfeed.reorder_window`:
-  a wait in a first-in, first-out buffer before it is sent delays the entries tailed after it alike, so it does not count (*Peaks*);
-- the retry duration stays below `logfeed.duplicate_window` (2 min), or a late retry is stored twice;
-  Vector cannot bound a retry's total duration, so this holds while an outage is shorter than the window, and a retry past it is unmeasured;
+- it is stored within `logfeed.reorder_window` of the next entry tailed after it for its equipment (`logfeed.md` §15.2):
+  a wait that delays the entries after it alike does not count, in a first-in, first-out buffer before it is sent or in retries through an outage that hold every publish (*Peaks*, *A server lost*);
+  what counts is its delay beyond the next entry's, a retry's backoff above all, so cap the backoff well below the window;
+- a publish stored but not acknowledged is retried within `logfeed.duplicate_window` (2 min), or the retry is stored twice:
+  while the servers answer, a retry comes within the acknowledgement's timeout and the backoff's cap;
+  Vector cannot bound a retry's total duration, so through an outage longer than the window it may come later, which is unmeasured;
 - publishes run concurrently enough to reach the fleet's rate, the publishes in flight about the rate times the round trip to the bus:
   one in flight reached 24,750 entries a second at a 40 µs round trip and about 670 at 2 to 3 ms, so the fleet needs about 72 at 3 ms;
   concurrent publishes may reorder an equipment's entries, which tracekeep puts back in order as long as each stays within the reorder window
@@ -110,7 +112,7 @@ a peak above the fleet's steady rate, many pieces of equipment logging large mes
 and every forwarder of the fleet waits on its acknowledgements meanwhile.
 So the forwarder's buffer holds a peak's worth of entries, its rate above the steady one times its length, and sends them once the streams catch up.
 An entry is stale only when it arrives behind an entry of its file the converter has already released, one that arrived a reorder window or more before it (`logfeed.md` §15.5):
-a first-in, first-out buffer delays an entry and the entries after it alike, however long it waits, so only the time from sending to the stored publish, retries included, stays within the window.
+a first-in, first-out buffer delays an entry and the entries after it alike, however long it waits, so only an entry's delay beyond the next one's stays within the window.
 A buffer set to block stops the tailer when it fills, and the files on disk resume from its checkpoint; one set to drop loses entries, which show only as missing records.
 Measured with Vector 0.61 on 2026-11-08: a 60 s stall at the fleet's rate filled a memory buffer with 1.46 million entries, 6.5 GB;
 they were stored within 20 s of its end, each delayed by at most the stall, none 30 s or more behind a later entry of its file, none lost or stored twice;
