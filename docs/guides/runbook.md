@@ -23,7 +23,7 @@ Read when an alert names an incident; each alert the Helm chart ships links its 
 | `producer-drops` (`TracepubDropping`) | the gateway's `tracepub_records_dropped_total{reason}` | remove the drop's reason at the gateway or the bus | the dropped seqs stay gaps |
 | `log-feed-silent` (`TracekeepLogFeedSilent`) | `tracekeep_logfeed_last_entry_timestamp_seconds{equipment_id}`, `tracekeep_logfeed_stream_backlog_messages`, `tracekeep status`'s `feed` | restore the pipeline's route, or the log stage's throughput | none: past the feed stream's limit, the pipeline's publications are refused |
 | `log-entry-unreadable` (`TracekeepLogEntryUnreadable`) | `tracekeep_logfeed_last_outcome_timestamp_seconds{outcome="unreadable"}`, `tracekeep_logfeed_entries_total{outcome="unreadable"}` | fix the pipeline's entry for the equipment | none: the entry was acknowledged unconverted |
-| `log-entries-late` (`TracekeepLogEntriesLate`) | `tracekeep_logfeed_last_outcome_timestamp_seconds{outcome="stale"}`, `tracekeep_logfeed_entries_total{outcome="stale"}` | bound the pipeline's retries and in-flight time below `logfeed.reorder_window` | none: a late entry was acknowledged unconverted |
+| `log-entries-late` (`TracekeepLogEntriesLate`) | `tracekeep_logfeed_last_outcome_timestamp_seconds{outcome="stale"}`, `tracekeep_logfeed_entries_total{outcome="stale"}` | cap the pipeline's retry backoff and an entry's delay beyond the next one's below `logfeed.reorder_window` | none: a late entry was acknowledged unconverted |
 
 ## key-binding-mismatch
 
@@ -314,8 +314,8 @@ not JSON, a field of the envelope missing or of the wrong type, its `equipment_i
 **Alert** `TracekeepLogEntriesLate`: within the hour entries arrived stale (`logfeed.md` §15.5 *Stale entries*):
 older than their file's registered watermark, or of a file or capture already stopped.
 
-1. Entries retried by the pipeline for longer than `logfeed.reorder_window`, or held in flight longer, arrive past it:
-   cap the pipeline's retry backoff and in-flight time below the window (`log-pipeline.md`), or widen the window.
+1. Entries the pipeline stored `logfeed.reorder_window` or more behind a later entry of their file, a long retry backoff or a file spread over two aggregators, arrive past it:
+   cap the pipeline's retry backoff and an entry's delay beyond the next one's below the window (`log-pipeline.md`), or widen the window.
 2. A replica that crashed after registering a flush and before acknowledging it has its redeliveries counted here once; that needs nothing.
 3. Entries of a file the host program writes again after its next dated file began are stale by design.
 
