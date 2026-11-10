@@ -989,11 +989,11 @@ and spreading the flushes over F, which measured worse than aligned flushes on a
 
 The owner chose, on 2026-11-09 and 2026-11-10, from the probes and measurements of the feed-stream-a-group plan (`git show 41a448c:docs/plans/feed-stream-per-group.md`), the choices T-67 left to it.
 **The mapping**: the accounts are in the servers' configuration files, and the operations team maintains the account mapping that partitions the feed's subjects into the groups' (`logfeed.md` §15.4);
-tracekeep never writes it, and preflight checks that it routes the feed's subjects.
+tracekeep never writes it, and preflight checks that its partition count is G.
 Probed on three servers in a configuration-file account: every token's group under the account mapping equals the one the stream transform gave, for 2,000 tokens,
 the server's one partition function serving both.
 **The change from one stream**: the feed is deployed nowhere, so `migrate` replaces the one stream by the group streams once it holds no message.
-**Placement**: `migrate` places each group's stream by a `logfeed.placement_tags` list of the servers' tags, round-robin over the groups; the operations team tags each server.
+**Placement**: `migrate` places each group's stream of one replica by a `logfeed.placement_tags` list of the servers' tags, round-robin over the groups; the operations team tags each server.
 Probed: 32 unplaced streams of one replica all landed on one server, every round; placed by tags, 11, 11 and 10.
 **Each stream's limit**: `logfeed.max_bytes` / G × 1.25, `logfeed.max_bytes` staying the feed's total; the limits sum to 1.25 times it, which the servers' disks hold,
 and a group past its own limit refuses publishes while the others have room.
