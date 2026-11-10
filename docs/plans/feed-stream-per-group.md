@@ -1,6 +1,6 @@
 # Feed stream a group
 
-Status: active (2026-11-09) — step 2 awaits the owner's choices
+Status: active (2026-11-10)
 
 The work that gives each of the host log feed's lease groups a stream of its own, of one replica, its entries acknowledged one by one as today (T-67),
 the servers' subject mapping partitioning the publishes so the pipeline names no stream.
@@ -16,7 +16,7 @@ Out of scope: spreading the flushes over F, leaving an earlier hour to the next 
 | 3 — streams and `migrate` | `logfeed.replicas`; the group streams, their consumers and limits in `internal/bus`; `migrate` replacing the one stream once drained, and changing G with the mapping; preflight's overlap checks over every group stream | pending |
 | 4 — the stage, preflight and status | each group's converter on its own stream; a preflight probe that the mapping routes the feed's subjects; `tracekeep status`, metrics and readiness per stream | pending |
 | 5 — the gate | the correctness cases the change touches, on the cluster and both engines; the load case on the new layout, on SQLite then MariaDB | pending |
-| 6 — operations | the runbook for a server lost with streams of one replica, the alerts, the guides' sizing | pending |
+| 6 — operations | the runbook for a server lost with streams of one replica, and a lost server's replacement; the alerts; the guides' sizing of Vector's buffer for the outage, and its disk buffer's held tail | pending |
 
 Each step is one pull request.
 A probe of step 1 that fails, or a choice it leaves open, stops the plan for the owner's decision.
@@ -33,7 +33,7 @@ They are `TestFeedGroupProbes` on the unmerged branch `test/feed-group-probes` (
   32 streams of one replica with no placement all landed on one server, in every round and every run, the server differing from cluster to cluster;
   tagged round-robin, they landed 11, 11 and 10.
 - **A server lost** and restarted with its storage loses no stored entry, and stalls its groups for the outage:
-  a publish to a group on the killed server fails after about 0.5 s (`no response from stream`), and the other servers' groups take theirs meanwhile;
+  a publish to a group on the killed server fails after about 0.5 s (`no response from stream`), and the other servers' groups take a client's publishes meanwhile, if it does not wait on the failed ones (Vector does, below);
   the group's fetch fails at once with no responders, which the stage's loop does not pass over, so its converter gives up, releases the lease and retries after its pause;
   restarted, the server was healthy after about 1.3 s, and the group's first publish after that was taken;
   the consumer is there, its in-memory state reset, which the stage's start replaces anyway,
@@ -45,23 +45,43 @@ They are `TestFeedGroupProbes` on the unmerged branch `test/feed-group-probes` (
   a real fleet's heavy equipment is not measured: a group holds at least its heaviest equipment's share, so one equipment above 1/G of the fleet's bytes fills its stream alone.
 - On a cluster just formed, a stream's creation went unanswered for a minute in about one run in six, as `testbus.Retry` notes; step 3's `migrate` retries it.
 
-## Step 2 — the owner's choices first
+## The server-loss measurement (2026-11-10)
 
-Step 2 starts once the owner chooses:
+Measured on one host: three nats-server processes as step 1's, the 32 group streams tagged round-robin,
+and Vector 0.61 publishing to all three servers at the fleet's rate, 24,700 entries a second, 95 MB/s,
+with a fixed concurrency of 256, retries unbounded and backing off at most 3 s, a 20 GiB disk buffer blocking when full.
+One server was killed and restarted with its storage 60 s later, in five runs.
 
-- **Placement**: `migrate` applying a list of the servers' tags round-robin, a `logfeed` setting, or the operations team placing the streams.
-- **Each stream's limit**: `logfeed.max_bytes` / G with a headroom factor, or each stream at `logfeed.max_bytes`, the total bounded by the servers' disks.
-- **A server lost**, the cost of one replica: inferred from Vector's source, not measured, the sink's concurrency limit wraps its retries,
-  so requests to the lost server's groups, about a third, keep their slots retrying until every slot is theirs,
-  and the whole feed stalls for the outage;
-  the entries wait in its buffer and then in the hosts' files, lost only if the retries are bounded, the buffer drops, the files rotate away, or the server's storage is lost;
-  a stream of three replicas keeps taking publishes once a remaining server leads it.
-  The owner accepts it, or asks for the stall measured first.
+- **The whole feed stalls** for the outage:
+  every group, on every server, took nothing from 1 s after the kill until the server was back, in all five runs,
+  whether Vector's own connection was on the lost server or not, with a fixed or an adaptive concurrency.
+  Publishes to the lost groups fail at once (`no stream found for given subject`) and retry holding their concurrency slots;
+  with about a third of the entries theirs, every slot is theirs within milliseconds.
+- **The cost is the buffer**: 1.56 million entries, 5.9 GiB, for a minute of outage at the fleet's rate.
+  The lost groups took entries 1 s after the server was healthy, and the backlog was gone 11 to 15 s later.
+  No entry was discarded, lost or stored twice; entries of one file were stored at most 2.9 s out of order.
+- One run ended with its last 10 entries still in Vector's buffer, unrelated to the outage:
+  Vector 0.61's disk buffer can leave a burst's tail unread until the next entry arrives,
+  in 13 and 17 bursts of 200 on one server with no fault, and in none with a memory buffer
+  (Vector issues #23456 and #23605, their fixes not merged).
+  Under the fleet's traffic the next entry comes within milliseconds; an aggregator gone idle holds its last entries until one does.
 
-## The owner's answers (2026-11-09)
+## The owner's answers
 
-Step 2 records them in the spec and the decision log; until then they bound the probes and the steps.
+Step 2 records them in the spec and the decision log; until then they bound the steps.
+
+On 2026-11-09:
 
 - Accounts are in the servers' configuration files, the operations team maintaining the mapping.
 - The feed is deployed nowhere, so `migrate` replaces the one stream once drained.
 - The measurement harness of 2026-11-08 (the feed-streams mode, the flush and series switches) is on an unmerged branch; step 5 takes the parts the gate needs.
+
+On 2026-11-10, the choices step 1 left:
+
+- **Placement**: `migrate` places the streams, applying a `logfeed` setting's list of the servers' tags round-robin over the groups;
+  the operations team tags each server.
+- **Each stream's limit**: `logfeed.max_bytes` / G × 1.25.
+  The limits sum to 1.25 × `logfeed.max_bytes`, which the servers' disks must hold,
+  and a group past its own limit refuses publishes while the others have room.
+- **A server lost**: one replica, its stall as measured above, accepted;
+  Vector's buffer is sized for the outage a deployment accepts, and `logfeed.replicas` remains for one that wants three.
