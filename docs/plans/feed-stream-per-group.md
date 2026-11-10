@@ -1,6 +1,6 @@
 # Feed stream a group
 
-Status: active (2026-11-10)
+Status: active (2026-11-09)
 
 The work that gives each of the host log feed's lease groups a stream of its own, of one replica, its entries acknowledged one by one as today (T-67),
 the servers' subject mapping partitioning the publishes so the pipeline names no stream.
@@ -48,21 +48,23 @@ They are `TestFeedGroupProbes` on the unmerged branch `test/feed-group-probes` (
 ## The server-loss measurement (2026-11-10)
 
 Measured on one host: three nats-server processes as step 1's, the 32 group streams tagged round-robin,
-and Vector 0.61 publishing to all three servers at the fleet's rate, 24,700 entries a second, 95 MB/s,
-with a fixed concurrency of 256, retries unbounded and backing off at most 3 s, a 20 GiB disk buffer blocking when full.
-One server was killed and restarted with its storage 60 s later, in five runs.
+and Vector 0.61 publishing to all three servers at the fleet's rate, 24,700 entries a second, 95 MB/s.
+Its retries were unbounded, backing off at most 3 s, and its buffer was a 20 GiB disk buffer blocking when full;
+its concurrency was fixed at 256 in four runs and adaptive in one.
+In each of the five runs, one server was killed and restarted with its storage 60 s later.
 
-- **The whole feed stalls** for the outage:
-  every group, on every server, took nothing from 1 s after the kill until the server was back, in all five runs,
-  whether Vector's own connection was on the lost server or not, with a fixed or an adaptive concurrency.
-  Publishes to the lost groups fail at once (`no stream found for given subject`) and retry holding their concurrency slots;
-  with about a third of the entries theirs, every slot is theirs within milliseconds.
-- **The cost is the buffer**: 1.56 million entries, 5.9 GiB, for a minute of outage at the fleet's rate.
-  The lost groups took entries 1 s after the server was healthy, and the backlog was gone 11 to 15 s later.
-  No entry was discarded, lost or stored twice; entries of one file were stored at most 2.9 s out of order.
-- One run ended with its last 10 entries still in Vector's buffer, unrelated to the outage:
-  Vector 0.61's disk buffer can leave a burst's tail unread until the next entry arrives,
-  in 13 and 17 bursts of 200 on one server with no fault, and in none with a memory buffer
+- **The whole feed stalls** for the outage, with a fixed or an adaptive concurrency.
+  From 1 s after the kill until the server was back, the groups on the other servers took nothing in the two runs that killed a server Vector was not connected to,
+  and about 500 entries in the minute, against a million before it, in the three that killed the server Vector was connected to.
+  Publishes to the lost groups fail at once (`no stream found for given subject`) and are retried;
+  by Vector's source, each retry keeps its concurrency slot, so the lost groups, about a third of the entries, come to hold every slot.
+- **The cost is the buffer**: up to 1.56 million entries, about 5.8 GiB, for a minute of outage at the fleet's rate.
+  The lost groups took entries 1 s after the server was healthy, and the buffer was below 1,000 entries 11 to 15 s after the restart.
+  No entry was discarded or stored twice, and none was missing but the ten below;
+  entries of one file were stored at most 2.9 s out of order.
+- One run ended with its last 10 entries still in Vector's buffer, unrelated to the outage.
+  Vector 0.61's disk buffer can leave a burst's tail unread until the next entry arrives:
+  with no fault, bursts of random size to one server held their tail in 13 and in 17 of 200 with a disk buffer, and in none of 200 with a memory buffer
   (Vector issues #23456 and #23605, their fixes not merged).
   Under the fleet's traffic the next entry comes within milliseconds; an aggregator gone idle holds its last entries until one does.
 
