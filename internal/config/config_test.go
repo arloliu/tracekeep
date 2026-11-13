@@ -222,7 +222,8 @@ func TestLogfeedDefaults(t *testing.T) {
 }
 
 // A feed is refused whose prefix shares a first token with the traffic or parking prefix, whose F outlasts ingest's ack_wait,
-// whose placement tags would place streams of more than one replica, whose duplicate window is no longer than its reorder window,
+// whose max_bytes gives a group stream no representable limit, whose placement tags would place streams of more than one replica,
+// whose duplicate window is no longer than its reorder window,
 // and whose device rule names both or neither of a token and a session.
 func TestLogfeedValidation(t *testing.T) {
 	t.Parallel()
@@ -243,6 +244,8 @@ func TestLogfeedValidation(t *testing.T) {
 		"no main device":             {"logfeed:\n  main_device: \"\"\n", "MainDevice"},
 		"tags over three replicas":   {"logfeed:\n  replicas: 3\n  placement_tags: [a, b]\n", "logfeed.placement_tags"},
 		"no replica":                 {"logfeed:\n  replicas: 0\n", "Replicas"},
+		"a share below a byte":       {"logfeed:\n  max_bytes: 31\n", "logfeed.max_bytes"},
+		"a limit past int64":         {"logfeed:\n  lease_groups: 1\n  max_bytes: 7EiB\n", "logfeed.max_bytes"},
 	} {
 		if _, err := Load(write(t, yaml("", "", "", tc.extra))); err == nil || !strings.Contains(err.Error(), tc.want) {
 			t.Errorf("%s: Load = %v, want an error naming %s", name, err, tc.want)

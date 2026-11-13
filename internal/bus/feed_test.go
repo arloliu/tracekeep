@@ -36,7 +36,7 @@ func checkFeed(t *testing.T, js jetstream.JetStream, f bus.Feed) {
 		}
 		c := s.CachedInfo().Config
 		if c.Retention != jetstream.WorkQueuePolicy || c.Storage != jetstream.FileStorage || c.Compression != jetstream.NoCompression ||
-			c.Discard != jetstream.DiscardNew || c.MaxBytes != f.MaxBytes*5/4/int64(f.Groups) || c.Duplicates != f.Duplicates || c.Replicas != f.Replicas ||
+			c.Discard != jetstream.DiscardNew || c.MaxBytes != f.MaxBytes/int64(f.Groups)*5/4 || c.Duplicates != f.Duplicates || c.Replicas != f.Replicas ||
 			c.SubjectTransform != nil || len(c.Subjects) != 1 || c.Subjects[0] != fmt.Sprintf("tklog.%d.*", n) {
 			t.Errorf("group %d's stream %+v", n, c)
 		}
@@ -112,6 +112,11 @@ func TestEnsureFeed(t *testing.T) {
 		t.Fatalf("a change of G on a drained feed = %v", err)
 	}
 	checkFeed(t, js, feed(2, 1))
+	publish(t, js, "tklog.0.EQ-1")
+	if err := bus.EnsureFeed(ctx, js, feed(6, 1), 2, trafficStream, parkedStream); !errors.Is(err, bus.ErrFeedNotDrained) {
+		t.Fatalf("a growth of G over a message = %v, want ErrFeedNotDrained", err)
+	}
+	purge(t, js, bus.FeedStreamName(feed(2, 1), 0))
 	if err := bus.EnsureFeed(ctx, js, feed(6, 1), 2, trafficStream, parkedStream); err != nil {
 		t.Fatalf("a growth of G on a drained feed = %v", err)
 	}
@@ -139,6 +144,21 @@ func TestEnsureFeed(t *testing.T) {
 		if err := bus.EnsureFeed(ctx, js, f, 0, traffic, parked); !errors.Is(err, bus.ErrFeedOverlap) {
 			t.Errorf("a feed on %s = %v, want ErrFeedOverlap", name, err)
 		}
+	}
+}
+
+// Each stream's limit is its share of the feed's scaled by 1.25, computed without overflow at the largest totals,
+// and migrate refuses a total that leaves a stream no limit, which the server would take as none.
+func TestFeedStreamLimit(t *testing.T) {
+	t.Parallel()
+	f := feed(32, 1)
+	f.MaxBytes = 1 << 61
+	if got := bus.FeedStreamConfig(f, 0).MaxBytes; got != 1<<56*5/4 {
+		t.Errorf("the limit of 2^61 bytes over 32 groups = %d, want %d", got, int64(1<<56*5/4))
+	}
+	f.MaxBytes = 31
+	if err := bus.EnsureFeed(t.Context(), jetStream(t), f, 0, trafficStream, parkedStream); err == nil {
+		t.Error("migrate with a share below a byte succeeded, want refused")
 	}
 }
 
@@ -331,6 +351,35 @@ func TestEnsureFeedClustered(t *testing.T) {
 	}
 	if found != 1 {
 		t.Errorf("the entry on %d group streams under their group's subject, want one", found)
+	}
+}
+
+// migrate refuses, and deletes nothing, while a group stream it would retire is on a server that is down:
+// the listing reports such a stream with no state, as if drained.
+func TestEnsureFeedOffline(t *testing.T) {
+	t.Parallel()
+	ctx := t.Context()
+	srvs, js := cluster(t)
+	f := feed(3, 1)
+	f.PlacementTags = []string{"tb-0", "tb-1", "tb-2"}
+	if err := bus.EnsureFeed(ctx, js, f, 0, trafficStream, parkedStream); err != nil {
+		t.Fatal(err)
+	}
+	publish(t, js, "tklog.2.EQ-1")
+	srvs[2].Shutdown()
+	srvs[2].WaitForShutdown()
+	shrunk := feed(2, 1)
+	shrunk.PlacementTags = f.PlacementTags[:2]
+	if err := bus.EnsureFeed(ctx, js, shrunk, 3, trafficStream, parkedStream); err == nil {
+		t.Fatal("migrate retiring a stream on a server that is down succeeded, want refused")
+	}
+	found := false
+	names := js.StreamNames(ctx)
+	for name := range names.Name() {
+		found = found || name == bus.FeedStreamName(f, 2)
+	}
+	if !found {
+		t.Error("the retired group's stream on the server that is down was deleted")
 	}
 }
 

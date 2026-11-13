@@ -49,12 +49,14 @@ type Feed struct {
 func FeedStreamName(f Feed, n int) string { return f.Stream + "_" + strconv.Itoa(n) }
 
 // FeedStreamConfig is group n's stream: a work queue on file storage without compression, discard-new at its share of the feed's limit,
+// divided before it is scaled so no limit the configuration admits overflows,
 // its duplicate window, and its placement (T-62, T-64, T-68).
 // The servers' account mapping partitions the published subjects into the groups', so the stream has no transform (T-67).
 func FeedStreamConfig(f Feed, n int) jetstream.StreamConfig {
+	share := f.MaxBytes / int64(f.Groups)
 	c := jetstream.StreamConfig{
 		Name: FeedStreamName(f, n), Subjects: []string{f.Prefix + "." + strconv.Itoa(n) + ".*"}, Retention: jetstream.WorkQueuePolicy,
-		Storage: jetstream.FileStorage, Compression: jetstream.NoCompression, MaxBytes: f.MaxBytes * 5 / (4 * int64(f.Groups)), MaxMsgs: -1,
+		Storage: jetstream.FileStorage, Compression: jetstream.NoCompression, MaxBytes: share + share/4, MaxMsgs: -1,
 		MaxMsgsPerSubject: -1, Discard: jetstream.DiscardNew, Duplicates: f.Duplicates, Replicas: f.Replicas,
 	}
 	if len(f.PlacementTags) > 0 {
@@ -95,6 +97,10 @@ func CheckFeed(feed, traffic, parked jetstream.StreamConfig) error {
 // and a stream an update cannot correct with ErrFeedImmutable.
 // Each request is retried as Retry does, for a cluster just formed.
 func EnsureFeed(ctx context.Context, js jetstream.JetStream, f Feed, previous int, traffic, parked jetstream.StreamConfig) error {
+	if limit := FeedStreamConfig(f, 0).MaxBytes; limit < 1 {
+		// The server takes a limit below one as none.
+		return fmt.Errorf("bus: feed stream limit %d from max_bytes %d over %d groups", limit, f.MaxBytes, f.Groups)
+	}
 	for n := range f.Groups {
 		if err := CheckFeed(FeedStreamConfig(f, n), traffic, parked); err != nil {
 			return err
@@ -170,15 +176,17 @@ func FeedBacklog(ctx context.Context, js jetstream.JetStream, f Feed) (msgs, byt
 	return msgs, bytes, nil
 }
 
-// feedStreams is the existing streams under the feed's names, the earlier layout's single one included.
+// feedStreams is the existing streams under the feed's names, the earlier layout's single one included,
+// each with its leader's own information: a listing reports a stream whose servers are all offline with no state, as if it held nothing,
+// so a stream that cannot answer fails the run rather than pass a drained check.
 func feedStreams(ctx context.Context, js jetstream.JetStream, f Feed) (map[string]*jetstream.StreamInfo, error) {
-	have := map[string]*jetstream.StreamInfo{}
+	var names []string
 	err := Retry(ctx, time.Second, func(ctx context.Context) error {
-		clear(have)
-		l := js.ListStreams(ctx)
-		for info := range l.Info() {
-			if name := info.Config.Name; name == f.Stream || feedGroup(f, name) >= 0 {
-				have[name] = info
+		names = names[:0]
+		l := js.StreamNames(ctx)
+		for name := range l.Name() {
+			if name == f.Stream || feedGroup(f, name) >= 0 {
+				names = append(names, name)
 			}
 		}
 
@@ -186,6 +194,20 @@ func feedStreams(ctx context.Context, js jetstream.JetStream, f Feed) (map[strin
 	})
 	if err != nil {
 		return nil, fmt.Errorf("bus: feed streams: %w", err)
+	}
+	have := map[string]*jetstream.StreamInfo{}
+	for _, name := range names {
+		err := Retry(ctx, time.Second, func(ctx context.Context) error {
+			s, err := js.Stream(ctx, name)
+			if err == nil {
+				have[name] = s.CachedInfo()
+			}
+
+			return err
+		})
+		if err != nil {
+			return nil, fmt.Errorf("bus: feed stream %s: %w", name, err)
+		}
 	}
 
 	return have, nil
