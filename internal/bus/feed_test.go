@@ -1,6 +1,7 @@
 package bus_test
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"testing"
@@ -381,6 +382,36 @@ func TestEnsureFeedOffline(t *testing.T) {
 	if !found {
 		t.Error("the retired group's stream on the server that is down was deleted")
 	}
+}
+
+// unansweredDelete is a JetStream whose deletions go unanswered, as on a cluster just formed, and are counted.
+type unansweredDelete struct {
+	jetstream.JetStream
+	deletes int
+}
+
+func (u *unansweredDelete) DeleteStream(context.Context, string) error {
+	u.deletes++
+	return context.DeadlineExceeded
+}
+
+// An unanswered deletion fails migrate at once: retried, the first could still run after the name was created again
+// and delete the new stream.
+func TestEnsureFeedUnansweredDelete(t *testing.T) {
+	t.Parallel()
+	ctx := t.Context()
+	js := jetStream(t)
+	if err := bus.EnsureFeed(ctx, js, feed(3, 1), 0, trafficStream, parkedStream); err != nil {
+		t.Fatal(err)
+	}
+	u := &unansweredDelete{JetStream: js}
+	if err := bus.EnsureFeed(ctx, u, feed(2, 1), 3, trafficStream, parkedStream); !errors.Is(err, context.DeadlineExceeded) || u.deletes != 1 {
+		t.Fatalf("migrate over an unanswered deletion = %v after %d deletions, want DeadlineExceeded after one", err, u.deletes)
+	}
+	if err := bus.EnsureFeed(ctx, js, feed(2, 1), 3, trafficStream, parkedStream); err != nil {
+		t.Fatalf("migrate again once the bus answers = %v", err)
+	}
+	checkFeed(t, js, feed(2, 1))
 }
 
 // Placement tags place group n's stream of one replica on the server of tag n mod their number,

@@ -95,7 +95,7 @@ func CheckFeed(feed, traffic, parked jetstream.StreamConfig) error {
 // previous is G as the catalog's lease rows record it, 0 before any;
 // a G other than it, or any deletion, is refused with ErrFeedNotDrained while a feed stream holds a message,
 // and a stream an update cannot correct with ErrFeedImmutable.
-// Each request is retried as Retry does, for a cluster just formed.
+// Each request but a deletion is retried as Retry does, for a cluster just formed.
 func EnsureFeed(ctx context.Context, js jetstream.JetStream, f Feed, previous int, traffic, parked jetstream.StreamConfig) error {
 	if limit := FeedStreamConfig(f, 0).MaxBytes; limit < 1 {
 		// The server takes a limit below one as none.
@@ -114,9 +114,10 @@ func EnsureFeed(ctx context.Context, js jetstream.JetStream, f Feed, previous in
 	if err != nil {
 		return err
 	}
+	// A deletion is never retried: one unanswered may still run after a retry succeeded and the name was created again,
+	// deleting the new stream, so it fails the run instead, which the next re-judges from the streams' state.
 	for _, name := range drop {
-		err := Retry(ctx, time.Second, func(ctx context.Context) error { return js.DeleteStream(ctx, name) })
-		if err != nil && !errors.Is(err, jetstream.ErrStreamNotFound) {
+		if err := js.DeleteStream(ctx, name); err != nil && !errors.Is(err, jetstream.ErrStreamNotFound) {
 			return fmt.Errorf("bus: delete feed stream %s: %w", name, err)
 		}
 	}
