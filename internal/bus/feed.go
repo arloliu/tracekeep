@@ -90,7 +90,8 @@ func CheckFeed(feed, traffic, parked jetstream.StreamConfig) error {
 // EnsureFeed brings the feed's streams and consumers to f, after CheckFeed of each group stream against the traffic and parking streams (logfeed.md §15.4):
 // it deletes the earlier layout's single stream, the streams of groups at or above f.Groups and those placed otherwise, creates the missing ones,
 // corrects the settings an update can, and ensures each group's consumer.
-// previous is G as the catalog's lease rows record it, 0 before any; a G other than it, or any deletion, is refused with ErrFeedNotDrained while a feed stream holds a message,
+// previous is G as the catalog's lease rows record it, 0 before any;
+// a G other than it, or any deletion, is refused with ErrFeedNotDrained while a feed stream holds a message,
 // and a stream an update cannot correct with ErrFeedImmutable.
 // Each request is retried as Retry does, for a cluster just formed.
 func EnsureFeed(ctx context.Context, js jetstream.JetStream, f Feed, previous int, traffic, parked jetstream.StreamConfig) error {

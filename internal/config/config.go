@@ -398,7 +398,8 @@ func (c *Config) checkMaxima() []error {
 }
 
 // checkLogfeed refuses a feed whose prefix shares a first token with the traffic or parking prefix (the service's check, never the SDK's, T-60),
-// whose F would outlast ingest's ack_wait, whose placement tags would place streams of more than one replica, whose duplicate window is no longer than its reorder window, and a device rule naming neither a token nor a session, or both.
+// whose F would outlast ingest's ack_wait, whose placement tags would place streams of more than one replica,
+// whose duplicate window is no longer than its reorder window, and a device rule naming neither a token nor a session, or both.
 func (c *Config) checkLogfeed() []error {
 	l := &c.Logfeed
 	var errs []error
