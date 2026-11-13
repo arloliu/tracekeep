@@ -245,6 +245,35 @@ func TestCheckFeedStreams(t *testing.T) {
 	}
 }
 
+// again runs migrate on f over a feed holding one message: it refuses nothing, re-creates no stream, and the message stays.
+func again(t *testing.T, js jetstream.JetStream, f bus.Feed) {
+	t.Helper()
+	ctx := t.Context()
+	created := map[int]time.Time{}
+	for n := range f.Groups {
+		s, err := js.Stream(ctx, bus.FeedStreamName(f, n))
+		if err != nil {
+			t.Fatal(err)
+		}
+		created[n] = s.CachedInfo().Created
+	}
+	if err := bus.EnsureFeed(ctx, js, f, f.Groups, trafficStream, parkedStream); err != nil {
+		t.Fatalf("migrate again over a held message = %v", err)
+	}
+	for n := range f.Groups {
+		s, err := js.Stream(ctx, bus.FeedStreamName(f, n))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !s.CachedInfo().Created.Equal(created[n]) {
+			t.Errorf("group %d's stream was re-created", n)
+		}
+	}
+	if msgs, _, err := bus.FeedBacklog(ctx, js, f); err != nil || msgs != 1 {
+		t.Errorf("the feed's backlog = %d, %v; want the one message", msgs, err)
+	}
+}
+
 // cluster is a three-server cluster's servers and a JetStream client of them.
 func cluster(t *testing.T) ([]*server.Server, jetstream.JetStream) {
 	t.Helper()
@@ -289,10 +318,7 @@ func TestEnsureFeedClustered(t *testing.T) {
 	}
 	checkFeed(t, js, feed(4, 3))
 	publish(t, js, "tklog.EQ-1")
-	msgs, _, err := bus.FeedBacklog(ctx, js, feed(4, 3))
-	if err != nil || msgs != 1 {
-		t.Fatalf("the feed's backlog = %d, %v; want the one entry", msgs, err)
-	}
+	again(t, js, feed(4, 3))
 	found := 0
 	for n := range 4 {
 		s, err := js.Stream(ctx, bus.FeedStreamName(feed(4, 3), n))
@@ -337,6 +363,7 @@ func TestEnsureFeedPlaced(t *testing.T) {
 	}
 	placed(f)
 	publish(t, js, "tklog.3.EQ-1")
+	again(t, js, f)
 	moved := f
 	moved.PlacementTags = []string{"tb-2", "tb-1"}
 	if err := bus.EnsureFeed(ctx, js, moved, 4, trafficStream, parkedStream); !errors.Is(err, bus.ErrFeedNotDrained) {
