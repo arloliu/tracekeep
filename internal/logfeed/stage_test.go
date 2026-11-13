@@ -26,7 +26,6 @@ type stageEnv struct {
 	t    *testing.T
 	c    *catalog.Catalog
 	js   jetstream.JetStream
-	s    jetstream.Stream
 	feed bus.Feed
 	cfg  int64
 	st   store.ObjectStore
@@ -35,7 +34,11 @@ type stageEnv struct {
 func newStageEnv(t *testing.T, c *catalog.Catalog) *stageEnv {
 	t.Helper()
 	ctx := t.Context()
-	nc, err := nats.Connect(testbus.Start(t))
+	feed := bus.Feed{Stream: "TRACEKEEP_LOGFEED", Prefix: "tklog", Groups: 4, MaxBytes: 64 << 20, Duplicates: 2 * time.Minute,
+		Replicas: 1, AckWait: 10 * time.Second, MaxAckPending: 10_000}
+	srv := testbus.StartServer(t, testbus.Options{})
+	srv.MapFeed(feed.Prefix, feed.Groups)
+	nc, err := nats.Connect(srv.URL())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -44,10 +47,7 @@ func newStageEnv(t *testing.T, c *catalog.Catalog) *stageEnv {
 	if err != nil {
 		t.Fatal(err)
 	}
-	feed := bus.Feed{Stream: "TRACEKEEP_LOGFEED", Prefix: "tklog", Groups: 4, MaxBytes: 64 << 20, Duplicates: 2 * time.Minute,
-		Replicas: 1, AckWait: 10 * time.Second, MaxAckPending: 10_000}
-	s, err := bus.EnsureFeed(ctx, js, feed, busconfig.StreamConfig("TRACEKEEP_TRAFFIC", "tk"), busconfig.ParkedStreamConfig("TRACEKEEP_PARKED", "tkpark", 1))
-	if err != nil {
+	if err := bus.EnsureFeed(ctx, js, feed, 0, busconfig.StreamConfig("TRACEKEEP_TRAFFIC", "tk"), busconfig.ParkedStreamConfig("TRACEKEEP_PARKED", "tkpark", 1)); err != nil {
 		t.Fatal(err)
 	}
 	cfg, err := c.ActivateConfig(ctx, []byte(`{"classifier":"go-secs/v2.8.0","max_frame_len":0}`))
@@ -58,7 +58,7 @@ func newStageEnv(t *testing.T, c *catalog.Catalog) *stageEnv {
 		t.Fatal(err)
 	}
 
-	return &stageEnv{t: t, c: c, js: js, s: s, feed: feed, cfg: cfg, st: store.NewMem()}
+	return &stageEnv{t: t, c: c, js: js, feed: feed, cfg: cfg, st: store.NewMem()}
 }
 
 // stage registers replica's membership and returns its stage, whose files go idle after idle.
@@ -69,7 +69,7 @@ func (e *stageEnv) stage(replica string, idle time.Duration) *Stage {
 	}
 
 	return &Stage{
-		Catalog: e.c, Stream: e.s, Conn: e.js.Conn(), Feed: e.feed, Replica: replica, LeaseTTL: 900 * time.Millisecond, FetchBatch: 100, Pause: time.Second,
+		Catalog: e.c, JS: e.js, Conn: e.js.Conn(), Feed: e.feed, Replica: replica, LeaseTTL: 900 * time.Millisecond, FetchBatch: 100, Pause: time.Second,
 		Base: &Converter{
 			Catalog: e.c, Store: e.st, WorkDir: e.t.TempDir(), Writer: "tracekeep-test", Configs: map[int64]ingest.Config{e.cfg: {Name: "go-secs/v2.8.0"}},
 			Devices: Devices{Main: "eqp"}, Flush: 300 * time.Millisecond, Reorder: 100 * time.Millisecond, Idle: idle, AckWait: e.feed.AckWait,
@@ -111,12 +111,12 @@ func (e *stageEnv) eventually(what string, ok func() bool) {
 }
 
 func (e *stageEnv) drained() bool {
-	info, err := e.s.Info(e.t.Context())
+	msgs, _, err := bus.FeedBacklog(e.t.Context(), e.js, e.feed)
 	if err != nil {
 		e.t.Fatal(err)
 	}
 
-	return info.State.Msgs == 0
+	return msgs == 0
 }
 
 func run(ctx context.Context, wg *sync.WaitGroup, s *Stage) context.CancelFunc {
@@ -257,7 +257,7 @@ func TestGateTakeoverWithHeldEntriesAndBacklog(t *testing.T) {
 		e.publish(8, 0)
 		var held []jetstream.Msg
 		for n := range e.feed.Groups {
-			cons, err := e.s.Consumer(ctx, bus.FeedConsumer(n))
+			cons, err := e.js.Consumer(ctx, bus.FeedStreamName(e.feed, n), bus.FeedConsumer(n))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -302,8 +302,8 @@ func TestGateRetriedPublish(t *testing.T) {
 				t.Fatal(err)
 			}
 		}
-		if info, err := e.s.Info(ctx); err != nil || info.State.Msgs != 1 {
-			t.Fatalf("stream state %+v, %v; want the retried publish stored once", info.State, err)
+		if msgs, _, err := bus.FeedBacklog(ctx, e.js, e.feed); err != nil || msgs != 1 {
+			t.Fatalf("the feed holds %d, %v; want the retried publish stored once", msgs, err)
 		}
 		var wg sync.WaitGroup
 		t.Cleanup(wg.Wait)

@@ -14,57 +14,69 @@ import (
 	"github.com/arloliu/tracekeep/producer/busconfig"
 )
 
-// ErrFeedNotDrained refuses a change of the feed's lease groups while its stream holds a message (logfeed.md §15.4).
-var ErrFeedNotDrained = errors.New("bus: the feed stream holds messages; drain it before changing its lease groups")
+// ErrFeedNotDrained refuses a change of the feed's layout while a feed stream holds a message (logfeed.md §15.4):
+// a change of its lease groups or its placement, or the earlier layout's single stream replaced.
+var ErrFeedNotDrained = errors.New("bus: a feed stream holds messages; drain the feed before changing its layout")
 
-// ErrFeedOverlap refuses a feed stream whose name is the traffic or parking stream's, or whose subjects could take their messages or they its own.
-var ErrFeedOverlap = errors.New("bus: the feed stream overlaps another stream")
+// ErrFeedOverlap refuses a feed stream whose name is the traffic or parking stream's, or whose subjects could take their messages or they its own,
+// and a stream under a feed stream's name whose subjects are not its group's.
+var ErrFeedOverlap = errors.New("bus: a feed stream overlaps another stream")
 
 // ErrFeedImmutable refuses an existing feed stream whose storage, retention or compression differs from its specification,
 // which an update cannot change in place: the operator drains it, deletes it and runs migrate again (T-64).
-var ErrFeedImmutable = errors.New("bus: the feed stream's storage, retention or compression differs; drain and delete it, then migrate again")
+var ErrFeedImmutable = errors.New("bus: a feed stream's storage, retention or compression differs; drain and delete it, then migrate again")
 
-// Feed is the host log feed's stream and group consumers as migrate ensures them (logfeed.md §15.4, T-64).
+// Feed is the host log feed's group streams and their consumers as migrate ensures them (logfeed.md §15.4, T-64, T-67).
 type Feed struct {
+	// Stream names the group streams, group n's being Stream_n; Prefix is their subjects', group n's being Prefix.n.*.
 	Stream, Prefix string
-	// Groups is G, the stream's partitions and its consumers.
-	Groups   int
+	// Groups is G, the lease groups and their streams.
+	Groups int
+	// MaxBytes is the feed's total; each group's stream holds MaxBytes / Groups × 1.25 (T-68).
 	MaxBytes int64
-	// Duplicates is the stream's duplicate window.
+	// Duplicates is each stream's duplicate window.
 	Duplicates time.Duration
-	// Replicas are the traffic stream's, the cluster the feed shares.
+	// Replicas are each group stream's.
 	Replicas int
+	// PlacementTags places group n's stream on the server tagged PlacementTags[n mod their number]; empty places none (T-68).
+	PlacementTags []string
 	// AckWait is ingest's; MaxAckPending each group consumer's.
 	AckWait       time.Duration
 	MaxAckPending int
 }
 
-// FeedStreamConfig is the feed stream's configuration: a work queue on file storage without compression, discard-new at its limit,
-// its duplicate window, and the transform partitioning its equipment tokens into Groups (T-62, T-64).
-func FeedStreamConfig(f Feed) jetstream.StreamConfig {
-	return jetstream.StreamConfig{
-		Name: f.Stream, Subjects: []string{f.Prefix + ".*"}, Retention: jetstream.WorkQueuePolicy, Storage: jetstream.FileStorage,
-		Compression: jetstream.NoCompression, MaxBytes: f.MaxBytes, MaxMsgs: -1, MaxMsgsPerSubject: -1, Discard: jetstream.DiscardNew,
-		Duplicates: f.Duplicates, Replicas: f.Replicas,
-		SubjectTransform: &jetstream.SubjectTransformConfig{
-			Source: f.Prefix + ".*", Destination: fmt.Sprintf("%s.{{partition(%d,1)}}.{{wildcard(1)}}", f.Prefix, f.Groups),
-		},
+// FeedStreamName is group n's stream.
+func FeedStreamName(f Feed, n int) string { return f.Stream + "_" + strconv.Itoa(n) }
+
+// FeedStreamConfig is group n's stream: a work queue on file storage without compression, discard-new at its share of the feed's limit,
+// its duplicate window, and its placement (T-62, T-64, T-68).
+// The servers' account mapping partitions the published subjects into the groups', so the stream has no transform (T-67).
+func FeedStreamConfig(f Feed, n int) jetstream.StreamConfig {
+	c := jetstream.StreamConfig{
+		Name: FeedStreamName(f, n), Subjects: []string{f.Prefix + "." + strconv.Itoa(n) + ".*"}, Retention: jetstream.WorkQueuePolicy,
+		Storage: jetstream.FileStorage, Compression: jetstream.NoCompression, MaxBytes: f.MaxBytes * 5 / (4 * int64(f.Groups)), MaxMsgs: -1,
+		MaxMsgsPerSubject: -1, Discard: jetstream.DiscardNew, Duplicates: f.Duplicates, Replicas: f.Replicas,
 	}
+	if len(f.PlacementTags) > 0 {
+		c.Placement = &jetstream.Placement{Tags: []string{f.PlacementTags[n%len(f.PlacementTags)]}}
+	}
+
+	return c
 }
 
 // FeedConsumer is group n's durable name.
 func FeedConsumer(n int) string { return "logfeed-" + strconv.Itoa(n) }
 
-// FeedConsumerConfig is group n's consumer: its partition's subjects, explicit acknowledgements, unlimited deliveries,
+// FeedConsumerConfig is group n's consumer, its stream's only one: explicit acknowledgements, unlimited deliveries,
 // and its state in memory, at the stream's replicas, which a work queue requires (T-64).
 func FeedConsumerConfig(f Feed, n int) jetstream.ConsumerConfig {
 	return jetstream.ConsumerConfig{
-		Durable: FeedConsumer(n), FilterSubject: fmt.Sprintf("%s.%d.>", f.Prefix, n), AckPolicy: jetstream.AckExplicitPolicy,
+		Durable: FeedConsumer(n), AckPolicy: jetstream.AckExplicitPolicy,
 		AckWait: f.AckWait, MaxAckPending: f.MaxAckPending, MaxDeliver: -1, MemoryStorage: true,
 	}
 }
 
-// CheckFeed refuses a feed stream named as the traffic or parking stream or whose subjects overlap theirs, the service's preflight (T-60).
+// CheckFeed refuses a feed stream named as the traffic or parking stream or whose subjects overlap theirs (T-60).
 func CheckFeed(feed, traffic, parked jetstream.StreamConfig) error {
 	for _, other := range []jetstream.StreamConfig{traffic, parked} {
 		if feed.Name == other.Name || busconfig.SubjectsOverlap(feed.Subjects, other.Subjects) {
@@ -75,88 +87,160 @@ func CheckFeed(feed, traffic, parked jetstream.StreamConfig) error {
 	return nil
 }
 
-// EnsureFeed creates the feed stream and its group consumers, or brings existing ones to f, after CheckFeed against the traffic and parking streams,
-// and deletes the consumers of groups at or above f.Groups.
-// A change of the lease groups is refused with ErrFeedNotDrained while the stream holds a message, and a stream an update cannot correct with ErrFeedImmutable.
-func EnsureFeed(ctx context.Context, js jetstream.JetStream, f Feed, traffic, parked jetstream.StreamConfig) (jetstream.Stream, error) {
-	want := FeedStreamConfig(f)
-	if err := CheckFeed(want, traffic, parked); err != nil {
-		return nil, err
-	}
-	s, err := js.CreateStream(ctx, want)
-	if errors.Is(err, jetstream.ErrStreamNameAlreadyInUse) {
-		if s, err = updateFeed(ctx, js, want); err != nil {
-			return nil, err
+// EnsureFeed brings the feed's streams and consumers to f, after CheckFeed of each group stream against the traffic and parking streams (logfeed.md §15.4):
+// it deletes the earlier layout's single stream, the streams of groups at or above f.Groups and those placed otherwise, creates the missing ones,
+// corrects the settings an update can, and ensures each group's consumer.
+// previous is G as the catalog's lease rows record it, 0 before any; a G other than it, or any deletion, is refused with ErrFeedNotDrained while a feed stream holds a message,
+// and a stream an update cannot correct with ErrFeedImmutable.
+// Each request is retried as Retry does, for a cluster just formed.
+func EnsureFeed(ctx context.Context, js jetstream.JetStream, f Feed, previous int, traffic, parked jetstream.StreamConfig) error {
+	for n := range f.Groups {
+		if err := CheckFeed(FeedStreamConfig(f, n), traffic, parked); err != nil {
+			return err
 		}
-	} else if err != nil {
-		return nil, fmt.Errorf("bus: feed stream %s: %w", f.Stream, err)
+	}
+	have, err := feedStreams(ctx, js, f)
+	if err != nil {
+		return err
+	}
+	drop, err := feedDrops(f, previous, have)
+	if err != nil {
+		return err
+	}
+	for _, name := range drop {
+		err := Retry(ctx, time.Second, func(ctx context.Context) error { return js.DeleteStream(ctx, name) })
+		if err != nil && !errors.Is(err, jetstream.ErrStreamNotFound) {
+			return fmt.Errorf("bus: delete feed stream %s: %w", name, err)
+		}
 	}
 	for n := range f.Groups {
-		if _, err := s.CreateOrUpdateConsumer(ctx, FeedConsumerConfig(f, n)); err != nil {
-			return nil, fmt.Errorf("bus: feed consumer %s: %w", FeedConsumer(n), err)
+		want := FeedStreamConfig(f, n)
+		err := Retry(ctx, time.Second, func(ctx context.Context) error {
+			_, err := js.CreateOrUpdateStream(ctx, want)
+			return err
+		})
+		if err != nil {
+			return fmt.Errorf("bus: feed stream %s: %w", want.Name, err)
+		}
+		err = Retry(ctx, time.Second, func(ctx context.Context) error {
+			_, err := js.CreateOrUpdateConsumer(ctx, want.Name, FeedConsumerConfig(f, n))
+			return err
+		})
+		if err != nil {
+			return fmt.Errorf("bus: feed consumer %s: %w", FeedConsumer(n), err)
 		}
 	}
-	names := s.ConsumerNames(ctx)
-	for name := range names.Name() {
-		n, err := strconv.Atoi(strings.TrimPrefix(name, "logfeed-"))
-		if err != nil || !strings.HasPrefix(name, "logfeed-") || n < f.Groups {
+
+	return nil
+}
+
+// CheckFeedStreams opens every group's stream and refuses one whose subjects are not its group's or overlap the traffic or parking stream's,
+// as every role does at its start with the feed enabled (logfeed.md §15.4).
+func CheckFeedStreams(ctx context.Context, js jetstream.JetStream, f Feed, traffic, parked jetstream.StreamConfig) error {
+	for n := range f.Groups {
+		name := FeedStreamName(f, n)
+		s, err := js.Stream(ctx, name)
+		if err != nil {
+			return fmt.Errorf("bus: feed stream %s: %w", name, err)
+		}
+		c := s.CachedInfo().Config
+		if want := FeedStreamConfig(f, n).Subjects; !slices.Equal(c.Subjects, want) {
+			return fmt.Errorf("%w: %s %v, not group %d's %v", ErrFeedOverlap, name, c.Subjects, n, want)
+		}
+		if err := CheckFeed(c, traffic, parked); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// FeedBacklog is the messages and bytes every group's stream holds.
+func FeedBacklog(ctx context.Context, js jetstream.JetStream, f Feed) (msgs, bytes uint64, err error) {
+	for n := range f.Groups {
+		s, err := js.Stream(ctx, FeedStreamName(f, n))
+		if err != nil {
+			return 0, 0, fmt.Errorf("bus: feed stream %s: %w", FeedStreamName(f, n), err)
+		}
+		st := s.CachedInfo().State
+		msgs, bytes = msgs+st.Msgs, bytes+st.Bytes
+	}
+
+	return msgs, bytes, nil
+}
+
+// feedStreams is the existing streams under the feed's names, the earlier layout's single one included.
+func feedStreams(ctx context.Context, js jetstream.JetStream, f Feed) (map[string]*jetstream.StreamInfo, error) {
+	have := map[string]*jetstream.StreamInfo{}
+	err := Retry(ctx, time.Second, func(ctx context.Context) error {
+		clear(have)
+		l := js.ListStreams(ctx)
+		for info := range l.Info() {
+			if name := info.Config.Name; name == f.Stream || feedGroup(f, name) >= 0 {
+				have[name] = info
+			}
+		}
+
+		return l.Err()
+	})
+	if err != nil {
+		return nil, fmt.Errorf("bus: feed streams: %w", err)
+	}
+
+	return have, nil
+}
+
+// feedDrops is the existing feed streams to delete: the earlier layout's single stream, retired groups' and those placed otherwise.
+// It refuses a stream under a feed name whose subjects are not its own, any deletion or a G other than previous while a feed stream holds a message,
+// and a kept stream an update cannot correct.
+func feedDrops(f Feed, previous int, have map[string]*jetstream.StreamInfo) ([]string, error) {
+	var drop []string
+	var held uint64
+	for name, info := range have {
+		held += info.State.Msgs
+		c := info.Config
+		if name == f.Stream {
+			if c.SubjectTransform == nil || !slices.Equal(c.Subjects, []string{f.Prefix + ".*"}) {
+				return nil, fmt.Errorf("%w: %s %v is not the earlier layout's feed stream", ErrFeedOverlap, name, c.Subjects)
+			}
+			drop = append(drop, name)
+
 			continue
 		}
-		if err := s.DeleteConsumer(ctx, name); err != nil {
-			return nil, fmt.Errorf("bus: retired feed consumer %s: %w", name, err)
+		n := feedGroup(f, name)
+		want := FeedStreamConfig(f, n)
+		switch {
+		case !slices.Equal(c.Subjects, want.Subjects):
+			return nil, fmt.Errorf("%w: %s %v, not group %d's %v", ErrFeedOverlap, name, c.Subjects, n, want.Subjects)
+		case n >= f.Groups || !slices.Equal(placementTags(c.Placement), placementTags(want.Placement)):
+			drop = append(drop, name)
+		case c.Storage != want.Storage || c.Retention != want.Retention || c.Compression != want.Compression:
+			return nil, fmt.Errorf("%w: %s", ErrFeedImmutable, name)
+		default:
+			// Kept: an update corrects the rest.
 		}
 	}
-	if err := names.Err(); err != nil {
-		return nil, fmt.Errorf("bus: feed consumers: %w", err)
+	if held > 0 && (len(drop) > 0 || previous != 0 && previous != f.Groups) {
+		return nil, fmt.Errorf("%w: they hold %d", ErrFeedNotDrained, held)
 	}
 
-	return s, nil
+	return drop, nil
 }
 
-// OpenFeed opens the feed stream and checks it against the traffic and parking streams, as every role does at its start with the feed enabled.
-func OpenFeed(ctx context.Context, js jetstream.JetStream, name string, traffic, parked jetstream.StreamConfig) (jetstream.Stream, error) {
-	s, err := js.Stream(ctx, name)
-	if err != nil {
-		return nil, fmt.Errorf("bus: feed stream %s: %w", name, err)
-	}
-	if err := CheckFeed(s.CachedInfo().Config, traffic, parked); err != nil {
-		return nil, err
+// feedGroup is the group whose stream name is, or -1.
+func feedGroup(f Feed, name string) int {
+	n, err := strconv.Atoi(strings.TrimPrefix(name, f.Stream+"_"))
+	if err != nil || n < 0 || FeedStreamName(f, n) != name {
+		return -1
 	}
 
-	return s, nil
+	return n
 }
 
-// updateFeed brings the existing feed stream to want: it refuses a change of its transform while it holds a message,
-// and a storage, retention or compression an update cannot change in the running store.
-func updateFeed(ctx context.Context, js jetstream.JetStream, want jetstream.StreamConfig) (jetstream.Stream, error) {
-	s, err := js.Stream(ctx, want.Name)
-	if err != nil {
-		return nil, fmt.Errorf("bus: feed stream %s: %w", want.Name, err)
-	}
-	info, err := s.Info(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("bus: feed stream %s: %w", want.Name, err)
-	}
-	have := info.Config
-	if have.Storage != want.Storage || have.Retention != want.Retention || have.Compression != want.Compression {
-		return nil, fmt.Errorf("%w: %s", ErrFeedImmutable, want.Name)
-	}
-	if regrouped := have.SubjectTransform == nil || *have.SubjectTransform != *want.SubjectTransform; regrouped && info.State.Msgs > 0 {
-		return nil, fmt.Errorf("%w: %s holds %d", ErrFeedNotDrained, want.Name, info.State.Msgs)
-	}
-	if feedDiffers(have, want) {
-		if s, err = js.UpdateStream(ctx, want); err != nil {
-			return nil, fmt.Errorf("bus: update feed stream %s: %w", want.Name, err)
-		}
+func placementTags(p *jetstream.Placement) []string {
+	if p == nil {
+		return nil
 	}
 
-	return s, nil
-}
-
-// feedDiffers reports a stream whose settings migrate owns, and an update can correct, differ from want's.
-func feedDiffers(have, want jetstream.StreamConfig) bool {
-	return !slices.Equal(have.Subjects, want.Subjects) || have.MaxBytes != want.MaxBytes || have.MaxMsgs != want.MaxMsgs ||
-		have.MaxMsgsPerSubject != want.MaxMsgsPerSubject || have.MaxAge != want.MaxAge || have.Discard != want.Discard ||
-		have.Duplicates != want.Duplicates || have.Replicas != want.Replicas ||
-		have.SubjectTransform == nil || *have.SubjectTransform != *want.SubjectTransform
+	return p.Tags
 }

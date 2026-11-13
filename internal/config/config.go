@@ -132,11 +132,16 @@ type Logfeed struct {
 	Stream  string `yaml:"stream" default:"TRACEKEEP_LOGFEED" env:"TRACEKEEP_LOGFEED_STREAM" validate:"required"`
 	// Prefix is the feed's subject prefix, whose first token differs from the traffic and parking prefixes'.
 	Prefix string `yaml:"prefix" default:"tklog" env:"TRACEKEEP_LOGFEED_PREFIX" validate:"required"`
-	// LeaseGroups is G, the stream's partitions and the lease groups; changing it is a migrate step on a drained stream (§15.4).
+	// LeaseGroups is G, the lease groups and their streams; changing it is a migrate step on a drained feed (§15.4).
 	LeaseGroups int `yaml:"lease_groups" default:"32" env:"TRACEKEEP_LOGFEED_LEASE_GROUPS" validate:"gt=0,lte=1024"`
-	// MaxBytes is the stream's limit in logical bytes, discard-new.
+	// MaxBytes is the feed's total in logical bytes; each group's stream holds MaxBytes / G × 1.25, discard-new.
 	MaxBytes fuda.ByteSize `yaml:"max_bytes" default:"40GiB" env:"TRACEKEEP_LOGFEED_MAX_BYTES" validate:"gt=0"`
-	// DuplicateWindow is the stream's duplicate window, longer than the pipeline's retry cap, which stays below the reorder window.
+	// Replicas are each group stream's.
+	Replicas int `yaml:"replicas" default:"1" env:"TRACEKEEP_LOGFEED_REPLICAS" validate:"gt=0,lte=5"`
+	// PlacementTags places group n's stream on the server tagged with tag n mod their number, streams of one replica only;
+	// changing it is a migrate step on a drained feed (§15.4).
+	PlacementTags []string `yaml:"placement_tags"`
+	// DuplicateWindow is each stream's duplicate window, longer than the pipeline's retry cap, which stays below the reorder window.
 	DuplicateWindow time.Duration `yaml:"duplicate_window" default:"2m" env:"TRACEKEEP_LOGFEED_DUPLICATE_WINDOW" validate:"gte=100ms"`
 	// MaxAckPending is each group consumer's.
 	MaxAckPending int `yaml:"max_ack_pending" default:"100000" env:"TRACEKEEP_LOGFEED_MAX_ACK_PENDING" validate:"gt=0"`
@@ -393,7 +398,7 @@ func (c *Config) checkMaxima() []error {
 }
 
 // checkLogfeed refuses a feed whose prefix shares a first token with the traffic or parking prefix (the service's check, never the SDK's, T-60),
-// whose F would outlast ingest's ack_wait, whose duplicate window is no longer than its reorder window, and a device rule naming neither a token nor a session, or both.
+// whose F would outlast ingest's ack_wait, whose placement tags would place streams of more than one replica, whose duplicate window is no longer than its reorder window, and a device rule naming neither a token nor a session, or both.
 func (c *Config) checkLogfeed() []error {
 	l := &c.Logfeed
 	var errs []error
@@ -410,6 +415,9 @@ func (c *Config) checkLogfeed() []error {
 	}
 	if f := l.Flush(c.Ingest.FlushInterval); f >= c.Ingest.AckWait {
 		errs = append(errs, fmt.Errorf("logfeed.flush_interval %s must be below ingest.ack_wait %s", f, c.Ingest.AckWait))
+	}
+	if len(l.PlacementTags) > 0 && l.Replicas > 1 {
+		errs = append(errs, fmt.Errorf("logfeed.placement_tags places streams of one replica only, not logfeed.replicas %d", l.Replicas))
 	}
 	if l.DuplicateWindow <= l.ReorderWindow {
 		errs = append(errs, fmt.Errorf("logfeed.duplicate_window %s must exceed logfeed.reorder_window %s", l.DuplicateWindow, l.ReorderWindow))

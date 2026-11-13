@@ -114,18 +114,24 @@ func runFeedConvert(t *testing.T, smoke, idle bool) {
 	if url != "" {
 		requireFreshBus(t, url)
 	}
+	// A bus outside the test's process maps the feed's subjects in its own configuration (logfeed.md §15.4).
+	var tags []string
 	if url == "" {
 		srvs := testbus.StartClusterServers(t, 3)
 		urls := make([]string, len(srvs))
 		for i, s := range srvs {
 			urls[i] = s.ClientURL()
+			if err := testbus.MapFeed(s, feedPrefix, feedGroups); err != nil {
+				t.Fatal(err)
+			}
+			tags = append(tags, s.Name())
 		}
 		url = strings.Join(urls, ",")
 	}
 	pool, burstPool := newSizedFeedPool(t, fs.body), newSizedFeedPool(t, fs.burstBody)
 	h := newReportingHarness(t, loadSpec{flush: ft.flush, ackWait: ft.ackWait, probed: true, maxAckPending: ft.trafficLimit, bus: url,
 		feed: func(l *config.Logfeed) {
-			l.Stream, l.Prefix, l.LeaseGroups, l.MaxBytes = feedStream, feedPrefix, feedGroups, fuda.ByteSize(feedMaxBytes)
+			l.Stream, l.Prefix, l.LeaseGroups, l.MaxBytes, l.PlacementTags = feedStream, feedPrefix, feedGroups, fuda.ByteSize(feedMaxBytes), tags
 			l.DuplicateWindow, l.MaxAckPending, l.ReorderWindow, l.FlushInterval = ft.dupWindow, cmp.Or(fs.ackPending, ft.maxAckPending), ft.reorder, ft.flush
 		}})
 	h.log(fmt.Sprintf("a fleet converted by dev's log stage on a three-node cluster, catalog %s: flush %s, ack_wait %s, reorder window %s, %d groups, max_ack_pending %d; "+
@@ -143,10 +149,7 @@ func runFeedConvert(t *testing.T, smoke, idle bool) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	s, err := js.Stream(ctx, feedStream)
-	if err != nil {
-		t.Fatal(err)
-	}
+	s := groupStreams{js: js, f: h.d.Env.Feed()}
 
 	equipment := h.startEquipment(ft.k)
 	defer h.stopEquipment(equipment)
@@ -176,11 +179,11 @@ func runFeedConvert(t *testing.T, smoke, idle bool) {
 	remaining, drained := drainFeed(t, s, 2*ft.flush+ft.reorder+ft.ackWait)
 	samples := backlog.stop()
 	cpu := (processCPU(t) - cpu0).Seconds() / time.Since(start).Seconds()
-	info, err := s.Info(ctx)
+	st, err := s.state(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
-	acc := accountFeed(t, h, info.State.LastSeq, remaining)
+	acc := accountFeed(t, h, st.LastSeq, remaining)
 
 	base, peak, digested := digest(samples, burstAt, burstEnd)
 	made := float64(pubs.made.Load()) / ran.Seconds()
@@ -221,7 +224,7 @@ func runFeedConvert(t *testing.T, smoke, idle bool) {
 }
 
 // progress writes a line a minute to stderr, which a test's timeout does not swallow as it does the report.
-func progress(ctx context.Context, t *testing.T, h *loadHarness, s jetstream.Stream, p *feedPublishers) {
+func progress(ctx context.Context, t *testing.T, h *loadHarness, s groupStreams, p *feedPublishers) {
 	ctx, cancel := context.WithCancel(ctx)
 	done := make(chan struct{})
 	t.Cleanup(func() { cancel(); <-done })
@@ -235,14 +238,10 @@ func progress(ctx context.Context, t *testing.T, h *loadHarness, s jetstream.Str
 				return
 			case <-tick.C:
 			}
-			var msgs, bytes uint64
-			replicas := 0
-			if info, err := s.Info(ctx); err == nil {
-				msgs, bytes, replicas = info.State.Msgs, info.State.Bytes, info.Config.Replicas
-			}
+			st, _ := s.state(ctx)
 			lo, hi, capped := -1, 0, 0
 			for n := range feedGroups {
-				ci, err := s.Consumer(ctx, bus.FeedConsumer(n))
+				ci, err := s.js.Consumer(ctx, bus.FeedStreamName(s.f, n), bus.FeedConsumer(n))
 				if err != nil {
 					continue
 				}
@@ -275,8 +274,8 @@ func progress(ctx context.Context, t *testing.T, h *loadHarness, s jetstream.Str
 					}
 				}
 			}
-			fmt.Fprintf(os.Stderr, "progress %s: made %d acked %d failed %d retried %d; stream %d msgs %s R%d; settled %.0f; ack pending %d..%d, %d groups capped\n",
-				time.Since(p.started).Round(time.Second), p.made.Load(), p.acked.Load(), p.failed.Load(), p.retried.Load(), msgs, kib(int(bytes)), replicas,
+			fmt.Fprintf(os.Stderr, "progress %s: made %d acked %d failed %d retried %d; streams %d msgs %s R%d; settled %.0f; ack pending %d..%d, %d groups capped\n",
+				time.Since(p.started).Round(time.Second), p.made.Load(), p.acked.Load(), p.failed.Load(), p.retried.Load(), st.Msgs, kib(int(st.Bytes)), s.f.Replicas,
 				converted, lo, hi, capped)
 		}
 	}()
@@ -527,20 +526,41 @@ func digest(samples []backlogSample, at, end time.Time) (base, peak string, took
 	return fmt.Sprintf("%.0f MiB", mean/(1<<20)), fmt.Sprintf("%d MiB", top>>20), took
 }
 
-// backlogSample is one reading of the feed stream's bytes.
+// groupStreams is the feed's group streams.
+type groupStreams struct {
+	js jetstream.JetStream
+	f  bus.Feed
+}
+
+// state is the messages and bytes the group streams hold, and as LastSeq the messages they ever stored, their last sequences' sum.
+func (l groupStreams) state(ctx context.Context) (jetstream.StreamState, error) {
+	var sum jetstream.StreamState
+	for n := range l.f.Groups {
+		s, err := l.js.Stream(ctx, bus.FeedStreamName(l.f, n))
+		if err != nil {
+			return sum, err
+		}
+		st := s.CachedInfo().State
+		sum.Msgs, sum.Bytes, sum.LastSeq = sum.Msgs+st.Msgs, sum.Bytes+st.Bytes, sum.LastSeq+st.LastSeq
+	}
+
+	return sum, nil
+}
+
+// backlogSample is one reading of the feed streams' bytes.
 type backlogSample struct {
 	at    time.Time
 	bytes uint64
 }
 
-// backlogSampler reads the feed stream's messages every loadTick.
+// backlogSampler reads the feed streams' bytes every loadTick.
 type backlogSampler struct {
 	cancel  context.CancelFunc
 	done    chan struct{}
 	samples []backlogSample
 }
 
-func sampleBacklog(ctx context.Context, s jetstream.Stream) *backlogSampler {
+func sampleBacklog(ctx context.Context, s groupStreams) *backlogSampler {
 	ctx, cancel := context.WithCancel(ctx)
 	b := &backlogSampler{cancel: cancel, done: make(chan struct{})}
 	go func() {
@@ -548,8 +568,8 @@ func sampleBacklog(ctx context.Context, s jetstream.Stream) *backlogSampler {
 		tick := time.NewTicker(loadTick)
 		defer tick.Stop()
 		for {
-			if info, err := s.Info(ctx); err == nil {
-				b.samples = append(b.samples, backlogSample{at: time.Now(), bytes: info.State.Bytes})
+			if st, err := s.state(ctx); err == nil {
+				b.samples = append(b.samples, backlogSample{at: time.Now(), bytes: st.Bytes})
 			}
 			select {
 			case <-ctx.Done():
@@ -569,18 +589,18 @@ func (b *backlogSampler) stop() []backlogSample {
 	return b.samples
 }
 
-// drainFeed waits up to within for the feed stream to hold nothing, every message published being stored and paired,
+// drainFeed waits up to within for the feed streams to hold nothing, every message published being stored and paired,
 // and returns what it holds: an equipment's last entries leave their window up to the reorder window after the publishers stop,
 // and its flush after them up to F later, so no smaller remainder is final before the deadline.
-func drainFeed(t *testing.T, s jetstream.Stream, within time.Duration) (uint64, bool) {
+func drainFeed(t *testing.T, s groupStreams, within time.Duration) (uint64, bool) {
 	t.Helper()
 	deadline := time.Now().Add(within)
 	for {
-		info, err := s.Info(t.Context())
+		st, err := s.state(t.Context())
 		if err != nil {
 			t.Fatal(err)
 		}
-		n := info.State.Msgs
+		n := st.Msgs
 		if n == 0 {
 			return n, true
 		}
@@ -600,7 +620,7 @@ type feedAccount struct {
 }
 
 // accountFeed reads the log stage's counters and each piece of equipment's capture: every stored entry was converted, counted with an outcome,
-// or is still held, the stored being the stream's last sequence, every publish retried under its message id stored once;
+// or is still held, the stored being the streams' last sequences, every publish retried under its message id stored once;
 // and each capture's records are its equipment's converted data records, two entries each, and its annotations.
 func accountFeed(t *testing.T, h *loadHarness, stored, held uint64) *feedAccount {
 	t.Helper()

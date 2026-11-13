@@ -71,6 +71,16 @@ func (c *Catalog) EnsureLogGroups(ctx context.Context, groups int) error {
 	return nil
 }
 
+// LogGroups is the number of the lease groups' rows, G as migrate last synced it, 0 before any.
+func (c *Catalog) LogGroups(ctx context.Context) (int, error) {
+	var n int
+	if err := c.read.GetContext(ctx, &n, `SELECT COUNT(*) FROM leases WHERE name LIKE 'logfeed/%'`); err != nil {
+		return 0, fmt.Errorf("catalog: log groups: %w", err)
+	}
+
+	return n, nil
+}
+
 // SyncLogGroups makes the lease groups' rows those of groups 0 to groups-1, in one transaction, judged from the rows alone (logfeed.md §15.4):
 // with no row, it inserts them; with rows of another set, after a change of G on a drained stream with every log stage stopped,
 // it increments every remaining group's fence and lapses its lease, so no converter of the old G registers again,

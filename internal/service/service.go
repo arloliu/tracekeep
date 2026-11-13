@@ -400,20 +400,25 @@ func Migrate(ctx context.Context, e *Env) error {
 	return nil
 }
 
-// Feed is the host log feed's stream and consumers as the configuration names them, on the traffic stream's replicas (logfeed.md §15.4).
-func (e *Env) Feed(replicas int) bus.Feed {
+// Feed is the host log feed's group streams and consumers as the configuration names them (logfeed.md §15.4).
+func (e *Env) Feed() bus.Feed {
 	l := &e.Config.Logfeed
 
 	return bus.Feed{
 		Stream: l.Stream, Prefix: l.Prefix, Groups: l.LeaseGroups, MaxBytes: l.MaxBytes.Int64(), Duplicates: l.DuplicateWindow,
-		Replicas: replicas, AckWait: e.Config.Ingest.AckWait, MaxAckPending: l.MaxAckPending,
+		Replicas: l.Replicas, PlacementTags: l.PlacementTags, AckWait: e.Config.Ingest.AckWait, MaxAckPending: l.MaxAckPending,
 	}
 }
 
-// migrateFeed ensures the feed's stream, its group consumers and the groups' lease rows; a change of the groups retires the old ones' leases.
+// migrateFeed ensures the feed's group streams, their consumers and the groups' lease rows; a change of the groups retires the old ones' leases.
+// The lease rows, synced last, are the previous G, so a run interrupted between the two completes on the next.
 // The feed has no incarnation row: nothing is ever parked from it (T-60).
 func (e *Env) migrateFeed(ctx context.Context, traffic, parked jetstream.StreamConfig) error {
-	if _, err := bus.EnsureFeed(ctx, e.JS, e.Feed(traffic.Replicas), traffic, parked); err != nil {
+	previous, err := e.Catalog.LogGroups(ctx)
+	if err != nil {
+		return err
+	}
+	if err := bus.EnsureFeed(ctx, e.JS, e.Feed(), previous, traffic, parked); err != nil {
 		return err
 	}
 
@@ -439,7 +444,7 @@ func (e *Env) streams(ctx context.Context) (map[string]jetstream.Stream, map[str
 		return nil, nil, err
 	}
 	if e.Config.Logfeed.Enabled {
-		if _, err := bus.OpenFeed(ctx, e.JS, e.Config.Logfeed.Stream, tc, pc); err != nil {
+		if err := bus.CheckFeedStreams(ctx, e.JS, e.Feed(), tc, pc); err != nil {
 			return nil, nil, err
 		}
 	}
@@ -465,7 +470,7 @@ func Ingest(ctx context.Context, e *Env) error {
 	if err != nil {
 		return err
 	}
-	stage, err := logStage(ctx, e, gs[0])
+	stage, err := logStage(e, gs[0])
 	if err != nil {
 		for _, g := range gs {
 			e.leave(g.Replica)
@@ -499,7 +504,7 @@ func Ingest(ctx context.Context, e *Env) error {
 			defer close(refreshed)
 			var feed metrics.Consumer
 			if stage != nil {
-				feed = feedState{js: e.JS, stream: e.Config.Logfeed.Stream}
+				feed = feedState{js: e.JS, feed: e.Feed()}
 			}
 			e.refresh(rctx, gs[0].Metrics, e.Catalog, states[0], feed)
 		}()
@@ -513,18 +518,10 @@ func Ingest(ctx context.Context, e *Env) error {
 }
 
 // logStage builds the host log feed's stage from the traffic ingester's configurations, keys and store, nil with the feed disabled (logfeed.md §15.4).
-func logStage(ctx context.Context, e *Env, g *ingest.Ingester) (*logfeed.Stage, error) {
+func logStage(e *Env, g *ingest.Ingester) (*logfeed.Stage, error) {
 	c := e.Config
 	if !c.Logfeed.Enabled {
 		return nil, nil //nolint:nilnil // no stage is not an error
-	}
-	traffic, err := e.JS.Stream(ctx, bus.StreamName(e.Bus(), catalog.RoleTraffic))
-	if err != nil {
-		return nil, fmt.Errorf("service: traffic stream: %w", err)
-	}
-	s, err := e.JS.Stream(ctx, c.Logfeed.Stream)
-	if err != nil {
-		return nil, fmt.Errorf("service: feed stream: %w", err)
 	}
 	dir, err := ownWorkDir(c.Ingest.WorkDir, "logfeed", c.Replica)
 	if err != nil {
@@ -554,7 +551,7 @@ func logStage(ctx context.Context, e *Env, g *ingest.Ingester) (*logfeed.Stage, 
 	}
 
 	return &logfeed.Stage{
-		Catalog: e.Catalog, Stream: s, Conn: e.JS.Conn(), Feed: e.Feed(traffic.CachedInfo().Config.Replicas), Replica: c.Replica,
+		Catalog: e.Catalog, JS: e.JS, Conn: e.JS.Conn(), Feed: e.Feed(), Replica: c.Replica,
 		LeaseTTL: c.Ingest.Lease, FetchBatch: c.Ingest.FetchBatch, Pause: c.Ingest.Lease, Log: e.Log.With("role", "logfeed"),
 		Base: &logfeed.Converter{
 			Catalog: e.Catalog, Store: e.Store, KeyPrefix: c.Store.KeyPrefix, WorkDir: dir, Writer: writerName,
@@ -620,20 +617,16 @@ func (b busState) State(ctx context.Context) (metrics.BusState, error) {
 	return metrics.BusState{AckPending: uint64(ci.NumAckPending), Messages: st.Msgs, Bytes: st.Bytes}, nil //nolint:gosec // a count is positive
 }
 
-// feedState reads the host log feed's stream backlog; its G group consumers have no single pending count.
+// feedState reads the host log feed's backlog, its group streams' together.
 type feedState struct {
-	js     jetstream.JetStream
-	stream string
+	js   jetstream.JetStream
+	feed bus.Feed
 }
 
 func (f feedState) State(ctx context.Context) (metrics.BusState, error) {
-	s, err := f.js.Stream(ctx, f.stream)
-	if err != nil {
-		return metrics.BusState{}, err
-	}
-	st := s.CachedInfo().State
+	msgs, bytes, err := bus.FeedBacklog(ctx, f.js, f.feed)
 
-	return metrics.BusState{Messages: st.Msgs, Bytes: st.Bytes}, nil
+	return metrics.BusState{Messages: msgs, Bytes: bytes}, err
 }
 
 // run runs the joined ingesters until ctx ends, and ends their memberships.

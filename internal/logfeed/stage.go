@@ -20,13 +20,14 @@ import (
 const releaseTimeout = 5 * time.Second
 
 // Stage is the log stage in the ingest role (logfeed.md §15.4, §15.5): it holds its share of the lease groups among the live replicas,
-// taking free ones and giving back those past its share as replicas join, and runs each held group's converter on the group's consumer,
+// taking free ones and giving back those past its share as replicas join, and runs each held group's converter on its group stream's consumer,
 // re-created at every take. A group whose lease is lost stops at once; one whose converter gives up returns everything it holds and its lease,
 // which any replica takes again after a pause.
 type Stage struct {
 	Catalog *catalog.Catalog
-	Stream  jetstream.Stream
-	// Conn is the stream's connection, which a held delivery's acknowledgement publishes on; nil keeps each delivery whole until acknowledged.
+	// JS opens group n's stream, bus.FeedStreamName's.
+	JS jetstream.JetStream
+	// Conn is the streams' connection, which a held delivery's acknowledgement publishes on; nil keeps each delivery whole until acknowledged.
 	Conn    *nats.Conn
 	Feed    bus.Feed
 	Replica string
@@ -255,11 +256,11 @@ func (s *Stage) convert(ctx context.Context, n int, conv *Converter) error {
 	if err := conv.Load(opens); err != nil {
 		return err
 	}
-	name := bus.FeedConsumer(n)
-	if err := s.Stream.DeleteConsumer(ctx, name); err != nil && !errors.Is(err, jetstream.ErrConsumerNotFound) {
+	stream := bus.FeedStreamName(s.Feed, n)
+	if err := s.JS.DeleteConsumer(ctx, stream, bus.FeedConsumer(n)); err != nil && !errors.Is(err, jetstream.ErrConsumerNotFound) {
 		return err
 	}
-	cons, err := s.Stream.CreateOrUpdateConsumer(ctx, bus.FeedConsumerConfig(s.Feed, n))
+	cons, err := s.JS.CreateOrUpdateConsumer(ctx, stream, bus.FeedConsumerConfig(s.Feed, n))
 	if err != nil {
 		return err
 	}

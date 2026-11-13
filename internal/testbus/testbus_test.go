@@ -3,6 +3,8 @@ package testbus_test
 import (
 	"context"
 	"errors"
+	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -176,5 +178,56 @@ func TestSnapshotRestore(t *testing.T) {
 	}
 	if n := c.CachedInfo().NumPending; n != 3 {
 		t.Errorf("the restored consumer has %d pending, want 3", n)
+	}
+}
+
+// The feed's mapping applies to a client already connected, a second one replaces the first, and a restart keeps it.
+func TestMapFeed(t *testing.T) {
+	t.Parallel()
+	srv := testbus.StartServer(t, testbus.Options{})
+	nc, err := nats.Connect(srv.URL(), nats.MaxReconnects(-1), nats.ReconnectWait(10*time.Millisecond))
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	t.Cleanup(nc.Close)
+	js, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream: %v", err)
+	}
+	ctx := t.Context()
+	// Only a mapped subject has a group token, so an unmapped publish finds no stream.
+	stream, err := js.CreateStream(ctx, jetstream.StreamConfig{Name: "FEED", Subjects: []string{"tklog.*.*"}})
+	if err != nil {
+		t.Fatalf("create stream: %v", err)
+	}
+	groups := func() map[string]bool {
+		t.Helper()
+		seen := map[string]bool{}
+		for i := range 20 {
+			ack, err := js.Publish(ctx, fmt.Sprintf("tklog.EQ-%d", i), nil)
+			if err != nil {
+				t.Fatalf("publish: %v", err)
+			}
+			m, err := stream.GetMsg(ctx, ack.Sequence)
+			if err != nil {
+				t.Fatalf("get message: %v", err)
+			}
+			seen[strings.Split(m.Subject, ".")[1]] = true
+		}
+
+		return seen
+	}
+	srv.MapFeed("tklog", 1)
+	if got := groups(); len(got) != 1 || !got["0"] {
+		t.Errorf("groups under one partition %v, want 0 alone", got)
+	}
+	srv.MapFeed("tklog", 64)
+	if got := groups(); len(got) < 2 {
+		t.Errorf("groups under 64 partitions %v, want several", got)
+	}
+	srv.Stop()
+	srv.Restart()
+	if got := groups(); len(got) < 2 {
+		t.Errorf("groups after a restart %v, want several", got)
 	}
 }
