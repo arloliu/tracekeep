@@ -51,7 +51,26 @@ func load(t *testing.T, url string) *config.Config {
 // env is an environment over the catalog c, a fresh embedded bus and an in-memory store, migrated.
 func env(t *testing.T, c *catalog.Catalog) *Env {
 	t.Helper()
-	url := testbus.Start(t)
+
+	return envOn(t, c, testbus.Start(t), nil)
+}
+
+// feedEnv is env with the feed enabled in groups lease groups, the bus mapping its subjects as the servers' configuration does.
+func feedEnv(t *testing.T, c *catalog.Catalog, groups int) *Env {
+	t.Helper()
+	srv := testbus.StartServer(t, testbus.Options{})
+
+	return envOn(t, c, srv.URL(), func(e *Env) {
+		l := &e.Config.Logfeed
+		// A small limit: JetStream reserves a stream's max_bytes, and a test server's storage is far below the default 40 GiB.
+		l.Enabled, l.LeaseGroups, l.MaxBytes = true, groups, 64<<20
+		srv.MapFeed(l.Prefix, l.LeaseGroups)
+	})
+}
+
+// envOn is env on the bus at url, adjusted by adjust before migrate unless it is nil.
+func envOn(t *testing.T, c *catalog.Catalog, url string, adjust func(*Env)) *Env {
+	t.Helper()
 	nc, err := nats.Connect(url)
 	if err != nil {
 		t.Fatal(err)
@@ -63,6 +82,9 @@ func env(t *testing.T, c *catalog.Catalog) *Env {
 	}
 	// A test binary carries no dependency versions, so its classifier names none, as a dev build's.
 	e := &Env{Config: load(t, url), Log: slog.New(slog.DiscardHandler), Catalog: c, NC: nc, JS: js, Store: store.NewMem(), AllowUnversioned: true, Dev: true}
+	if adjust != nil {
+		adjust(e)
+	}
 	if err := Migrate(t.Context(), e); err != nil {
 		t.Fatal(err)
 	}
@@ -94,33 +116,41 @@ func TestMigrate(t *testing.T) {
 	})
 }
 
-// With the feed enabled, migrate also ensures the feed's stream, its group consumers and the groups' lease rows, and can run again.
+// With the feed enabled, migrate also ensures the group streams, their consumers and the groups' lease rows, and can run again;
+// it refuses a change of G while a group stream holds a message.
 func TestMigrateFeed(t *testing.T) {
 	t.Parallel()
 	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
 		ctx := t.Context()
-		e := env(t, c)
-		// A small limit: JetStream reserves a stream's max_bytes, and a test server's storage is far below the default 40 GiB.
-		e.Config.Logfeed.Enabled, e.Config.Logfeed.LeaseGroups, e.Config.Logfeed.MaxBytes = true, 4, 64<<20
-		for range 2 {
-			if err := Migrate(ctx, e); err != nil {
-				t.Fatalf("Migrate with the feed = %v", err)
-			}
+		e := feedEnv(t, c, 4)
+		if err := Migrate(ctx, e); err != nil {
+			t.Fatalf("Migrate again with the feed = %v", err)
 		}
-		s, err := e.JS.Stream(ctx, e.Config.Logfeed.Stream)
-		if err != nil {
-			t.Fatalf("feed stream: %v", err)
-		}
-		if _, err := s.Consumer(ctx, bus.FeedConsumer(3)); err != nil {
+		if _, err := e.JS.Consumer(ctx, bus.FeedStreamName(e.Feed(), 3), bus.FeedConsumer(3)); err != nil {
 			t.Errorf("group 3's consumer: %v", err)
 		}
 		old, ok, err := c.TakeLease(ctx, catalog.LogGroupLease(1), "r", time.Minute)
 		if err != nil || !ok {
 			t.Fatalf("group 1's lease = %v, %v; want its row", ok, err)
 		}
-
-		// A change of G whose stream changed and whose catalog did not, as a migrate failing between the two leaves it, completes on the next run.
+		if _, err := e.JS.Publish(ctx, "tklog.T1", []byte("{}")); err != nil {
+			t.Fatal(err)
+		}
 		e.Config.Logfeed.LeaseGroups = 2
+		if err := Migrate(ctx, e); !errors.Is(err, bus.ErrFeedNotDrained) {
+			t.Fatalf("Migrate changing G over a message = %v, want ErrFeedNotDrained", err)
+		}
+		for n := range 4 {
+			s, err := e.JS.Stream(ctx, bus.FeedStreamName(e.Feed(), n))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := s.Purge(ctx); err != nil {
+				t.Fatal(err)
+			}
+		}
+
+		// A change of G whose streams changed and whose catalog did not, as a migrate failing between the two leaves it, completes on the next run.
 		tc := func(role string) jetstream.StreamConfig {
 			s, err := e.JS.Stream(ctx, bus.StreamName(e.Bus(), role))
 			if err != nil {
@@ -129,7 +159,7 @@ func TestMigrateFeed(t *testing.T) {
 
 			return s.CachedInfo().Config
 		}
-		if _, err := bus.EnsureFeed(ctx, e.JS, e.Feed(1), tc(catalog.RoleTraffic), tc(catalog.RoleParking)); err != nil {
+		if err := bus.EnsureFeed(ctx, e.JS, e.Feed(), 4, tc(catalog.RoleTraffic), tc(catalog.RoleParking)); err != nil {
 			t.Fatal(err)
 		}
 		if err := Migrate(ctx, e); err != nil {
@@ -141,23 +171,21 @@ func TestMigrateFeed(t *testing.T) {
 		if _, ok, err := c.TakeLease(ctx, catalog.LogGroupLease(3), "r", time.Minute); !errors.Is(err, catalog.ErrUnknownLease) || ok {
 			t.Errorf("a retired group's lease = %v, %v; want ErrUnknownLease", ok, err)
 		}
-		if _, err := s.Consumer(ctx, bus.FeedConsumer(3)); err == nil {
-			t.Error("a retired group's consumer is left")
+		if _, err := e.JS.Stream(ctx, bus.FeedStreamName(e.Feed(), 3)); !errors.Is(err, jetstream.ErrStreamNotFound) {
+			t.Errorf("a retired group's stream = %v, want none", err)
 		}
 	})
 }
 
-// With the feed enabled, ingest runs the log stage: entries published on the feed become a log capture.
+// With the feed enabled, ingest runs the log stage: entries published on the feed's subject, which the servers' mapping routes to its group's stream,
+// become a log capture.
 func TestIngestConvertsTheFeed(t *testing.T) {
 	t.Parallel()
 	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
 		ctx := t.Context()
-		e := env(t, c)
+		e := feedEnv(t, c, 2)
 		l := &e.Config.Logfeed
-		l.Enabled, l.LeaseGroups, l.MaxBytes, l.ReorderWindow, l.FlushInterval = true, 2, 64<<20, 100*time.Millisecond, 200*time.Millisecond
-		if err := Migrate(ctx, e); err != nil {
-			t.Fatal(err)
-		}
+		l.ReorderWindow, l.FlushInterval = 100*time.Millisecond, 200*time.Millisecond
 		run, stop := context.WithCancel(ctx)
 		done := make(chan error, 1)
 		go func() { done <- Ingest(run, e) }()

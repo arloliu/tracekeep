@@ -392,7 +392,8 @@ func (e *Env) Admin(actor string) (*admin.Admin, error) {
 		Catalog: e.Catalog, Bus: e.JS, Config: e.Bus(), Actor: actor, Keys: k, Classifier: builtin.Name, MaxFrameLen: builtin.MaxFrameLen, Dev: e.Dev,
 	}
 	if e.Config.Logfeed.Enabled {
-		a.Feed = e.Config.Logfeed.Stream
+		f := e.Feed()
+		a.Feed = &f
 	}
 
 	return a, nil

@@ -646,7 +646,7 @@ func logOperatorRefusals(t *testing.T, c *Catalog, l, lease Lease, a, gw tracepa
 
 // The lease groups' rows follow G: an unchanged G changes nothing, and a change retires the old groups,
 // every remaining group's fence moving and its lease lapsing, so its old holder registers nothing more,
-// the groups at or above the new G losing their rows, and the missing ones gaining theirs.
+// the groups at or above the new G losing their rows, and the missing ones gaining theirs, which LogGroups counts.
 func TestSyncLogGroups(t *testing.T) {
 	t.Parallel()
 	engines(t, func(t *testing.T, c *Catalog) {
@@ -666,6 +666,9 @@ func TestSyncLogGroups(t *testing.T) {
 		var names []string
 		if err := c.read.SelectContext(ctx, &names, `SELECT name FROM leases WHERE name LIKE 'logfeed/%' ORDER BY name`); err != nil || len(names) != 2 || names[0] != "logfeed/0" || names[1] != "logfeed/1" {
 			t.Errorf("the lease groups after the change = %v, %v; want logfeed/0 and logfeed/1", names, err)
+		}
+		if n, err := c.LogGroups(ctx); err != nil || n != 2 {
+			t.Errorf("LogGroups after the change = %d, %v; want 2", n, err)
 		}
 		f := &LogFlush{Packs: []*Pack{segment(t, a, 5, 0, 9)}, Files: []LogFileMark{{LogFile: logFile, Watermark: 10}}}
 		if _, err := c.RegisterLogFlush(ctx, l, f); !errors.Is(err, ErrLeaseLost) {

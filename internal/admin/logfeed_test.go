@@ -2,6 +2,7 @@ package admin_test
 
 import (
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -85,7 +86,7 @@ func TestCaptureStop(t *testing.T) {
 	})
 }
 
-// status shows the feed stream's backlog with the feed enabled, and nothing of it with the feed disabled.
+// status shows the group streams' backlog together with the feed enabled, and nothing of it with the feed disabled.
 func TestStatusFeed(t *testing.T) {
 	t.Parallel()
 	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
@@ -99,11 +100,11 @@ func TestStatusFeed(t *testing.T) {
 			Stream: "tklog", Prefix: "tklog", Groups: 2, MaxBytes: 64 << 20, Duplicates: time.Minute, Replicas: 1,
 			AckWait: time.Minute, MaxAckPending: 100,
 		}
-		if _, err := bus.EnsureFeed(ctx, js, f, traffic.CachedInfo().Config, parked.CachedInfo().Config); err != nil {
+		if err := bus.EnsureFeed(ctx, js, f, 0, traffic.CachedInfo().Config, parked.CachedInfo().Config); err != nil {
 			t.Fatal(err)
 		}
-		for range 2 {
-			if _, err := js.Publish(ctx, "tklog.T1", []byte("{}")); err != nil {
+		for n := range 2 {
+			if _, err := js.Publish(ctx, fmt.Sprintf("tklog.%d.T1", n), []byte("{}")); err != nil {
 				t.Fatal(err)
 			}
 		}
@@ -111,7 +112,7 @@ func TestStatusFeed(t *testing.T) {
 		if err != nil || st.Feed != nil {
 			t.Fatalf("status with the feed disabled = %+v, %v; want no feed", st.Feed, err)
 		}
-		a.Feed = "tklog"
+		a.Feed = &f
 		st, err = a.Status(ctx)
 		if err != nil || st.Feed == nil || st.Feed.BacklogMessages != 2 || st.Feed.BacklogBytes == 0 || st.Feed.SilentEquipment != 0 {
 			t.Errorf("status's feed = %+v, %v; want two messages of backlog", st.Feed, err)

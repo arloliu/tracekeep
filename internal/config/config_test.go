@@ -211,7 +211,7 @@ func TestLogfeedDefaults(t *testing.T) {
 		t.Fatal(err)
 	}
 	l := c.Logfeed
-	if l.Enabled || l.Stream != "TRACEKEEP_LOGFEED" || l.Prefix != "tklog" || l.LeaseGroups != 32 || l.MaxBytes.Int64() != 40<<30 ||
+	if l.Enabled || l.Stream != "TRACEKEEP_LOGFEED" || l.Prefix != "tklog" || l.LeaseGroups != 32 || l.MaxBytes.Int64() != 40<<30 || l.Replicas != 1 || len(l.PlacementTags) != 0 ||
 		l.DuplicateWindow != 2*time.Minute || l.MaxAckPending != 100_000 || l.ReorderWindow != 30*time.Second || l.PairingWindow != 3 ||
 		l.IdlePeriod != 24*time.Hour || l.MainDevice != "eqp" || l.Flush(c.Ingest.FlushInterval) != 5*time.Minute {
 		t.Errorf("logfeed %+v, want the defaults", l)
@@ -222,7 +222,8 @@ func TestLogfeedDefaults(t *testing.T) {
 }
 
 // A feed is refused whose prefix shares a first token with the traffic or parking prefix, whose F outlasts ingest's ack_wait,
-// whose duplicate window is no longer than its reorder window, and whose device rule names both or neither of a token and a session.
+// whose placement tags would place streams of more than one replica, whose duplicate window is no longer than its reorder window,
+// and whose device rule names both or neither of a token and a session.
 func TestLogfeedValidation(t *testing.T) {
 	t.Parallel()
 	for name, tc := range map[string]struct{ extra, want string }{
@@ -240,6 +241,8 @@ func TestLogfeedValidation(t *testing.T) {
 		"no reorder window":          {"logfeed:\n  reorder_window: 0s\n", "ReorderWindow"},
 		"a tiny duplicate window":    {"logfeed:\n  duplicate_window: 50ms\n  reorder_window: 10ms\n", "DuplicateWindow"},
 		"no main device":             {"logfeed:\n  main_device: \"\"\n", "MainDevice"},
+		"tags over three replicas":   {"logfeed:\n  replicas: 3\n  placement_tags: [a, b]\n", "logfeed.placement_tags"},
+		"no replica":                 {"logfeed:\n  replicas: 0\n", "Replicas"},
 	} {
 		if _, err := Load(write(t, yaml("", "", "", tc.extra))); err == nil || !strings.Contains(err.Error(), tc.want) {
 			t.Errorf("%s: Load = %v, want an error naming %s", name, err, tc.want)

@@ -49,6 +49,9 @@ type Server struct {
 	opts server.Options
 	srv  *server.Server
 	url  string
+	// feed is MapFeed's prefix and groups, applied again at every start; groups is 0 before any.
+	feedPrefix string
+	feedGroups int
 }
 
 // Start runs an embedded nats-server with JetStream and returns its client URL.
@@ -105,6 +108,27 @@ func StartServer(t testing.TB, o Options) *Server {
 	return s
 }
 
+// MapFeed gives the server's account the host log feed's mapping as the operations team configures it (logfeed.md §15.4),
+// replacing an earlier one; a restart keeps it.
+func (s *Server) MapFeed(prefix string, groups int) {
+	s.t.Helper()
+	s.feedPrefix, s.feedGroups = prefix, groups
+	if err := MapFeed(s.srv, prefix, groups); err != nil {
+		s.t.Fatal(err)
+	}
+}
+
+// MapFeed gives srv's account the host log feed's mapping, <prefix>.* to <prefix>.{{partition(groups,1)}}.{{wildcard(1)}},
+// replacing an earlier one, so a publish lands on its equipment's group stream (logfeed.md §15.4).
+// A cluster's every server needs it, the server a client is connected to applying it.
+func MapFeed(srv *server.Server, prefix string, groups int) error {
+	if err := srv.GlobalAccount().AddMapping(prefix+".*", fmt.Sprintf("%s.{{partition(%d,1)}}.{{wildcard(1)}}", prefix, groups)); err != nil {
+		return fmt.Errorf("testbus: feed mapping: %w", err)
+	}
+
+	return nil
+}
+
 // URL returns the nats:// URL to connect to; it does not change across a restart.
 func (s *Server) URL() string { return s.url }
 
@@ -149,6 +173,9 @@ func (s *Server) start() {
 		s.t.Fatalf("testbus: server not ready within %s", readyTimeout)
 	}
 	s.srv = srv
+	if s.feedGroups > 0 {
+		s.MapFeed(s.feedPrefix, s.feedGroups)
+	}
 }
 
 // StartCluster runs n embedded servers with JetStream clustered over routes on localhost and returns a client URL naming them all,
@@ -222,7 +249,8 @@ func startServers(t testing.TB, n int) ([]*server.Server, error) {
 	srvs := make([]*server.Server, n)
 	for i := range n {
 		opts := server.Options{
-			ServerName: fmt.Sprintf("tb-%d", i), Host: "127.0.0.1", Port: -1, JetStream: true, StoreDir: t.TempDir(),
+			// Each server is tagged with its name, for a placement by tag.
+			ServerName: fmt.Sprintf("tb-%d", i), Tags: []string{fmt.Sprintf("tb-%d", i)}, Host: "127.0.0.1", Port: -1, JetStream: true, StoreDir: t.TempDir(),
 			Cluster: server.ClusterOpts{Name: "testbus", Host: "127.0.0.1", Port: ports[i]},
 			Routes:  routes,
 			NoLog:   true, NoSigs: true,

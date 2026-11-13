@@ -95,6 +95,11 @@ func NewDev(ctx context.Context, o DevOptions) (*Dev, error) {
 	if err != nil {
 		return nil, errors.Join(err, d.Close())
 	}
+	if d.bus != nil {
+		if err := testbus.MapFeed(d.bus, cfg.Logfeed.Prefix, cfg.Logfeed.LeaseGroups); err != nil {
+			return nil, errors.Join(err, d.Close())
+		}
+	}
 	if err := d.devAPI(cfg); err != nil {
 		return nil, errors.Join(err, d.Close())
 	}

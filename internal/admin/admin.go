@@ -23,9 +23,9 @@ import (
 type Admin struct {
 	Catalog *catalog.Catalog
 	Bus     jetstream.JetStream
-	// Config names the bus's streams, and Feed the host log feed's, empty with it disabled.
+	// Config names the bus's streams, and Feed the host log feed's, nil with it disabled.
 	Config bus.Config
-	Feed   string
+	Feed   *bus.Feed
 	// Actor names the operator in every audit row.
 	Actor string
 	// Keys resolves the declared keys, for key verify and config stage.
