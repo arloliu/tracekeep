@@ -398,7 +398,7 @@ func (c *Config) checkMaxima() []error {
 }
 
 // checkLogfeed refuses a feed whose prefix shares a first token with the traffic or parking prefix (the service's check, never the SDK's, T-60),
-// whose F would outlast ingest's ack_wait, whose placement tags would place streams of more than one replica,
+// whose max_bytes gives a group stream no representable limit, whose F would outlast ingest's ack_wait, whose placement tags would place streams of more than one replica,
 // whose duplicate window is no longer than its reorder window, and a device rule naming neither a token nor a session, or both.
 func (c *Config) checkLogfeed() []error {
 	l := &c.Logfeed
@@ -416,6 +416,10 @@ func (c *Config) checkLogfeed() []error {
 	}
 	if f := l.Flush(c.Ingest.FlushInterval); f >= c.Ingest.AckWait {
 		errs = append(errs, fmt.Errorf("logfeed.flush_interval %s must be below ingest.ack_wait %s", f, c.Ingest.AckWait))
+	}
+	// Each stream's limit is its share scaled by 1.25, as bus.FeedStreamConfig computes it; the server takes one below a byte as none.
+	if share := l.MaxBytes.Int64() / int64(max(l.LeaseGroups, 1)); share+share/4 < 1 {
+		errs = append(errs, fmt.Errorf("logfeed.max_bytes %d leaves no limit for each of %d group streams", l.MaxBytes.Int64(), l.LeaseGroups))
 	}
 	if len(l.PlacementTags) > 0 && l.Replicas > 1 {
 		errs = append(errs, fmt.Errorf("logfeed.placement_tags places streams of one replica only, not logfeed.replicas %d", l.Replicas))
