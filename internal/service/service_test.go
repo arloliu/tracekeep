@@ -229,6 +229,24 @@ func TestRolesNeedTheFeed(t *testing.T) {
 	})
 }
 
+// With the feed enabled, a role refuses to start while the servers' mapping partitions the feed's subjects into more partitions than G.
+func TestRolesNeedTheMapping(t *testing.T) {
+	t.Parallel()
+	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
+		srv := testbus.StartServer(t, testbus.Options{})
+		e := envOn(t, c, srv.URL(), func(e *Env) {
+			l := &e.Config.Logfeed
+			l.Enabled, l.LeaseGroups, l.MaxBytes = true, 4, 64<<20
+			srv.MapFeed(l.Prefix, 2*l.LeaseGroups)
+		})
+		ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+		defer cancel()
+		if err := Compact(ctx, e); !errors.Is(err, bus.ErrFeedMapping) {
+			t.Errorf("compact over a mapping into 2G partitions = %v, want ErrFeedMapping", err)
+		}
+	})
+}
+
 // Migrate, ingest and compact refuse to start against a traffic stream that allows direct gets, or a stream the catalog does not record.
 func TestRolesRefuseToStart(t *testing.T) {
 	t.Parallel()

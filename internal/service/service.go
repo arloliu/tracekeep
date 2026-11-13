@@ -429,7 +429,8 @@ func (e *Env) migrateFeed(ctx context.Context, traffic, parked jetstream.StreamC
 	return e.Catalog.SyncLogGroups(ctx, e.Config.Logfeed.LeaseGroups)
 }
 
-// streams opens the traffic and parking streams and refuses either when it allows direct gets or is not the catalog's incarnation.
+// streams opens the traffic and parking streams and refuses either when it allows direct gets or is not the catalog's incarnation;
+// with the feed enabled, it checks every group stream and probes the servers' mapping of the feed's subjects (logfeed.md §15.4).
 func (e *Env) streams(ctx context.Context) (map[string]jetstream.Stream, map[string]catalog.Incarnation, error) {
 	ss := map[string]jetstream.Stream{}
 	incs := map[string]catalog.Incarnation{}
@@ -449,6 +450,9 @@ func (e *Env) streams(ctx context.Context) (map[string]jetstream.Stream, map[str
 	}
 	if e.Config.Logfeed.Enabled {
 		if err := bus.CheckFeedStreams(ctx, e.JS, e.Feed(), tc, pc); err != nil {
+			return nil, nil, err
+		}
+		if err := bus.ProbeFeedMapping(ctx, e.NC, e.JS, e.Feed()); err != nil {
 			return nil, nil, err
 		}
 	}
@@ -506,7 +510,7 @@ func Ingest(ctx context.Context, e *Env) error {
 		refreshed := make(chan struct{})
 		go func() {
 			defer close(refreshed)
-			var feed metrics.Consumer
+			var feed metrics.Feed
 			if stage != nil {
 				feed = feedState{js: e.JS, feed: e.Feed()}
 			}
@@ -571,7 +575,7 @@ func logStage(e *Env, g *ingest.Ingester) (*logfeed.Stage, error) {
 // refresh reads ingest's catalog and bus gauges every refreshInterval until ctx ends, each pass bounded by the interval,
 // and the feed stream's backlog unless feed is nil.
 // A failed pass's catalog and bus causes are logged through safetext.Text, so a URL they quote keeps no credential or query.
-func (e *Env) refresh(ctx context.Context, m *metrics.Ingest, cat metrics.Catalog, traffic, feed metrics.Consumer) {
+func (e *Env) refresh(ctx context.Context, m *metrics.Ingest, cat metrics.Catalog, traffic metrics.Consumer, feed metrics.Feed) {
 	t := time.NewTicker(refreshInterval)
 	defer t.Stop()
 	for {
@@ -621,16 +625,20 @@ func (b busState) State(ctx context.Context) (metrics.BusState, error) {
 	return metrics.BusState{AckPending: uint64(ci.NumAckPending), Messages: st.Msgs, Bytes: st.Bytes}, nil //nolint:gosec // a count is positive
 }
 
-// feedState reads the host log feed's backlog, its group streams' together.
+// feedState reads the host log feed's group streams' backlog, failing whole when any stream cannot answer.
 type feedState struct {
 	js   jetstream.JetStream
 	feed bus.Feed
 }
 
-func (f feedState) State(ctx context.Context) (metrics.BusState, error) {
-	msgs, bytes, err := bus.FeedBacklog(ctx, f.js, f.feed)
+func (f feedState) Streams(ctx context.Context) ([]metrics.FeedStream, error) {
+	states := bus.FeedStates(ctx, f.js, f.feed)
+	out, errs := make([]metrics.FeedStream, 0, len(states)), make([]error, 0, len(states))
+	for _, st := range states {
+		out, errs = append(out, metrics.FeedStream{Stream: st.Stream, Messages: st.Messages, Bytes: st.Bytes}), append(errs, st.Err)
+	}
 
-	return metrics.BusState{Messages: msgs, Bytes: bytes}, err
+	return out, errors.Join(errs...)
 }
 
 // run runs the joined ingesters until ctx ends, and ends their memberships.

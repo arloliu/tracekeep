@@ -30,12 +30,22 @@ type Equipment struct {
 	Backlog uint64 `json:"backlog_messages"`
 }
 
-// Feed is tracekeep status's host log feed (logfeed.md §15.11): its group streams' backlog together,
+// Feed is tracekeep status's host log feed (logfeed.md §15.11): its group streams' backlog, each and together,
 // and the number of equipment whose log captures registered nothing for catalog.SilentAfter among those that did within catalog.SilentWithin.
 type Feed struct {
+	BacklogMessages uint64       `json:"backlog_messages"`
+	BacklogBytes    uint64       `json:"backlog_bytes"`
+	Streams         []FeedStream `json:"streams"`
+	SilentEquipment int          `json:"silent_equipment"`
+}
+
+// FeedStream is one group stream's backlog, or why it could not be read, which leaves it out of the feed's sums.
+type FeedStream struct {
+	Group           int    `json:"group"`
+	Stream          string `json:"stream"`
 	BacklogMessages uint64 `json:"backlog_messages"`
 	BacklogBytes    uint64 `json:"backlog_bytes"`
-	SilentEquipment int    `json:"silent_equipment"`
+	Error           string `json:"error,omitempty"`
 }
 
 // Status is tracekeep status: the pending captures by id first, then each piece of equipment, and the traffic stream's whole backlog,
@@ -85,11 +95,16 @@ func (a *Admin) Status(ctx context.Context) (Status, error) {
 		out.Equipment = append(out.Equipment, line)
 	}
 	if a.Feed != nil {
-		msgs, bytes, err := bus.FeedBacklog(ctx, a.Bus, *a.Feed)
-		if err != nil {
-			return Status{}, fmt.Errorf("admin: status: %w", err)
+		// A stream whose servers are down is reported as such, the others still shown (T-68).
+		out.Feed = &Feed{SilentEquipment: st.SilentLogEquipment}
+		for _, fs := range bus.FeedStates(ctx, a.Bus, *a.Feed) {
+			line := FeedStream{Group: fs.Group, Stream: fs.Stream, BacklogMessages: fs.Messages, BacklogBytes: fs.Bytes}
+			if fs.Err != nil {
+				line.Error = fs.Err.Error()
+			}
+			out.Feed.Streams = append(out.Feed.Streams, line)
+			out.Feed.BacklogMessages, out.Feed.BacklogBytes = out.Feed.BacklogMessages+fs.Messages, out.Feed.BacklogBytes+fs.Bytes
 		}
-		out.Feed = &Feed{BacklogMessages: msgs, BacklogBytes: bytes, SilentEquipment: st.SilentLogEquipment}
 	}
 
 	return out, nil

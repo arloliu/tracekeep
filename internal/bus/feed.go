@@ -163,15 +163,40 @@ func CheckFeedStreams(ctx context.Context, js jetstream.JetStream, f Feed, traff
 	return nil
 }
 
-// FeedBacklog is the messages and bytes every group's stream holds.
-func FeedBacklog(ctx context.Context, js jetstream.JetStream, f Feed) (msgs, bytes uint64, err error) {
+// FeedStreamState is a group stream's backlog, or the error that kept it from being read.
+type FeedStreamState struct {
+	Group           int
+	Stream          string
+	Messages, Bytes uint64
+	Err             error
+}
+
+// FeedStates reads every group's stream, in group order; a stream that cannot answer carries its error, the others their backlog.
+func FeedStates(ctx context.Context, js jetstream.JetStream, f Feed) []FeedStreamState {
+	out := make([]FeedStreamState, f.Groups)
 	for n := range f.Groups {
-		s, err := js.Stream(ctx, FeedStreamName(f, n))
+		out[n] = FeedStreamState{Group: n, Stream: FeedStreamName(f, n)}
+		s, err := js.Stream(ctx, out[n].Stream)
 		if err != nil {
-			return 0, 0, fmt.Errorf("bus: feed stream %s: %w", FeedStreamName(f, n), err)
+			out[n].Err = fmt.Errorf("bus: feed stream %s: %w", out[n].Stream, err)
+			continue
 		}
 		st := s.CachedInfo().State
-		msgs, bytes = msgs+st.Msgs, bytes+st.Bytes
+		out[n].Messages, out[n].Bytes = st.Msgs, st.Bytes
+	}
+
+	return out
+}
+
+// FeedBacklog is the messages and bytes every group's stream holds, or the errors of those that could not be read.
+func FeedBacklog(ctx context.Context, js jetstream.JetStream, f Feed) (msgs, bytes uint64, err error) {
+	states := FeedStates(ctx, js, f)
+	errs := make([]error, 0, len(states))
+	for _, st := range states {
+		msgs, bytes, errs = msgs+st.Messages, bytes+st.Bytes, append(errs, st.Err)
+	}
+	if err := errors.Join(errs...); err != nil {
+		return 0, 0, err
 	}
 
 	return msgs, bytes, nil

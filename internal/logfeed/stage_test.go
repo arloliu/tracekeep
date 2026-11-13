@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -173,6 +174,27 @@ func TestStageRebalancesForAJoiner(t *testing.T) {
 		e.publish(8, 0)
 		e.eventually("the feed drained", e.drained)
 		e.converted(8, 1, 3)
+	})
+}
+
+// A group whose stream cannot be read gives up, and readiness names the group's stream until the pause has passed.
+func TestStageReadinessNamesTheStream(t *testing.T) {
+	t.Parallel()
+	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
+		ctx := t.Context()
+		e := newStageEnv(t, c)
+		lost := bus.FeedStreamName(e.feed, 2)
+		if err := e.js.DeleteStream(ctx, lost); err != nil {
+			t.Fatal(err)
+		}
+		a := e.stage("a", time.Hour)
+		var wg sync.WaitGroup
+		t.Cleanup(wg.Wait)
+		run(ctx, &wg, a)
+		e.eventually("readiness names the lost stream", func() bool {
+			err := a.Ready(ctx)
+			return err != nil && strings.Contains(err.Error(), "gave up") && strings.Contains(err.Error(), lost)
+		})
 	})
 }
 

@@ -289,7 +289,8 @@ func TestUnknownTailDropsAClosedCapture(t *testing.T) {
 	})
 }
 
-// The feed stream's backlog shows only once read, with its own refresh stamp; a failed read keeps it and counts the failure.
+// The feed's group streams' backlog shows only once read, a series a stream, with its own refresh stamp;
+// a failed read keeps it and counts the failure.
 func TestRefreshFeed(t *testing.T) {
 	t.Parallel()
 	s := NewServer()
@@ -300,16 +301,20 @@ func TestRefreshFeed(t *testing.T) {
 	if b := body(t, s); strings.Contains(b, "tracekeep_logfeed_stream_backlog") {
 		t.Errorf("the feed's backlog before a read:\n%s", b)
 	}
-	if err := m.RefreshFeed(t.Context(), busFunc(func(context.Context) (BusState, error) { return BusState{Messages: 3, Bytes: 30}, nil })); err != nil {
+	read := feedFunc(func(context.Context) ([]FeedStream, error) {
+		return []FeedStream{{Stream: "TRACEKEEP_LOGFEED_0", Messages: 3, Bytes: 30}, {Stream: "TRACEKEEP_LOGFEED_1", Messages: 1, Bytes: 10}}, nil
+	})
+	if err := m.RefreshFeed(t.Context(), read); err != nil {
 		t.Fatal(err)
 	}
 	failing := errors.New("no stream")
-	if err := m.RefreshFeed(t.Context(), busFunc(func(context.Context) (BusState, error) { return BusState{}, failing })); !errors.Is(err, failing) {
+	if err := m.RefreshFeed(t.Context(), feedFunc(func(context.Context) ([]FeedStream, error) { return nil, failing })); !errors.Is(err, failing) {
 		t.Fatalf("a failed read = %v", err)
 	}
 	b := body(t, s)
 	for _, want := range []string{
-		"tracekeep_logfeed_stream_backlog_messages 3", "tracekeep_logfeed_stream_backlog_bytes 30",
+		`tracekeep_logfeed_stream_backlog_messages{stream="TRACEKEEP_LOGFEED_0"} 3`, `tracekeep_logfeed_stream_backlog_bytes{stream="TRACEKEEP_LOGFEED_0"} 30`,
+		`tracekeep_logfeed_stream_backlog_messages{stream="TRACEKEEP_LOGFEED_1"} 1`, `tracekeep_logfeed_stream_backlog_bytes{stream="TRACEKEEP_LOGFEED_1"} 10`,
 		`tracekeep_ingest_refreshed_timestamp_seconds{source="feed"} 100`, "tracekeep_ingest_refresh_failures_total 1",
 	} {
 		if !strings.Contains(b, want+"\n") {
@@ -317,3 +322,7 @@ func TestRefreshFeed(t *testing.T) {
 		}
 	}
 }
+
+type feedFunc func(context.Context) ([]FeedStream, error)
+
+func (f feedFunc) Streams(ctx context.Context) ([]FeedStream, error) { return f(ctx) }

@@ -126,7 +126,7 @@ spec:
         runbook_url: {{ $runbook }}#keys-unavailable
     # The host log feed (logfeed.md §15.11). An entry's arrival is stamped by the replica holding its group's lease, which moves,
     # and a replica that stopped serves no stamp: the latest stamp over the past day, over every replica, is the equipment's.
-    # The feed's backlog holds up to a flush's entries, so its floor over two flush intervals, not its value, grows when the converters fall behind,
+    # The feed's backlog, its group streams' sum, holds up to a flush's entries, so its floor over two flush intervals, not its value, grows when the converters fall behind,
     # and it is read only while a replica's snapshot of the feed is fresh.
     - alert: TracekeepLogFeedSilent
       expr: |
@@ -136,11 +136,11 @@ spec:
         )
         or (
             min_over_time(max(
-              tracekeep_logfeed_stream_backlog_messages
+              sum by (instance) (tracekeep_logfeed_stream_backlog_messages)
               and on(instance) (time() - tracekeep_ingest_refreshed_timestamp_seconds{source="feed"}) < 600
             )[10m:1m])
           > min_over_time(max(
-              tracekeep_logfeed_stream_backlog_messages
+              sum by (instance) (tracekeep_logfeed_stream_backlog_messages)
               and on(instance) (time() - tracekeep_ingest_refreshed_timestamp_seconds{source="feed"}) < 600
             )[10m:1m] offset 15m)
           and on() (time() - max(tracekeep_ingest_refreshed_timestamp_seconds{source="feed"})) < 600

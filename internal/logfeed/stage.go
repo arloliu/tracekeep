@@ -81,7 +81,7 @@ func (s *Stage) Run(ctx context.Context) error {
 }
 
 // Ready is nil while Run balances the groups, every group it holds fetches from its consumer,
-// and no group's converter gave up within the pause.
+// and no group's converter gave up within the pause; an error names the group and its stream.
 func (s *Stage) Ready(context.Context) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -95,7 +95,7 @@ func (s *Stage) Ready(context.Context) error {
 	}
 	for n := range s.held {
 		if s.starting[n] {
-			return fmt.Errorf("logfeed: lease group %d is starting", n)
+			return fmt.Errorf("logfeed: lease group %d is starting on stream %s", n, bus.FeedStreamName(s.Feed, n))
 		}
 	}
 
@@ -218,7 +218,8 @@ func (s *Stage) runGroup(ctx context.Context, r *running) {
 	if givenUp {
 		s.log().Warn("logfeed: a lease group's converter gave up", "group", r.group, "error", err)
 		// Before the release, so no balance takes the group back within the pause.
-		s.givenUp[r.group], s.failed, s.failedAt = time.Now(), err, time.Now()
+		s.givenUp[r.group], s.failedAt = time.Now(), time.Now()
+		s.failed = fmt.Errorf("lease group %d on stream %s: %w", r.group, bus.FeedStreamName(s.Feed, r.group), err)
 	}
 	s.mu.Unlock()
 	rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), releaseTimeout)
