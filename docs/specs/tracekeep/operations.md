@@ -83,7 +83,7 @@ a role stopped by a signal that drains within its bound exits 0.
 `tracekeep status` lists `pending` captures by capture id first, outside any per-equipment grouping
 (they have no equipment yet), then prints per equipment the last record time, open captures, deferred messages and backlog;
 its JSON names them `equipment`, each with its `equipment_id`.
-With the host log feed enabled, its `feed` gives the feed streams' backlog and `silent_equipment`, the equipment whose log captures registered a pack within the past day and none for 15 minutes (`logfeed.md` §15.11).
+With the host log feed enabled, its `feed` gives the feed's backlog, each group stream's under `streams` (one that cannot be read carrying its `error` and left out of the sum), and `silent_equipment`, the equipment whose log captures registered a pack within the past day and none for 15 minutes (`logfeed.md` §15.11).
 `cmd/tracekeep-sim` names the equipment with `-equipment` and the source with `-source`.
 Deferred messages are the equipment's unresolved parked versions, as `deferred list` counts them;
 backlog is the traffic stream's messages on the equipment's subjects, whose token after the prefix is the equipment's (tracepack's `bus.Subject`),

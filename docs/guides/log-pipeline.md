@@ -154,6 +154,7 @@ accounts {
 
 Its count is G exactly: a larger one sends some publishes to subjects no stream holds, which the pipeline retries until the whole feed stalls,
 and a smaller one leaves the higher groups' streams empty; tracekeep's preflight refuses either.
+The preflight's probes are publishes under tokens `_tracekeep_probe_<i>` that no stream stores; a subscriber to the feed's subjects sees them, the pipeline never.
 Changing G changes the mapping together with a `migrate` run, on a drained feed (`configuration.md`).
 
 The **tags**: with streams of one replica, each server carries a tag of its own, and `logfeed.placement_tags` lists them, so the groups' streams spread round-robin over the servers;

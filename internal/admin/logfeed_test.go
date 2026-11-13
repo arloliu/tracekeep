@@ -86,7 +86,20 @@ func TestCaptureStop(t *testing.T) {
 	})
 }
 
-// status shows the group streams' backlog together with the feed enabled, and nothing of it with the feed disabled.
+// checkFeedStreams asserts status's line for each of f's group streams, each holding one message.
+func checkFeedStreams(t *testing.T, got []admin.FeedStream, f bus.Feed) {
+	t.Helper()
+	if len(got) != f.Groups {
+		t.Fatalf("status's feed streams %+v, want %d", got, f.Groups)
+	}
+	for n, fs := range got {
+		if fs.Group != n || fs.Stream != bus.FeedStreamName(f, n) || fs.BacklogMessages != 1 || fs.Error != "" {
+			t.Errorf("status's group %d stream = %+v, want its one message", n, fs)
+		}
+	}
+}
+
+// status shows each group stream's backlog and their sum with the feed enabled, a stream it cannot read marked so, and nothing of it with the feed disabled.
 func TestStatusFeed(t *testing.T) {
 	t.Parallel()
 	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
@@ -115,7 +128,17 @@ func TestStatusFeed(t *testing.T) {
 		a.Feed = &f
 		st, err = a.Status(ctx)
 		if err != nil || st.Feed == nil || st.Feed.BacklogMessages != 2 || st.Feed.BacklogBytes == 0 || st.Feed.SilentEquipment != 0 {
-			t.Errorf("status's feed = %+v, %v; want two messages of backlog", st.Feed, err)
+			t.Fatalf("status's feed = %+v, %v; want two messages of backlog", st.Feed, err)
+		}
+		checkFeedStreams(t, st.Feed.Streams, f)
+
+		// A stream that cannot answer is reported as such; the others are still shown.
+		if err := js.DeleteStream(ctx, bus.FeedStreamName(f, 1)); err != nil {
+			t.Fatal(err)
+		}
+		st, err = a.Status(ctx)
+		if err != nil || st.Feed.BacklogMessages != 1 || st.Feed.Streams[0].BacklogMessages != 1 || st.Feed.Streams[1].Error == "" {
+			t.Errorf("status's feed with a stream gone = %+v, %v; want group 0's message and group 1's error", st.Feed, err)
 		}
 	})
 }

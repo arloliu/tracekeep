@@ -483,7 +483,9 @@ a merged segment's deletion about 0.6 ms (`RegisterPack/miss`, unmeasured for de
 | `logfeed.device_overrides` | none | per `equipment_id`, rules that replace the table's |
 
 The feed's consumers take `ingest.ack_wait` and its heartbeat.
-Preflight checks that the servers' mapping partitions the feed's subjects into G, every group's stream reached (§15.4);
+Preflight checks that the servers' mapping partitions the feed's subjects into G, every group's stream reached (§15.4):
+it publishes probes under tokens `_tracekeep_probe_<i>`, each expecting a last sequence no stream reaches, so the group stream that takes one refuses to store it,
+and a core subscription of its own reads the group the mapping chose;
 `tracekeep status`, the metrics and readiness report each group's stream.
 
 **Admin**:
@@ -491,7 +493,7 @@ Preflight checks that the servers' mapping partitions the feed's subjects into G
 an entry of its key after it is stale.
 With no converter holding the lease, the command writes the stop to the row itself, having locked the group's lease row after the capture row, so a converter taking the lease meanwhile waits for it (T-60, `catalog.md` §7.2 `StopLogCapture`).
 On a gateway's capture it is refused.
-`tracekeep status` shows the feed's backlog and the number of equipment silent for 15 minutes.
+`tracekeep status` shows the feed's backlog, each group stream's and their sum, a stream that cannot be read marked so, and the number of equipment silent for 15 minutes.
 
 **Alerts**:
 
@@ -506,7 +508,7 @@ On a gateway's capture it is refused.
 `tracekeep_logfeed_unpaired_total{side=header|body}`, `tracekeep_logfeed_annotations_total{kind}`,
 `tracekeep_logfeed_last_entry_timestamp_seconds` (an entry's arrival),
 `tracekeep_logfeed_last_outcome_timestamp_seconds{outcome}` (an outcome's last count, which the unreadable and late alerts read, as no scrape misses it),
-and the feed streams' backlog beside the traffic stream's.
+and each group stream's backlog (`tracekeep_logfeed_stream_backlog_messages{stream}`, `_bytes{stream}`) beside the traffic stream's, the alert reading their sum.
 
 ### 15.12 What it does not do
 
