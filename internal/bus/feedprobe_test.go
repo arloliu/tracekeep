@@ -12,19 +12,23 @@ import (
 )
 
 // Preflight's probe passes a mapping into G partitions, its probes stored nowhere,
-// and refuses no mapping, a mapping into more partitions than G and one into fewer.
+// and refuses no mapping, a mapping into more partitions than G, even one more, and one into fewer.
 func TestProbeFeedMapping(t *testing.T) {
 	t.Parallel()
 	for name, tc := range map[string]struct {
-		partitions int
-		ok         bool
+		groups, partitions int
+		ok                 bool
 	}{
-		"G partitions":  {4, true},
-		"no mapping":    {0, false},
-		"more than G":   {8, false},
-		"fewer than G":  {2, false},
-		"one partition": {1, false},
-		"twice as many": {16, false},
+		"G partitions":  {4, 4, true},
+		"no mapping":    {4, 0, false},
+		"more than G":   {4, 8, false},
+		"fewer than G":  {4, 2, false},
+		"one partition": {4, 1, false},
+		"twice as many": {4, 16, false},
+		// The first probes of these reach every group before one falls outside them.
+		"one group, two partitions":    {1, 2, false},
+		"two groups, three partitions": {2, 3, false},
+		"one group":                    {1, 1, true},
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
@@ -42,7 +46,7 @@ func TestProbeFeedMapping(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			f := feed(4, 1)
+			f := feed(tc.groups, 1)
 			if err := bus.EnsureFeed(ctx, js, f, 0, trafficStream, parkedStream); err != nil {
 				t.Fatal(err)
 			}

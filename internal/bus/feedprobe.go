@@ -13,9 +13,11 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 )
 
-// probesPerGroup bounds the mapping probe at this many publishes a group:
-// the partition spreads tokens evenly, so a count of G reaches every group long before, and one below G never does.
-const probesPerGroup = 64
+// probesPerGroup sets the mapping probe's publishes at this many for each of G+1 groups, all of them sent whatever the first reach:
+// a mapping into C > G partitions sends a probe outside the groups with chance (C-G)/C ≥ 1/(G+1),
+// so 32(G+1) probes all inside the groups has a chance below e^-32, and one into fewer than G never reaches a group at or above C.
+// The tokens are fixed, so a mapping that passes passes at every start.
+const probesPerGroup = 32
 
 // probeWait bounds a probe, its mapped copy arriving at once when a mapping routes it.
 const probeWait = 2 * time.Second
@@ -24,21 +26,22 @@ const probeWait = 2 * time.Second
 var ErrFeedMapping = errors.New("bus: the servers' mapping does not partition the feed's subjects into its group streams")
 
 // ProbeFeedMapping checks that the servers' mapping routes the feed's subjects to its G group streams, every role's preflight with the feed enabled (logfeed.md §15.4):
-// it publishes probe entries under tokens of its own until every group's stream has been reached, refusing a probe no mapping routes,
-// one routed to a subject with no group stream, which a count above G gives, and a run past its bound with a group unreached, which a count below G gives.
+// it publishes 32(G+1) probe entries under tokens of its own, refusing a probe no mapping routes,
+// one routed to a subject with no group stream, which a count above G gives, and a run that leaves a group unreached, which a count below G gives.
 // Each probe expects a last sequence no stream reaches, so the stream that takes it refuses to store it;
 // its copy to a core subscription of nc tells the group the mapping chose.
 func ProbeFeedMapping(ctx context.Context, nc *nats.Conn, js jetstream.JetStream, f Feed) error {
+	probes := probesPerGroup * (f.Groups + 1)
 	reached := make(map[int]bool, f.Groups)
-	for i := 0; len(reached) < f.Groups; i++ {
-		if i == probesPerGroup*f.Groups {
-			return fmt.Errorf("%w: %d probes reached %d of %d groups, as a mapping into fewer partitions does", ErrFeedMapping, i, len(reached), f.Groups)
-		}
+	for i := range probes {
 		n, err := probeFeed(ctx, nc, js, f, "_tracekeep_probe_"+strconv.Itoa(i))
 		if err != nil {
 			return err
 		}
 		reached[n] = true
+	}
+	if len(reached) < f.Groups {
+		return fmt.Errorf("%w: %d probes reached %d of %d groups, as a mapping into fewer partitions does", ErrFeedMapping, probes, len(reached), f.Groups)
 	}
 
 	return nil

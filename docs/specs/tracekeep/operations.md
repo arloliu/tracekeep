@@ -78,7 +78,8 @@ everything per capture is served by `tracekeep status` and the admin commands, n
 | catalog | pool usage, transaction retries (`busy`, `deadlock`), migration version; `audit_wait_seconds{engine,outcome=acquired,deadline,canceled,error}`, the wait of a standalone audit write for its connection, from the request to its acquisition or failure (T-55) |
 
 Health: `/healthz` (process) and `/readyz` (catalog reachable, lease state for `compact`, consumer bound for `ingest`; for `api` failing once it starts to stop, before it stops accepting);
-`/readyz` names each check that fails, never its error's text, since the metrics listener is unauthenticated;
+`/readyz` names each check that fails, never its error's text, since the metrics listener is unauthenticated,
+and after `ingest` the log stage's group streams not ready, configuration names only (`logfeed.md` §15.11);
 a role stopped by a signal that drains within its bound exits 0.
 `tracekeep status` lists `pending` captures by capture id first, outside any per-equipment grouping
 (they have no equipment yet), then prints per equipment the last record time, open captures, deferred messages and backlog;
