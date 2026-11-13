@@ -366,6 +366,11 @@ func TestEnsureFeedOffline(t *testing.T) {
 	if err := bus.EnsureFeed(ctx, js, f, 0, trafficStream, parkedStream); err != nil {
 		t.Fatal(err)
 	}
+	s, err := js.Stream(ctx, bus.FeedStreamName(f, 2))
+	if err != nil {
+		t.Fatal(err)
+	}
+	testbus.AwaitStream(t, js, s)
 	publish(t, js, "tklog.2.EQ-1")
 	srvs[2].Shutdown()
 	srvs[2].WaitForShutdown()
