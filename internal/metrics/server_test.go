@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -24,7 +25,8 @@ func get(t *testing.T, h http.Handler, path string) (int, string) {
 	return rec.Code, string(body)
 }
 
-// /healthz answers while the process runs; /readyz answers ok only when every registered check passes, naming a failing one without its error's text;
+// /healthz answers while the process runs; /readyz answers ok only when every registered check passes,
+// naming a failing one and the parts its ReadyError names, without its error's text;
 // /metrics serves the registry.
 func TestServer(t *testing.T) {
 	t.Parallel()
@@ -51,6 +53,13 @@ func TestServer(t *testing.T) {
 		if strings.Contains(body, leak) {
 			t.Errorf("/readyz body %q holds %q from the check's error", body, leak)
 		}
+	}
+	// A ReadyError's parts follow the check's name; its error's text still does not.
+	s.Ready("ingest", func(context.Context) error {
+		return fmt.Errorf("stage: %w", &ReadyError{Parts: []string{"TRACEKEEP_LOGFEED_2"}, Err: failing})
+	})
+	if code, body := get(t, h, "/readyz"); code != http.StatusServiceUnavailable || !strings.Contains(body, "ingest (TRACEKEEP_LOGFEED_2)") || strings.Contains(body, "pw-sentinel") {
+		t.Errorf("/readyz with a part not ready = %d %q, want 503 naming the check and its part alone", code, body)
 	}
 	s.Ready("ingest", func(context.Context) error { return nil })
 	if code, _ := get(t, h, "/readyz"); code != http.StatusOK {

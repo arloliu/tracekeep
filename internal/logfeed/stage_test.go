@@ -2,6 +2,7 @@ package logfeed
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -17,6 +18,7 @@ import (
 	"github.com/arloliu/tracekeep/internal/catalog"
 	"github.com/arloliu/tracekeep/internal/catalog/catalogtest"
 	"github.com/arloliu/tracekeep/internal/ingest"
+	"github.com/arloliu/tracekeep/internal/metrics"
 	"github.com/arloliu/tracekeep/internal/store"
 	"github.com/arloliu/tracekeep/internal/testbus"
 	"github.com/arloliu/tracekeep/producer/busconfig"
@@ -192,8 +194,9 @@ func TestStageReadinessNamesTheStream(t *testing.T) {
 		t.Cleanup(wg.Wait)
 		run(ctx, &wg, a)
 		e.eventually("readiness names the lost stream", func() bool {
+			var re *metrics.ReadyError
 			err := a.Ready(ctx)
-			return err != nil && strings.Contains(err.Error(), "gave up") && strings.Contains(err.Error(), lost)
+			return errors.As(err, &re) && strings.Contains(err.Error(), "gave up") && slices.Equal(re.Parts, []string{lost})
 		})
 	})
 }

@@ -484,7 +484,7 @@ a merged segment's deletion about 0.6 ms (`RegisterPack/miss`, unmeasured for de
 
 The feed's consumers take `ingest.ack_wait` and its heartbeat.
 Preflight checks that the servers' mapping partitions the feed's subjects into G, every group's stream reached (§15.4):
-it publishes probes under tokens `_tracekeep_probe_<i>`, each expecting a last sequence no stream reaches, so the group stream that takes one refuses to store it,
+it publishes 32(G+1) probes under tokens `_tracekeep_probe_<i>`, every one whatever the first reach, so a count even one above G shows, each expecting a last sequence no stream reaches, so the group stream that takes one refuses to store it,
 and a core subscription of its own reads the group the mapping chose;
 `tracekeep status`, the metrics and readiness report each group's stream.
 

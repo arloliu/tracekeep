@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"hash/fnv"
 	"log/slog"
+	"slices"
 	"sync"
 	"time"
 
@@ -14,6 +15,7 @@ import (
 
 	"github.com/arloliu/tracekeep/internal/bus"
 	"github.com/arloliu/tracekeep/internal/catalog"
+	"github.com/arloliu/tracekeep/internal/metrics"
 )
 
 // releaseTimeout bounds giving a lease back, so a stalled catalog never holds a stopping stage.
@@ -47,11 +49,12 @@ type Stage struct {
 	givenUp map[int]time.Time
 	// balanced is the last balance's error, nil once one succeeded; running reports Run in progress;
 	// starting are the held groups whose consumer is not fetching yet; failed is the last give-up's error, at failedAt.
-	balanced error
-	running  bool
-	starting map[int]bool
-	failed   error
-	failedAt time.Time
+	balanced    error
+	running     bool
+	starting    map[int]bool
+	failed      error
+	failedAt    time.Time
+	failedGroup int
 }
 
 type running struct {
@@ -81,7 +84,7 @@ func (s *Stage) Run(ctx context.Context) error {
 }
 
 // Ready is nil while Run balances the groups, every group it holds fetches from its consumer,
-// and no group's converter gave up within the pause; an error names the group and its stream.
+// and no group's converter gave up within the pause; a metrics.ReadyError names the group streams that are not ready.
 func (s *Stage) Ready(context.Context) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -91,12 +94,17 @@ func (s *Stage) Ready(context.Context) error {
 	case s.balanced != nil:
 		return s.balanced
 	case s.failed != nil && time.Since(s.failedAt) < s.Pause:
-		return fmt.Errorf("logfeed: a lease group gave up: %w", s.failed)
+		return &metrics.ReadyError{Parts: []string{bus.FeedStreamName(s.Feed, s.failedGroup)}, Err: fmt.Errorf("logfeed: a lease group gave up: %w", s.failed)}
 	}
+	var starting []string
 	for n := range s.held {
 		if s.starting[n] {
-			return fmt.Errorf("logfeed: lease group %d is starting on stream %s", n, bus.FeedStreamName(s.Feed, n))
+			starting = append(starting, bus.FeedStreamName(s.Feed, n))
 		}
+	}
+	if len(starting) > 0 {
+		slices.Sort(starting)
+		return &metrics.ReadyError{Parts: starting, Err: fmt.Errorf("logfeed: lease groups starting on %v", starting)}
 	}
 
 	return nil
@@ -218,7 +226,7 @@ func (s *Stage) runGroup(ctx context.Context, r *running) {
 	if givenUp {
 		s.log().Warn("logfeed: a lease group's converter gave up", "group", r.group, "error", err)
 		// Before the release, so no balance takes the group back within the pause.
-		s.givenUp[r.group], s.failedAt = time.Now(), time.Now()
+		s.givenUp[r.group], s.failedAt, s.failedGroup = time.Now(), time.Now(), r.group
 		s.failed = fmt.Errorf("lease group %d on stream %s: %w", r.group, bus.FeedStreamName(s.Feed, r.group), err)
 	}
 	s.mu.Unlock()

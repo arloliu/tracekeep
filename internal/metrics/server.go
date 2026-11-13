@@ -28,6 +28,17 @@ const readyTimeout = 5 * time.Second
 // idleTimeout closes a keep-alive connection that sends no request for this long.
 const idleTimeout = 2 * time.Minute
 
+// ReadyError is a readiness check's failure that names the parts not ready, which /readyz shows after the check's name;
+// the parts are configuration names, such as a feed group's stream, never an error's text.
+type ReadyError struct {
+	Parts []string
+	Err   error
+}
+
+func (e *ReadyError) Error() string { return e.Err.Error() }
+
+func (e *ReadyError) Unwrap() error { return e.Err }
+
 // Server holds the registry and the readiness checks, and serves them.
 type Server struct {
 	// Pprof, set before Handler or Start, also serves Go's profiles under /debug/pprof/.
@@ -93,10 +104,14 @@ func (s *Server) readyz(w http.ResponseWriter, r *http.Request) {
 	maps.Copy(checks, s.checks)
 	s.mu.Unlock()
 	slices.Sort(names)
-	// The listener is unauthenticated: the body names each failing check, never its error's text (operations.md §10.4).
+	// The listener is unauthenticated: the body names each failing check, and the parts a ReadyError names, never its error's text (operations.md §10.4).
 	var failed []string
 	for _, name := range names {
 		if err := checks[name](ctx); err != nil {
+			var re *ReadyError
+			if errors.As(err, &re) && len(re.Parts) > 0 {
+				name += " (" + strings.Join(re.Parts, ", ") + ")"
+			}
 			failed = append(failed, name)
 		}
 	}
