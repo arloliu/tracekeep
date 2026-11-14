@@ -51,10 +51,13 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -210,6 +213,8 @@ type loadHarness struct {
 	// begin and end, when set, run at a measurement's first and last sample; samples are its samples.
 	begin, end func()
 	samples    []loadSample
+	// reads times the harness's own requests to the bus.
+	reads apiReads
 }
 
 // newLoadHarness starts dev with no simulator, observed so its ingest metrics are recorded, its retention recorded so a pack has a deadline.
@@ -537,13 +542,21 @@ func (h *loadHarness) sample(equipment []*loadEquipment) loadSample {
 
 // read is sample returning its error, for a goroutine other than the test's.
 func (h *loadHarness) read(equipment []*loadEquipment) (loadSample, error) {
-	info, err := h.stream.Info(h.t.Context())
+	var info *jetstream.StreamInfo
+	err := h.reads.do(h.t.Context(), "traffic stream", func(ctx context.Context) (err error) {
+		info, err = h.stream.Info(ctx)
+		return err
+	})
 	if err != nil {
 		return loadSample{}, err
 	}
 	s := loadSample{at: time.Now(), published: info.State.LastSeq, backlog: info.State.Msgs}
 	if h.cons != nil {
-		ci, err := h.cons.Info(h.t.Context())
+		var ci *jetstream.ConsumerInfo
+		err := h.reads.do(h.t.Context(), "traffic consumer", func(ctx context.Context) (err error) {
+			ci, err = h.cons.Info(ctx)
+			return err
+		})
 		if err != nil {
 			return loadSample{}, err
 		}
@@ -844,4 +857,73 @@ func loadEngine(t *testing.T) string {
 		t.Fatalf("TRACEKEEP_LOAD_ENGINE=%q: want sqlite or mariadb", e)
 		return ""
 	}
+}
+
+// apiReads times the harness's requests to the bus by what they read, retrying one that goes unanswered:
+// a busy server may answer a stream's or consumer's information late, which the harness counts rather than fails on.
+type apiReads struct {
+	mu    sync.Mutex
+	stats map[string]*apiReadStats
+}
+
+type apiReadStats struct {
+	n, slow, timeouts int
+	worst             time.Duration
+	worstAt           time.Time
+}
+
+// apiReadAttempts and apiReadTimeout bound one read's tries; apiReadSlow is the latency counted slow.
+const (
+	apiReadAttempts = 5
+	apiReadTimeout  = 10 * time.Second
+	apiReadSlow     = time.Second
+)
+
+// do runs f, a read named what, each attempt within apiReadTimeout, retrying one past its deadline.
+func (r *apiReads) do(ctx context.Context, what string, f func(context.Context) error) error {
+	for n := 1; ; n++ {
+		actx, cancel := context.WithTimeout(ctx, apiReadTimeout)
+		start := time.Now()
+		err := f(actx)
+		took := time.Since(start)
+		cancel()
+		timedOut := errors.Is(err, context.DeadlineExceeded) && ctx.Err() == nil
+		r.mu.Lock()
+		if r.stats == nil {
+			r.stats = map[string]*apiReadStats{}
+		}
+		st := r.stats[what]
+		if st == nil {
+			st = &apiReadStats{}
+			r.stats[what] = st
+		}
+		st.n++
+		if took >= apiReadSlow {
+			st.slow++
+		}
+		if timedOut {
+			st.timeouts++
+		}
+		if took > st.worst {
+			st.worst, st.worstAt = took, start
+		}
+		r.mu.Unlock()
+		if !timedOut || n == apiReadAttempts {
+			return err
+		}
+	}
+}
+
+// String is each read's count, slow ones, timeouts and worst latency, at the time it started.
+func (r *apiReads) String() string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var b strings.Builder
+	b.WriteString("| harness read | requests | ≥ 1 s | timed out | worst | worst at |\n|---|---|---|---|---|---|\n")
+	for _, what := range slices.Sorted(maps.Keys(r.stats)) {
+		st := r.stats[what]
+		fmt.Fprintf(&b, "| %s | %d | %d | %d | %s | %s |\n", what, st.n, st.slow, st.timeouts, st.worst.Round(time.Millisecond), st.worstAt.Format(time.TimeOnly))
+	}
+
+	return b.String()
 }

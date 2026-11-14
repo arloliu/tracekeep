@@ -149,8 +149,14 @@ func runFeedConvert(t *testing.T, smoke, idle bool) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	s := groupStreams{js: js, f: h.d.Env.Feed()}
-	h.log("the group streams' servers: " + s.servers(ctx))
+	s := groupStreams{js: js, f: h.d.Env.Feed(), reads: &h.reads, fullest: new(atomic.Uint64)}
+	h.log(fmt.Sprintf("the group streams' leaders: %s; the traffic stream's %s, its consumer's %s",
+		s.servers(ctx), h.stream.CachedInfo().Cluster.Leader, h.cons.CachedInfo().Cluster.Leader))
+	defer func() {
+		limit := bus.FeedStreamConfig(s.f, 0).MaxBytes
+		h.log(fmt.Sprintf("the fullest group stream held %s, of its limit %s\n\n%s",
+			mib(s.fullest.Load()), mib(uint64(limit)), &h.reads)) //nolint:gosec // a positive limit
+	}()
 
 	equipment := h.startEquipment(ft.k)
 	defer h.stopEquipment(equipment)
@@ -531,17 +537,37 @@ func digest(samples []backlogSample, at, end time.Time) (base, peak string, took
 type groupStreams struct {
 	js jetstream.JetStream
 	f  bus.Feed
+	// reads, when set, times each stream's read; fullest is the most bytes a stream was read holding.
+	reads   *apiReads
+	fullest *atomic.Uint64
 }
 
 // state is the messages and bytes the group streams hold, and as LastSeq the messages they ever stored, their last sequences' sum.
 func (l groupStreams) state(ctx context.Context) (jetstream.StreamState, error) {
 	var sum jetstream.StreamState
 	for n := range l.f.Groups {
-		s, err := l.js.Stream(ctx, bus.FeedStreamName(l.f, n))
+		var s jetstream.Stream
+		read := func(ctx context.Context) (err error) {
+			s, err = l.js.Stream(ctx, bus.FeedStreamName(l.f, n))
+			return err
+		}
+		var err error
+		if l.reads != nil {
+			err = l.reads.do(ctx, "feed stream", read)
+		} else {
+			err = read(ctx)
+		}
 		if err != nil {
 			return sum, err
 		}
 		st := s.CachedInfo().State
+		if l.fullest != nil {
+			for {
+				if old := l.fullest.Load(); st.Bytes <= old || l.fullest.CompareAndSwap(old, st.Bytes) {
+					break
+				}
+			}
+		}
 		sum.Msgs, sum.Bytes, sum.LastSeq = sum.Msgs+st.Msgs, sum.Bytes+st.Bytes, sum.LastSeq+st.LastSeq
 	}
 
