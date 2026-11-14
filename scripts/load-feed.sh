@@ -11,12 +11,14 @@
 #                         a disk other than the test's temporary directory's at best; the system's temporary directory when unset
 #   BUS_GOMEMLIMIT        each server's GOMEMLIMIT (7GiB)
 #   BUS_BLOCK_RATE        the servers' prof_block_rate, Go's block profile rate in nanoseconds, off when unset
-#   BUS_FEED_STREAMS      when set, n: the servers map tklog.<equipment> to tklog.<partition of n>.<equipment>, for the feed-streams mode's stream a group
+#   BUS_FEED_STREAMS      n: the servers map tklog.<equipment> to tklog.<partition of n>.<equipment>, for a stream a group;
+#                         the feed-convert modes' 32 groups when unset, no mapping for the feed-streams mode's one stream
 # Server i, tb-i and tagged so, serves clients on 431i, monitoring on 822i and Go's pprof on 865i (http://127.0.0.1:865i/debug/pprof/).
 #   GOMEMLIMIT, TRACEKEEP_LOAD_ENGINE, TRACEKEEP_MARIADB_DSN, TRACEKEEP_LOAD_PROFILES are the test's, passed through
 set -euo pipefail
 
 mode=${1:-feed-convert}
+case $mode in feed-convert*) BUS_FEED_STREAMS=${BUS_FEED_STREAMS:-32} ;; esac
 work=$(mktemp -d)
 pids=()
 bus=

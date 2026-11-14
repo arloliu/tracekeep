@@ -114,8 +114,9 @@ func runFeedConvert(t *testing.T, smoke, idle bool) {
 	if url != "" {
 		requireFreshBus(t, url)
 	}
-	// A bus outside the test's process maps the feed's subjects in its own configuration (logfeed.md §15.4).
-	var tags []string
+	// A bus outside the test's process maps the feed's subjects in its own configuration (logfeed.md §15.4);
+	// its servers, as testbus's, are tagged with their names.
+	tags := []string{"tb-0", "tb-1", "tb-2"}
 	if url == "" {
 		srvs := testbus.StartClusterServers(t, 3)
 		urls := make([]string, len(srvs))
@@ -124,7 +125,6 @@ func runFeedConvert(t *testing.T, smoke, idle bool) {
 			if err := testbus.MapFeed(s, feedPrefix, feedGroups); err != nil {
 				t.Fatal(err)
 			}
-			tags = append(tags, s.Name())
 		}
 		url = strings.Join(urls, ",")
 	}
@@ -150,6 +150,7 @@ func runFeedConvert(t *testing.T, smoke, idle bool) {
 		t.Fatal(err)
 	}
 	s := groupStreams{js: js, f: h.d.Env.Feed()}
+	h.log("the group streams' servers: " + s.servers(ctx))
 
 	equipment := h.startEquipment(ft.k)
 	defer h.stopEquipment(equipment)
@@ -545,6 +546,22 @@ func (l groupStreams) state(ctx context.Context) (jetstream.StreamState, error) 
 	}
 
 	return sum, nil
+}
+
+// servers is the number of group streams each server leads, the layout the run measures.
+func (l groupStreams) servers(ctx context.Context) string {
+	led := map[string]int{}
+	for n := range l.f.Groups {
+		s, err := l.js.Stream(ctx, bus.FeedStreamName(l.f, n))
+		if err != nil {
+			return err.Error()
+		}
+		if c := s.CachedInfo().Cluster; c != nil {
+			led[c.Leader]++
+		}
+	}
+
+	return fmt.Sprint(led)
 }
 
 // backlogSample is one reading of the feed streams' bytes.

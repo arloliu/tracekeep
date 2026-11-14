@@ -17,8 +17,16 @@ tests=(
 	TestTwoVersionsInOneWindow/claim-check/clustered/mariadb
 	TestCopiesFromAFollower/sqlite
 	TestCopiesFromAFollower/mariadb
+	TestStageSharesAndTakesOver/clustered/sqlite
+	TestStageSharesAndTakesOver/clustered/mariadb
+	TestGateTakeoverWithHeldEntriesAndBacklog/clustered/sqlite
+	TestGateTakeoverWithHeldEntriesAndBacklog/clustered/mariadb
+	TestGateRetriedPublish/clustered/sqlite
+	TestGateRetriedPublish/clustered/mariadb
+	TestStageServerLost/sqlite
+	TestStageServerLost/mariadb
 )
-run='^(TestStartClusterReplicates|TestPublishCopy|TestSuppressedPublishConverges|TestTwoVersionsInOneWindow|TestCopiesFromAFollower)$/^(clustered|inline|claim-check|sqlite|mariadb)$/^clustered$'
+run='^(TestStartClusterReplicates|TestPublishCopy|TestSuppressedPublishConverges|TestTwoVersionsInOneWindow|TestCopiesFromAFollower|TestStageSharesAndTakesOver|TestGateTakeoverWithHeldEntriesAndBacklog|TestGateRetriedPublish|TestStageServerLost)$/^(clustered|inline|claim-check|sqlite|mariadb)$/^(clustered|sqlite|mariadb)$'
 
 if [ -n "${TRACEKEEP_MARIADB_DSN:-}" ]; then
 	export TRACEKEEP_REQUIRE_MARIADB=1
@@ -30,7 +38,7 @@ log=$(mktemp)
 trap 'rm -f "$log"' EXIT
 status=0
 # shellcheck disable=SC2086 # GOTESTFLAGS splits into flags
-GOWORK=off CGO_ENABLED=1 go test ./internal/testbus/ ./internal/ingest/ ./internal/compact/ \
+GOWORK=off CGO_ENABLED=1 go test ./internal/testbus/ ./internal/ingest/ ./internal/compact/ ./internal/logfeed/ \
 	-race -count "$count" -timeout "${TIMEOUT:-60m}" -v -run "$run" ${GOTESTFLAGS:-} >"$log" 2>&1 || status=$?
 if [ "$status" -ne 0 ]; then
 	grep -vE '^\s*(=== (RUN|PAUSE|CONT|NAME)|--- (PASS|SKIP))' "$log" || true
@@ -42,12 +50,12 @@ awk -v count="$count" -v names="${tests[*]}" -v maria="${TRACEKEEP_MARIADB_DSN:+
 		n[w[2], w[1]]++
 	}
 	END {
-		printf "%-56s %5s %5s %5s\n", "test", "pass", "fail", "skip"
+		printf "%-64s %5s %5s %5s\n", "test", "pass", "fail", "skip"
 		k = split(names, list, " ")
 		for (i = 1; i <= k; i++) {
 			t = list[i]
 			p = n[t, "PASS"] + 0; f = n[t, "FAIL"] + 0; s = n[t, "SKIP"] + 0
-			printf "%-56s %5d %5d %5d\n", t, p, f, s
+			printf "%-64s %5d %5d %5d\n", t, p, f, s
 			if (p != count && !(maria == "" && t ~ /\/mariadb$/ && s == count)) bad = 1
 		}
 		exit bad
