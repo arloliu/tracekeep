@@ -10,6 +10,7 @@
 #   BUS_DIR               the directory under which the servers keep their stores, in a new directory of their own removed afterwards,
 #                         a disk other than the test's temporary directory's at best; the system's temporary directory when unset
 #   BUS_GOMEMLIMIT        each server's GOMEMLIMIT (7GiB)
+#   BUS_LOGS              a directory the servers' logs are copied into when the run ends, none kept when unset
 #   BUS_BLOCK_RATE        the servers' prof_block_rate, Go's block profile rate in nanoseconds, off when unset
 #   BUS_FEED_STREAMS      n: the servers map tklog.<equipment> to tklog.<partition of n>.<equipment>, for a stream a group;
 #                         the feed-convert modes' 32 groups when unset, no mapping for the feed-streams mode's one stream
@@ -25,6 +26,7 @@ bus=
 cleanup() {
 	for p in "${pids[@]}"; do kill "$p" 2>/dev/null || true; done
 	wait 2>/dev/null || true
+	[ -z "${BUS_LOGS:-}" ] || { mkdir -p "$BUS_LOGS" && cp "$work"/server-*.log "$BUS_LOGS"/; } || true
 	rm -rf -- "$work"
 	# Only the stores' directory this run made: never what BUS_DIR held before.
 	[ -z "$bus" ] || rm -rf -- "$bus"
