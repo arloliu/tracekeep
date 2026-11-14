@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/nats-io/nats-server/v2/server"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 
@@ -26,7 +27,7 @@ import (
 	"github.com/arloliu/tracekeep/producer/busconfig"
 )
 
-// stageEnv is a feed stream of 4 groups on an embedded bus over c, and a builder of replicas' stages sharing one store.
+// stageEnv is a feed of 4 group streams on an embedded bus over c, and a builder of replicas' stages sharing one store.
 type stageEnv struct {
 	t    *testing.T
 	c    *catalog.Catalog
@@ -34,16 +35,35 @@ type stageEnv struct {
 	feed bus.Feed
 	cfg  int64
 	st   store.ObjectStore
+	// servers is the cluster's, when the bus is one.
+	servers []*server.Server
 }
 
-func newStageEnv(t *testing.T, c *catalog.Catalog) *stageEnv {
+// newStageEnv starts the bus, one server or, clustered, three, each mapping the feed's subjects,
+// the group streams placed on the three in turn by their tags as migrate places them (logfeed.md §15.4).
+func newStageEnv(t *testing.T, c *catalog.Catalog, clustered bool) *stageEnv {
 	t.Helper()
 	ctx := t.Context()
 	feed := bus.Feed{Stream: "TRACEKEEP_LOGFEED", Prefix: "tklog", Groups: 4, MaxBytes: 64 << 20, Duplicates: 2 * time.Minute,
 		Replicas: 1, AckWait: 10 * time.Second, MaxAckPending: 10_000}
-	srv := testbus.StartServer(t, testbus.Options{})
-	srv.MapFeed(feed.Prefix, feed.Groups)
-	nc, err := nats.Connect(srv.URL())
+	var url string
+	var srvs []*server.Server
+	if clustered {
+		srvs = testbus.StartClusterServers(t, 3)
+		urls := make([]string, len(srvs))
+		for i, s := range srvs {
+			if err := testbus.MapFeed(s, feed.Prefix, feed.Groups); err != nil {
+				t.Fatal(err)
+			}
+			urls[i], feed.PlacementTags = s.ClientURL(), append(feed.PlacementTags, s.Name())
+		}
+		url = strings.Join(urls, ",")
+	} else {
+		srv := testbus.StartServer(t, testbus.Options{})
+		srv.MapFeed(feed.Prefix, feed.Groups)
+		url = srv.URL()
+	}
+	nc, err := nats.Connect(url)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -55,6 +75,14 @@ func newStageEnv(t *testing.T, c *catalog.Catalog) *stageEnv {
 	if err := bus.EnsureFeed(ctx, js, feed, 0, busconfig.StreamConfig("TRACEKEEP_TRAFFIC", "tk"), busconfig.ParkedStreamConfig("TRACEKEEP_PARKED", "tkpark", 1)); err != nil {
 		t.Fatal(err)
 	}
+	// A stream just created on a cluster elects its leader after the creation returns.
+	for n := range feed.Groups {
+		s, err := js.Stream(ctx, bus.FeedStreamName(feed, n))
+		if err != nil {
+			t.Fatal(err)
+		}
+		testbus.AwaitStream(t, js, s)
+	}
 	cfg, err := c.ActivateConfig(ctx, []byte(`{"classifier":"go-secs/v2.8.0","max_frame_len":0}`))
 	if err != nil {
 		t.Fatal(err)
@@ -63,7 +91,17 @@ func newStageEnv(t *testing.T, c *catalog.Catalog) *stageEnv {
 		t.Fatal(err)
 	}
 
-	return &stageEnv{t: t, c: c, js: js, feed: feed, cfg: cfg, st: store.NewMem()}
+	return &stageEnv{t: t, c: c, js: js, feed: feed, cfg: cfg, st: store.NewMem(), servers: srvs}
+}
+
+// layouts runs f on one server and on a three-node cluster, each on both engines.
+func layouts(t *testing.T, f func(t *testing.T, e *stageEnv)) {
+	for _, clustered := range []bool{false, true} {
+		t.Run(map[bool]string{false: "single", true: "clustered"}[clustered], func(t *testing.T) {
+			t.Parallel()
+			catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) { f(t, newStageEnv(t, c, clustered)) })
+		})
+	}
 }
 
 // stage registers replica's membership and returns its stage, whose files go idle after idle.
@@ -135,9 +173,8 @@ func run(ctx context.Context, wg *sync.WaitGroup, s *Stage) context.CancelFunc {
 // each re-creating the group's consumer, and every entry ends converted and acknowledged.
 func TestStageSharesAndTakesOver(t *testing.T) {
 	t.Parallel()
-	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
-		ctx := t.Context()
-		e := newStageEnv(t, c)
+	layouts(t, func(t *testing.T, e *stageEnv) {
+		ctx, c := t.Context(), e.c
 		a, b := e.stage("a", time.Hour), e.stage("b", time.Hour)
 		var wg sync.WaitGroup
 		t.Cleanup(wg.Wait)
@@ -165,7 +202,7 @@ func TestStageRebalancesForAJoiner(t *testing.T) {
 	t.Parallel()
 	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
 		ctx := t.Context()
-		e := newStageEnv(t, c)
+		e := newStageEnv(t, c, false)
 		a := e.stage("a", time.Hour)
 		var wg sync.WaitGroup
 		t.Cleanup(wg.Wait)
@@ -186,7 +223,7 @@ func TestStageReadinessNamesTheStream(t *testing.T) {
 	t.Parallel()
 	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
 		ctx := t.Context()
-		e := newStageEnv(t, c)
+		e := newStageEnv(t, c, false)
 		lost := bus.FeedStreamName(e.feed, 2)
 		if err := e.js.DeleteStream(ctx, lost); err != nil {
 			t.Fatal(err)
@@ -208,7 +245,7 @@ func TestStageRestoresOpenCaptures(t *testing.T) {
 	t.Parallel()
 	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
 		ctx := t.Context()
-		e := newStageEnv(t, c)
+		e := newStageEnv(t, c, false)
 		a := e.stage("a", time.Hour)
 		var wg sync.WaitGroup
 		t.Cleanup(wg.Wait)
@@ -237,9 +274,21 @@ func TestStageRestoresOpenCaptures(t *testing.T) {
 // and its file's watermark the last one's offset.
 func (e *stageEnv) converted(n, rounds, perRound int) {
 	e.t.Helper()
+	e.convertedOf(slices.Collect(func(yield func(int) bool) {
+		for eq := range n {
+			if !yield(eq) {
+				return
+			}
+		}
+	}), rounds, perRound)
+}
+
+// convertedOf is converted for the equipment eqs.
+func (e *stageEnv) convertedOf(eqs []int, rounds, perRound int) {
+	e.t.Helper()
 	ctx := e.t.Context()
 	h := &harness{t: e.t, c: e.c, store: e.st}
-	for eq := range n {
+	for _, eq := range eqs {
 		file := catalog.LogFile{Source: "feed-a", EquipmentID: fmt.Sprintf("EQ%d", eq), File: "host-20261107.log"}
 		cp, ok, err := e.c.LogCaptureOf(ctx, catalog.LogKey{LogFile: file, Device: "eqp"})
 		if err != nil || !ok {
@@ -273,9 +322,8 @@ func (e *stageEnv) converted(n, rounds, perRound int) {
 // not after ack_wait; each is converted once, and the dead holder's acknowledgements arriving late change nothing.
 func TestGateTakeoverWithHeldEntriesAndBacklog(t *testing.T) {
 	t.Parallel()
-	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
-		ctx := t.Context()
-		e := newStageEnv(t, c)
+	layouts(t, func(t *testing.T, e *stageEnv) {
+		ctx, c := t.Context(), e.c
 		for n := range e.feed.Groups {
 			if _, ok, err := c.TakeLease(ctx, catalog.LogGroupLease(n), "dead", 900*time.Millisecond); err != nil || !ok {
 				t.Fatal(ok, err)
@@ -319,9 +367,8 @@ func TestGateTakeoverWithHeldEntriesAndBacklog(t *testing.T) {
 // A publish retried under its message id is stored once, and converted once (logfeed.md §15.3).
 func TestGateRetriedPublish(t *testing.T) {
 	t.Parallel()
-	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
+	layouts(t, func(t *testing.T, e *stageEnv) {
 		ctx := t.Context()
-		e := newStageEnv(t, c)
 		f := &fixture{t: e.t}
 		raw := f.raw(map[string]any{"equipment_id": "EQ0", "kind": KindUnclassified, "text": "r0-0", "ts": time.Now().UTC().Format("2006-01-02 15:04:05.000"), "tz": "UTC"})
 		for range 2 {
@@ -387,7 +434,7 @@ func TestGateConnectionDropLosesNoEntry(t *testing.T) {
 	t.Parallel()
 	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
 		ctx := t.Context()
-		e := newStageEnv(t, c)
+		e := newStageEnv(t, c, false)
 		d := &lossyDialer{}
 		nc, err := nats.Connect(e.js.Conn().ConnectedUrl(), nats.SetCustomDialer(d), nats.ReconnectWait(10*time.Millisecond), nats.MaxReconnects(-1))
 		if err != nil {
@@ -482,7 +529,7 @@ func TestStageFetchBytesTakeTheLargestDelivery(t *testing.T) {
 func TestStageFetchesADeliveryPastTheBound(t *testing.T) {
 	t.Parallel()
 	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
-		e := newStageEnv(t, c)
+		e := newStageEnv(t, c, false)
 		e.publish(4, 0)
 		a := e.stage("a", time.Hour)
 		a.fetchMax = 64
@@ -524,4 +571,62 @@ func TestStageSameConnAfterReconnect(t *testing.T) {
 	if err := s.sameConn(s.reconnects()); err != nil {
 		t.Errorf("sameConn on the generation after it = %v", err)
 	}
+}
+// A server lost with a group's stream of one replica stalls that group alone (logfeed.md §15.4, T-68):
+// the replica gives the group up and readiness names its stream, while the other groups' streams, on the other servers, are converted.
+// A lost server's restart redelivering what it held rests on the bus, probed in the feed stream a group plan's step 1.
+func TestStageServerLost(t *testing.T) {
+	t.Parallel()
+	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
+		ctx := t.Context()
+		e := newStageEnv(t, c, true)
+		e.publish(8, 0)
+		// The group placed on tb-1, its stream's equipment, and the others'.
+		lost := slices.Index(e.feed.PlacementTags, "tb-1")
+		var gone, live []int
+		for n := range e.feed.Groups {
+			s, err := e.js.Stream(ctx, bus.FeedStreamName(e.feed, n))
+			if err != nil {
+				t.Fatal(err)
+			}
+			info, err := s.Info(ctx, jetstream.WithSubjectFilter(">"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			for subject := range info.State.Subjects {
+				var eq int
+				if _, err := fmt.Sscanf(subject, fmt.Sprintf("tklog.%d.EQ%%d", n), &eq); err != nil {
+					t.Fatal(subject, err)
+				}
+				if n == lost {
+					gone = append(gone, eq)
+				} else {
+					live = append(live, eq)
+				}
+			}
+		}
+		if len(gone) == 0 || len(live) == 0 {
+			t.Fatalf("equipment of the lost group %v, of the others %v: want some of each", gone, live)
+		}
+		e.servers[lost].Shutdown()
+		a := e.stage("a", time.Hour)
+		var wg sync.WaitGroup
+		t.Cleanup(wg.Wait)
+		run(ctx, &wg, a)
+		lostStream := bus.FeedStreamName(e.feed, lost)
+		e.eventually("readiness names the lost group's stream", func() bool {
+			var re *metrics.ReadyError
+			return errors.As(a.Ready(ctx), &re) && slices.Equal(re.Parts, []string{lostStream})
+		})
+		e.eventually("the other groups' streams drained", func() bool {
+			for _, st := range bus.FeedStates(ctx, e.js, e.feed) {
+				if st.Group != lost && (st.Err != nil || st.Messages != 0) {
+					return false
+				}
+			}
+
+			return true
+		})
+		e.convertedOf(live, 1, 3)
+	})
 }
