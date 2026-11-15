@@ -12,6 +12,10 @@
 #   BUS_GOMEMLIMIT        each server's GOMEMLIMIT (7GiB)
 #   BUS_LOGS              a directory the servers' logs are copied into when the run ends, none kept when unset
 #   BUS_BLOCK_RATE        the servers' prof_block_rate, Go's block profile rate in nanoseconds, off when unset
+#   MEM_BUDGET            GiB: the servers' and the test's resident memory in all past which the test is stopped (24)
+#   RUN_FOR               seconds after which the test is stopped, a probe of the run's start; the whole run when unset
+#   MEM_LOG               a CSV file of the servers', the test's and their total resident memory every 10 s, none when unset;
+#                         their peaks are printed at the end either way
 #   BUS_FEED_STREAMS      n: the servers map tklog.<equipment> to tklog.<partition of n>.<equipment>, for a stream a group;
 #                         the feed-convert modes' 32 groups when unset, no mapping for the feed-streams mode's one stream
 # Server i, tb-i and tagged so, serves clients on 431i, monitoring on 822i and Go's pprof on 865i (http://127.0.0.1:865i/debug/pprof/).
@@ -70,4 +74,48 @@ if [ "$ready" -ne 3 ]; then
 fi
 
 TRACEKEEP_LOAD_BUS=nats://127.0.0.1:4310,nats://127.0.0.1:4311,nats://127.0.0.1:4312 TRACEKEEP_LOAD="$mode" \
-	"${test_pin[@]}" go test ./internal/service/ -run '^TestLoad$' -count=1 -v -timeout 150m
+	"${test_pin[@]}" go test ./internal/service/ -run '^TestLoad$' -count=1 -v -timeout 150m &
+tpid=$!
+
+# rss is a process's and its children's resident memory in KiB: go test's own and its test binary's.
+rss() {
+	local total=0 p kb
+	for p in "$1" $(pgrep -P "$1" || true); do
+		kb=$(awk '/^VmRSS/ {print $2}' "/proc/$p/status" 2>/dev/null || true)
+		total=$((total + ${kb:-0}))
+	done
+	echo "$total"
+}
+budget=$((${MEM_BUDGET:-24} * 1024 * 1024))
+start=$SECONDS
+peaks=(0 0 0 0 0)
+stopped=
+[ -z "${MEM_LOG:-}" ] || echo "seconds,tb-0,tb-1,tb-2,test,total" >"$MEM_LOG"
+while kill -0 "$tpid" 2>/dev/null; do
+	row=()
+	total=0
+	for p in "${pids[@]}" "$tpid"; do
+		r=$(rss "$p")
+		row+=("$r")
+		total=$((total + r))
+	done
+	row+=("$total")
+	for i in "${!row[@]}"; do [ "${row[$i]}" -le "${peaks[$i]}" ] || peaks[i]=${row[$i]}; done
+	[ -z "${MEM_LOG:-}" ] || (IFS=,; echo "$((SECONDS - start)),${row[*]}") >>"$MEM_LOG"
+	if [ "$total" -gt "$budget" ]; then
+		stopped="resident memory $((total / 1024)) MiB past the budget of ${MEM_BUDGET:-24} GiB"
+	elif [ -n "${RUN_FOR:-}" ] && [ $((SECONDS - start)) -ge "$RUN_FOR" ]; then
+		stopped="RUN_FOR ${RUN_FOR} s reached"
+	fi
+	if [ -n "$stopped" ]; then
+		echo "load-feed: stopping the test: $stopped" >&2
+		pkill -TERM -P "$tpid" || true
+		break
+	fi
+	sleep 10
+done
+status=0
+wait "$tpid" || status=$?
+echo "load-feed: peak resident memory, MiB: tb-0 $((peaks[0] / 1024)), tb-1 $((peaks[1] / 1024)), tb-2 $((peaks[2] / 1024)), test $((peaks[3] / 1024)), total $((peaks[4] / 1024))"
+[ -z "$stopped" ] || exit 1
+exit "$status"
