@@ -19,7 +19,7 @@
 #   BUS_FEED_STREAMS      n: the servers map tklog.<equipment> to tklog.<partition of n>.<equipment>, for a stream a group;
 #                         the feed-convert modes' 32 groups when unset, no mapping for the feed-streams mode's one stream
 # Server i, tb-i and tagged so, serves clients on 431i, monitoring on 822i and Go's pprof on 865i (http://127.0.0.1:865i/debug/pprof/).
-#   GOMEMLIMIT, TRACEKEEP_LOAD_ENGINE, TRACEKEEP_MARIADB_DSN, TRACEKEEP_LOAD_PROFILES are the test's, passed through
+#   GOMEMLIMIT, TRACEKEEP_LOAD_ENGINE, TRACEKEEP_MARIADB_DSN, TRACEKEEP_LOAD_PROFILES, TRACEKEEP_LOAD_LOG are the test's, passed through
 set -euo pipefail
 
 mode=${1:-feed-convert}
@@ -27,7 +27,18 @@ case $mode in feed-convert*) BUS_FEED_STREAMS=${BUS_FEED_STREAMS:-32} ;; esac
 work=$(mktemp -d)
 pids=()
 bus=
+tpid=
+# stop_test stops the test's process group, go test and its test binary, killing what is left after 30 s.
+stop_test() {
+	kill -TERM -- "-$tpid" 2>/dev/null || return 0
+	for _ in $(seq 30); do
+		kill -0 -- "-$tpid" 2>/dev/null || return 0
+		sleep 1
+	done
+	kill -KILL -- "-$tpid" 2>/dev/null || true
+}
 cleanup() {
+	[ -z "$tpid" ] || stop_test
 	for p in "${pids[@]}"; do kill "$p" 2>/dev/null || true; done
 	wait 2>/dev/null || true
 	[ -z "${BUS_LOGS:-}" ] || { mkdir -p "$BUS_LOGS" && cp "$work"/server-*.log "$BUS_LOGS"/; } || true
@@ -74,7 +85,8 @@ if [ "$ready" -ne 3 ]; then
 fi
 
 TRACEKEEP_LOAD_BUS=nats://127.0.0.1:4310,nats://127.0.0.1:4311,nats://127.0.0.1:4312 TRACEKEEP_LOAD="$mode" \
-	"${test_pin[@]}" go test ./internal/service/ -run '^TestLoad$' -count=1 -v -timeout 150m &
+	"${test_pin[@]}" setsid go test ./internal/service/ -run '^TestLoad$' -count=1 -v -timeout 150m &
+# setsid gives the test a process group of its own, its id the test's pid, which stop_test stops whole.
 tpid=$!
 
 # rss is a process's and its children's resident memory in KiB: go test's own and its test binary's.
@@ -109,13 +121,14 @@ while kill -0 "$tpid" 2>/dev/null; do
 	fi
 	if [ -n "$stopped" ]; then
 		echo "load-feed: stopping the test: $stopped" >&2
-		pkill -TERM -P "$tpid" || true
+		stop_test
 		break
 	fi
 	sleep 10
 done
 status=0
 wait "$tpid" || status=$?
+tpid=
 echo "load-feed: peak resident memory, MiB: tb-0 $((peaks[0] / 1024)), tb-1 $((peaks[1] / 1024)), tb-2 $((peaks[2] / 1024)), test $((peaks[3] / 1024)), total $((peaks[4] / 1024))"
 [ -z "$stopped" ] || exit 1
 exit "$status"

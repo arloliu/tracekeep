@@ -125,12 +125,22 @@ func (e *stageEnv) stage(replica string, idle time.Duration) *Stage {
 // a replica taking a group over restores a file's last arrival from its last record's time, which a fixed time would leave idle.
 func (e *stageEnv) publish(n, round int) {
 	e.t.Helper()
+	eqs := make([]int, n)
+	for i := range eqs {
+		eqs[i] = i
+	}
+	e.publishOf(eqs, round)
+}
+
+// publishOf is publish for the equipment eqs.
+func (e *stageEnv) publishOf(eqs []int, round int) {
+	e.t.Helper()
 	taipei, err := time.LoadLocation("Asia/Taipei")
 	if err != nil {
 		e.t.Fatal(err)
 	}
 	ts := time.Now().In(taipei).Format("2006-01-02 15:04:05.000")
-	for eq := range n {
+	for _, eq := range eqs {
 		f := &fixture{t: e.t, offset: int64(round) * 1000}
 		for k := range 3 {
 			raw := f.raw(map[string]any{"equipment_id": fmt.Sprintf("EQ%d", eq), "kind": KindUnclassified, "text": fmt.Sprintf("r%d-%d", round, k), "ts": ts})
@@ -608,15 +618,23 @@ func TestStageServerLost(t *testing.T) {
 		if len(gone) == 0 || len(live) == 0 {
 			t.Fatalf("equipment of the lost group %v, of the others %v: want some of each", gone, live)
 		}
-		e.servers[lost].Shutdown()
 		a := e.stage("a", time.Hour)
 		var wg sync.WaitGroup
 		t.Cleanup(wg.Wait)
 		run(ctx, &wg, a)
+		e.eventually("a holds every group, started", func() bool { return len(a.Held()) == e.feed.Groups && a.Ready(ctx) == nil })
+		e.eventually("the feed drained", e.drained)
+		// The server lost while the stage runs; the client's connection, if to it, reconnects to another before the next round.
+		e.servers[lost].Shutdown()
+		e.eventually("the client connected to a live server", func() bool {
+			nc := e.js.Conn()
+			return nc.IsConnected() && nc.ConnectedServerName() != e.servers[lost].Name()
+		})
+		e.publishOf(live, 1)
 		lostStream := bus.FeedStreamName(e.feed, lost)
-		e.eventually("readiness names the lost group's stream", func() bool {
+		e.eventually("the lost group given up, its lease released, and readiness naming its stream", func() bool {
 			var re *metrics.ReadyError
-			return errors.As(a.Ready(ctx), &re) && slices.Equal(re.Parts, []string{lostStream})
+			return errors.As(a.Ready(ctx), &re) && slices.Equal(re.Parts, []string{lostStream}) && !slices.Contains(a.Held(), lost)
 		})
 		e.eventually("the other groups' streams drained", func() bool {
 			for _, st := range bus.FeedStates(ctx, e.js, e.feed) {
@@ -627,6 +645,7 @@ func TestStageServerLost(t *testing.T) {
 
 			return true
 		})
-		e.convertedOf(live, 1, 3)
+		e.convertedOf(live, 2, 3)
+		e.convertedOf(gone, 1, 3)
 	})
 }

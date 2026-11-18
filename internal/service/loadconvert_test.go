@@ -246,7 +246,7 @@ func progress(ctx context.Context, t *testing.T, h *loadHarness, s groupStreams,
 			case <-tick.C:
 			}
 			st, _ := s.state(ctx)
-			lo, hi, capped := -1, 0, 0
+			lo, hi, capped, redelivered := -1, 0, 0, 0
 			for n := range feedGroups {
 				ci, err := s.js.Consumer(ctx, bus.FeedStreamName(s.f, n), bus.FeedConsumer(n))
 				if err != nil {
@@ -257,6 +257,7 @@ func progress(ctx context.Context, t *testing.T, h *loadHarness, s groupStreams,
 					continue
 				}
 				a := info.NumAckPending
+				redelivered += info.NumRedelivered
 				if lo < 0 || a < lo {
 					lo = a
 				}
@@ -271,19 +272,24 @@ func progress(ctx context.Context, t *testing.T, h *loadHarness, s groupStreams,
 					_ = f.Close()
 				}
 			}
-			converted := 0.0
+			converted, outcomes := 0.0, map[string]float64{}
 			if mfs, err := h.d.Env.Metrics.Registry().Gather(); err == nil {
 				for _, mf := range mfs {
 					if mf.GetName() == "tracekeep_logfeed_entries_total" {
 						for _, m := range mf.GetMetric() {
 							converted += m.GetCounter().GetValue()
+							for _, l := range m.GetLabel() {
+								if l.GetName() == "outcome" {
+									outcomes[l.GetValue()] += m.GetCounter().GetValue()
+								}
+							}
 						}
 					}
 				}
 			}
-			fmt.Fprintf(os.Stderr, "progress %s: made %d acked %d failed %d retried %d; streams %d msgs %s R%d; settled %.0f; ack pending %d..%d, %d groups capped\n",
+			fmt.Fprintf(os.Stderr, "progress %s: made %d acked %d failed %d retried %d; streams %d msgs %s R%d; settled %.0f (stale %.0f, duplicate %.0f, annotation %.0f); ack pending %d..%d, %d groups capped, %d redelivered pending\n",
 				time.Since(p.started).Round(time.Second), p.made.Load(), p.acked.Load(), p.failed.Load(), p.retried.Load(), st.Msgs, kib(int(st.Bytes)), s.f.Replicas,
-				converted, lo, hi, capped)
+				converted, outcomes["stale"], outcomes["duplicate"], outcomes["annotation"], lo, hi, capped, redelivered)
 		}
 	}()
 }

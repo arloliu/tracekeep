@@ -43,6 +43,7 @@ package service
 // TRACEKEEP_LOAD_BUS, client URLs joined by commas, runs feed-convert on a cluster of servers outside the test's process, fresh for each run,
 // so the bus keeps its own heap, cores and disk; unset, the three servers run in the test's process.
 // scripts/load-feed.sh starts such a cluster, pinned apart from the test, the gate's environment (T-66).
+// TRACEKEEP_LOAD_LOG is a file dev's warnings and errors are written to, discarded when unset.
 // TRACEKEEP_LOAD_PROFILES is the directory the ceiling's and production's profiles are written to, a new temporary one when unset.
 // The harness profiles in-process (runtime/pprof), so it runs without -cpuprofile, and every profile is the whole process's,
 // the embedded bus server, the producers and the loopbacks included: ingest's share is go tool pprof -top -focus 'tracekeep/internal/(ingest|catalog)',
@@ -217,12 +218,28 @@ type loadHarness struct {
 	reads apiReads
 }
 
+// loadLog is dev's logger: its warnings and errors to TRACEKEEP_LOAD_LOG, nothing when unset.
+func loadLog(t *testing.T) *slog.Logger {
+	t.Helper()
+	path := os.Getenv("TRACEKEEP_LOAD_LOG")
+	if path == "" {
+		return slog.New(slog.DiscardHandler)
+	}
+	f, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = f.Close() })
+
+	return slog.New(slog.NewTextHandler(f, &slog.HandlerOptions{Level: slog.LevelWarn}))
+}
+
 // newLoadHarness starts dev with no simulator, observed so its ingest metrics are recorded, its retention recorded so a pack has a deadline.
 func newLoadHarness(t *testing.T, spec loadSpec) *loadHarness {
 	t.Helper()
 	ctx := t.Context()
 	dir := t.TempDir()
-	opts := DevOptions{Dir: dir, Flush: spec.flush, API: "127.0.0.1:0", IDP: "127.0.0.1:0", Log: slog.New(slog.DiscardHandler), bus: spec.bus}
+	opts := DevOptions{Dir: dir, Flush: spec.flush, API: "127.0.0.1:0", IDP: "127.0.0.1:0", Log: loadLog(t), bus: spec.bus}
 	engine := loadEngine(t)
 	if engine == catalog.EngineMariaDB {
 		dsn, _ := catalogtest.MariaDBEmpty(t)
