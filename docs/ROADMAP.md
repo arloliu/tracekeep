@@ -57,7 +57,7 @@ Milestones the owner set after seed v21 §12's (T-52).
 
 ## Active plans
 
-- [Feed stream a group](plans/feed-stream-per-group.md) — each lease group's own stream of one replica (T-67).
+None.
 
 Phase 0 is done (#1, #3, #4, #7, #8).
 Phase 1 is done (#9, #11, #13, #14, #16, #17, #18, #19).
@@ -73,6 +73,8 @@ The test efficiency (T-61) is done (#96, #97, #98 and the pull request that clos
 CI's `ci` job went from 9–14 min to about 8.5 min and its `catalog` job from 10–14 min to about 4 min, its packages in four legs.
 The host log feed (P3; T-60, T-62 to T-66) is done (#100, #101, #102, #103, #104, #105, #106, #107, #108, #109, #110, #111, #112), `specs/tracekeep/logfeed.md` current;
 its closed plan's last text, with its measurements and the gate's runs, is at 3c11e5e.
+The feed stream a group (T-67, T-68, T-69) is done (#120, #121, #122, #123, #124, #127, #128, #129, #130, #131), each lease group's own stream of one replica;
+its closed plan's last text, with its probes, the server-loss measurement and the gate's runs, is at 05992ba.
 
 ## Open items
 
