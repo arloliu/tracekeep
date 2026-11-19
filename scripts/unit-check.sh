@@ -8,7 +8,8 @@ unit=deploy/systemd/tracekeep.service
 sed "s|/usr/local/bin/tracekeep|$(command -v true)|g" "$unit" > "$out/tracekeep.service"
 # User= names an account this host may lack; verify reports a missing one, which the sysusers file below creates.
 systemd-analyze verify --man=no "$out/tracekeep.service" > "$out/verify" 2>&1 || true
-grep -v "User.*not found\|Failed to resolve user" "$out/verify" > "$out/issues" || true
+# Only the unit's own issues: the host's other units, which verify loads alongside, report theirs too (a runner image's, for one).
+grep -v "User.*not found\|Failed to resolve user\|^/usr/lib/systemd/\|^/lib/systemd/\|^/etc/systemd/\|^/run/systemd/" "$out/verify" > "$out/issues" || true
 if [ -s "$out/issues" ]; then
 	cat "$out/issues" >&2
 	echo "unit-check: systemd-analyze verify reported the above" >&2
