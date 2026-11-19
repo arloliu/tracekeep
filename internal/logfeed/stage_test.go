@@ -4,9 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -336,4 +338,144 @@ func TestGateRetriedPublish(t *testing.T) {
 		e.eventually("the feed drained", e.drained)
 		e.converted(1, 1, 1)
 	})
+}
+
+// lossyDialer dials the stage's connection; lose makes its current connection read and discard everything the server sends,
+// as a server's slow-consumer closure loses what it had sent and the client had not read, until drop closes it and the client reconnects.
+type lossyDialer struct {
+	mu   sync.Mutex
+	conn *lossyConn
+}
+
+type lossyConn struct {
+	net.Conn
+	lost atomic.Bool
+}
+
+func (d *lossyDialer) Dial(network, address string) (net.Conn, error) {
+	c, err := net.Dial(network, address)
+	if err != nil {
+		return nil, err
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.conn = &lossyConn{Conn: c}
+
+	return d.conn, nil
+}
+
+func (d *lossyDialer) current() *lossyConn {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	return d.conn
+}
+
+func (c *lossyConn) Read(b []byte) (int, error) {
+	for {
+		n, err := c.Conn.Read(b)
+		if err != nil || !c.lost.Load() {
+			return n, err
+		}
+	}
+}
+
+// A drop of the stage's connection loses the deliveries in flight (T-69): every group gives up, readiness names each stream,
+// and the groups taken again re-create their consumers, so the lost entries come back at once, ahead of the newer ones,
+// not after ack_wait and stale; each entry is converted once.
+func TestGateConnectionDropLosesNoEntry(t *testing.T) {
+	t.Parallel()
+	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
+		ctx := t.Context()
+		e := newStageEnv(t, c)
+		d := &lossyDialer{}
+		nc, err := nats.Connect(e.js.Conn().ConnectedUrl(), nats.SetCustomDialer(d), nats.ReconnectWait(10*time.Millisecond), nats.MaxReconnects(-1))
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(nc.Close)
+		js, err := jetstream.New(nc)
+		if err != nil {
+			t.Fatal(err)
+		}
+		a := e.stage("a", time.Hour)
+		a.JS, a.Conn, a.Pause = js, nc, 2*time.Second
+		srv := metrics.NewServer()
+		if a.Base.Metrics, err = metrics.NewLogfeed(srv); err != nil {
+			t.Fatal(err)
+		}
+		var wg sync.WaitGroup
+		t.Cleanup(wg.Wait)
+		run(ctx, &wg, a)
+		e.eventually("a ready on every group", func() bool { return len(a.Held()) == e.feed.Groups && a.Ready(ctx) == nil })
+		created := map[int]time.Time{}
+		pending := func() int {
+			sum := 0
+			for n := range e.feed.Groups {
+				cons, err := e.js.Consumer(ctx, bus.FeedStreamName(e.feed, n), bus.FeedConsumer(n))
+				if err != nil {
+					t.Fatal(err)
+				}
+				info, err := cons.Info(ctx)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, ok := created[n]; !ok {
+					created[n] = info.Created
+				}
+				sum += info.NumAckPending
+			}
+
+			return sum
+		}
+		pending()
+		d.current().lost.Store(true)
+		start := time.Now()
+		e.publish(8, 0)
+		e.eventually("the server sent every entry to the lossy connection", func() bool { return pending() == 24 })
+		_ = d.current().Close()
+		e.eventually("readiness names every group's stream", func() bool {
+			var re *metrics.ReadyError
+			err := a.Ready(ctx)
+			return errors.As(err, &re) && strings.Contains(err.Error(), "gave up") && len(re.Parts) == e.feed.Groups
+		})
+		e.publish(8, 1)
+		e.eventually("a drains the lost entries and the newer ones", e.drained)
+		if took := time.Since(start); took >= e.feed.AckWait {
+			t.Errorf("the lost entries came back after %v, not before ack_wait %v: the consumers were not re-created", took, e.feed.AckWait)
+		}
+		e.eventually("a holds every group again", func() bool { return len(a.Held()) == e.feed.Groups })
+		for n := range e.feed.Groups {
+			cons, err := e.js.Consumer(ctx, bus.FeedStreamName(e.feed, n), bus.FeedConsumer(n))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if info := cons.CachedInfo(); !info.Created.After(created[n]) {
+				t.Errorf("group %d's consumer created %v, not after the drop's %v", n, info.Created, created[n])
+			}
+		}
+		e.converted(8, 2, 3)
+		if got := scrape(t, srv); strings.Contains(got, `outcome="stale"`) {
+			t.Errorf("entries stale after the drop:\n%s", got)
+		}
+	})
+}
+
+// A fetch's byte bound is at least the largest delivery the server sends, so a pull never ends before a message larger than the group's share of the budget.
+func TestStageFetchBytesTakeTheLargestDelivery(t *testing.T) {
+	t.Parallel()
+	srv := testbus.StartServer(t, testbus.Options{})
+	nc, err := nats.Connect(srv.URL())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(nc.Close)
+	js, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := &Stage{JS: js, Feed: bus.Feed{Groups: 32}}
+	if got, want := s.fetchBytes(), int(nc.MaxPayload())+deliverySlack; got != want || got*s.Feed.Groups >= 64<<20 {
+		t.Errorf("fetchBytes() = %d at G = 32; want %d, the 32 fetches within the server's 64 MiB pending", got, want)
+	}
 }

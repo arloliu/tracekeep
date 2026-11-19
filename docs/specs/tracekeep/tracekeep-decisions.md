@@ -1006,3 +1006,18 @@ which the pipeline guide notes: nothing is lost, and an aggregator gone idle hol
 Considered and not taken: the operations team placing each stream by hand, which nothing checks;
 each stream at `logfeed.max_bytes`, its total bounded by the servers' disks alone;
 three replicas, at about three times the bus's resources (T-67).
+
+### T-69 — the stage gives its groups up on a reconnect, and bounds a fetch by bytes (2026-11-19)
+
+The feed's load gate of 2026-11-19 lost 58,721 of the 161,187,774 entries it stored.
+Under the burst, the servers closed the log stage's connection as a slow consumer, the server's 64 MiB a client may have pending exceeded:
+each group's fetch was bounded by 500 messages only, the burst's entries were about 53 KiB, and up to 32 groups fetched at once on the one connection.
+The client reconnected on its own and the stage never noticed:
+the deliveries the server had sent and the client had not read were lost, JetStream redelivered them only after `ack_wait`, 7 minutes, long past the 30 s reorder window,
+and the converter judged them stale and acknowledged them unconverted;
+acknowledgements written before the drop were lost too, so some converted entries came back stale a second time, which is harmless.
+The owner chose, on 2026-11-19, both of (`logfeed.md` §15.4, §15.5 *A dropped connection*):
+**a drop gives every group up**, as a converter that gives up does, so each is taken again with its consumer re-created and the lost deliveries come back at once, converted afresh;
+a group converts no delivery read after its connection dropped and releases no entry once it has, judged by the connection's reconnection count read before each delivery and each tick;
+and **a fetch is bounded by bytes**, the groups' fetches together by 32 MiB, half the server's default pending, each at least a delivery of the server's `max_payload`.
+Considered and not taken: only bounding the fetches' bytes, which removes this slow consumer and leaves any other drop, a server's restart or a network fault, losing entries the same way.
