@@ -7,6 +7,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/nats-io/nats.go/jetstream"
@@ -171,19 +172,29 @@ type FeedStreamState struct {
 	Err             error
 }
 
+// feedStateWait bounds each group stream's read: one on a server that is down goes unanswered until its deadline.
+const feedStateWait = 5 * time.Second
+
 // FeedStates reads every group's stream, in group order; a stream that cannot answer carries its error, the others their backlog.
+// The streams are read at once, each within feedStateWait, so a stream on a server that is down does not take the others' time.
 func FeedStates(ctx context.Context, js jetstream.JetStream, f Feed) []FeedStreamState {
 	out := make([]FeedStreamState, f.Groups)
+	var wg sync.WaitGroup
 	for n := range f.Groups {
 		out[n] = FeedStreamState{Group: n, Stream: FeedStreamName(f, n)}
-		s, err := js.Stream(ctx, out[n].Stream)
-		if err != nil {
-			out[n].Err = fmt.Errorf("bus: feed stream %s: %w", out[n].Stream, err)
-			continue
-		}
-		st := s.CachedInfo().State
-		out[n].Messages, out[n].Bytes = st.Msgs, st.Bytes
+		wg.Go(func() {
+			ctx, cancel := context.WithTimeout(ctx, feedStateWait)
+			defer cancel()
+			s, err := js.Stream(ctx, out[n].Stream)
+			if err != nil {
+				out[n].Err = fmt.Errorf("bus: feed stream %s: %w", out[n].Stream, err)
+				return
+			}
+			st := s.CachedInfo().State
+			out[n].Messages, out[n].Bytes = st.Msgs, st.Bytes
+		})
 	}
+	wg.Wait()
 
 	return out
 }
