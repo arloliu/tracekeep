@@ -408,6 +408,21 @@ func TestFeedStatesServerDown(t *testing.T) {
 	}
 	srvs[1].Shutdown()
 	srvs[1].WaitForShutdown()
+	// The client reconnects and the cluster may elect a meta leader meanwhile, so the live streams are awaited first.
+	for _, n := range []int{0, 2} {
+		deadline := time.Now().Add(30 * time.Second)
+		for {
+			rctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
+			_, err := js.Stream(rctx, bus.FeedStreamName(f, n))
+			cancel()
+			if err == nil {
+				break
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("group %d's stream on a server that is up: %v", n, err)
+			}
+		}
+	}
 	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Second)
 	defer cancel()
 	for _, st := range bus.FeedStates(ctx, js, f) {
