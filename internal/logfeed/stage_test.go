@@ -582,6 +582,7 @@ func TestStageSameConnAfterReconnect(t *testing.T) {
 		t.Errorf("sameConn on the generation after it = %v", err)
 	}
 }
+
 // A server lost with a group's stream of one replica stalls that group alone (logfeed.md §15.4, T-68):
 // the replica gives the group up and readiness names its stream, while the other groups' streams, on the other servers, are converted.
 // A lost server's restart redelivering what it held rests on the bus, probed in the feed stream a group plan's step 1.
