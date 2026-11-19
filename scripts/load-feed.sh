@@ -28,14 +28,15 @@ work=$(mktemp -d)
 pids=()
 bus=
 tpid=
-# stop_test stops the test's process group, go test and its test binary, killing what is left after 30 s.
+# stop_test stops the test's process group, go test and its test binary, killing what is left after 30 s;
+# the test itself, when stopped before setsid made its group.
 stop_test() {
-	kill -TERM -- "-$tpid" 2>/dev/null || return 0
+	kill -TERM -- "-$tpid" 2>/dev/null || kill -TERM "$tpid" 2>/dev/null || return 0
 	for _ in $(seq 30); do
-		kill -0 -- "-$tpid" 2>/dev/null || return 0
+		kill -0 -- "-$tpid" 2>/dev/null || kill -0 "$tpid" 2>/dev/null || return 0
 		sleep 1
 	done
-	kill -KILL -- "-$tpid" 2>/dev/null || true
+	kill -KILL -- "-$tpid" 2>/dev/null || kill -KILL "$tpid" 2>/dev/null || true
 }
 cleanup() {
 	[ -z "$tpid" ] || stop_test
