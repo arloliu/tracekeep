@@ -573,7 +573,7 @@ func logStage(e *Env, g *ingest.Ingester) (*logfeed.Stage, error) {
 }
 
 // refresh reads ingest's catalog and bus gauges every refreshInterval until ctx ends, each pass bounded by the interval,
-// and the feed stream's backlog unless feed is nil.
+// and the feed streams' backlog unless feed is nil, within a bound of its own, so a slow catalog never leaves the feed's snapshot stale.
 // A failed pass's catalog and bus causes are logged through safetext.Text, so a URL they quote keeps no credential or query.
 func (e *Env) refresh(ctx context.Context, m *metrics.Ingest, cat metrics.Catalog, traffic metrics.Consumer, feed metrics.Feed) {
 	t := time.NewTicker(refreshInterval)
@@ -581,13 +581,15 @@ func (e *Env) refresh(ctx context.Context, m *metrics.Ingest, cat metrics.Catalo
 	for {
 		pctx, cancel := context.WithTimeout(ctx, refreshInterval)
 		err := m.Refresh(pctx, cat, traffic)
+		cancel()
 		if feed != nil {
-			err = errors.Join(err, m.RefreshFeed(pctx, feed))
+			fctx, cancel := context.WithTimeout(ctx, refreshInterval)
+			err = errors.Join(err, m.RefreshFeed(fctx, feed))
+			cancel()
 		}
 		if err != nil && ctx.Err() == nil {
 			e.Log.Warn("metrics: refresh", "error", safetext.Text(err.Error()))
 		}
-		cancel()
 		select {
 		case <-ctx.Done():
 			return

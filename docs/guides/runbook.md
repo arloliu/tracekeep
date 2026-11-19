@@ -303,14 +303,14 @@ past `logfeed.max_bytes` the stream refuses the pipeline's publications, and wha
 
 ## log-feed-stream-unreadable
 
-**Alert** `TracekeepLogFeedStreamUnreadable` (`logfeed.md` §15.11): for three minutes no `ingest` replica has read every group stream of the feed while the traffic stream is read.
+**Alert** `TracekeepLogFeedStreamUnreadable` (`logfeed.md` §15.11): no `ingest` replica has read every group stream of the feed for about five minutes while the traffic stream is read.
 A group's stream cannot answer, most often because its server is lost;
 with streams of one replica (`logfeed.replicas`, the default) the whole feed stalls until it is back, the pipelines' buffers holding it (`log-pipeline.md` *A server lost*).
 
 1. `tracekeep status` marks each group stream that cannot be read under `feed.streams`, and the `ingest` replicas' readiness names those whose groups were given up;
    `logfeed.placement_tags` names the server: group n's stream is on the server tagged with tag n mod their number.
 2. Do not restart or roll out tracekeep's pods meanwhile:
-   with the feed enabled every role checks every group stream and probes the servers' mapping at its start, and does not start while one cannot answer, the traffic roles included.
+   with the feed enabled the `ingest`, `compact` and `all` roles check every group stream and probe the servers' mapping at their start, and do not start while one cannot answer, traffic ingest included.
    A pod that must start runs with `logfeed.enabled: false` until the server is back, which stops the log stage; the pipelines' buffers hold the feed meanwhile.
 3. A server back with its storage needs nothing more: its streams and their entries are there, the log stage takes their groups again after its pause, and the pipelines' buffers drain within seconds.
 4. A server whose storage is lost loses what its streams held, the entries of its groups not yet converted:
@@ -319,7 +319,7 @@ with streams of one replica (`logfeed.replicas`, the default) the whole feed sta
    - Replace it under the **same server name** with its tag: at its start its streams and their consumers are created again, empty, and the feed resumes.
    - A replacement under **another name** takes the lost server's tag, and the lost server is removed from the cluster's peers with the system account (`nats server raft peer-remove <lost server>`):
      until then its streams stay offline; once it is removed they are placed on the replacement by their tag, empty.
-   - Never delete a lost stream to create it again: until a `migrate` run does, every role's start is refused.
+   - Never delete a lost stream to create it again: until a `migrate` run does, those roles' starts are refused.
 
 **If ignored**: the whole feed stays stalled; the pipelines' buffers fill, then block their tailers,
 and what a host program rotates away before its tailer resumes is lost.

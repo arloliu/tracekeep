@@ -145,7 +145,7 @@ The contract between the pipeline and tracekeep is a versioned field schema, one
   Three keep a group's stream taking publishes once a remaining server leads it, at about three times the bus's resources (T-67).
   A server lost with its storage loses the entries its streams held, those not yet converted;
   a replacement under its name and tag, or under another name with its tag once the lost server is removed from the cluster's peers, takes its streams again, empty (§15.10).
-  While a group's stream cannot answer, no role starts with the feed enabled, its preflight reading every group's stream and probing the mapping (§15.11).
+  While a group's stream cannot answer, the `ingest`, `compact` and `all` roles do not start with the feed enabled, their preflight reading every group's stream and probing the mapping (§15.11).
 - **Placement** (`logfeed.placement_tags`): group n's stream is placed on the server tagged with the list's tag n mod its length, so the streams spread round-robin over the servers;
   an empty list places none, for a single server, since unplaced streams of one replica all landed on one server (T-68).
   The operations team tags each server (`server_tags`), each tag naming one server's: two tags on one server put both shares on it.
@@ -442,7 +442,7 @@ No entry was discarded or stored twice, none was missing but ten a disk buffer h
 and entries of one file were stored at most 2.9 s out of order.
 **A server's replacement**, probed on 2026-11-19 on three servers of the module's version with six group streams of one replica (branch `test/feed-replace-probe`, 26754fb):
 one server killed and its storage removed.
-Until it was back, its streams' reads went unanswered, and `migrate`, a role's start and the mapping's probe failed.
+Until it was back, its streams' reads went unanswered, and `migrate`, the preflight's reads and the mapping's probe failed.
 Restarted under its name with empty storage, its streams and their consumers were created again, empty, and took publishes;
 a server of another name with its tag left them offline until the lost server was removed from the peers, which placed them on it, empty.
 The entries the lost streams held were gone.
@@ -524,7 +524,7 @@ On a gateway's capture it is refused.
 | Alert | Fires when | Runbook section |
 |---|---|---|
 | `TracekeepLogFeedSilent` | an equipment that sent entries in the past day sent none for 15 min, or the feed's backlog grows for 15 min | `log-feed-silent` |
-| `TracekeepLogFeedStreamUnreadable` | for 3 min no replica has read every group stream while the traffic stream is read: a stream's server lost | `log-feed-stream-unreadable` |
+| `TracekeepLogFeedStreamUnreadable` | no replica has read every group stream for about 5 min while the traffic stream is read: a stream's server lost | `log-feed-stream-unreadable` |
 | `TracekeepLogEntryUnreadable` | an entry tracekeep cannot read within the hour | `log-entry-unreadable` |
 | `TracekeepLogEntriesLate` | stale entries growing within the hour: the pipeline's in-flight time exceeds the reorder window (§15.5 *Stale entries*) | `log-entries-late` |
 

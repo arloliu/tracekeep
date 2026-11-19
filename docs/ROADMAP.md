@@ -81,8 +81,8 @@ its closed plan's last text, with its measurements and the gate's runs, is at 3c
   The cause is not proven (the test efficiency plan's last text, 10803c8).
 - `TestCopiesFromAFollower/mariadb` (`internal/compact`) failed once in CI on 2026-11-19, `Copies` through a follower counting none where one copy was acknowledged,
   and passed on its rerun; the cause is not diagnosed.
-- With the feed enabled, no role starts while a group stream cannot answer, its server lost (`logfeed.md` §15.4):
-  each role's preflight reads every group stream and probes the servers' mapping, so a pod restarting during the outage waits for the server, a traffic role included.
+- With the feed enabled, the `ingest`, `compact` and `all` roles do not start while a group stream cannot answer, its server lost (`logfeed.md` §15.4):
+  their preflight reads every group stream and probes the servers' mapping, so a pod restarting during the outage waits for the server, traffic ingest included.
   The runbook's way out is `logfeed.enabled: false` until the server is back (`log-feed-stream-unreadable`);
   whether a role should start with the groups it can reach is the owner's to decide.
 - The SDK sometimes marks a capture's first S1F3 ordering-uncertain, observed before its predecessor (`producer.md` §4.2);
