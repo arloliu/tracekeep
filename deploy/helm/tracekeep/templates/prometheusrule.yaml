@@ -151,6 +151,18 @@ spec:
       annotations:
         summary: "The host log feed is silent or falling behind{{ "{{" }} with $labels.equipment_id {{ "}}" }} (equipment {{ "{{" }} . {{ "}}" }}){{ "{{" }} end {{ "}}" }}."
         runbook_url: {{ $runbook }}#log-feed-silent
+    # A group stream that cannot answer, its server lost, fails every replica's snapshot of the feed whole,
+    # while the traffic stream's snapshot is still read: a replica that stopped refreshes neither, which fires nothing here.
+    - alert: TracekeepLogFeedStreamUnreadable
+      expr: |
+        time() - max(tracekeep_ingest_refreshed_timestamp_seconds{source="feed"}) > 120
+        and on() (time() - max(tracekeep_ingest_refreshed_timestamp_seconds{source="bus"})) < 120
+      for: 3m
+      labels:
+        severity: warning
+      annotations:
+        summary: A host log feed group stream cannot be read; its server may be lost.
+        runbook_url: {{ $runbook }}#log-feed-stream-unreadable
     # An outcome's last count is stamped, an event no scrape misses, as a counter's first increment or an unsampled reset is missed.
     - alert: TracekeepLogEntryUnreadable
       expr: min by (equipment_id) (time() - tracekeep_logfeed_last_outcome_timestamp_seconds{outcome="unreadable"}) < 3600

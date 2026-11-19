@@ -1,6 +1,6 @@
 # tracekeep — host log feed
 
-Status: current (2026-11-07) — from P3 as T-60 accepted it, delivered by the host log feed plan (#101–#112)
+Status: current (2026-11-19) — from P3 as T-60 accepted it, delivered by the host log feed plan (#101–#112)
 
 Covers the host log feed: a log pipeline parses the SECS traffic a host program prints to its text log,
 and tracekeep pairs the entries, builds the frames and writes `capture_method = log` captures as they arrive.
@@ -143,6 +143,9 @@ The contract between the pipeline and tracekeep is a versioned field schema, one
   a group past its own limit refuses publishes while the others have room.
 - **Replicas** (`logfeed.replicas`): one by default (T-67), so a server's loss stalls the whole feed for the outage, the entries waiting in the pipeline's buffers (§15.10, T-68).
   Three keep a group's stream taking publishes once a remaining server leads it, at about three times the bus's resources (T-67).
+  A server lost with its storage loses the entries its streams held, those not yet converted;
+  a replacement under its name and tag, or under another name with its tag once the lost server is removed from the cluster's peers, takes its streams again, empty (§15.10).
+  While a group's stream cannot answer, no role starts with the feed enabled, its preflight reading every group's stream and probing the mapping (§15.11).
 - **Placement** (`logfeed.placement_tags`): group n's stream is placed on the server tagged with the list's tag n mod its length, so the streams spread round-robin over the servers;
   an empty list places none, for a single server, since unplaced streams of one replica all landed on one server (T-68).
   The operations team tags each server (`server_tags`), each tag naming one server's: two tags on one server put both shares on it.
@@ -437,6 +440,12 @@ Vector's buffer grew to 1.56 million entries, about 5.8 GiB, for the minute;
 the lost groups took entries 1 s after the server was healthy, and the buffer was below 1,000 entries 11 to 15 s after the restart.
 No entry was discarded or stored twice, none was missing but ten a disk buffer held (`docs/guides/log-pipeline.md` *A server lost*),
 and entries of one file were stored at most 2.9 s out of order.
+**A server's replacement**, probed on 2026-11-19 on three servers of the module's version with six group streams of one replica (branch `test/feed-replace-probe`, 26754fb):
+one server killed and its storage removed.
+Until it was back, its streams' reads went unanswered, and `migrate`, a role's start and the mapping's probe failed.
+Restarted under its name with empty storage, its streams and their consumers were created again, empty, and took publishes;
+a server of another name with its tag left them offline until the lost server was removed from the peers, which placed them on it, empty.
+The entries the lost streams held were gone.
 **`max_bytes`** = the outage tolerated × 10.1 GB/h, logical bytes: `logfeed.max_bytes` defaults to 40 GiB, about 4 h.
 Each group's stream holds `max_bytes` / G × 1.25 (§15.4): at the defaults 1.5625 GiB, 50 GiB in all, about 17 GiB on a server holding 11 streams of one replica.
 A group fuller than 1.25 times the mean fills first: the plan's probe, its fleet uniform, put 60 to 66 equipment in a group against a mean of 62.5,
@@ -515,6 +524,7 @@ On a gateway's capture it is refused.
 | Alert | Fires when | Runbook section |
 |---|---|---|
 | `TracekeepLogFeedSilent` | an equipment that sent entries in the past day sent none for 15 min, or the feed's backlog grows for 15 min | `log-feed-silent` |
+| `TracekeepLogFeedStreamUnreadable` | for 3 min no replica has read every group stream while the traffic stream is read: a stream's server lost | `log-feed-stream-unreadable` |
 | `TracekeepLogEntryUnreadable` | an entry tracekeep cannot read within the hour | `log-entry-unreadable` |
 | `TracekeepLogEntriesLate` | stale entries growing within the hour: the pipeline's in-flight time exceeds the reorder window (§15.5 *Stale entries*) | `log-entries-late` |
 

@@ -16,7 +16,7 @@ Out of scope: spreading the flushes over F, leaving an earlier hour to the next 
 | 3 — streams and `migrate` | `logfeed.replicas` and `logfeed.placement_tags`; the group streams, their consumers and limits in `internal/bus`; `migrate` replacing the one stream once drained, and changing G with the mapping; preflight's overlap checks over every group stream; each group's converter on its own stream, so the feed works between the steps; the embedded bus's mapping | done #124 |
 | 4 — preflight and status | a preflight probe that the mapping routes the feed's subjects; `tracekeep status`, metrics and readiness per stream | done #127 |
 | 5 — the gate | the correctness cases the change touches, on the cluster and both engines; the load case on the new layout, on SQLite then MariaDB | done #129 |
-| 6 — operations | the runbook for a server lost with streams of one replica, and a lost server's replacement; the alerts; the guides' sizing of Vector's buffer for the outage, and its disk buffer's held tail | pending |
+| 6 — operations | the runbook for a server lost with streams of one replica, and a lost server's replacement; the alerts; the guides' sizing of Vector's buffer for the outage, and its disk buffer's held tail | done #131 |
 
 Each step is one pull request.
 A probe of step 1 that fails, or a choice it leaves open, stops the plan for the owner's decision.
@@ -99,6 +99,33 @@ The test process holds the producers' fleet, the traffic load and dev in one pro
 It ran under `GOMEMLIMIT=16GiB`, the servers under 3 GiB each, the run stopped past 28 GiB in all.
 At 12 GiB, the failed run's garbage collector took about half the test's CPU, 6.12 cores against 2.70 at 16 GiB.
 `logfeed.md` §15.10's sizing is unchanged (the owner, 2026-11-19); these figures are the harness's.
+
+## Step 6 — operations (2026-11-19)
+
+**A lost server's replacement**, probed on three nats-server processes of the module's version, each tagged with its name,
+with six group streams of one replica placed by tag and 300 entries never fetched (`TestFeedReplaceProbe` on the unmerged branch `test/feed-replace-probe`, 26754fb).
+The server of two groups' streams was killed and its storage removed:
+
+| when | its streams' reads | `CheckFeedStreams`, a role's start | the mapping's probe | `migrate` | a publish to its group |
+|---|---|---|---|---|---|
+| the outage | unanswered until the caller's deadline | fails | fails | fails | `no response from stream` |
+| restarted under its name, its storage empty | the streams and their consumers there, empty | passes | passes | passes | stored, sequence 1 |
+| a server of another name with its tag | `stream is offline` (10118) | fails | fails | fails | `no response from stream` |
+| … the lost server removed from the peers | placed on the replacement, empty, with their consumers | passes | passes | passes | stored, sequence 1 |
+| … the lost streams deleted instead | `stream not found` | fails until `migrate` | fails until `migrate` | creates them | stored |
+
+The 97 entries the lost streams held were gone.
+The outage showed `bus.FeedStates` reading the streams in turn under one deadline, so a lost stream failed every stream read after it:
+#130 reads each within its own bound.
+It also showed that no role starts while a group stream cannot answer, `docs/ROADMAP.md` *Open items*.
+
+**The alert** `TracekeepLogFeedStreamUnreadable` fires when no `ingest` replica has read every group stream for 3 min while the traffic stream is read,
+before `TracekeepLogFeedSilent` fires for every equipment at 15 min;
+its runbook section `log-feed-stream-unreadable` covers a server back with its storage, a replacement under its name or another, and pods that must start meanwhile.
+The pipeline guide sizes Vector's buffer for a replacement's outage too, about 360 GiB an hour at the fleet's rate,
+has a replacement take the lost server's tag, and records the disk buffer's held tail across a restart:
+in ten held tails stopped each way with Vector 0.61 on 2026-11-13, none lost or sent twice,
+a graceful stop sending it about 30 s after the signal and a killed Vector's restart within 30 s.
 
 ## The owner's answers
 

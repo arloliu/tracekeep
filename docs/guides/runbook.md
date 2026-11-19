@@ -1,6 +1,6 @@
 # Runbook
 
-Status: current (2026-11-07) — every alert the Helm chart ships, the host log feed's included, key, masking and sign-in incidents, refused restores and digests, the pages
+Status: current (2026-11-19) — every alert the Helm chart ships, the host log feed's included, key, masking and sign-in incidents, refused restores and digests, the pages
 
 One section per named incident of `docs/specs/tracekeep/operations.md` §10.4:
 the alert that raises it, the metric to look at, the command that resolves it, and what is lost if it is ignored.
@@ -22,6 +22,7 @@ Read when an alert names an incident; each alert the Helm chart ships links its 
 | `equipment-silent` (`TracepubEquipmentSilent`) | the gateway's `tracepub_records_published_total`, `tracepub_bus_connected` | check the equipment's traffic and the gateway's capture | none |
 | `producer-drops` (`TracepubDropping`) | the gateway's `tracepub_records_dropped_total{reason}` | remove the drop's reason at the gateway or the bus | the dropped seqs stay gaps |
 | `log-feed-silent` (`TracekeepLogFeedSilent`) | `tracekeep_logfeed_last_entry_timestamp_seconds{equipment_id}`, `tracekeep_logfeed_stream_backlog_messages{stream}`, `tracekeep status`'s `feed` and its `streams` | restore the pipeline's route, or the log stage's throughput | none: past the feed stream's limit, the pipeline's publications are refused |
+| `log-feed-stream-unreadable` (`TracekeepLogFeedStreamUnreadable`) | `tracekeep_ingest_refreshed_timestamp_seconds{source="feed"}`, `tracekeep status`'s `feed.streams` | bring the lost server back, or replace it under its name and tag | none: the entries a lost server's storage held are gone |
 | `log-entry-unreadable` (`TracekeepLogEntryUnreadable`) | `tracekeep_logfeed_last_outcome_timestamp_seconds{outcome="unreadable"}`, `tracekeep_logfeed_entries_total{outcome="unreadable"}` | fix the pipeline's entry for the equipment | none: the entry was acknowledged unconverted |
 | `log-entries-late` (`TracekeepLogEntriesLate`) | `tracekeep_logfeed_last_outcome_timestamp_seconds{outcome="stale"}`, `tracekeep_logfeed_entries_total{outcome="stale"}` | cap the pipeline's retry backoff and an entry's delay beyond the next one's below `logfeed.reorder_window` | none: a late entry was acknowledged unconverted |
 
@@ -291,13 +292,37 @@ or the floor of the feed streams' backlog, what remains between flushes, has gro
 1. With an `equipment_id`: the host program or its log pipeline for that equipment stopped.
    Equipment that logs nothing, idle or down, sends nothing: check its host program first, then the pipeline's own log and its publications to the bus.
    `tracekeep status` counts the equipment whose log captures registered nothing for 15 minutes.
-2. Without one: the log stage converts less than the pipelines send.
+2. Every equipment at once, with `TracekeepLogFeedStreamUnreadable` firing: a server holding group streams is lost (`log-feed-stream-unreadable`).
+3. Without one: the log stage converts less than the pipelines send.
    Check the `ingest` replicas are up and ready with `logfeed.enabled`, and their log for flushes given up;
    a slow `tracekeep_catalog_*` or store makes every flush slow, as for `backlog`.
-3. A backlog that drains once fixed needs nothing more; its entries are acknowledged as their flushes register.
+4. A backlog that drains once fixed needs nothing more; its entries are acknowledged as their flushes register.
 
 **If ignored**: entries a stopped pipeline never sent are missing records, said by no gap, since a log capture claims no coverage;
 past `logfeed.max_bytes` the stream refuses the pipeline's publications, and what the pipeline then drops is lost.
+
+## log-feed-stream-unreadable
+
+**Alert** `TracekeepLogFeedStreamUnreadable` (`logfeed.md` §15.11): for three minutes no `ingest` replica has read every group stream of the feed while the traffic stream is read.
+A group's stream cannot answer, most often because its server is lost;
+with streams of one replica (`logfeed.replicas`, the default) the whole feed stalls until it is back, the pipelines' buffers holding it (`log-pipeline.md` *A server lost*).
+
+1. `tracekeep status` marks each group stream that cannot be read under `feed.streams`, and the `ingest` replicas' readiness names those whose groups were given up;
+   `logfeed.placement_tags` names the server: group n's stream is on the server tagged with tag n mod their number.
+2. Do not restart or roll out tracekeep's pods meanwhile:
+   with the feed enabled every role checks every group stream and probes the servers' mapping at its start, and does not start while one cannot answer, the traffic roles included.
+   A pod that must start runs with `logfeed.enabled: false` until the server is back, which stops the log stage; the pipelines' buffers hold the feed meanwhile.
+3. A server back with its storage needs nothing more: its streams and their entries are there, the log stage takes their groups again after its pause, and the pipelines' buffers drain within seconds.
+4. A server whose storage is lost loses what its streams held, the entries of its groups not yet converted:
+   a flush interval's entries and any backlog, about 2.5 million at the measured fleet's rate with a third of the groups;
+   nothing records their loss, since a log capture claims no coverage.
+   - Replace it under the **same server name** with its tag: at its start its streams and their consumers are created again, empty, and the feed resumes.
+   - A replacement under **another name** takes the lost server's tag, and the lost server is removed from the cluster's peers with the system account (`nats server raft peer-remove <lost server>`):
+     until then its streams stay offline; once it is removed they are placed on the replacement by their tag, empty.
+   - Never delete a lost stream to create it again: until a `migrate` run does, every role's start is refused.
+
+**If ignored**: the whole feed stays stalled; the pipelines' buffers fill, then block their tailers,
+and what a host program rotates away before its tailer resumes is lost.
 
 ## log-entry-unreadable
 
