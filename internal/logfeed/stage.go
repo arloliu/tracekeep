@@ -66,6 +66,8 @@ type Stage struct {
 	running  bool
 	starting map[int]bool
 	failed   error
+	// fetchMax, set only by the package's tests, replaces fetchBytes' bound, so a delivery can exceed it.
+	fetchMax int
 }
 
 type running struct {
@@ -299,10 +301,19 @@ func (s *Stage) convert(ctx context.Context, n int, conv *Converter) error {
 	delete(s.starting, n)
 	s.mu.Unlock()
 	tick := max(conv.Reorder/10, 50*time.Millisecond)
+	bounded := true
 	for ctx.Err() == nil {
 		// The server ends each pull at tick, and every message it sent is read: a pull cut short by the client's context
 		// would drop what was already on its way, redelivered only after ack_wait and then stale (logfeed.md §15.5).
-		batch, err := cons.Fetch(s.FetchBatch, jetstream.FetchMaxWait(tick), jetstream.FetchMaxBytes(maxBytes))
+		// A bounded pull whose next message exceeds its bytes ends without it, unreported by the client, so after one that delivered nothing
+		// the next takes a single message of any size: the group always progresses, its bytes still one message's.
+		var batch jetstream.MessageBatch
+		var err error
+		if bounded {
+			batch, err = cons.Fetch(s.FetchBatch, jetstream.FetchMaxWait(tick), jetstream.FetchMaxBytes(maxBytes))
+		} else {
+			batch, err = cons.Fetch(1, jetstream.FetchMaxWait(tick))
+		}
 		if err != nil {
 			if ctx.Err() != nil {
 				return nil
@@ -310,7 +321,9 @@ func (s *Stage) convert(ctx context.Context, n int, conv *Converter) error {
 
 			return err
 		}
+		bounded = false
 		for m := range batch.Messages() {
+			bounded = true
 			if err := s.sameConn(gen); err != nil {
 				return err
 			}
@@ -360,6 +373,10 @@ func (s *Stage) sameConn(gen uint64) error {
 // fetchBytes bounds one fetch's bytes: the group's share of fetchBudget, and at least the largest delivery the server sends,
 // since a pull whose next message exceeds the bytes it has left ends without it, and so would never deliver a larger one.
 func (s *Stage) fetchBytes() int {
+	if s.fetchMax > 0 {
+		return s.fetchMax
+	}
+
 	return max(fetchBudget/s.Feed.Groups, int(s.JS.Conn().MaxPayload())+deliverySlack)
 }
 

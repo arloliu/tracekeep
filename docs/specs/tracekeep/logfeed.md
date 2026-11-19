@@ -181,7 +181,8 @@ The contract between the pipeline and tracekeep is a versioned field schema, one
   and a converter taking it again after its pause, once the server is back with its storage, converts the redelivered entries afresh (T-68).
   The log stage's groups fetch on one connection, each fetch bounded by `ingest.fetch_batch` messages and by bytes (T-69):
   a 32 MiB budget, half the 64 MiB a server lets a client have pending by default, divided among the G groups, but at least the server's `max_payload` and a delivery's subjects,
-  since a pull whose next message exceeds the bytes it has left ends without it and would never deliver a larger one.
+  since a pull whose next message exceeds the bytes it has left ends without it and would never deliver a larger one;
+  a message larger still, one stored under a larger `max_payload` than the connection's, is taken alone: after a bounded fetch that delivered nothing, the next fetches one message, unbounded.
   Bounded by messages alone, 32 groups' fetches of a burst's 53 KiB entries asked for about 850 MiB at once, and the servers closed the connection as a slow consumer (§15.5 *A dropped connection*).
 - **Lease groups**: group n's lease is the `leases` row `logfeed/<n>`, with a fence token, renewed and lost as the compactor's lease is (`compactor.md` §8.1).
   An `ingest` replica with the feed enabled takes free group leases up to its share, the groups divided by the live members of `members` (`rollouts.md` §6.4), rounded up,
@@ -232,7 +233,8 @@ acknowledgements and in-progress acknowledgements written before the drop may be
 So every group gives up as a converter that meets an outcome it cannot resolve does, and is taken again by *Taking a lease*, its consumer re-created, the lost deliveries first.
 A group reads its connection's reconnection count, which the client raises before its new connection reads anything, before it re-creates its consumer;
 before each delivery is received and before each tick, it gives up unless the connection is connected and the count unchanged,
-so no delivery read after a drop is converted and no entry is released while a lost one may still be owed.
+so no delivery read after a drop is converted and no tick starts once it has;
+a tick already running at the drop releases only entries received before it, the lost deliveries being later in the stream.
 
 **Beyond retention.**
 An entry whose UTC hour is beyond the retention horizon is counted and acknowledged as beyond retention, never admitted.
