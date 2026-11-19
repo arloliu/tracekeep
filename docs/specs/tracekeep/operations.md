@@ -120,7 +120,7 @@ the chart's gateway rules keep their fallback for a gateway on an older SDK, whi
 | `TracekeepKeyRefused` | a key resolution refused within ten minutes (`tracekeep_key_last_problem_timestamp_seconds{outcome="refused"}`) | `key-refused` |
 | `TracekeepKeysUnavailable` | key resolutions unavailable through five minutes, each two minutes of them holding one (`tracekeep_key_last_problem_timestamp_seconds{outcome="unavailable"}`) | `keys-unavailable` |
 
-The chart also ships the host log feed's rules, `TracekeepLogFeedSilent`, `TracekeepLogEntryUnreadable` and `TracekeepLogEntriesLate`, whose rows and metrics are in `logfeed.md` §15.11;
+The chart also ships the host log feed's rules, `TracekeepLogFeedSilent`, `TracekeepLogFeedStreamUnreadable`, `TracekeepLogEntryUnreadable` and `TracekeepLogEntriesLate`, whose rows and metrics are in `logfeed.md` §15.11;
 with the feed disabled their metrics are never served, so they never fire.
 
 The gateway's rules read the producer's metrics (`tracepub_`), which the gateway serves, not tracekeep;

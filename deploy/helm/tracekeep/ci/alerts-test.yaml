@@ -389,6 +389,33 @@ tests:
   - {series: 'tracekeep_ingest_refreshed_timestamp_seconds{instance="a",source="feed"}', values: '0+60x30 1800x30'}
   alert_rule_test:
   - {eval_time: 45m, alertname: TracekeepLogFeedSilent, exp_alerts: []}
+- name: a group stream unreadable, the feed's snapshot stale on both replicas while the traffic stream's is fresh
+  interval: 1m
+  input_series:
+  - {series: 'tracekeep_ingest_refreshed_timestamp_seconds{instance="a",source="feed"}', values: '0+60x5 300x20'}
+  - {series: 'tracekeep_ingest_refreshed_timestamp_seconds{instance="b",source="feed"}', values: '0+60x4 240x20'}
+  - {series: 'tracekeep_ingest_refreshed_timestamp_seconds{instance="a",source="bus"}', values: '0+60x25'}
+  - {series: 'tracekeep_ingest_refreshed_timestamp_seconds{instance="b",source="bus"}', values: '0+60x25'}
+  alert_rule_test:
+  - {eval_time: 9m, alertname: TracekeepLogFeedStreamUnreadable, exp_alerts: []}
+  - eval_time: 12m
+    alertname: TracekeepLogFeedStreamUnreadable
+    exp_alerts: [{exp_labels: {severity: warning}, exp_annotations: {summary: "A host log feed group stream cannot be read; its server may be lost.", runbook_url: "rb#log-feed-stream-unreadable"}}]
+- name: the feed read by one replica, another's snapshot of it stale
+  interval: 1m
+  input_series:
+  - {series: 'tracekeep_ingest_refreshed_timestamp_seconds{instance="a",source="feed"}', values: '0+60x25'}
+  - {series: 'tracekeep_ingest_refreshed_timestamp_seconds{instance="b",source="feed"}', values: '0x25'}
+  - {series: 'tracekeep_ingest_refreshed_timestamp_seconds{instance="a",source="bus"}', values: '0+60x25'}
+  alert_rule_test:
+  - {eval_time: 20m, alertname: TracekeepLogFeedStreamUnreadable, exp_alerts: []}
+- name: every replica stopped, both snapshots stale
+  interval: 1m
+  input_series:
+  - {series: 'tracekeep_ingest_refreshed_timestamp_seconds{instance="a",source="feed"}', values: '0+60x5 300x20'}
+  - {series: 'tracekeep_ingest_refreshed_timestamp_seconds{instance="a",source="bus"}', values: '0+60x5 300x20'}
+  alert_rule_test:
+  - {eval_time: 20m, alertname: TracekeepLogFeedStreamUnreadable, exp_alerts: []}
 - name: an unreadable entry, stamped
   interval: 1m
   input_series:

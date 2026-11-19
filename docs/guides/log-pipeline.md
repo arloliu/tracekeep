@@ -1,6 +1,6 @@
 # Log pipeline guide
 
-Status: current (2026-11-07) — the entry a host program's log pipeline publishes, its subject, message id, retries and in-flight bound
+Status: current (2026-11-19) — the entry a host program's log pipeline publishes, its subject, message id, retries and in-flight bound
 
 How to build the pipeline that tails a host program's SECS log and publishes it to tracekeep's host log feed.
 Read before deploying or changing such a pipeline, or when `log-entry-unreadable` or `log-entries-late` fires.
@@ -130,10 +130,15 @@ the buffer was below 1,000 entries 11 to 15 s after the server's restart, with n
 So size `buffer.max_size` at about 6 GiB a minute of the outage the deployment accepts, at the fleet's rate, and give Vector's host the memory beside it:
 20 GiB holds about 3 minutes.
 Past it the buffer blocks and the tailer stops, resuming from its checkpoint as long as the host program keeps its files.
+A server whose storage is lost stalls the feed until its replacement runs (`runbook.md` *log-feed-stream-unreadable*), and the entries its streams held are lost:
+an hour's replacement is about 360 GiB at that rate, which a buffer that cannot hold it leaves to the tailer's checkpoint and the host program's files,
+or which `logfeed.replicas: 3` avoids.
 
 Vector 0.61's disk buffer can leave a burst's tail unread until the next entry arrives (Vector issues #23456 and #23605, their fixes not merged):
 in bursts of random size to one server with no fault, it held a tail of 1 to 150 entries in 13 and in 17 of 200 bursts, and a memory buffer in none of 200.
 Nothing is lost: under a fleet's traffic the next entry comes within milliseconds, and an aggregator gone idle holds its last entries until one does.
+Nor across Vector's restart, measured on 2026-11-13 in ten held tails stopped each way, none lost or sent twice:
+a graceful stop sends the tail as its source shuts down, about 30 s after the signal, and after a kill the restarted Vector sends it within 30 s, with no new entry.
 
 ## The servers
 
@@ -163,6 +168,8 @@ with three replicas the list stays empty:
 ```text
 server_tags: ["<SERVER-TAG>"]
 ```
+
+A server that replaces a lost one takes its tag, and its name too where it can (`runbook.md` *log-feed-stream-unreadable*).
 
 ## Checking a pipeline
 
