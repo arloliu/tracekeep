@@ -15,7 +15,7 @@ Out of scope: spreading the flushes over F, leaving an earlier hour to the next 
 | 2 — spec and decision | `logfeed.md` §15.2, §15.4, §15.10 and §15.11 for a stream a group; the owner's answers below and each choice step 1 leaves to the owner as decisions; the pipeline and configuration guides, the servers' mapping with placeholder tokens for the operations team that maintains it | done #123 |
 | 3 — streams and `migrate` | `logfeed.replicas` and `logfeed.placement_tags`; the group streams, their consumers and limits in `internal/bus`; `migrate` replacing the one stream once drained, and changing G with the mapping; preflight's overlap checks over every group stream; each group's converter on its own stream, so the feed works between the steps; the embedded bus's mapping | done #124 |
 | 4 — preflight and status | a preflight probe that the mapping routes the feed's subjects; `tracekeep status`, metrics and readiness per stream | done #127 |
-| 5 — the gate | the correctness cases the change touches, on the cluster and both engines; the load case on the new layout, on SQLite then MariaDB | pending |
+| 5 — the gate | the correctness cases the change touches, on the cluster and both engines; the load case on the new layout, on SQLite then MariaDB | done #129 |
 | 6 — operations | the runbook for a server lost with streams of one replica, and a lost server's replacement; the alerts; the guides' sizing of Vector's buffer for the outage, and its disk buffer's held tail | pending |
 
 Each step is one pull request.
@@ -67,6 +67,38 @@ In each of the five runs, one server was killed and restarted with its storage 6
   with no fault, bursts of random size to one server held their tail in 13 and in 17 of 200 with a disk buffer, and in none of 200 with a memory buffer
   (Vector issues #23456 and #23605, their fixes not merged).
   Under the fleet's traffic the next entry comes within milliseconds; an aggregator gone idle holds its last entries until one does.
+
+## Step 5 — the gate (2026-11-19)
+
+**The correctness cases** the change touches run on one server and on three, the group streams placed by tag (`scripts/test-clustered.sh`).
+On the cluster, each of the 17 passed 20 times in a row, on SQLite and MariaDB:
+the cluster's start and a publish's copy, a suppressed publish converging, two versions in one window, copies from a follower,
+the stage's sharing and takeover, a takeover with held entries and a backlog, a retried publish,
+and a new case, `TestStageServerLost`, that loses the server of one group's stream while the stage runs:
+that group is given up, its lease released and readiness naming its stream, while the other groups convert what is published meanwhile.
+
+**The load case's first run failed**, on SQLite.
+During the burst, the servers closed dev's connection 14 times as a slow consumer, past its 64 MiB pending;
+nats.go reconnected, and the stage did not notice.
+The deliveries lost in flight came back after `ack_wait`, 7 m, far past the 30 s reorder window:
+119,898 entries came back stale, 58,721 of them never converted.
+#128 fixed it (T-69, `logfeed.md` §15.4 and §15.5):
+the stage gives every group up when its connection drops, and a fetch is bounded by bytes as well, 32 MiB over the groups, so a burst no longer fills the connection's pending.
+
+**The load case on the fix** passed on both engines, with no slow consumer in the servers' logs and no warning from dev:
+
+| engine | duration | record entries | stale | duplicate | burst digested in | drained in | publish p99 | dev's CPU, feed | peak memory, test + servers |
+|---|---|---|---|---|---|---|---|---|---|
+| SQLite | 54 m | 72,983,070 | 0 | 0 | 5m53s | 5m23s | 449 ms | 2.70 cores | 16.3 + 9.0 GiB |
+| MariaDB | 54 m | 72,543,120 | 0 | 0 | 6m30s | 5m27s | 430 ms | 2.61 cores | 15.5 + 8.9 GiB |
+
+The traffic passes settled 16 of 16, sustained at 800 forwards a second.
+
+**Memory at the gate's scale.**
+The test process holds the producers' fleet, the traffic load and dev in one process, so its resident memory is not dev's alone.
+It ran under `GOMEMLIMIT=16GiB`, the servers under 3 GiB each, the run stopped past 28 GiB in all.
+At 12 GiB, the failed run's garbage collector took about half the test's CPU, 6.12 cores against 2.70 at 16 GiB.
+`logfeed.md` §15.10's sizing is unchanged (the owner, 2026-11-19); these figures are the harness's.
 
 ## The owner's answers
 
