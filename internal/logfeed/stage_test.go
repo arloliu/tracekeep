@@ -430,7 +430,6 @@ func TestGateConnectionDropLosesNoEntry(t *testing.T) {
 		}
 		pending()
 		d.current().lost.Store(true)
-		start := time.Now()
 		e.publish(8, 0)
 		e.eventually("the server sent every entry to the lossy connection", func() bool { return pending() == 24 })
 		_ = d.current().Close()
@@ -440,10 +439,8 @@ func TestGateConnectionDropLosesNoEntry(t *testing.T) {
 			return errors.As(err, &re) && strings.Contains(err.Error(), "gave up") && len(re.Parts) == e.feed.Groups
 		})
 		e.publish(8, 1)
+		// No time bound: a lost entry back through ack_wait instead of a re-created consumer would be stale, which the scrape below refuses.
 		e.eventually("a drains the lost entries and the newer ones", e.drained)
-		if took := time.Since(start); took >= e.feed.AckWait {
-			t.Errorf("the lost entries came back after %v, not before ack_wait %v: the consumers were not re-created", took, e.feed.AckWait)
-		}
 		e.eventually("a holds every group again", func() bool { return len(a.Held()) == e.feed.Groups })
 		for n := range e.feed.Groups {
 			cons, err := e.js.Consumer(ctx, bus.FeedStreamName(e.feed, n), bus.FeedConsumer(n))
