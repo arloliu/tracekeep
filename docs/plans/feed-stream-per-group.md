@@ -106,7 +106,7 @@ At 12 GiB, the failed run's garbage collector took about half the test's CPU, 6.
 with six group streams of one replica placed by tag and 300 entries never fetched (`TestFeedReplaceProbe` on the unmerged branch `test/feed-replace-probe`, 26754fb).
 The server of two groups' streams was killed and its storage removed:
 
-| when | its streams' reads | `CheckFeedStreams`, a role's start | the mapping's probe | `migrate` | a publish to its group |
+| when | its streams' reads | `CheckFeedStreams`, the preflight's reads | the mapping's probe | `migrate` | a publish to its group |
 |---|---|---|---|---|---|
 | the outage | unanswered until the caller's deadline | fails | fails | fails | `no response from stream` |
 | restarted under its name, its storage empty | the streams and their consumers there, empty | passes | passes | passes | stored, sequence 1 |
@@ -117,9 +117,9 @@ The server of two groups' streams was killed and its storage removed:
 The 97 entries the lost streams held were gone.
 The outage showed `bus.FeedStates` reading the streams in turn under one deadline, so a lost stream failed every stream read after it:
 #130 reads each within its own bound.
-It also showed that no role starts while a group stream cannot answer, `docs/ROADMAP.md` *Open items*.
+So the `ingest`, `compact` and `all` roles, whose preflight runs it, do not start while a group stream cannot answer, `docs/ROADMAP.md` *Open items*.
 
-**The alert** `TracekeepLogFeedStreamUnreadable` fires when no `ingest` replica has read every group stream for 3 min while the traffic stream is read,
+**The alert** `TracekeepLogFeedStreamUnreadable` fires when no `ingest` replica has read every group stream for about 5 min while the traffic stream is read, its snapshot refreshed within a bound of its own,
 before `TracekeepLogFeedSilent` fires for every equipment at 15 min;
 its runbook section `log-feed-stream-unreadable` covers a server back with its storage, a replacement under its name or another, and pods that must start meanwhile.
 The pipeline guide sizes Vector's buffer for a replacement's outage too, about 360 GiB an hour at the fleet's rate,
