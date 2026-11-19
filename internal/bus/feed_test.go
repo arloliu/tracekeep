@@ -389,6 +389,34 @@ func TestEnsureFeedOffline(t *testing.T) {
 	}
 }
 
+// A group stream on a server that is down is reported unreadable, and the streams after it are still read:
+// its read, unanswered, takes its own bound, not the caller's whole deadline (logfeed.md §15.11, T-68).
+func TestFeedStatesServerDown(t *testing.T) {
+	t.Parallel()
+	srvs, js := cluster(t)
+	f := feed(3, 1)
+	f.PlacementTags = []string{"tb-0", "tb-1", "tb-2"}
+	if err := bus.EnsureFeed(t.Context(), js, f, 0, trafficStream, parkedStream); err != nil {
+		t.Fatal(err)
+	}
+	for n := range 3 {
+		s, err := js.Stream(t.Context(), bus.FeedStreamName(f, n))
+		if err != nil {
+			t.Fatal(err)
+		}
+		testbus.AwaitStream(t, js, s)
+	}
+	srvs[1].Shutdown()
+	srvs[1].WaitForShutdown()
+	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Second)
+	defer cancel()
+	for _, st := range bus.FeedStates(ctx, js, f) {
+		if down := st.Group == 1; (st.Err != nil) != down {
+			t.Errorf("group %d's stream: %v; want an error only for the stream on the server that is down", st.Group, st.Err)
+		}
+	}
+}
+
 // unansweredDelete is a JetStream whose deletions go unanswered, as on a cluster just formed, and are counted.
 type unansweredDelete struct {
 	jetstream.JetStream
