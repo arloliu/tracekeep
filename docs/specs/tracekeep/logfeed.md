@@ -179,6 +179,10 @@ The contract between the pipeline and tracekeep is a versioned field schema, one
   and a consumer lost with the cluster is re-created as a takeover re-creates it (§15.5), delivering every unacknowledged message again from the oldest.
   A group whose server is lost fails its fetches at once: its converter gives the group up, releasing its lease,
   and a converter taking it again after its pause, once the server is back with its storage, converts the redelivered entries afresh (T-68).
+  The log stage's groups fetch on one connection, each fetch bounded by `ingest.fetch_batch` messages and by bytes (T-69):
+  a 32 MiB budget, half the 64 MiB a server lets a client have pending by default, divided among the G groups, but at least the server's `max_payload` and a delivery's subjects,
+  since a pull whose next message exceeds the bytes it has left ends without it and would never deliver a larger one.
+  Bounded by messages alone, 32 groups' fetches of a burst's 53 KiB entries asked for about 850 MiB at once, and the servers closed the connection as a slow consumer (§15.5 *A dropped connection*).
 - **Lease groups**: group n's lease is the `leases` row `logfeed/<n>`, with a fence token, renewed and lost as the compactor's lease is (`compactor.md` §8.1).
   An `ingest` replica with the feed enabled takes free group leases up to its share, the groups divided by the live members of `members` (`rollouts.md` §6.4), rounded up,
   and consumes only the groups it holds; a replica that loses a lease stops that group's converter at once, acknowledging nothing more.
@@ -220,6 +224,15 @@ and its negative acknowledgements only repeat one, which the new holder joins as
 An acknowledgement the deletion lost belongs to an entry already registered, whose redelivery is stale.
 A converter that gives up a flush (§15.7 *The bound*) or meets an outcome it cannot resolve gives up the lease too:
 it stops, negatively acknowledges everything it holds, drops its state and takes the lease again by this paragraph, never continuing on state a lost flush left behind.
+
+**A dropped connection** (T-69).
+When the log stage's connection drops, the deliveries the server had sent and the client had not read are lost,
+and JetStream redelivers them only after `ack_wait`, past the reorder window and so stale, while the client reconnects on its own and its fetches deliver newer entries;
+acknowledgements and in-progress acknowledgements written before the drop may be lost too.
+So every group gives up as a converter that meets an outcome it cannot resolve does, and is taken again by *Taking a lease*, its consumer re-created, the lost deliveries first.
+A group reads its connection's reconnection count, which the client raises before its new connection reads anything, before it re-creates its consumer;
+before each delivery is received and before each tick, it gives up unless the connection is connected and the count unchanged,
+so no delivery read after a drop is converted and no entry is released while a lost one may still be owed.
 
 **Beyond retention.**
 An entry whose UTC hour is beyond the retention horizon is counted and acknowledged as beyond retention, never admitted.

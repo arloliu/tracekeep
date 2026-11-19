@@ -18,18 +18,30 @@ import (
 	"github.com/arloliu/tracekeep/internal/metrics"
 )
 
-// releaseTimeout bounds giving a lease back, so a stalled catalog never holds a stopping stage.
-const releaseTimeout = 5 * time.Second
+const (
+	// releaseTimeout bounds giving a lease back, so a stalled catalog never holds a stopping stage.
+	releaseTimeout = 5 * time.Second
+	// fetchBudget bounds the bytes every group's fetch, one each in flight on the stage's one connection, asks for at once:
+	// half the 64 MiB a server lets a client have pending by default, past which it closes the connection as a slow consumer (T-69).
+	fetchBudget = 32 << 20
+	// deliverySlack is what a delivery adds to its payload against a fetch's bytes: its subject, within the 4 KiB control line, and its acknowledgement subject.
+	deliverySlack = 8 << 10
+)
+
+// errReconnected ends a group whose connection dropped since its consumer was created:
+// deliveries the server sent and the client never read are lost, and JetStream redelivers them only after ack_wait, stale by then (logfeed.md §15.5).
+var errReconnected = errors.New("logfeed: the stage's connection dropped since the group's consumer was created")
 
 // Stage is the log stage in the ingest role (logfeed.md §15.4, §15.5): it holds its share of the lease groups among the live replicas,
 // taking free ones and giving back those past its share as replicas join, and runs each held group's converter on its group stream's consumer,
 // re-created at every take. A group whose lease is lost stops at once; one whose converter gives up returns everything it holds and its lease,
-// which any replica takes again after a pause.
+// which any replica takes again after a pause. Every group gives up when the connection drops, since a drop loses the deliveries in flight.
 type Stage struct {
 	Catalog *catalog.Catalog
 	// JS opens group n's stream, bus.FeedStreamName's.
 	JS jetstream.JetStream
-	// Conn is the streams' connection, which a held delivery's acknowledgement publishes on; nil keeps each delivery whole until acknowledged.
+	// Conn is the streams' connection, which a held delivery's acknowledgement publishes on and whose drops end every group;
+	// nil keeps each delivery whole until acknowledged and watches no drop.
 	Conn    *nats.Conn
 	Feed    bus.Feed
 	Replica string
@@ -37,24 +49,23 @@ type Stage struct {
 	LeaseTTL time.Duration
 	// Base holds every group converter's settings; its lease, group and state are not used.
 	Base *Converter
-	// FetchBatch bounds one fetch; Pause is how long a group given up waits before this replica takes it again.
+	// FetchBatch bounds one fetch's messages, fetchBudget its bytes; Pause is how long a group given up waits before this replica takes it again.
 	FetchBatch int
 	Pause      time.Duration
 	Log        *slog.Logger
 
 	mu sync.Mutex
-	// held are the groups this replica holds; workers every group goroutine still running, held or not, which a stop waits for.
+	// held are the groups this replica holds; workers every group goroutine still running, held or not, which a stop waits for;
+	// givenUp the time each group last gave up.
 	held    map[int]*running
 	workers map[*running]struct{}
 	givenUp map[int]time.Time
 	// balanced is the last balance's error, nil once one succeeded; running reports Run in progress;
-	// starting are the held groups whose consumer is not fetching yet; failed is the last give-up's error, at failedAt.
-	balanced    error
-	running     bool
-	starting    map[int]bool
-	failed      error
-	failedAt    time.Time
-	failedGroup int
+	// starting are the held groups whose consumer is not fetching yet; failed is the last give-up's error.
+	balanced error
+	running  bool
+	starting map[int]bool
+	failed   error
 }
 
 type running struct {
@@ -84,7 +95,7 @@ func (s *Stage) Run(ctx context.Context) error {
 }
 
 // Ready is nil while Run balances the groups, every group it holds fetches from its consumer,
-// and no group's converter gave up within the pause; a metrics.ReadyError names the group streams that are not ready.
+// and no group's converter gave up within the pause; a metrics.ReadyError names the group streams that are not ready, every one given up within it.
 func (s *Stage) Ready(context.Context) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -93,8 +104,16 @@ func (s *Stage) Ready(context.Context) error {
 		return errors.New("logfeed: the log stage is not running")
 	case s.balanced != nil:
 		return s.balanced
-	case s.failed != nil && time.Since(s.failedAt) < s.Pause:
-		return &metrics.ReadyError{Parts: []string{bus.FeedStreamName(s.Feed, s.failedGroup)}, Err: fmt.Errorf("logfeed: a lease group gave up: %w", s.failed)}
+	}
+	var gaveUp []string
+	for n, at := range s.givenUp {
+		if time.Since(at) < s.Pause {
+			gaveUp = append(gaveUp, bus.FeedStreamName(s.Feed, n))
+		}
+	}
+	if len(gaveUp) > 0 {
+		slices.Sort(gaveUp)
+		return &metrics.ReadyError{Parts: gaveUp, Err: fmt.Errorf("logfeed: lease groups gave up, the last: %w", s.failed)}
 	}
 	var starting []string
 	for n := range s.held {
@@ -226,7 +245,7 @@ func (s *Stage) runGroup(ctx context.Context, r *running) {
 	if givenUp {
 		s.log().Warn("logfeed: a lease group's converter gave up", "group", r.group, "error", err)
 		// Before the release, so no balance takes the group back within the pause.
-		s.givenUp[r.group], s.failedAt, s.failedGroup = time.Now(), time.Now(), r.group
+		s.givenUp[r.group] = time.Now()
 		s.failed = fmt.Errorf("lease group %d on stream %s: %w", r.group, bus.FeedStreamName(s.Feed, r.group), err)
 	}
 	s.mu.Unlock()
@@ -256,8 +275,11 @@ func heartbeat(ctx context.Context, conv *Converter) {
 }
 
 // convert restores the group's open captures, re-creates its consumer and feeds the deliveries to conv,
-// ticking it every tenth of the reorder window, until ctx ends or a step fails.
+// ticking it every tenth of the reorder window, until ctx ends, a step fails or the connection drops.
 func (s *Stage) convert(ctx context.Context, n int, conv *Converter) error {
+	// Before the consumer's re-creation, so a drop at any point after it ends the group.
+	gen := s.reconnects()
+	maxBytes := s.fetchBytes()
 	opens, err := s.Catalog.OpenLogCaptures(ctx, n, s.Feed.Groups, n == 0)
 	if err != nil {
 		return err
@@ -280,7 +302,7 @@ func (s *Stage) convert(ctx context.Context, n int, conv *Converter) error {
 	for ctx.Err() == nil {
 		// The server ends each pull at tick, and every message it sent is read: a pull cut short by the client's context
 		// would drop what was already on its way, redelivered only after ack_wait and then stale (logfeed.md §15.5).
-		batch, err := cons.Fetch(s.FetchBatch, jetstream.FetchMaxWait(tick))
+		batch, err := cons.Fetch(s.FetchBatch, jetstream.FetchMaxWait(tick), jetstream.FetchMaxBytes(maxBytes))
 		if err != nil {
 			if ctx.Err() != nil {
 				return nil
@@ -289,6 +311,9 @@ func (s *Stage) convert(ctx context.Context, n int, conv *Converter) error {
 			return err
 		}
 		for m := range batch.Messages() {
+			if err := s.sameConn(gen); err != nil {
+				return err
+			}
 			var d Msg = m
 			if s.Conn != nil {
 				d = delivery{Msg: m, nc: s.Conn}
@@ -301,12 +326,41 @@ func (s *Stage) convert(ctx context.Context, n int, conv *Converter) error {
 		if berr != nil && !errors.Is(berr, jetstream.ErrNoMessages) && !errors.Is(berr, nats.ErrTimeout) && ctx.Err() == nil {
 			return berr
 		}
+		if err := s.sameConn(gen); err != nil {
+			return err
+		}
 		if err := conv.Tick(ctx, conv.Now()); err != nil {
 			return err
 		}
 	}
 
 	return nil
+}
+
+// reconnects is Conn's reconnections so far, nats.go counting one under the connection's lock before the new connection reads anything.
+func (s *Stage) reconnects() uint64 {
+	if s.Conn == nil {
+		return 0
+	}
+
+	return s.Conn.Stats().Reconnects
+}
+
+// sameConn is errReconnected unless Conn is connected and has not reconnected since gen:
+// read synchronously before each delivery's Receive and each Tick, so no delivery read after a drop is converted
+// and no entry is released while the deliveries a drop lost may still be owed.
+func (s *Stage) sameConn(gen uint64) error {
+	if s.Conn == nil || s.Conn.Status() == nats.CONNECTED && s.reconnects() == gen {
+		return nil
+	}
+
+	return errReconnected
+}
+
+// fetchBytes bounds one fetch's bytes: the group's share of fetchBudget, and at least the largest delivery the server sends,
+// since a pull whose next message exceeds the bytes it has left ends without it, and so would never deliver a larger one.
+func (s *Stage) fetchBytes() int {
+	return max(fetchBudget/s.Feed.Groups, int(s.JS.Conn().MaxPayload())+deliverySlack)
 }
 
 // delivery is a feed message whose held acknowledgement keeps only its reply subject, not its payload (logfeed.md §15.7 *Held entries keep no payload*).
