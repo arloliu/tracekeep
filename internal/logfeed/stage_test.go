@@ -479,3 +479,52 @@ func TestStageFetchBytesTakeTheLargestDelivery(t *testing.T) {
 		t.Errorf("fetchBytes() = %d at G = 32; want %d, the 32 fetches within the server's 64 MiB pending", got, want)
 	}
 }
+
+// A delivery larger than a fetch's bytes is never sent by a bounded pull, and the client does not report it:
+// after a bounded fetch delivered nothing, the stage takes one message unbounded, so a group whose every entry exceeds the bound still converts.
+func TestStageFetchesADeliveryPastTheBound(t *testing.T) {
+	t.Parallel()
+	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
+		e := newStageEnv(t, c)
+		e.publish(4, 0)
+		a := e.stage("a", time.Hour)
+		a.fetchMax = 64
+		var wg sync.WaitGroup
+		t.Cleanup(wg.Wait)
+		run(t.Context(), &wg, a)
+		e.eventually("the feed drained", e.drained)
+		e.converted(4, 1, 3)
+	})
+}
+
+// The generation check fails once the connection reconnected, whatever its status since, and holds on the generation read after it.
+func TestStageSameConnAfterReconnect(t *testing.T) {
+	t.Parallel()
+	srv := testbus.StartServer(t, testbus.Options{})
+	nc, err := nats.Connect(srv.URL(), nats.ReconnectWait(10*time.Millisecond), nats.MaxReconnects(-1))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(nc.Close)
+	s := &Stage{Conn: nc}
+	gen := s.reconnects()
+	if err := s.sameConn(gen); err != nil {
+		t.Fatalf("sameConn before a reconnect = %v", err)
+	}
+	if err := nc.ForceReconnect(); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(10 * time.Second)
+	for nc.Status() != nats.CONNECTED || s.reconnects() == gen {
+		if time.Now().After(deadline) {
+			t.Fatalf("not reconnected within 10 s: %v, %d reconnects", nc.Status(), s.reconnects())
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if err := s.sameConn(gen); !errors.Is(err, errReconnected) {
+		t.Errorf("sameConn on the generation before the reconnect = %v, want errReconnected", err)
+	}
+	if err := s.sameConn(s.reconnects()); err != nil {
+		t.Errorf("sameConn on the generation after it = %v", err)
+	}
+}

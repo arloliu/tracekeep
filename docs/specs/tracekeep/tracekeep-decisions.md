@@ -1018,6 +1018,7 @@ and the converter judged them stale and acknowledged them unconverted;
 acknowledgements written before the drop were lost too, so some converted entries came back stale a second time, which is harmless.
 The owner chose, on 2026-11-19, both of (`logfeed.md` §15.4, §15.5 *A dropped connection*):
 **a drop gives every group up**, as a converter that gives up does, so each is taken again with its consumer re-created and the lost deliveries come back at once, converted afresh;
-a group converts no delivery read after its connection dropped and releases no entry once it has, judged by the connection's reconnection count read before each delivery and each tick;
-and **a fetch is bounded by bytes**, the groups' fetches together by 32 MiB, half the server's default pending, each at least a delivery of the server's `max_payload`.
+a group converts no delivery read after its connection dropped and starts no tick once it has, judged by the connection's status and reconnection count read before each delivery and each tick;
+and **a fetch is bounded by bytes**, 32 MiB, half the server's default pending, divided among the groups, each fetch at least a delivery of the server's `max_payload`
+(so 32.25 MiB at the default G = 32 and `max_payload`), and after a bounded fetch that delivered nothing the next takes one message unbounded, so a larger message never stalls a group.
 Considered and not taken: only bounding the fetches' bytes, which removes this slow consumer and leaves any other drop, a server's restart or a network fault, losing entries the same way.
