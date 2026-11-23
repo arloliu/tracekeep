@@ -1,6 +1,7 @@
 package catalog
 
 import (
+	"errors"
 	"slices"
 	"strings"
 	"sync/atomic"
@@ -124,6 +125,44 @@ func run(f func()) <-chan struct{} {
 	}()
 
 	return done
+}
+
+// waitBehindLeaseRow returns only once the lapse waits on the lease row, not once its statement started:
+// a lapse delayed before it asks for the row, here by a constant subquery that sleeps, still lands before a renewal that follows the held commit.
+func TestWaitBehindLeaseRowWaitsForTheLock(t *testing.T) {
+	t.Parallel()
+	engines(t, func(t *testing.T, c *Catalog) {
+		if c.d.name == EngineSQLite {
+			t.Skip("SQLite serializes whole transactions")
+		}
+		ctx := t.Context()
+		l := compactorLease(t, c, "w")
+		tx, err := c.write.BeginTxx(ctx, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = tx.Rollback() }()
+		if err := c.checkLease(ctx, tx, l); err != nil {
+			t.Fatal(err)
+		}
+		release := make(chan struct{})
+		leaseRowHeld(t, c, release)
+		var lerr error
+		lapsed := run(func() {
+			_, lerr = c.write.ExecContext(ctx, `UPDATE leases SET until_ns = 0 WHERE name = (SELECT 'compactor/2' FROM (SELECT SLEEP(0.3)) s)`)
+		})
+		waitBehindLeaseRow(t, c, 0, release)
+		if err := tx.Commit(); err != nil {
+			t.Fatal(err)
+		}
+		if err := c.RenewLease(ctx, l, time.Minute); !errors.Is(err, ErrLeaseLost) {
+			t.Errorf("a renewal after the held commit = %v, want ErrLeaseLost: the lapse was not yet waiting on the row", err)
+		}
+		<-lapsed
+		if lerr != nil {
+			t.Fatalf("lapse: %v", lerr)
+		}
+	})
 }
 
 // Two first sightings of one capture: the second waits on the capture row the first holds,
