@@ -323,6 +323,34 @@ func TestRefreshFeed(t *testing.T) {
 	}
 }
 
+// A replica whose first read of the feed fails stamps the feed's refresh 0, with no backlog, so the stream-unreadable alert sees it,
+// and its first successful read stamps the time.
+func TestIngestRefreshFeedFailsFirst(t *testing.T) {
+	t.Parallel()
+	s := NewServer()
+	m, err := NewIngest(s, func() time.Time { return time.Unix(100, 0) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if b := body(t, s); strings.Contains(b, `source="feed"`) {
+		t.Errorf("the feed's refresh before any read:\n%s", b)
+	}
+	failing := errors.New("no stream")
+	if err := m.RefreshFeed(t.Context(), feedFunc(func(context.Context) ([]FeedStream, error) { return nil, failing })); !errors.Is(err, failing) {
+		t.Fatalf("a failed read = %v", err)
+	}
+	b := body(t, s)
+	if !strings.Contains(b, `tracekeep_ingest_refreshed_timestamp_seconds{source="feed"} 0`+"\n") || strings.Contains(b, "tracekeep_logfeed_stream_backlog") {
+		t.Errorf("after a failed first read, want the feed's refresh 0 and no backlog:\n%s", b)
+	}
+	if err := m.RefreshFeed(t.Context(), feedFunc(func(context.Context) ([]FeedStream, error) { return []FeedStream{{Stream: "TRACEKEEP_LOGFEED_0"}}, nil })); err != nil {
+		t.Fatal(err)
+	}
+	if b := body(t, s); !strings.Contains(b, `tracekeep_ingest_refreshed_timestamp_seconds{source="feed"} 100`+"\n") {
+		t.Errorf("after a successful read, want the feed's refresh stamped:\n%s", b)
+	}
+}
+
 type feedFunc func(context.Context) ([]FeedStream, error)
 
 func (f feedFunc) Streams(ctx context.Context) ([]FeedStream, error) { return f(ctx) }

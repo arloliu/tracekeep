@@ -53,6 +53,7 @@ func probeFeed(ctx context.Context, nc *nats.Conn, js jetstream.JetStream, f Fee
 	subject := f.Prefix + "." + token
 	ctx, cancel := context.WithTimeout(ctx, probeWait)
 	defer cancel()
+	reconnects := nc.Stats().Reconnects
 	sub, err := nc.SubscribeSync(f.Prefix + ".*." + token)
 	if err != nil {
 		return 0, fmt.Errorf("bus: feed probe: %w", err)
@@ -71,6 +72,10 @@ func probeFeed(ctx context.Context, nc *nats.Conn, js jetstream.JetStream, f Fee
 		published <- err
 	}()
 	m, err := sub.NextMsgWithContext(ctx)
+	if err != nil && (!nc.IsConnected() || nc.Stats().Reconnects != reconnects) {
+		// The copy may have been lost with the connection: no mapping is proven missing.
+		return 0, fmt.Errorf("%w: the connection dropped while probing %s: %w", ErrFeedUnavailable, subject, err)
+	}
 	if err != nil {
 		return 0, fmt.Errorf("%w: no mapping routed %s within %s: %w", ErrFeedMapping, subject, probeWait, err)
 	}
