@@ -118,6 +118,53 @@ func TestMigrate(t *testing.T) {
 	})
 }
 
+// On three servers, migrate with bus.replicas 3 raises a running deployment's streams of one replica:
+// the traffic stream keeps its backlog, both streams their incarnations and ingest's consumer, and ingest joins on them again (T-71).
+func TestMigrateRaisesReplicas(t *testing.T) {
+	t.Parallel()
+	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
+		ctx := t.Context()
+		e := envOn(t, c, testbus.StartCluster(t, 3), nil)
+		cancel, done := startIngest(t, e)
+		cancel()
+		if err := <-done; err != nil {
+			t.Fatalf("ingest at one replica stopped = %v", err)
+		}
+		for i := range 3 {
+			if _, err := e.JS.Publish(ctx, "tk.backlog", fmt.Appendf(nil, "message %d", i)); err != nil {
+				t.Fatal(err)
+			}
+		}
+		e.Config.Bus.Replicas = 3
+		if err := Migrate(ctx, e); err != nil {
+			t.Fatalf("Migrate raising to three replicas = %v", err)
+		}
+		for _, name := range []string{bus.StreamName(e.Bus(), catalog.RoleParking), bus.StreamName(e.Bus(), catalog.RoleTraffic), busconfig.ClaimStreamName(e.Config.Bus.ClaimBucket)} {
+			s, err := e.JS.Stream(ctx, name)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if n := s.CachedInfo().Config.Replicas; n != 3 {
+				t.Errorf("stream %s has %d replicas, want 3", name, n)
+			}
+			if name == bus.StreamName(e.Bus(), catalog.RoleTraffic) {
+				inc, err := c.Incarnate(ctx, catalog.RoleTraffic, name, s.CachedInfo().Created.UnixNano())
+				if err != nil {
+					t.Fatalf("the raised traffic stream's incarnation: %v", err)
+				}
+				if _, err := s.Consumer(ctx, bus.ConsumerName(inc)); err != nil || s.CachedInfo().State.Msgs != 3 {
+					t.Errorf("the raised traffic stream holds %d messages and ingest's consumer %v, want the 3 and the consumer", s.CachedInfo().State.Msgs, err)
+				}
+			}
+		}
+		cancel, done = startIngest(t, e)
+		cancel()
+		if err := <-done; err != nil {
+			t.Errorf("ingest at three replicas stopped = %v", err)
+		}
+	})
+}
+
 // With the feed enabled, migrate also ensures the group streams, their consumers and the groups' lease rows, and can run again;
 // it refuses a change of G while a group stream holds a message.
 func TestMigrateFeed(t *testing.T) {
@@ -259,7 +306,7 @@ func TestIngestNeedsTheMapping(t *testing.T) {
 func TestIngestStartsWithAGroupStreamLost(t *testing.T) {
 	t.Parallel()
 	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
-		e, _ := lostGroupEnv(t, c)
+		e, _, _ := lostGroupEnv(t, c)
 		cancel, done := startIngest(t, e)
 		convertsTheLiveGroups(t, e, c)
 		cancel()
@@ -286,9 +333,10 @@ func TestIngestRecoversAGroupStreamsReplacement(t *testing.T) {
 // recovers starts ingest with group 1's server lost, restarts the server, its storage wiped when wipe is set,
 // and waits for the stage's check to pass, then for new entries of every group, the formerly lost one's included, to be converted,
 // ingest never returning meanwhile; a return during the recovery, a refusal included, fails the test with its error.
+// The entry group 1's stream held before the loss comes back and is converted with the storage, and is gone without it.
 func recovers(t *testing.T, c *catalog.Catalog, wipe bool) {
 	t.Helper()
-	e, srvs := lostGroupEnv(t, c)
+	e, srvs, before := lostGroupEnv(t, c)
 	// A short lease: the stage checks the feed again every third of it, and takes a group given up again after it;
 	// fetches wait less than it, so the memberships renewed before each one never lapse.
 	e.Config.Ingest.Lease, e.Config.Ingest.MaxWait = 6*time.Second, time.Second
@@ -321,7 +369,20 @@ func recovers(t *testing.T, c *catalog.Catalog, wipe bool) {
 			t.Fatal("the feed's check did not pass within 2 min of the lost server's return")
 		}
 	}
+	// Probes store nothing, so the stream's last sequence is the entry's while it kept its storage, and 0 once created again.
+	sctx, scancel := context.WithTimeout(t.Context(), 5*time.Second)
+	s, err := e.JS.Stream(sctx, bus.FeedStreamName(e.Feed(), 1))
+	scancel()
+	if err != nil {
+		t.Fatalf("group 1's stream once the check passed: %v", err)
+	}
+	if last := s.CachedInfo().State.LastSeq; (last == 0) != wipe {
+		t.Fatalf("group 1's stream has last sequence %d with its server's storage wiped %t, want 0 exactly when wiped", last, wipe)
+	}
 	convertsEveryGroup(t, e, c, done)
+	if !wipe {
+		awaitCapture(t, c, before, 1, time.Now().Add(time.Minute), done)
+	}
 	cancel()
 	if err := <-done; err != nil {
 		t.Errorf("ingest stopped = %v", err)
@@ -331,7 +392,8 @@ func recovers(t *testing.T, c *catalog.Catalog, wipe bool) {
 // lostGroupEnv is an environment on three servers whose traffic and parking streams and claim bucket take three replicas (bus.replicas),
 // the feed's three group streams of one replica placed one a server, and the server holding group 1's stream shut down,
 // returned once the streams ingest opens answer again; the lost server holds no copy any other stream needs.
-func lostGroupEnv(t *testing.T, c *catalog.Catalog) (*Env, []*server.Server) {
+// Before the loss, group 1's stream takes one entry of the equipment it returns, the first equipment of that group.
+func lostGroupEnv(t *testing.T, c *catalog.Catalog) (*Env, []*server.Server, string) {
 	t.Helper()
 	srvs := testbus.StartClusterServers(t, 3)
 	urls := make([]string, len(srvs))
@@ -350,6 +412,15 @@ func lostGroupEnv(t *testing.T, c *catalog.Catalog) (*Env, []*server.Server) {
 			l.PlacementTags = append(l.PlacementTags, s.Name())
 		}
 	})
+	before := ""
+	for eq := 0; before == ""; eq++ {
+		if eq == 100 {
+			t.Fatal("no equipment of 100 landed on group 1's stream")
+		}
+		if publishEntry(t, e, fmt.Sprintf("L%d", eq), 0) == bus.FeedStreamName(e.Feed(), 1) {
+			before = fmt.Sprintf("L%d", eq)
+		}
+	}
 	srvs[1].Shutdown()
 	srvs[1].WaitForShutdown()
 	// The client reconnects and the cluster elects new leaders meanwhile, so the streams ingest opens are awaited first.
@@ -362,7 +433,7 @@ func lostGroupEnv(t *testing.T, c *catalog.Catalog) (*Env, []*server.Server) {
 		testbus.AwaitStream(t, e.JS, s)
 	}
 
-	return e, srvs
+	return e, srvs, before
 }
 
 // startIngest runs Ingest under a context of its own until its consumers joined, and returns the context's cancel and the channel Ingest's return lands on.
@@ -394,50 +465,59 @@ func startIngest(t *testing.T, e *Env) (context.CancelFunc, <-chan error) {
 // and waits for each such equipment to become a log capture of 3 entries, failing should ingest return meanwhile.
 func convertsEveryGroup(t *testing.T, e *Env, c *catalog.Catalog, done <-chan error) {
 	t.Helper()
-	entry := `{"v":1,"equipment_id":"R%d","source":"feed-a","tz":"UTC","file":"host.log","offset":%d,"ts":"2026-11-07 08:00:0%d","kind":"unclassified","text":"line"}`
-	publish := func(eq, i int) string {
-		pctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
-		defer cancel()
-		a, err := e.JS.Publish(pctx, fmt.Sprintf("tklog.R%d", eq), fmt.Appendf(nil, entry, eq, 100*i, i))
-		if err != nil {
-			t.Fatalf("entry %d of R%d: %v", i, eq, err)
-		}
-
-		return a.Stream
-	}
-	groups := map[string]int{} // a group's stream, by name, to its equipment
+	groups := map[string]string{} // a group's stream to its equipment
 	for eq := 0; len(groups) < e.Config.Logfeed.LeaseGroups; eq++ {
 		if eq == 100 {
 			t.Fatalf("100 equipment's entries landed on %v only, want every group's stream", groups)
 		}
-		if s := publish(eq, 0); groups[s] == 0 {
-			groups[s] = eq + 1
+		id := fmt.Sprintf("R%d", eq)
+		if s := publishEntry(t, e, id, 0); groups[s] == "" {
+			groups[s] = id
 		}
 	}
 	deadline := time.Now().Add(time.Minute)
-	for s, eq := range groups {
-		eq--
-		publish(eq, 1)
-		publish(eq, 2)
-		key := catalog.LogKey{LogFile: catalog.LogFile{Source: "feed-a", EquipmentID: fmt.Sprintf("R%d", eq), File: "host.log"}, Device: "eqp"}
-		for {
-			cp, ok, err := c.LogCaptureOf(t.Context(), key)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if ok && cp.HasHighestSeq && cp.HighestSeq == 3 {
-				break
-			}
-			select {
-			case err := <-done:
-				t.Fatalf("ingest returned %v before R%d's entries on %s were converted", err, eq, s)
-			default:
-			}
-			if time.Now().After(deadline) {
-				t.Fatalf("R%d's capture on %s = %+v, %v after 1 min; want its 3 entries registered", eq, s, cp.Capture, ok)
-			}
-			time.Sleep(50 * time.Millisecond)
+	for _, id := range groups {
+		publishEntry(t, e, id, 1)
+		publishEntry(t, e, id, 2)
+		awaitCapture(t, c, id, 3, deadline, done)
+	}
+}
+
+// publishEntry publishes entry i of equipment eq's host.log and returns the stream that stored it.
+func publishEntry(t *testing.T, e *Env, eq string, i int) string {
+	t.Helper()
+	entry := `{"v":1,"equipment_id":%q,"source":"feed-a","tz":"UTC","file":"host.log","offset":%d,"ts":"2026-11-07 08:00:0%d","kind":"unclassified","text":"line"}`
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	a, err := e.JS.Publish(ctx, "tklog."+eq, fmt.Appendf(nil, entry, eq, 100*i, i))
+	if err != nil {
+		t.Fatalf("entry %d of %s: %v", i, eq, err)
+	}
+
+	return a.Stream
+}
+
+// awaitCapture waits until deadline for equipment eq's log capture to register n entries, failing should ingest return meanwhile.
+func awaitCapture(t *testing.T, c *catalog.Catalog, eq string, n int64, deadline time.Time, done <-chan error) {
+	t.Helper()
+	key := catalog.LogKey{LogFile: catalog.LogFile{Source: "feed-a", EquipmentID: eq, File: "host.log"}, Device: "eqp"}
+	for {
+		cp, ok, err := c.LogCaptureOf(t.Context(), key)
+		if err != nil {
+			t.Fatal(err)
 		}
+		if ok && cp.HasHighestSeq && cp.HighestSeq == n {
+			return
+		}
+		select {
+		case err := <-done:
+			t.Fatalf("ingest returned %v before %s's %d entries were converted", err, eq, n)
+		default:
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("%s's capture = %+v, %v; want its %d entries registered", eq, cp.Capture, ok, n)
+		}
+		time.Sleep(50 * time.Millisecond)
 	}
 }
 
