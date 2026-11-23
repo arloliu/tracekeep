@@ -1,6 +1,6 @@
 # Hour flush
 
-Status: active (2026-11-23) — the owner's two decisions of 2026-11-23 (T-72) and ingest's design (T-73); steps 1 and 3 done, steps 2 and 4 waiting for the host
+Status: active (2026-11-23) — the owner's two decisions of 2026-11-23 (T-72) and ingest's design (T-73); steps 1 to 4 done, step 5 the owner's
 
 The work behind the owner's two decisions on the ROADMAP's open item *A fleet's flushes align, and their load with them*:
 stop the hour's change from flushing every equipment's earlier hour at once, and explain why spreading the flushes measured worse on a stream a group before spreading is taken up.
@@ -12,10 +12,10 @@ The measurements it cites are the flush-evidence cells of 2026-11-08 (kept outsi
 | Step | Work | State |
 |---|---|---|
 | 1 — the log stage holds the hour | the converter's hour trigger and its load switch removed, each equipment keeping its flush times across the hour; `logfeed.md` §15.7 | done #135 |
-| 2 — measure the hold | the before and after cells below, on today's layout, the log stage aligned and dispersed | pending |
+| 2 — measure the hold | the before and after cells below, on today's layout, the log stage aligned and dispersed | done, *Step 2's cells* |
 | 3 — ingest holds the hour | a capture's flush time in `Batcher.Due`, its earlier hour registered first, the gap alert's `for:` (`alerts.gapsFor`); `ingest.md` §6.2 | done #139 |
-| 4 — explain the spread | the bus-only cells of *Spreading* below, with the harness's switch for a phase a group | harness switch done; cells pending |
-| 5 — decide the spread | the spec and the decision for spreading by group, or none, from step 4 | pending |
+| 4 — explain the spread | the bus-only cells of *Spreading* below, with the harness's switch for a phase a group | done #141, *Step 4's cells* |
+| 5 — decide the spread | the spec and the decision for spreading by group, or none, from step 4 | recommended: by group; the owner's |
 
 Each step is one pull request; steps 2 and 4 need the host alone and are scheduled by the owner.
 
@@ -71,6 +71,32 @@ Judged over 420–840 s, the hour's change to past its F + 60 s and clear of the
 
 In a long run the old trigger had already moved an aligned fleet's flush times onto the hour plus the reorder window,
 where the trigger and the ordinary flush come together; so in steady state the hold saves at most one wave an hour, unmeasured.
+
+### Step 2's cells
+
+Run 2026-11-23, one cell an hour as ordered, alternating with the step 4 cells.
+Each stopped at 900 s, past the judged window and into the burst, to keep the host's memory under its bound
+(the first, H1, was stopped at 978 s for it);
+so the mode's own judgment at the run's end was not reached, and its accounting rests on step 1's tests.
+Log packs registered a second, the catalog's commits a second, and the bus disk's reads:
+
+| Cell | Busiest second, ordinary flush (300–420 s) | Busiest second, the hour (420–840 s) | Packs, 420–840 s | Commits a second, max, 420–840 s | Bus reads, MB/s, max (mean), 420–840 s |
+|---|---|---|---|---|---|
+| H1 before, aligned | 429 | 924 | 6,672 | 527 | 1,734 (29) |
+| H1b before, aligned | 549 | 914 | 6,680 | 582 | 1,194 (14) |
+| H2 after, aligned | 433 | 648 | 4,973 | 424 | 327 (8) |
+| H2b after, aligned | 424 | 763 | 4,973 | 427 | 433 (9) |
+| H3 before, dispersed | 17 | 757 | 7,129 | 393 | 1,134 (229) |
+| H4 after, dispersed | 20 | 39 | 5,205 | 115 | 1,598 (332) |
+
+- Dispersed, the hold keeps the fleet dispersed across the hour: its busiest second 39 against the ordinary 20, where before the hour's change put 757 into one second.
+  That repeats A3 against A2 on today's layout.
+- Aligned, the expectation above was wrong: before step 1 the hour's busiest second is 1.7 to 2.2 times an ordinary one, not about the same.
+  The hour's wave writes two packs an equipment, an ordinary wave one, and before step 1 the ordinary :02:30 wave followed it two minutes later.
+  After step 1 the hour's packs ride the ordinary wave: the busiest second down 17 to 30 %, the catalog's busiest second 20 to 27 %, the window's packs 25 % fewer, the bus's busiest read a quarter to a third.
+  It is still 1.5 to 1.8 times an ordinary second, the one wave carrying two packs an equipment.
+- Both pairs repeat closely (packs in the window to 0.1 %); the busiest seconds vary by up to 28 % between repeats.
+- The dispersed cells spread by equipment, and their bus reads (mean 229 and 332 MB/s against under 30 aligned) are step 4's S2 on the log stage.
 
 ## Report
 
@@ -196,3 +222,35 @@ BUS_FEED_STREAMS=<32 for 32 streams, unset for 1> scripts/load-feed.sh feed-stre
 Run in that order, S1 and S5 bracketing the rest for the host's drift.
 If S3 reads like S2, hypothesis 1 is wrong and spreading stays parked;
 if S3 reads like S1 but its publish p99 is S2's, hypothesis 2 is wrong, and the p99 needs another explanation before spreading is taken up.
+
+### Step 4's cells
+
+Run 2026-11-23 in the order above, each 1,200 s, the test's memory limit at 12 GiB to keep the host under its bound.
+Bus disk reads, MB/s, and publish p99, ms, in each window, then the run's (60–1200 s):
+
+| Cell | Reads, before the burst | Reads, the burst | Reads, after it | Reads, the run | Publish p99, before / the burst / after; the run | Disk utilisation, the run |
+|---|---|---|---|---|---|---|
+| S1, 32 streams, aligned | 25 | 357 | 217 | 123 | 18 / 166 / 53; 96 | 19 % |
+| S2, 32 streams, spread | 190 | 710 | 460 | 336 | 18 / 207 / 67; 115 | 34 % |
+| S3, 32 streams, group | 6 | 304 | 172 | 93 | 13 / 144 / 34; 86 | 19 % |
+| S4, 1 stream, spread | 349 | 675 | 585 | 456 | 623 / 1,336 / 759; 804 | 36 % |
+| S5, 32 streams, aligned | 23 | 383 | 228 | 128 | 19 / 162 / 118; 108 | 20 % |
+
+Every cell passed its judgment, nothing failed; S1 and S5 agree, so the host did not drift.
+
+- **Hypothesis 1 holds.** S2 repeats B5's reads (7.6 times S1's before the burst), and S3, the same streams with the phase from the group, reads less than aligned in every window.
+- **Hypothesis 2 is not needed.** Spreading by equipment did not raise the publish p99 before the burst (18 against 18 ms) and raised it a quarter in and after the burst;
+  B5's 461 against 134 ms did not repeat (S2's run 115 against 96 and 108), so that gap was most likely the host's drift late in B5's queue.
+  Spreading by group has the lowest p99 in every window.
+- **S4 does not repeat A2.** One stream of one replica does not carry this harness's fleet: its stored rate fell to 4,213 a second in the burst against 24,752 offered,
+  0.1 to 0.4 million entries waited undelivered, and its reads are most likely those entries' delivery, not removals.
+  A2 came from the log stage, whose one-stream run did keep up; the two are not comparable, and the one-stream layout is gone (T-67).
+- S3 also held the least memory of the 32-stream cells (32.8 GB at peak against 33.6 aligned and 35.7 spread, the host's desktop included).
+
+**Step 5's recommendation.**
+Spread by group: each group's equipment flush at one phase, the groups' phases spread evenly over F, in the log stage's converter (`logfeed.md` §15.7).
+It keeps aligned's one sweep a stream a F, cuts the bus's reads and the publish p99 below aligned's, and still splits the fleet's wave for the store and the catalog 32 ways.
+The hold it needs is done (steps 1 and 3), and step 2's dispersed pair shows it keeps a phase across the hour.
+Not measured: spreading by group on the log stage, with the store and the catalog, and with ingest, whose flushes are a capture's own;
+the first is the next cell if the owner takes this up.
+
