@@ -53,6 +53,10 @@ type Stage struct {
 	FetchBatch int
 	Pause      time.Duration
 	Log        *slog.Logger
+	// Check, when set, is the feed's check that found a group stream unable to answer at the start:
+	// Run balances the groups meanwhile, as when it passed, and retries it every third of the lease lifetime until it passes;
+	// a refusal it returns (bus.FeedRefused) ends Run.
+	Check func(context.Context) error
 
 	mu sync.Mutex
 	// held are the groups this replica holds; workers every group goroutine still running, held or not, which a stop waits for;
@@ -86,12 +90,47 @@ func (s *Stage) Run(ctx context.Context) error {
 	tick := time.NewTicker(s.LeaseTTL / 3)
 	defer tick.Stop()
 	defer s.stopAll()
+	var checked chan error
+	var wg sync.WaitGroup
+	defer wg.Wait()
+	if s.Check != nil {
+		checked = make(chan error, 1)
+		wg.Go(func() { checked <- s.recheck(ctx) })
+	}
 	for {
 		s.balance(ctx)
 		select {
 		case <-ctx.Done():
 			return nil
+		case err := <-checked:
+			if err != nil {
+				return err
+			}
+			checked = nil
 		case <-tick.C:
+		}
+	}
+}
+
+// recheck retries Check every third of the lease lifetime until it passes or ctx ends, returning nil then and a refusal at once.
+func (s *Stage) recheck(ctx context.Context) error {
+	t := time.NewTicker(s.LeaseTTL / 3)
+	defer t.Stop()
+	for {
+		err := s.Check(ctx)
+		switch {
+		case ctx.Err() != nil:
+			return nil
+		case err == nil:
+			s.log().Info("logfeed: every feed stream answers and the servers' mapping is checked")
+			return nil
+		case bus.FeedRefused(err):
+			return err
+		}
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-t.C:
 		}
 	}
 }

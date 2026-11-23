@@ -1,6 +1,7 @@
 package service
 
 import (
+	"cmp"
 	"context"
 	"database/sql"
 	"errors"
@@ -28,6 +29,7 @@ import (
 	"github.com/arloliu/tracekeep/internal/store"
 	"github.com/arloliu/tracekeep/internal/testbus"
 	"github.com/arloliu/tracekeep/migrations"
+	"github.com/arloliu/tracekeep/producer/busconfig"
 )
 
 // load is the configuration of a test: the bus at url, an fs store under a temporary directory, everything else defaulted.
@@ -217,20 +219,25 @@ func TestIngestConvertsTheFeed(t *testing.T) {
 	})
 }
 
-// With the feed enabled, a role refuses to start until migrate has made the feed's stream.
-func TestRolesNeedTheFeed(t *testing.T) {
+// With the feed enabled, ingest refuses to start until migrate has made the feed's streams; compact, which reads no feed stream, starts.
+func TestIngestNeedsTheFeed(t *testing.T) {
 	t.Parallel()
 	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
 		e := env(t, c)
 		e.Config.Logfeed.Enabled = true
-		if err := Compact(t.Context(), e); err == nil || !strings.Contains(err.Error(), "feed stream") {
-			t.Errorf("compact without the feed's stream = %v, want refused", err)
+		if err := Ingest(t.Context(), e); err == nil || !strings.Contains(err.Error(), "feed stream") || errors.Is(err, bus.ErrFeedUnavailable) {
+			t.Errorf("ingest without the feed's stream = %v, want refused", err)
+		}
+		ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+		defer cancel()
+		if err := Compact(ctx, e); err != nil {
+			t.Errorf("compact without the feed's stream = %v, want it run until its context ends", err)
 		}
 	})
 }
 
-// With the feed enabled, a role refuses to start while the servers' mapping partitions the feed's subjects into more partitions than G.
-func TestRolesNeedTheMapping(t *testing.T) {
+// With the feed enabled, ingest refuses to start while the servers' mapping partitions the feed's subjects into more partitions than G.
+func TestIngestNeedsTheMapping(t *testing.T) {
 	t.Parallel()
 	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
 		srv := testbus.StartServer(t, testbus.Options{})
@@ -241,10 +248,124 @@ func TestRolesNeedTheMapping(t *testing.T) {
 		})
 		ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
 		defer cancel()
-		if err := Compact(ctx, e); !errors.Is(err, bus.ErrFeedMapping) {
-			t.Errorf("compact over a mapping into 2G partitions = %v, want ErrFeedMapping", err)
+		if err := Ingest(ctx, e); !errors.Is(err, bus.ErrFeedMapping) {
+			t.Errorf("ingest over a mapping into 2G partitions = %v, want ErrFeedMapping", err)
 		}
 	})
+}
+
+// With a group stream's server lost, ingest starts, its traffic and parked consumers joined,
+// and its log stage converts the groups whose streams answer, checking the feed again meanwhile (logfeed.md §15.4).
+// The traffic stream and the claim bucket take three replicas, so the server lost holds only the group stream's copy.
+func TestIngestStartsWithAGroupStreamLost(t *testing.T) {
+	t.Parallel()
+	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
+		srvs := testbus.StartClusterServers(t, 3)
+		urls := make([]string, len(srvs))
+		for i, s := range srvs {
+			urls[i] = s.ClientURL()
+		}
+		e := envOn(t, c, strings.Join(urls, ","), func(e *Env) {
+			// Created ahead of migrate, which leaves them as they are, each retried: a cluster just formed may leave a request unanswered.
+			tc := busconfig.StreamConfig(bus.StreamName(e.Bus(), catalog.RoleTraffic), e.Config.Bus.SubjectPrefix)
+			tc.Replicas = 3
+			pc := busconfig.ParkedStreamConfig(bus.StreamName(e.Bus(), catalog.RoleParking), cmp.Or(e.Config.Bus.ParkPrefix, busconfig.DefaultParkPrefix), 3)
+			for _, sc := range []jetstream.StreamConfig{tc, pc} {
+				testbus.Retry(t, func(ctx context.Context) error {
+					_, err := e.JS.CreateOrUpdateStream(ctx, sc)
+					return err
+				})
+			}
+			oc := busconfig.ObjectStoreConfig(e.Config.Bus.ClaimBucket)
+			oc.Replicas = 3
+			testbus.Retry(t, func(ctx context.Context) error {
+				_, err := e.JS.CreateOrUpdateObjectStore(ctx, oc)
+				return err
+			})
+			l := &e.Config.Logfeed
+			l.Enabled, l.LeaseGroups, l.MaxBytes = true, 3, 64<<20
+			l.ReorderWindow, l.FlushInterval = 100*time.Millisecond, 200*time.Millisecond
+			for _, s := range srvs {
+				if err := testbus.MapFeed(s, l.Prefix, l.LeaseGroups); err != nil {
+					t.Fatal(err)
+				}
+				l.PlacementTags = append(l.PlacementTags, s.Name())
+			}
+		})
+		lost := bus.FeedStreamName(e.Feed(), 1)
+		srvs[1].Shutdown()
+		srvs[1].WaitForShutdown()
+		// The client reconnects and the cluster elects new leaders meanwhile, so the streams ingest opens are awaited first.
+		for _, name := range []string{bus.StreamName(e.Bus(), catalog.RoleTraffic), bus.StreamName(e.Bus(), catalog.RoleParking), busconfig.ClaimStreamName(e.Config.Bus.ClaimBucket)} {
+			var s jetstream.Stream
+			testbus.Retry(t, func(ctx context.Context) (err error) {
+				s, err = e.JS.Stream(ctx, name)
+				return err
+			})
+			testbus.AwaitStream(t, e.JS, s)
+		}
+		// A request just after the loss may go unanswered while the traffic stream's consumers elect their leaders,
+		// failing the start as a pod restarted then would; only a start the feed fails ends the test.
+		for attempt := 1; ; attempt++ {
+			ctx, cancel := context.WithTimeout(t.Context(), 20*time.Second)
+			joined, done := make(chan struct{}), make(chan error, 1)
+			e.joined = func() { close(joined) }
+			go func() { done <- Ingest(ctx, e) }()
+			select {
+			case <-joined:
+				convertsTheLiveGroups(t, e, c)
+				cancel()
+				if err := <-done; err != nil {
+					t.Errorf("ingest stopped = %v", err)
+				}
+
+				return
+			case err := <-done:
+				cancel()
+				if errors.Is(err, bus.ErrFeedUnavailable) || strings.Contains(err.Error(), "feed") || attempt == 3 {
+					t.Fatalf("ingest with %s lost = %v before it joined, want it started", lost, err)
+				}
+			}
+		}
+	})
+}
+
+// convertsTheLiveGroups publishes 3 entries for each of several equipment, those of a lost group's stream unacknowledged,
+// and waits for an equipment whose entries were stored to become a log capture of 3 entries.
+func convertsTheLiveGroups(t *testing.T, e *Env, c *catalog.Catalog) {
+	t.Helper()
+	entry := `{"v":1,"equipment_id":"T%d","source":"feed-a","tz":"UTC","file":"host.log","offset":%d,"ts":"2026-11-07 08:00:0%d","kind":"unclassified","text":"line"}`
+	var stored []int
+	for eq := range 6 {
+		ok := true
+		for i := range 3 {
+			pctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
+			_, err := e.JS.Publish(pctx, fmt.Sprintf("tklog.T%d", eq), fmt.Appendf(nil, entry, eq, 100*i, i))
+			cancel()
+			ok = ok && err == nil
+		}
+		if ok {
+			stored = append(stored, eq)
+		}
+	}
+	if len(stored) == 0 {
+		t.Fatal("no equipment's entries stored, want those of the groups whose streams answer")
+	}
+	key := catalog.LogKey{LogFile: catalog.LogFile{Source: "feed-a", EquipmentID: fmt.Sprintf("T%d", stored[0]), File: "host.log"}, Device: "eqp"}
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		cp, ok, err := c.LogCaptureOf(t.Context(), key)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if ok && cp.HasHighestSeq && cp.HighestSeq == 3 {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("equipment T%d's capture = %+v, %v after 30 s; want its 3 entries registered", stored[0], cp.Capture, ok)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
 }
 
 // Migrate, ingest and compact refuse to start against a traffic stream that allows direct gets, or a stream the catalog does not record.

@@ -25,8 +25,10 @@ tests=(
 	TestGateRetriedPublish/clustered/mariadb
 	TestStageServerLost/sqlite
 	TestStageServerLost/mariadb
+	TestIngestStartsWithAGroupStreamLost/sqlite
+	TestIngestStartsWithAGroupStreamLost/mariadb
 )
-run='^(TestStartClusterReplicates|TestPublishCopy|TestSuppressedPublishConverges|TestTwoVersionsInOneWindow|TestCopiesFromAFollower|TestStageSharesAndTakesOver|TestGateTakeoverWithHeldEntriesAndBacklog|TestGateRetriedPublish|TestStageServerLost)$/^(clustered|inline|claim-check|sqlite|mariadb)$/^(clustered|sqlite|mariadb)$'
+run='^(TestStartClusterReplicates|TestPublishCopy|TestSuppressedPublishConverges|TestTwoVersionsInOneWindow|TestCopiesFromAFollower|TestStageSharesAndTakesOver|TestGateTakeoverWithHeldEntriesAndBacklog|TestGateRetriedPublish|TestStageServerLost|TestIngestStartsWithAGroupStreamLost)$/^(clustered|inline|claim-check|sqlite|mariadb)$/^(clustered|sqlite|mariadb)$'
 
 if [ -n "${TRACEKEEP_MARIADB_DSN:-}" ]; then
 	export TRACEKEEP_REQUIRE_MARIADB=1
@@ -38,7 +40,7 @@ log=$(mktemp)
 trap 'rm -f "$log"' EXIT
 status=0
 # shellcheck disable=SC2086 # GOTESTFLAGS splits into flags
-GOWORK=off CGO_ENABLED=1 go test ./internal/testbus/ ./internal/ingest/ ./internal/compact/ ./internal/logfeed/ \
+GOWORK=off CGO_ENABLED=1 go test ./internal/testbus/ ./internal/ingest/ ./internal/compact/ ./internal/logfeed/ ./internal/service/ \
 	-race -count "$count" -timeout "${TIMEOUT:-60m}" -v -run "$run" ${GOTESTFLAGS:-} >"$log" 2>&1 || status=$?
 if [ "$status" -ne 0 ]; then
 	grep -vE '^\s*(=== (RUN|PAUSE|CONT|NAME)|--- (PASS|SKIP))' "$log" || true
