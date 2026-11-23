@@ -401,6 +401,18 @@ tests:
   - eval_time: 12m
     alertname: TracekeepLogFeedStreamUnreadable
     exp_alerts: [{exp_labels: {severity: warning}, exp_annotations: {summary: "A host log feed group stream cannot be read; its server may be lost.", runbook_url: "rb#log-feed-stream-unreadable"}}]
+- name: every replica started during the outage, the feed never read, the traffic stream's snapshot fresh
+  interval: 1m
+  input_series:
+  - {series: 'tracekeep_ingest_refreshed_timestamp_seconds{instance="a",source="feed"}', values: '0x25'}
+  - {series: 'tracekeep_ingest_refreshed_timestamp_seconds{instance="b",source="feed"}', values: '0x25'}
+  - {series: 'tracekeep_ingest_refreshed_timestamp_seconds{instance="a",source="bus"}', values: '0+60x25'}
+  - {series: 'tracekeep_ingest_refreshed_timestamp_seconds{instance="b",source="bus"}', values: '0+60x25'}
+  alert_rule_test:
+  - {eval_time: 4m, alertname: TracekeepLogFeedStreamUnreadable, exp_alerts: []}
+  - eval_time: 10m
+    alertname: TracekeepLogFeedStreamUnreadable
+    exp_alerts: [{exp_labels: {severity: warning}, exp_annotations: {summary: "A host log feed group stream cannot be read; its server may be lost.", runbook_url: "rb#log-feed-stream-unreadable"}}]
 - name: the feed read by one replica, another's snapshot of it stale
   interval: 1m
   input_series:

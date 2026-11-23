@@ -259,10 +259,13 @@ func TestStageRunsWhileTheCheckFails(t *testing.T) {
 		e := newStageEnv(t, c, false)
 		var back atomic.Bool
 		var checks atomic.Int32
+		var once sync.Once
+		passed := make(chan struct{})
 		a, b := e.stage("a", time.Hour), e.stage("b", time.Hour)
 		a.Check = func(context.Context) error {
 			checks.Add(1)
 			if back.Load() {
+				once.Do(func() { close(passed) })
 				return nil
 			}
 
@@ -278,7 +281,14 @@ func TestStageRunsWhileTheCheckFails(t *testing.T) {
 		})
 		e.eventually("a retried its check", func() bool { return checks.Load() > 2 })
 		back.Store(true)
-		e.eventually("a's check passed", func() bool { n := checks.Load(); time.Sleep(a.LeaseTTL); return checks.Load() == n })
+		select {
+		case <-passed:
+		case <-time.After(20 * time.Second):
+			t.Fatal("a's check did not pass within 20 s of the stream's return")
+		}
+		if a.Ready(ctx) != nil || len(a.Held()) != e.feed.Groups/2 {
+			t.Errorf("a after its check passed: ready %v, holding %v; want ready, its share", a.Ready(ctx), a.Held())
+		}
 
 		r := e.stage("r", time.Hour)
 		r.Check = func(context.Context) error { return fmt.Errorf("%w: a test mapping", bus.ErrFeedMapping) }
