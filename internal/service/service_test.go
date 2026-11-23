@@ -412,6 +412,15 @@ func lostGroupEnv(t *testing.T, c *catalog.Catalog) (*Env, []*server.Server, str
 			l.PlacementTags = append(l.PlacementTags, s.Name())
 		}
 	})
+	// Migrate returns before a group stream just created on the cluster elects its leader, which a publish needs.
+	for n := range e.Feed().Groups {
+		var s jetstream.Stream
+		testbus.Retry(t, func(ctx context.Context) (err error) {
+			s, err = e.JS.Stream(ctx, bus.FeedStreamName(e.Feed(), n))
+			return err
+		})
+		testbus.AwaitStream(t, e.JS, s)
+	}
 	before := ""
 	for eq := 0; before == ""; eq++ {
 		if eq == 100 {
