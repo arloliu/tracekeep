@@ -431,9 +431,10 @@ type feed struct {
 	consumers []jetstream.Consumer
 	groups    []*feedGroup
 	// aligned makes an equipment's flush due F after its first entry and each flush, as the log stage's are, not spread over F by its phase;
+	// byGroup, when not aligned, phases every equipment of a group alike, the groups spread evenly over F;
 	// groupBytes and maxHeld bound each group as the log stage's bound does (logfeed.md §15.7): past groupBytes of batched messages,
 	// or holding more than half of maxHeld, its largest equipment flushes first; zero bounds nothing.
-	aligned             bool
+	aligned, byGroup    bool
 	groupBytes, maxHeld int
 	// purge settles a group by purging its stream below its checkpoint instead of acknowledging each entry (the feed-streams mode's
 	// TRACEKEEP_LOAD_SETTLE=purge): its streams keep messages by limits, its consumers acknowledge nothing,
@@ -791,6 +792,9 @@ func (g *feedGroup) loop(ctx context.Context) {
 				g.total += len(h.m.Data())
 				if _, ok := g.due[h.eq]; !ok {
 					g.due[h.eq] = start.Add(phase(h.eq, ft.flush))
+					if g.f.byGroup {
+						g.due[h.eq] = start.Add(ft.flush * time.Duration(g.n) / time.Duration(len(g.f.groups)))
+					}
 					if g.f.aligned {
 						g.due[h.eq] = now.Add(ft.flush)
 					}

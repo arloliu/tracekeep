@@ -14,7 +14,7 @@ The measurements it cites are the flush-evidence cells of 2026-11-08 (kept outsi
 | 1 — the log stage holds the hour | the converter's hour trigger and its load switch removed, each equipment keeping its flush times across the hour; `logfeed.md` §15.7 | done #135 |
 | 2 — measure the hold | the before and after cells below, on today's layout, the log stage aligned and dispersed | pending |
 | 3 — ingest holds the hour | a capture's flush time in `Batcher.Due`, its earlier hour registered first, the gap alert's `for:` (`alerts.gapsFor`); `ingest.md` §6.2 | done #139 |
-| 4 — explain the spread | the bus-only cells of *Spreading* below, with the harness's switch for a phase a group | pending |
+| 4 — explain the spread | the bus-only cells of *Spreading* below, with the harness's switch for a phase a group | harness switch done; cells pending |
 | 5 — decide the spread | the spec and the decision for spreading by group, or none, from step 4 | pending |
 
 Each step is one pull request; steps 2 and 4 need the host alone and are scheduled by the owner.
