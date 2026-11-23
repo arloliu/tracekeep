@@ -535,7 +535,7 @@ func TestNextFlushKeepsThePhase(t *testing.T) {
 	}{
 		{"A", 1000.5, 1003}, // its next phase time
 		{"A", 1003, 1013},   // at its phase: the next one, never now
-		{"A", 1007.2, 1013}, // a flush off its phase, such as an hour's change, keeps the phase
+		{"A", 1007.2, 1013}, // a flush off its phase, such as the group bound's relief, keeps the phase
 		{"B", 1000.5, 1009}, // a negative phase is taken modulo F
 	} {
 		if got := c.nextFlush(tc.id, at(tc.now)); !got.Equal(at(tc.want)) {
@@ -544,34 +544,33 @@ func TestNextFlushKeepsThePhase(t *testing.T) {
 	}
 }
 
-// An hour's change flushes the earlier hour's batch at once, or, with HoldHours, leaves both hours to the equipment's next flush.
-func TestConverterHoldHours(t *testing.T) {
+// An hour's change flushes nothing: both hours' batches wait for the equipment's next flush, F after its first entry,
+// so a fleet's flushes keep their times across the hour instead of all flushing at its start (logfeed.md §15.7).
+func TestConverterKeepsItsCadenceAcrossTheHour(t *testing.T) {
 	t.Parallel()
-	for _, hold := range []bool{false, true} {
-		t.Run(fmt.Sprint("hold=", hold), func(t *testing.T) {
-			t.Parallel()
-			catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
-				h := newHarness(t, c)
-				h.conv.HoldHours = hold
-				f := &fixture{t: t}
-				for _, ts := range []string{"2026-11-07 08:59:59.000", "2026-11-07 09:00:01.000"} {
-					h.receive(&fakeMsg{data: f.raw(map[string]any{"kind": KindUnclassified, "text": ts, "ts": ts})})
-				}
-				packs := func() int {
-					n := 0
-					_ = h.store.List(t.Context(), "", func(store.ObjectInfo) error { n++; return nil })
+	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
+		h := newHarness(t, c) // F is 10 s, the first entry's equipment due 10 s after it
+		f := &fixture{t: t}
+		for _, ts := range []string{"2026-11-07 08:59:59.000", "2026-11-07 09:00:01.000"} {
+			h.receive(&fakeMsg{data: f.raw(map[string]any{"kind": KindUnclassified, "text": ts, "ts": ts})})
+		}
+		packs := func() int {
+			n := 0
+			_ = h.store.List(t.Context(), "", func(store.ObjectInfo) error { n++; return nil })
 
-					return n
-				}
-				h.tick(2 * time.Second)
-				if got, want := packs(), map[bool]int{false: 2, true: 0}[hold]; got != want {
-					t.Errorf("%d packs after the hour's change, want %d", got, want)
-				}
-				h.tick(10 * time.Second)
-				if got := packs(); got != 2 {
-					t.Errorf("%d packs after the next flush, want 2", got)
-				}
-			})
-		})
-	}
+			return n
+		}
+		h.tick(2 * time.Second) // both entries released and batched, one batch an hour
+		if got := packs(); got != 0 {
+			t.Errorf("%d packs after the hour's change, want none", got)
+		}
+		h.tick(7 * time.Second)
+		if got := packs(); got != 0 {
+			t.Errorf("%d packs before the equipment's flush is due, want none", got)
+		}
+		h.tick(2 * time.Second)
+		if got := packs(); got != 2 {
+			t.Errorf("%d packs after the equipment's flush, want both hours' 2", got)
+		}
+	})
 }
