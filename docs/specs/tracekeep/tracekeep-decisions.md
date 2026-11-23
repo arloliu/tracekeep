@@ -1042,3 +1042,18 @@ any other failure, a stream read unanswered within 5 s or refused as offline, or
 A replica that never read the feed whole stamps its feed refresh 0 once a read failed, so the stream-unreadable alert fires though every replica started during the outage.
 Considered and not taken: keeping the start refused, the runbook's way out `logfeed.enabled: false`, which stops every group's conversion and takes two rollouts;
 and a membership of the stage's own, so a replica waiting for the check counts in no share, a catalog change for the same outcome.
+
+### T-72 — an hour's change flushes no earlier hour; spreading is explained first (2026-11-23)
+
+A fleet's flushes align every F, and the hour's change aligned them again, flushing every equipment's earlier hour at once (ROADMAP, *A fleet's flushes align*).
+On the flush evidence of 2026-11-08 (kept outside the repository), holding the earlier hour together with spreading took the hour's busiest second from 997 to 32 puts;
+on a stream a group settled by acknowledgement, spreading by equipment measured worse than aligned flushes, unexplained.
+The owner chose, on 2026-11-23, both of: **the hour's change is to flush no earlier hour**, an earlier hour's batches waiting for the next flush,
+and **spreading is explained, and its direction confirmed, before it is taken up** (`docs/plans/hour-flush.md`).
+The log stage holds the hour first (`logfeed.md` §15.7): each equipment keeps its flush times across the hour, and every reader's bound already allows a batch to wait F.
+Ingest keeps its trigger for now: holding there needs a capture's own due time in `Batcher.Due`, since its later-hour batches all open with the hour and would realign the fleet F after it,
+and a later-hour batch closed early would register before the earlier hour's tail; its design is the plan's step 3, the owner's to settle.
+Holding alone is unmeasured: on an aligned fleet it removes at most one wave an hour, and its value is keeping whatever dispersion a fleet has.
+The analysis of 2026-11-23 points to spreading by equipment as the wrong granularity on a stream a group,
+each acknowledgement loading its entry's block and a group's few equipment leaving its blocks to go cold between their flushes, 6.5 times aligned's reads before the burst;
+spreading by group is to be measured.
