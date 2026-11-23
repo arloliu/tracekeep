@@ -54,7 +54,7 @@ func TestDefaults(t *testing.T) {
 		}
 	}
 	if c.Catalog.Engine != "sqlite" || c.Store.Kind != "s3" || !c.Store.Presign || !c.Parking.Enabled || c.Ingest.BatchMaxBytes.Int64() != 64<<20 || c.Ingest.MaxRecordBytes.Int64() != 64<<20 ||
-		c.Metrics.Listen != ":9090" || c.Metrics.Pprof || c.Compact.MergeAttempts != 1024 {
+		c.Metrics.Listen != ":9090" || c.Metrics.Pprof || c.Compact.MergeAttempts != 1024 || c.Bus.Replicas != 1 {
 		t.Errorf("config %+v, want the defaults", c)
 	}
 	if host, _ := os.Hostname(); c.Replica != host {
@@ -83,12 +83,14 @@ func TestEnvironmentOverrides(t *testing.T) {
 	t.Setenv("TRACEKEEP_INGEST_FLUSH_INTERVAL", "2m")
 	t.Setenv("TRACEKEEP_PARKING_ENABLED", "false")
 	t.Setenv("TRACEKEEP_METRICS_PPROF", "true")
+	t.Setenv("TRACEKEEP_BUS_REPLICAS", "3")
 	c, err := Load(write(t, minimal+"ingest:\n  flush_interval: 4m\n"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if c.Ingest.FlushInterval != 2*time.Minute || c.Parking.Enabled || !c.Metrics.Pprof {
-		t.Errorf("flush interval %s, parking %v, pprof %v; want the environment's", c.Ingest.FlushInterval, c.Parking.Enabled, c.Metrics.Pprof)
+	if c.Ingest.FlushInterval != 2*time.Minute || c.Parking.Enabled || !c.Metrics.Pprof || c.Bus.Replicas != 3 {
+		t.Errorf("flush interval %s, parking %v, pprof %v, bus replicas %d; want the environment's",
+			c.Ingest.FlushInterval, c.Parking.Enabled, c.Metrics.Pprof, c.Bus.Replicas)
 	}
 }
 
@@ -108,6 +110,8 @@ func TestValidation(t *testing.T) {
 		"s3, no secret":       {yaml("", "", "  s3:\n    bucket: packs\n    access_key_id: ak\n", ""), "store.s3.secret_access_key"},
 		"pprof, no listener":  {yaml("", "", "", "metrics:\n  listen: \"\"\n  pprof: true\n"), "metrics.pprof"},
 		"no merge attempts":   {yaml("", "", "", "compact:\n  merge_attempts: 0\n"), "MergeAttempts"},
+		"no bus replica":      {yaml("", "  url: nats://bus:4222\n  subject_prefix: tk\n  claim_bucket: claims\n  replicas: 0\n", "", ""), "Replicas"},
+		"six bus replicas":    {yaml("", "  url: nats://bus:4222\n  subject_prefix: tk\n  claim_bucket: claims\n  replicas: 6\n", "", ""), "Replicas"},
 	} {
 		if _, err := Load(write(t, tc.yaml)); err == nil || !strings.Contains(err.Error(), tc.want) {
 			t.Errorf("%s: Load = %v, want an error naming %s", name, err, tc.want)

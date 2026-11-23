@@ -1,7 +1,6 @@
 package service
 
 import (
-	"cmp"
 	"context"
 	"database/sql"
 	"errors"
@@ -256,7 +255,7 @@ func TestIngestNeedsTheMapping(t *testing.T) {
 
 // With a group stream's server lost, ingest starts, its traffic and parked consumers joined,
 // and its log stage converts the groups whose streams answer, checking the feed again meanwhile (logfeed.md §15.4).
-// The traffic stream and the claim bucket take three replicas, so the server lost holds only the group stream's copy.
+// The traffic and parking streams and the claim bucket take three replicas (bus.replicas), so the server lost holds only the group stream's copy.
 func TestIngestStartsWithAGroupStreamLost(t *testing.T) {
 	t.Parallel()
 	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
@@ -266,22 +265,7 @@ func TestIngestStartsWithAGroupStreamLost(t *testing.T) {
 			urls[i] = s.ClientURL()
 		}
 		e := envOn(t, c, strings.Join(urls, ","), func(e *Env) {
-			// Created ahead of migrate, which leaves them as they are, each retried: a cluster just formed may leave a request unanswered.
-			tc := busconfig.StreamConfig(bus.StreamName(e.Bus(), catalog.RoleTraffic), e.Config.Bus.SubjectPrefix)
-			tc.Replicas = 3
-			pc := busconfig.ParkedStreamConfig(bus.StreamName(e.Bus(), catalog.RoleParking), cmp.Or(e.Config.Bus.ParkPrefix, busconfig.DefaultParkPrefix), 3)
-			for _, sc := range []jetstream.StreamConfig{tc, pc} {
-				testbus.Retry(t, func(ctx context.Context) error {
-					_, err := e.JS.CreateOrUpdateStream(ctx, sc)
-					return err
-				})
-			}
-			oc := busconfig.ObjectStoreConfig(e.Config.Bus.ClaimBucket)
-			oc.Replicas = 3
-			testbus.Retry(t, func(ctx context.Context) error {
-				_, err := e.JS.CreateOrUpdateObjectStore(ctx, oc)
-				return err
-			})
+			e.Config.Bus.Replicas = 3
 			l := &e.Config.Logfeed
 			l.Enabled, l.LeaseGroups, l.MaxBytes = true, 3, 64<<20
 			l.ReorderWindow, l.FlushInterval = 100*time.Millisecond, 200*time.Millisecond

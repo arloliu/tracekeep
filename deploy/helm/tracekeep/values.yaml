@@ -12,7 +12,11 @@ imagePullSecrets: []
 # Never write a secret here: name it by its *_ref, a file under /run/secrets/<secret>/ mounted from secrets below,
 # such as catalog.dsn_ref: file:///run/secrets/tracekeep-catalog/dsn.
 # The chart sets the work directories (ingest.work_dir, exports.work_dir) and TMPDIR itself.
-config: {}
+config:
+  bus:
+    # The traffic and parking streams' and the claim bucket's replicas, so the loss of one NATS server stops no ingest (T-71);
+    # tracekeep's own default is 1, for a single server, which sets 1 here.
+    replicas: 3
 
 # secrets are Secrets of the release's namespace, each mounted read-only at /run/secrets/<name>/ in every pod and the migrate Job.
 secrets: []

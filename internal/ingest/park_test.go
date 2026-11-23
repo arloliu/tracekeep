@@ -54,9 +54,9 @@ func delivered(m Message) *Delivery {
 // parkingBus runs a bus, standalone or a cluster of three, with the traffic and parking streams of that many replicas.
 func parkingBus(t *testing.T, clustered bool) (jetstream.JetStream, jetstream.Stream) {
 	t.Helper()
-	url := testbus.Start(t)
+	url, replicas := testbus.Start(t), 1
 	if clustered {
-		url = testbus.StartCluster(t, 3)
+		url, replicas = testbus.StartCluster(t, 3), 3
 	}
 	nc, err := nats.Connect(url)
 	if err != nil {
@@ -67,22 +67,10 @@ func parkingBus(t *testing.T, clustered bool) (jetstream.JetStream, jetstream.St
 	if err != nil {
 		t.Fatal(err)
 	}
-	var parked jetstream.Stream
-	testbus.Retry(t, func(actx context.Context) (err error) {
-		if clustered {
-			// Ensure keeps an existing traffic stream, and gives the parking stream its replicas.
-			c := busconfig.StreamConfig(busconfig.DefaultTrafficStream, prefix)
-			c.Replicas = 3
-			if _, err = js.CreateStream(actx, c); errors.Is(err, jetstream.ErrStreamNameAlreadyInUse) {
-				err = nil
-			}
-		}
-		if err == nil {
-			_, parked, err = bus.Ensure(actx, js, bus.Config{SubjectPrefix: prefix, ClaimBucket: bucket})
-		}
-
-		return err
-	})
+	_, parked, err := bus.Ensure(t.Context(), js, bus.Config{SubjectPrefix: prefix, ClaimBucket: bucket, Replicas: replicas})
+	if err != nil {
+		t.Fatal(err)
+	}
 	if clustered {
 		testbus.AwaitStream(t, js, parked)
 	}

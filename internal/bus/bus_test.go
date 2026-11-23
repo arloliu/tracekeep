@@ -3,6 +3,7 @@ package bus_test
 import (
 	"context"
 	"errors"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -34,8 +35,8 @@ func jetStream(t *testing.T) jetstream.JetStream {
 	return js
 }
 
-// Ensure creates the traffic stream, the parking stream with the traffic stream's replicas, and the claim bucket with AllowDirect off,
-// and running it again changes nothing.
+// Ensure creates the traffic stream, the parking stream and the claim bucket with AllowDirect off, each of one replica by default,
+// so a single server takes them, and running it again changes nothing.
 func TestEnsure(t *testing.T) {
 	t.Parallel()
 	ctx := t.Context()
@@ -45,12 +46,12 @@ func TestEnsure(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if got := s.CachedInfo().Config; got.Name != busconfig.DefaultTrafficStream || got.Retention != jetstream.WorkQueuePolicy {
+		if got := s.CachedInfo().Config; got.Name != busconfig.DefaultTrafficStream || got.Retention != jetstream.WorkQueuePolicy || got.Replicas != 1 {
 			t.Fatalf("traffic stream %+v", got)
 		}
 		got := parked.CachedInfo().Config
 		if got.Name != busconfig.DefaultParkedStream || got.Retention != jetstream.WorkQueuePolicy || got.MaxAge != 0 ||
-			got.Replicas != s.CachedInfo().Config.Replicas || len(got.Subjects) != 1 || got.Subjects[0] != busconfig.DefaultParkPrefix+".>" {
+			got.Replicas != 1 || len(got.Subjects) != 1 || got.Subjects[0] != busconfig.DefaultParkPrefix+".>" {
 			t.Fatalf("parking stream %+v", got)
 		}
 	}
@@ -58,9 +59,95 @@ func TestEnsure(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if claims.CachedInfo().Config.AllowDirect {
-		t.Error("the claim bucket's stream has AllowDirect on")
+	if c := claims.CachedInfo().Config; c.AllowDirect || c.Replicas != 1 {
+		t.Errorf("the claim bucket's stream has AllowDirect %t and %d replicas, want off and one", c.AllowDirect, c.Replicas)
 	}
+}
+
+// On three servers, Ensure creates the three streams with bus.replicas;
+// it raises existing ones of one replica, the parking stream before the traffic stream,
+// and refuses, changing nothing, a bus.replicas below an existing count (T-71).
+func TestEnsureReplicas(t *testing.T) {
+	t.Parallel()
+	ctx := t.Context()
+	_, js := cluster(t)
+	names := func(c bus.Config) []string {
+		return []string{bus.StreamName(c, catalog.RoleParking), bus.StreamName(c, catalog.RoleTraffic), busconfig.ClaimStreamName(c.ClaimBucket)}
+	}
+	replicas := func(c bus.Config, want int) {
+		t.Helper()
+		for _, name := range names(c) {
+			var s jetstream.Stream
+			testbus.Retry(t, func(ctx context.Context) (err error) {
+				s, err = js.Stream(ctx, name)
+				return err
+			})
+			if got := s.CachedInfo().Config; got.Replicas != want || got.AllowDirect {
+				t.Errorf("stream %s has %d replicas and AllowDirect %t, want %d and off", name, got.Replicas, got.AllowDirect, want)
+			}
+		}
+	}
+
+	created := bus.Config{Stream: "A", ParkedStream: "A_PARKED", SubjectPrefix: "a", ParkPrefix: "apark", ClaimBucket: "a-claims", Replicas: 3}
+	traffic, parked, err := bus.Ensure(ctx, js, created)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if traffic.CachedInfo().Config.Replicas != 3 || parked.CachedInfo().Config.Replicas != 3 {
+		t.Errorf("Ensure returned streams of %d and %d replicas, want 3", traffic.CachedInfo().Config.Replicas, parked.CachedInfo().Config.Replicas)
+	}
+	replicas(created, 3)
+
+	raised := bus.Config{Stream: "B", ParkedStream: "B_PARKED", SubjectPrefix: "b", ParkPrefix: "bpark", ClaimBucket: "b-claims"}
+	if _, _, err := bus.Ensure(ctx, js, raised); err != nil {
+		t.Fatal(err)
+	}
+	replicas(raised, 1)
+	raised.Replicas = 3
+	rec := &recording{JetStream: js}
+	if traffic, parked, err = bus.Ensure(ctx, rec, raised); err != nil {
+		t.Fatal(err)
+	}
+	if want := names(raised); !slices.Equal(rec.changes, want) {
+		t.Errorf("Ensure raising changed %v, want %v in that order", rec.changes, want)
+	}
+	if traffic.CachedInfo().Config.Replicas != 3 || parked.CachedInfo().Config.Replicas != 3 {
+		t.Errorf("Ensure returned streams of %d and %d replicas, want the raised 3", traffic.CachedInfo().Config.Replicas, parked.CachedInfo().Config.Replicas)
+	}
+	replicas(raised, 3)
+
+	rec = &recording{JetStream: js}
+	for _, lower := range []int{1, 2} {
+		raised.Replicas = lower
+		if _, _, err := bus.Ensure(ctx, rec, raised); !errors.Is(err, bus.ErrReplicasAbove) {
+			t.Errorf("Ensure with bus.replicas %d over streams of 3 = %v, want ErrReplicasAbove", lower, err)
+		}
+	}
+	if len(rec.changes) > 0 {
+		t.Errorf("a refused Ensure changed %v, want nothing", rec.changes)
+	}
+	replicas(raised, 3)
+}
+
+// recording is a JetStream that records the streams it creates or updates, the claim bucket's by its stream's name.
+type recording struct {
+	jetstream.JetStream
+	changes []string
+}
+
+func (r *recording) CreateStream(ctx context.Context, c jetstream.StreamConfig) (jetstream.Stream, error) { //nolint:gocritic // the interface's signature
+	r.changes = append(r.changes, c.Name)
+	return r.JetStream.CreateStream(ctx, c)
+}
+
+func (r *recording) UpdateStream(ctx context.Context, c jetstream.StreamConfig) (jetstream.Stream, error) { //nolint:gocritic // the interface's signature
+	r.changes = append(r.changes, c.Name)
+	return r.JetStream.UpdateStream(ctx, c)
+}
+
+func (r *recording) CreateObjectStore(ctx context.Context, c jetstream.ObjectStoreConfig) (jetstream.ObjectStore, error) { //nolint:gocritic // the interface's signature
+	r.changes = append(r.changes, busconfig.ClaimStreamName(c.Bucket))
+	return r.JetStream.CreateObjectStore(ctx, c)
 }
 
 // Ingest's consumer is named for the stream's incarnation, with explicit acks and no delivery limit.

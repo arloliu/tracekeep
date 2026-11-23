@@ -68,7 +68,7 @@ which the SDK's publish options stamp into the message and which the parking str
 `busconfig` defines the traffic prefix and the park prefix as two distinct first tokens,
 and `Preflight` and `tracekeep migrate` refuse a configuration where either stream's subject filter could match the other's subjects,
 since a different stream name alone separates nothing, and refuse a parking stream with fewer replicas than the traffic stream or with any age, size or count limit
-(`tracekeep migrate` creates it with the traffic stream's replica count);
+(`tracekeep migrate` creates both with `bus.replicas` and, raising existing ones below it, raises the parking stream first, T-71);
 The **parking protocol** puts the catalog row before the copy, so the row, not the copy, is the protection point,
 and **every branch serializes on the capture row**:
 (1) a transaction whose first statement is the prologue of §6.3, which inserts a `pending` capture row when the catalog has none for the capture and otherwise updates the capture's row

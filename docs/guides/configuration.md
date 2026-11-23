@@ -39,6 +39,7 @@ The static token for services stays in `<data>/api-token`.
 | `bus.subject_prefix` | — | `TRACEKEEP_BUS_SUBJECT_PREFIX` | the traffic subjects' prefix, the producers' |
 | `bus.stream`, `bus.parked_stream`, `bus.park_prefix` | `busconfig`'s | `TRACEKEEP_BUS_…` | the traffic and parking streams and the parking prefix |
 | `bus.claim_bucket` | — | `TRACEKEEP_BUS_CLAIM_BUCKET` | the object store large records travel through |
+| `bus.replicas` | `1` (the Helm chart's values: `3`) | `TRACEKEEP_BUS_REPLICAS` | 1 to 5, the traffic and parking streams' and the claim bucket's replicas: with one, the loss of the server holding a stream stops traffic ingest; `migrate` creates each with it and raises an existing one below it, the parking stream first, copying the stream's data to the new replicas in the background, and refuses one above it, which it never lowers (T-71) |
 | `store.kind` | `s3` | `TRACEKEEP_STORE_KIND` | `s3`, or `fs` for a single host |
 | `store.key_prefix` | — | `TRACEKEEP_STORE_KEY_PREFIX` | prefixes every pack key |
 | `store.dir` | — | `TRACEKEEP_STORE_DIR` | the `fs` store's root |
