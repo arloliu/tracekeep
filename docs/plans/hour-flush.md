@@ -1,6 +1,6 @@
 # Hour flush
 
-Status: active (2026-11-23) — the owner's two decisions of 2026-11-23 (T-72); step 1 in this pull request
+Status: active (2026-11-23) — the owner's two decisions of 2026-11-23 (T-72) and ingest's design (T-73); step 3 in this pull request
 
 The work behind the owner's two decisions on the ROADMAP's open item *A fleet's flushes align, and their load with them*:
 stop the hour's change from flushing every equipment's earlier hour at once, and explain why spreading the flushes measured worse on a stream a group before spreading is taken up.
@@ -13,7 +13,7 @@ The measurements it cites are the flush-evidence cells of 2026-11-08 (kept outsi
 |---|---|---|
 | 1 — the log stage holds the hour | the converter's hour trigger and its load switch removed, each equipment keeping its flush times across the hour; `logfeed.md` §15.7 | in-progress |
 | 2 — measure the hold | the before and after cells below, on today's layout, the log stage aligned and dispersed | pending |
-| 3 — ingest holds the hour | a capture's flush time in `Batcher.Due`, its earlier hour registered first, the gap alert judged; `ingest.md` §6.2 | pending |
+| 3 — ingest holds the hour | a capture's flush time in `Batcher.Due`, its earlier hour registered first, the gap alert's `for:` (`alerts.gapsFor`); `ingest.md` §6.2 | done #PR |
 | 4 — explain the spread | the bus-only cells of *Spreading* below, with the harness's switch for a phase a group | pending |
 | 5 — decide the spread | the spec and the decision for spreading by group, or none, from step 4 | pending |
 
@@ -98,8 +98,8 @@ Holding in ingest is not separable from a capture's own flush time in `Batcher.D
   and registers before the earlier hour's batch, which now waits up to F;
   that happens at every hour to a capture that fills `ingest.batch_max_bytes` (64 MiB) within F, where today it needs the size reached within one fetch.
 
-Step 3's design, for the owner: a capture's batches are due together, at its earliest open batch's opening plus F;
-a batch closed early takes its capture's earlier-hour batches with it; `Due` returns them ordered by capture and hour (it iterates a map today),
+Step 3's design, which the owner chose (T-73) and step 3 implements: a capture's batches are due together, at its earliest open batch's opening plus F;
+a batch closed early takes its capture's earlier-hour batches with it; `Due`, `Closed` and the stop's `All` return them ordered by capture and hour (they iterated a map),
 which the ingester's loop already flushes one at a time in order.
 The bound readers rely on holds: no batch waits more than F after its own opening.
 
@@ -111,7 +111,9 @@ The bound readers rely on holds: no batch waits more than F after its own openin
   so one capture's records are split across the replicas' batches and their registrations interleave today, whatever the hour.
   `gap_observations_total` is an event count by its definition (`operations.md` §10.4);
   `TracekeepGapsGrowing` compares `open_gaps` with 30 minutes before at a single evaluation, with no `for:`, so a hole open at that instant fires it.
-- Recommended for step 3: the ordering, and a `for:` of at least F on the alert, judged then on its own, since the replicas' case does not depend on the hold.
+- Step 3 takes both (T-73): the ordering, and a `for:` on the alert, the chart's `alerts.gapsFor`, 10 minutes by default, at least F and a flush,
+  since the replicas' case does not depend on the hold; F reaches the chart only through `config` or the environment, so the value is set beside it.
+  The `for:` delays the rule's declared-loss arm as long.
   The log stage needs neither (step 1).
 
 ### Why spreading measured worse on a stream a group
