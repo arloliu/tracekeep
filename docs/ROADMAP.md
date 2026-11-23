@@ -133,15 +133,15 @@ a lost feed server's return, with its storage and wiped, is tested under the log
     The explanation, pending its measurement (T-72): an acknowledgement makes the server load its entry's block, and a group's 60-odd equipment flushing at their own phases
     leave the group's blocks to go cold between their flushes, so each flush reads them again, 6.5 times aligned's reads before the burst;
     spreading by group keeps one sweep a stream a F and is to be measured.
-  - The hour's change aligned them again, flushing every equipment's earlier hour at once; the log stage no longer does (T-72, `logfeed.md` §15.7),
+  - The hour's change aligned them again, flushing every equipment's earlier hour at once; neither the log stage (T-72, `logfeed.md` §15.7) nor ingest (T-73, `ingest.md` §6.2) does any longer,
     which keeps a fleet's flush times: on an aligned fleet that removes at most one wave an hour, unmeasured.
     Leaving an earlier hour's batches to the equipment's next flush, with spreading, took the hour's busiest second from 997 to 32 puts,
     the catalog's commits a second at p99 from 394 to 72 and its row lock waits from 1,318 to 108, with 30 % fewer packs.
-    Ingest still flushes every capture's earlier hour at the change (`ingest.md` §6.2).
+    In ingest a capture's batches are due together at its earliest opening plus F, so each capture keeps its flush times across the hour.
   - No reader assumes an earlier hour sooner: every bound already allows a batch to wait F
     (`compact.quiet_period` must exceed `ingest.flush_interval` + `ingest.ack_wait` + `compact.redelivery_slack`, and the log stage's F must be below `ingest.ack_wait`).
-  - Left to change (the plan's step 3): ingest's `Batcher.Due`, a capture's batches due together at its earliest opening plus F, an early-closed batch taking its earlier hours along,
-    and the earlier hour registered first; the gap alert's `for:` is judged with it, since ingest's replicas already register one capture's records out of order.
+  - Ingest's step is done (T-73): a batch closed early takes its capture's earlier hours along and the earlier hour registers first;
+    `TracekeepGapsGrowing` holds for `alerts.gapsFor` (10 min by default, at least F and a flush), since ingest's replicas still register one capture's records out of order.
 - go-secs is asked to export a filtered JSONL writer; until it does, `StartExport` refuses `kind=filtered` (T-48).
 - Configuration retirement waits for the first release that needs it.
 - The veq branch `docs/ve/log-service-decisions` (commit 7b8a019) carries the LS-row amendments and V-35;

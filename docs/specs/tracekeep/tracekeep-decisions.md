@@ -1070,3 +1070,16 @@ it **never lowers one**: a stream or bucket above `bus.replicas` is refused, bef
 On a standalone host, whose unit migrates before every start, such a stream refuses every start until then.
 The producer SDK is unchanged: `Preflight` compares the parking stream's replicas with the traffic stream's only.
 Considered and not taken: a default of 3, which a single server cannot place; `migrate` only warning, or refusing, on a stream below the key; and `migrate` lowering a stream to the key, which would drop copies the operator chose to keep.
+
+### T-73 — ingest holds the hour: a capture's batches due together, its earlier hour first, the gap alert held (2026-11-23)
+
+T-72 left ingest's hour trigger in place: each batch was due F after its own opening, and a capture's earlier hour was due once the capture had a record of a later hour,
+so the hour's change flushed every capture's earlier hour at once; dropping that clause alone would realign the fleet F after the hour, its later-hour batches all opening with the hour,
+and a later-hour batch closed early (`ingest.batch_max_bytes` or the metadata budget, flushed within the fetch) would register before its capture's earlier hour, a hole until that hour's flush.
+The owner chose, on 2026-11-23, the three recommendations of `docs/plans/hour-flush.md` for its step 3 (`ingest.md` §6.2, `operations.md` §10.4):
+**a capture's batches are due together**, at its earliest open batch's opening plus F, so a capture keeps its flush times across the hour and no batch waits more than F after its own opening;
+**a capture's earlier hour registers first**: a batch closed early takes its capture's earlier-hour batches with it, and the batches due at once are flushed ordered by capture and hour,
+each still in its own transaction under the same prologue;
+and **`TracekeepGapsGrowing` gets a `for:` of at least F**, since ingest's replicas share one consumer and already register one capture's records out of order, whatever the hour.
+The chart's `alerts.gapsFor` is 10 minutes, twice the default F, for the flush, the gauges' refresh and the scrape; an operator raising F raises it with F.
+The ordering sorts the batches due at once: 0.2 ms more a pass at 1,500 batches, a pass every F.
