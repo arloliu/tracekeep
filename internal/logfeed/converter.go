@@ -84,12 +84,10 @@ type Converter struct {
 	HorizonHour func() int64
 	// Phase, when set, places each equipment's flushes on the wall clock: due at the times congruent to its phase modulo F,
 	// whatever flushed it before, so a fleet's flushes stay spread over F; nil makes a flush due F after the previous one.
-	Phase func(equipmentID string) time.Duration
-	// HoldHours, when set, leaves an earlier hour's batches to the equipment's next flush instead of flushing them at the hour change.
-	HoldHours bool
-	Now       func() time.Time
-	Log       *slog.Logger
-	Metrics   *metrics.Logfeed
+	Phase   func(equipmentID string) time.Duration
+	Now     func() time.Time
+	Log     *slog.Logger
+	Metrics *metrics.Logfeed
 
 	// register, a test seam, is called in place of the catalog's RegisterLogFlush when set.
 	register func(context.Context, catalog.Lease, *catalog.LogFlush) (catalog.PackOutcome, error)
@@ -335,7 +333,8 @@ func (c *Converter) Tick(ctx context.Context, now time.Time) error {
 				}
 			}
 		}
-		due := now.After(eq.nextFlush) || eq.stopDue() || eq.requested(requests) || c.full(eq) || !c.HoldHours && eq.hourChanged()
+		// An hour's change is no trigger: an earlier hour's batches wait for the equipment's next flush, so its cadence holds across the hour (§15.7).
+		due := now.After(eq.nextFlush) || eq.stopDue() || eq.requested(requests) || c.full(eq)
 		if due {
 			if err := c.flush(ctx, eq, requests); err != nil {
 				return err
@@ -716,16 +715,6 @@ func (c *Converter) full(eq *equipmentState) bool {
 	return eq.bytes >= maxBytes || eq.meta >= maxMeta
 }
 
-// hourChanged reports batches of more than one hour, whose earlier ones are flushed at the hour change (ingest.md §6.2).
-func (eq *equipmentState) hourChanged() bool {
-	hours := map[int64]bool{}
-	for k := range eq.batches {
-		hours[k.hour] = true
-	}
-
-	return len(hours) > 1
-}
-
 // stopDue reports a file of eq that is stopping, which its next flush registers.
 func (eq *equipmentState) stopDue() bool {
 	for _, f := range eq.files {
@@ -1039,7 +1028,7 @@ func (c *Converter) clone(l catalog.Lease, n int) *Converter {
 		Lease: l, Group: n, Catalog: c.Catalog, Store: c.Store, KeyPrefix: c.KeyPrefix, WorkDir: c.WorkDir, Writer: c.Writer,
 		Configs: c.Configs, Bindable: c.Bindable, Keys: c.Keys, Devices: c.Devices, Flush: c.Flush, Reorder: c.Reorder, Idle: c.Idle,
 		AckWait: c.AckWait, Pairing: c.Pairing, MaxBatchBytes: c.MaxBatchBytes, MetaBytes: c.MetaBytes, GroupBytes: c.GroupBytes, MaxHeld: c.MaxHeld,
-		HorizonHour: c.HorizonHour, Phase: c.Phase, HoldHours: c.HoldHours,
+		HorizonHour: c.HorizonHour, Phase: c.Phase,
 		Now: c.Now, Log: c.Log, Metrics: c.Metrics,
 	}
 }

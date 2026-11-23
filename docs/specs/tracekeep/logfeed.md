@@ -330,8 +330,11 @@ records are written with `SegmentWriter.Append` (fidelity `reconstructed`, `deco
 ### 15.7 Flush, registration and acknowledgement
 
 - **Batches** per (capture, UTC hour of the record), as `ingest.md` §6.2 states;
-  but a flush takes **every batch of its equipment**, whatever triggered it (F, `logfeed.flush_interval`, ingest's F, T-25; `ingest.batch_max_bytes`; the metadata budget; an hour change),
+  but a flush takes **every batch of its equipment**, whatever triggered it (F, `logfeed.flush_interval`, ingest's F, T-25; `ingest.batch_max_bytes`; the metadata budget),
   so the watermark it writes covers everything converted before it, across devices and hours;
+  **an hour's change triggers no flush**, unlike ingest's (`ingest.md` §6.2): an earlier hour's batches wait for the equipment's next flush, F after its previous one (T-72),
+  so each equipment keeps its flush times across the hour and a fleet's flushes do not all fall at the hour's start;
+  every reader's bound already allows a batch to wait F (`compact.quiet_period` exceeds F, `api.md` §10.1 *The cursor*);
   an equipment has at most one flush registering at a time;
   generation-0 segments under [STO §3] keys with `flush_interval_ns`, the writer's `PackFacts.DurableRecorder` set ([FMT §5], G5-302).
 - **One registration transaction per equipment's flush** (`RegisterLogFlush`, `catalog.md` §7.2), never one per segment:
