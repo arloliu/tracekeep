@@ -17,6 +17,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/nats-io/nats.go/jetstream"
 
+	"github.com/arloliu/tracekeep/internal/bus"
 	"github.com/arloliu/tracekeep/internal/catalog"
 	"github.com/arloliu/tracekeep/internal/store"
 	"github.com/arloliu/tracekeep/internal/store/s3store"
@@ -115,10 +116,16 @@ func installSeries(ctx context.Context, t *testing.T, d *Dev) *seriesStore {
 // recordSeries writes series.csv a row a second until ctx ends, and packs.csv once the run is over.
 func recordSeries(ctx context.Context, t *testing.T, h *loadHarness, s *seriesStore) {
 	t.Helper()
-	feed, err := h.d.Env.JS.Stream(ctx, h.d.Env.Config.Logfeed.Stream)
-	if err != nil {
-		t.Fatal(err)
+	// The feed's columns sum its group streams (logfeed.md §15.4).
+	feed := make([]jetstream.Stream, 0, h.d.Env.Feed().Groups)
+	for n := range h.d.Env.Feed().Groups {
+		st, err := h.d.Env.JS.Stream(ctx, bus.FeedStreamName(h.d.Env.Feed(), n))
+		if err != nil {
+			t.Fatal(err)
+		}
+		feed = append(feed, st)
 	}
+	var err error
 	dir := os.Getenv(envSeries)
 	var db *sql.DB
 	if h.engine == catalog.EngineMariaDB {
@@ -149,13 +156,21 @@ func recordSeries(ctx context.Context, t *testing.T, h *loadHarness, s *seriesSt
 				row := []string{strconv.FormatInt(now.Unix(), 10),
 					strconv.FormatInt(lg.n, 10), strconv.FormatInt(lg.bytes, 10), strconv.FormatInt(lg.slowest.Milliseconds(), 10),
 					strconv.FormatInt(tr.n, 10), strconv.FormatInt(tr.bytes, 10), strconv.FormatInt(tr.slowest.Milliseconds(), 10)}
-				for _, st := range []jetstream.Stream{feed, h.stream} {
-					si, err := st.Info(ctx)
+				for _, sts := range [][]jetstream.Stream{feed, {h.stream}} {
+					var last, msgs uint64
+					var err error
+					for _, st := range sts {
+						si, ierr := st.Info(ctx)
+						if err = ierr; err != nil {
+							break
+						}
+						last, msgs = last+si.State.LastSeq, msgs+si.State.Msgs
+					}
 					if err != nil {
 						row = append(row, "", "")
 						continue
 					}
-					row = append(row, strconv.FormatUint(si.State.LastSeq, 10), strconv.FormatUint(si.State.Msgs, 10))
+					row = append(row, strconv.FormatUint(last, 10), strconv.FormatUint(msgs, 10))
 				}
 				row = append(row, globalStatus(ctx, db, append([]string{"Threads_running"}, status...))...)
 				_ = w.Write(row)
