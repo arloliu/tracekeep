@@ -22,6 +22,8 @@
 
 - Never use `time.Sleep` to wait for state; wait on the event or channel that signals it.
 - `time.Sleep` is acceptable only to *inject* a delay into the scenario itself.
+- The one exception is external state no event announces, such as a RAFT election or a stream's removal after an acknowledgement:
+  poll it within a deadline, failing loudly with what was awaited when the deadline passes.
 - A concurrent schedule is **barrier-controlled**, never timed:
   the test holds a goroutine at a named point (between unlock and enqueue, between commit and acknowledgement),
   runs the competing step, then releases it.
