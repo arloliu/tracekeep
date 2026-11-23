@@ -103,6 +103,7 @@ spec:
             )
         ) > 0
         or min by (equipment_id) (time() - tracekeep_ingest_last_declared_loss_timestamp_seconds) < 1800
+      for: {{ .Values.alerts.gapsFor }}
       labels:
         severity: warning
       annotations:

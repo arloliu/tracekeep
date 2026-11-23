@@ -118,6 +118,7 @@ Every role serves `/healthz` (liveness) and `/readyz` (readiness) on the metrics
 With `alerts.enabled` and the Prometheus Operator's CRDs, the chart installs a `PrometheusRule`
 whose alerts each link a section of `docs/guides/runbook.md` (`alerts.runbookURL`); `alerts.gateway.enabled` adds the rules on the gateways' metrics,
 for a Prometheus that scrapes the gateways too. The rules are in `docs/specs/tracekeep/operations.md` §10.4.
+`alerts.gapsFor`, the time `TracekeepGapsGrowing` holds before it fires, must be at least `ingest.flush_interval` and a flush: raise it with F.
 
 ## Checks
 
