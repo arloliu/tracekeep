@@ -144,10 +144,20 @@ the cases prove the decision, the schedules prove the re-reads under the capture
 
 - A batch is per (capture, UTC hour of `ts_utc_ns`);
   the hour is the record's, never the delivery's ([STO §4] *Scope and order*).
-- At flush (interval F, size threshold, or hour change) the batch is **sorted by seq**;
+- **A capture's batches are due together**, at its earliest open batch's opening plus F (`ingest.flush_interval`, T-25),
+  so no batch waits more than F after its own opening, which every reader's bound already allows (`compact.quiet_period` exceeds F, `api.md` §10.1 *The cursor*).
+  **An hour's change triggers no flush** (T-72, T-73): a capture's earlier hour waits for the capture's next flush, which takes its later hour too,
+  so each capture keeps its flush times across the hour and a fleet's flushes do not all fall at the hour's start.
+- **Earlier hour first**: a batch closed early, by the size threshold or the metadata budget, takes its capture's open batches of an earlier hour with it,
+  and the batches due at once are flushed one at a time, ordered by capture and hour;
+  so a capture's earlier hour registers first, and within one replica a later hour shows the earlier hour's tail as a hole only while the earlier hour's flush is retried.
+  Each batch still registers in its own transaction (§6.3).
+  The replicas share one consumer, so one capture's records are split across their batches and still register out of order between replicas,
+  a hole that closes within F and a flush (`operations.md` §10.4 `TracekeepGapsGrowing`).
+- At flush the batch is **sorted by seq**;
   equal seq with equal bytes keeps one.
 - **The size threshold** (`ingest.batch_max_bytes`) is checked as each record joins its batch:
-  a batch that reaches it is flushed before the fetch's next delivery is batched,
+  a batch that reaches it is flushed, with its capture's earlier hours, before the fetch's next delivery is batched,
   so a scope holds at most the threshold and one record, never a whole fetch.
 - **The metadata budget**: a segment's redaction entries are its metadata, which every reader opens within a budget (tracepack's default, 64 MiB),
   so a batch closes, due at once, before the record whose entries would take their estimated encoded size past half of it,
