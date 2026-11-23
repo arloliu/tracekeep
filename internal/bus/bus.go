@@ -134,14 +134,27 @@ func ensureStream(ctx context.Context, js jetstream.JetStream, s jetstream.Strea
 // raise updates s to n replicas when it has fewer, and turns its AllowDirect off when directOff is set, its other settings as they are;
 // it returns s when there is nothing to change.
 // The update returns before the new replicas hold the stream's data, which the servers copy to them meanwhile.
+// The stream is read again just before, so a count raised meanwhile by another migrate is refused above n, never written back lower.
+// shortcut: two migrates of different bus.replicas updating at once can still race between that read and the update; migrate runs one at a time.
 func raise(ctx context.Context, js jetstream.JetStream, s jetstream.Stream, n int, directOff bool) (jetstream.Stream, error) {
-	c := s.CachedInfo().Config
+	var info *jetstream.StreamInfo
+	err := Retry(ctx, time.Second, func(ctx context.Context) (err error) {
+		info, err = s.Info(ctx)
+		return err
+	})
+	if err != nil {
+		return nil, err
+	}
+	c := info.Config
+	if r := max(c.Replicas, 1); r > n {
+		return nil, fmt.Errorf("%w: %d replicas, bus.replicas %d", ErrReplicasAbove, r, n)
+	}
 	if max(c.Replicas, 1) >= n && (!directOff || !c.AllowDirect) {
 		return s, nil
 	}
-	c.Replicas = max(c.Replicas, n)
+	c.Replicas = n
 	c.AllowDirect = c.AllowDirect && !directOff
-	err := Retry(ctx, time.Second, func(ctx context.Context) (err error) {
+	err = Retry(ctx, time.Second, func(ctx context.Context) (err error) {
 		s, err = js.UpdateStream(ctx, c)
 		return err
 	})
