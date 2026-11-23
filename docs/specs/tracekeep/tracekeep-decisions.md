@@ -1022,3 +1022,22 @@ a group converts no delivery read after its connection dropped and starts no tic
 and **a fetch is bounded by bytes**, 32 MiB, half the server's default pending, divided among the groups, each fetch at least a delivery of the server's `max_payload`
 (so 32.25 MiB at the default G = 32 and `max_payload`), and after a bounded fetch that delivered nothing the next takes one message unbounded, so a larger message never stalls a group.
 Considered and not taken: only bounding the fetches' bytes, which removes this slow consumer and leaves any other drop, a server's restart or a network fault, losing entries the same way.
+
+### T-70 — a group stream that cannot answer keeps no role from starting (2026-11-23)
+
+With the feed enabled, every start of the `ingest`, `compact` and `all` roles read every group stream and probed the servers' mapping, and refused to start on any failure:
+a server lost with streams of one replica kept a pod restarted during the outage from starting, its traffic ingest included,
+while a pod already running converted every group but the lost one's (§15.4, the probe of 2026-11-19).
+`compact` reads no feed stream at all.
+A probe on three servers, one shut down, showed a lost stream's read refused as offline (10118) within 0.5 s,
+and a probe into its group routed by the mapping, its copy read, its publish unanswered, which the check reported as a wrong mapping.
+The owner chose, on 2026-11-23 (`logfeed.md` §15.4, §15.11), **the feed's check the log stage's alone**: `compact` checks no feed stream,
+and `ingest` starts its traffic and parked consumers whatever the check finds a stream cannot answer.
+Its first form had the stage take no group until the check passed; the stage's share counts every live replica, its traffic membership included,
+so the others would have left that replica's share of the reachable groups unconverted for the outage, where before the change they took every one.
+The owner chose instead that **the stage balances the groups as a running replica's does**, the lost group's converter giving up,
+and retries the whole check every third of the lease lifetime until it passes.
+A **refusal**, a stream missing, of other subjects or overlapping another, or a mapping of another count, still fails `ingest`'s start, and found by the retry ends the role;
+any other failure, a stream read unanswered within 5 s or refused as offline, or a probe its group's stream does not answer, is retried.
+Considered and not taken: keeping the start refused, the runbook's way out `logfeed.enabled: false`, which stops every group's conversion and takes two rollouts;
+and a membership of the stage's own, so a replica waiting for the check counts in no share, a catalog change for the same outcome.

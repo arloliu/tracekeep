@@ -75,6 +75,7 @@ The host log feed (P3; T-60, T-62 to T-66) is done (#100, #101, #102, #103, #104
 its closed plan's last text, with its measurements and the gate's runs, is at 3c11e5e.
 The feed stream a group (T-67, T-68, T-69) is done (#120, #121, #122, #123, #124, #127, #128, #129, #130, #131), each lease group's own stream of one replica;
 its closed plan's last text, with its probes, the server-loss measurement and the gate's runs, is at 05992ba.
+A group stream that cannot answer keeps no role from starting (T-70), the log stage alone retrying the feed's check.
 
 ## Open items
 
@@ -83,10 +84,6 @@ its closed plan's last text, with its probes, the server-loss measurement and th
   The cause is not proven (the test efficiency plan's last text, 10803c8).
 - `TestCopiesFromAFollower/mariadb` (`internal/compact`) failed once in CI on 2026-11-19, `Copies` through a follower counting none where one copy was acknowledged,
   and passed on its rerun; the cause is not diagnosed.
-- With the feed enabled, the `ingest`, `compact` and `all` roles do not start while a group stream cannot answer, its server lost (`logfeed.md` §15.4):
-  their preflight reads every group stream and probes the servers' mapping, so a pod restarting during the outage waits for the server, traffic ingest included.
-  The runbook's way out is `logfeed.enabled: false` until the server is back (`log-feed-stream-unreadable`);
-  whether a role should start with the groups it can reach is the owner's to decide.
 - The SDK sometimes marks a capture's first S1F3 ordering-uncertain, observed before its predecessor (`producer.md` §4.2);
   tracepack's lookup then does not match it, and the packaging browser test accepts that only with the gap shown.
   Why the first request is observed before the records allocated ahead of it is still open.

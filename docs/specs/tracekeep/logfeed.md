@@ -1,6 +1,6 @@
 # tracekeep — host log feed
 
-Status: current (2026-11-19) — from P3 as T-60 accepted it, delivered by the host log feed plan (#101–#112)
+Status: current (2026-11-23) — from P3 as T-60 accepted it, delivered by the host log feed plan (#101–#112)
 
 Covers the host log feed: a log pipeline parses the SECS traffic a host program prints to its text log,
 and tracekeep pairs the entries, builds the frames and writes `capture_method = log` captures as they arrive.
@@ -131,7 +131,7 @@ The contract between the pipeline and tracekeep is a versioned field schema, one
 - **The streams**, one a lease group (T-67): group n's is `<stream>_<n>`, `logfeed.stream` being `TRACEKEEP_LOGFEED` by default,
   its subjects `<logprefix>.<n>.*`, `logprefix` being `tklog` by default (`logfeed.prefix`), and n running below G, `logfeed.lease_groups` (32).
   The service refuses a log prefix whose first token equals the traffic or parking prefix's, and a feed stream named as either stream,
-  and `migrate` and preflight check every group stream's subjects against both existing streams (`busconfig.SubjectsOverlap`);
+  and `migrate` and the log stage's preflight check every group stream's subjects against both existing streams (`busconfig.SubjectsOverlap`);
   the check is the service's, never the SDK's `busconfig` validation (T-60).
 - Work-queue retention and file storage, as `TRACEKEEP_TRAFFIC`: a message is deleted once acknowledged.
 - **No compression** (T-64), which `migrate` cannot change in a running store, so it refuses a compressed feed stream, to be drained, deleted and migrated again:
@@ -145,7 +145,10 @@ The contract between the pipeline and tracekeep is a versioned field schema, one
   Three keep a group's stream taking publishes once a remaining server leads it, at about three times the bus's resources (T-67).
   A server lost with its storage loses the entries its streams held, those not yet converted;
   a replacement under its name and tag, or under another name with its tag once the lost server is removed from the cluster's peers, takes its streams again, empty (§15.10).
-  While a group's stream cannot answer, the `ingest`, `compact` and `all` roles do not start with the feed enabled, their preflight reading every group's stream and probing the mapping (§15.11).
+  While a group's stream cannot answer, the roles still start (T-70): `compact` reads no feed stream and checks none,
+  and `ingest` starts its traffic and parked consumers and its log stage, which balances the groups as a running replica's does, the lost group's converter giving up,
+  and retries its preflight, reading every group's stream and probing the mapping (§15.11), every third of the lease lifetime until it passes;
+  a preflight that refuses the streams or the mapping, a stream missing or of other subjects, or a mapping of another count, fails `ingest`'s start, and its retry ends the role.
 - **Placement** (`logfeed.placement_tags`): group n's stream is placed on the server tagged with the list's tag n mod its length, so the streams spread round-robin over the servers;
   an empty list places none, for a single server, since unplaced streams of one replica all landed on one server (T-68).
   The operations team tags each server (`server_tags`), each tag naming one server's: two tags on one server put both shares on it.
@@ -507,9 +510,10 @@ a merged segment's deletion about 0.6 ms (`RegisterPack/miss`, unmeasured for de
 | `logfeed.device_overrides` | none | per `equipment_id`, rules that replace the table's |
 
 The feed's consumers take `ingest.ack_wait` and its heartbeat.
-Preflight checks that the servers' mapping partitions the feed's subjects into G, every group's stream reached (§15.4):
+The log stage's preflight, at the `ingest` role's start, checks that the servers' mapping partitions the feed's subjects into G, every group's stream reached (§15.4):
 it publishes 32(G+1) probes under tokens `_tracekeep_probe_<i>`, every one whatever the first reach, so a count even one above G shows, each expecting a last sequence no stream reaches, so the group stream that takes one refuses to store it,
 and a core subscription of its own reads the group the mapping chose;
+a stream read unanswered within 5 s or refused as offline, a probe that group's stream does not answer, and any failure but a refusal are a stream that cannot answer, which the stage retries (T-70);
 `tracekeep status`, the metrics and readiness report each group's stream.
 
 **Admin**:
