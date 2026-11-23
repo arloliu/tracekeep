@@ -1,6 +1,7 @@
 package catalog
 
 import (
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -74,23 +75,33 @@ func leaseRowHeld(t *testing.T, c *Catalog, release chan struct{}) {
 }
 
 // waitBehindLeaseRow waits until the lapse of the compactor lease, `UPDATE leases`, waits on the lease row leaseRowHeld proved held:
-// on MariaDB until the lapse is inside its statement in this test's own database, which the held row then keeps waiting,
+// on MariaDB until InnoDB's monitor shows a lock wait on this test's own database's leases table, the lapse's,
 // on SQLite until it waits for the one writer.
+// The process list is not enough: it shows a statement from its start, before it asks for the row,
+// so a transaction that takes the row after the held one commits could still come first.
+// INNODB_TRX is not either: its cache refreshes only after 100 ms without a read, which this poll would prevent.
 // On a failure it closes release first, so the held transaction ends.
 func waitBehindLeaseRow(t *testing.T, c *Catalog, waitsBefore int64, release chan struct{}) {
 	t.Helper()
+	var db string
+	if c.d.name != EngineSQLite {
+		if err := c.read.GetContext(t.Context(), &db, `SELECT DATABASE()`); err != nil {
+			close(release)
+			t.Fatalf("database: %v", err)
+		}
+	}
 	deadline := time.Now().Add(10 * time.Second)
 	for {
 		reached := c.write.Stats().WaitCount > waitsBefore
 		if c.d.name != EngineSQLite {
-			var inside int
-			err := c.read.GetContext(t.Context(), &inside, `SELECT COUNT(*) FROM information_schema.PROCESSLIST
-				WHERE DB = DATABASE() AND INFO LIKE 'UPDATE leases%'`)
-			if err != nil {
+			var typ, name, status string
+			if err := c.read.QueryRowContext(t.Context(), `SHOW ENGINE INNODB STATUS`).Scan(&typ, &name, &status); err != nil {
 				close(release)
-				t.Fatalf("process list: %v", err)
+				t.Fatalf("InnoDB status: %v", err)
 			}
-			reached = inside > 0
+			reached = slices.ContainsFunc(strings.Split(status, "\n"), func(l string) bool {
+				return strings.Contains(l, " of table `"+db+"`.`leases` ") && strings.HasSuffix(l, " waiting")
+			})
 		}
 		switch {
 		case reached:
