@@ -264,7 +264,8 @@ api:
   service: {type: NodePort, port: 8443, nodePort: 30443}
 config:
   catalog: {engine: mariadb, dsn_ref: "file:///run/secrets/tracekeep-catalog/dsn"}
-  bus: {url: "nats://nats:4222", subject_prefix: tpk, claim_bucket: tpk-objects}
+  # One NATS server here, below the chart's default of three replicas.
+  bus: {url: "nats://nats:4222", subject_prefix: tpk, claim_bucket: tpk-objects, replicas: 1}
   store:
     kind: s3
     presign: false

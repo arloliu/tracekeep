@@ -367,11 +367,14 @@ func (e *Env) now() time.Time {
 	return time.Now()
 }
 
-// Bus names the bus's streams and prefixes.
+// Bus names the bus's streams and prefixes, and their replicas.
 func (e *Env) Bus() bus.Config {
 	b := &e.Config.Bus
 
-	return bus.Config{Stream: b.Stream, SubjectPrefix: b.SubjectPrefix, ParkedStream: b.ParkedStream, ParkPrefix: b.ParkPrefix, ClaimBucket: b.ClaimBucket}
+	return bus.Config{
+		Stream: b.Stream, SubjectPrefix: b.SubjectPrefix, ParkedStream: b.ParkedStream, ParkPrefix: b.ParkPrefix, ClaimBucket: b.ClaimBucket,
+		Replicas: b.Replicas,
+	}
 }
 
 // horizon is the retention horizon, in UTC nanoseconds.

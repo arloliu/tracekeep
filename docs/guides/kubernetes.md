@@ -65,6 +65,12 @@ config:
 
 - **`config`** is tracekeep's configuration, rendered as `config.yaml` for every role and the `migrate` Job.
   The chart sets the work directories (`ingest.work_dir`, `exports.work_dir`) and `TMPDIR` on `/work`.
+- **`bus.replicas` is 3 in the chart's values** (tracekeep's own default is 1):
+  the traffic and parking streams and the claim bucket each keep three copies, so the loss of one NATS server stops no traffic ingest (T-71).
+  The cluster needs three JetStream servers; on a single server, set `config.bus.replicas: 1`.
+  An upgrade from streams of one replica raises them in its `migrate` Job, the parking stream first;
+  the servers copy each stream's data to its new replicas after the Job ends, which takes a while for a stream holding a backlog.
+  `migrate` never lowers a stream's replicas, and refuses one above `bus.replicas`.
 - **A credential is never written in the values**: name a file under `/run/secrets/<secret>/` by its `*_ref`,
   and list the Secret in `secrets`, each mounted read-only at `/run/secrets/<name>/` in every pod and the Job.
   The chart refuses to render `catalog.dsn`, `bus.password` or `store.s3.secret_access_key` written inline.

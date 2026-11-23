@@ -70,6 +70,9 @@ type Bus struct {
 	// ParkPrefix is the parking subjects' prefix; empty takes busconfig's default.
 	ParkPrefix  string `yaml:"park_prefix" env:"TRACEKEEP_BUS_PARK_PREFIX"`
 	ClaimBucket string `yaml:"claim_bucket" env:"TRACEKEEP_BUS_CLAIM_BUCKET" validate:"required"`
+	// Replicas are the traffic stream's, the parking stream's and the claim bucket's;
+	// migrate raises one below it and refuses one above it (T-71).
+	Replicas int `yaml:"replicas" default:"1" env:"TRACEKEEP_BUS_REPLICAS" validate:"gt=0,lte=5"`
 }
 
 // Store is the object store packs live in (storage.md §5.2).

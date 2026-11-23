@@ -11,6 +11,8 @@ The design is `docs/specs/tracekeep/architecture.md` §3.3; every configuration 
 One process runs every role (`tracekeep all`) as the system user `tracekeep`, with its state in `/var/lib/tracekeep`:
 the SQLite catalog for a single-host pilot (or MariaDB on or off the host), an `fs` store (or any S3-compatible endpoint), and the work directories.
 The bus (NATS with JetStream) and the IdP are the host's or the network's.
+`bus.replicas` defaults to 1, for a single NATS server;
+on a cluster of three JetStream servers, set it to 3, so the loss of one stops no traffic ingest (`docs/guides/configuration.md`, T-71).
 
 ## Install
 

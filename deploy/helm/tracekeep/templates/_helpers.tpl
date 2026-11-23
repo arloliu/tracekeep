@@ -35,16 +35,16 @@ app.kubernetes.io/component: {{ .role }}
 {{- end -}}
 
 {{/*
-The config.yaml every role reads: the values' config, refused when empty,
+The config.yaml every role reads: the values' config, refused when empty but for the chart's own bus.replicas,
 and refused when it writes a credential the configuration could take by reference instead (architecture.md §3.3).
 */}}
 {{- define "tracekeep.config" -}}
 {{- $c := .Values.config -}}
-{{- if not $c -}}
+{{- $bus := default dict $c.bus -}}
+{{- if and (not (omit $c "bus")) (not (omit $bus "replicas")) -}}
 {{- fail "config is tracekeep's configuration and is required (docs/guides/kubernetes.md)" -}}
 {{- end -}}
 {{- $catalog := default dict $c.catalog -}}
-{{- $bus := default dict $c.bus -}}
 {{- $s3 := default dict (default dict $c.store).s3 -}}
 {{- range $path, $set := dict "catalog.dsn" (hasKey $catalog "dsn") "bus.password" (hasKey $bus "password") "store.s3.secret_access_key" (hasKey $s3 "secret_access_key") -}}
 {{- if $set -}}
