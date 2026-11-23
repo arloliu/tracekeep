@@ -76,6 +76,8 @@ its closed plan's last text, with its measurements and the gate's runs, is at 3c
 The feed stream a group (T-67, T-68, T-69) is done (#120, #121, #122, #123, #124, #127, #128, #129, #130, #131), each lease group's own stream of one replica;
 its closed plan's last text, with its probes, the server-loss measurement and the gate's runs, is at 05992ba.
 A group stream that cannot answer keeps no role from starting (T-70), the log stage alone retrying the feed's check.
+The traffic and parking streams and the claim bucket take `bus.replicas` (T-71), 3 in the Helm chart's values, `migrate` raising and never lowering them;
+a lost feed server's return, with its storage and wiped, is tested under the log stage's real check (T-70).
 
 ## Open items
 
