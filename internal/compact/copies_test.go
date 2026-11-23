@@ -75,17 +75,45 @@ func (b *streams) copyOf(t *testing.T, c *catalog.Catalog, capture tracepack.UUI
 	return &cp
 }
 
-// acknowledge acknowledges the next message of the parking stream, confirmed by the server.
+// acknowledge acknowledges the next message of the parking stream, confirmed by the server,
+// and waits until the stream no longer holds it.
+// A consumer just created on a cluster may not answer yet: its pull request then has no responders and the batch ends empty,
+// so the fetch is repeated until a message comes.
+// A replicated consumer confirms an acknowledgement once it applies it, and only then proposes the message's removal to the stream
+// (nats-server's processReplicatedAck, then stream.ackMsg), so a read right after the confirmation can still find the message.
+// No event announces either, so it polls.
 func (b *streams) acknowledge(t *testing.T) {
 	t.Helper()
-	msgs, err := b.cons.Fetch(1, jetstream.FetchMaxWait(5*time.Second))
+	deadline := time.Now().Add(10 * time.Second)
+	var m jetstream.Msg
+	for m == nil {
+		msgs, err := b.cons.Fetch(1, jetstream.FetchMaxWait(5*time.Second))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if m = <-msgs.Messages(); m == nil {
+			if !errors.Is(msgs.Error(), nats.ErrNoResponders) || time.Now().After(deadline) {
+				t.Fatalf("no message to acknowledge: %v", msgs.Error())
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
+	md, err := m.Metadata()
 	if err != nil {
 		t.Fatal(err)
 	}
-	for m := range msgs.Messages() {
-		if err := m.DoubleAck(t.Context()); err != nil {
-			t.Fatal(err)
+	if err := m.DoubleAck(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	for {
+		_, err := b.parked.GetMsg(t.Context(), md.Sequence.Stream)
+		if errors.Is(err, jetstream.ErrMsgNotFound) {
+			return
 		}
+		if time.Now().After(deadline) {
+			t.Fatalf("stream seq %d still held after its acknowledgement: %v", md.Sequence.Stream, err)
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }
 
