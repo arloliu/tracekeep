@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"slices"
 	"strconv"
 	"testing"
 	"time"
@@ -22,7 +21,8 @@ import (
 // until its flush as the log stage does, to judge how the stream's layout bears it:
 // TRACEKEEP_LOAD_STREAMS is 1, the feed's one partitioned stream, or feedGroups, a stream a group, which the servers' subject mapping
 // partitions the publishes into (scripts/load-feed.sh BUS_FEED_STREAMS), so the publishers name no stream;
-// TRACEKEEP_LOAD_REPLICAS is the streams' replicas, 1 or 3; TRACEKEEP_LOAD_FLUSHES=spread spreads the flushes over F, aligned otherwise;
+// TRACEKEEP_LOAD_REPLICAS is the streams' replicas, 1 or 3; TRACEKEEP_LOAD_FLUSHES=spread spreads the flushes over F by equipment, group by group
+// (a group's equipment flushing together, the groups spread evenly over F), aligned otherwise;
 // TRACEKEEP_LOAD_SETTLE=purge settles each group by purging below its checkpoint instead of acknowledging each entry (feed.purge),
 // and with it TRACEKEEP_LOAD_RESTART (any value) restarts every group from its checkpoint at 2F (feed.restart);
 // TRACEKEEP_LOAD_FEED_GIB, when set, is the streams' max_bytes in all, in GiB, in place of the feed's 40.
@@ -43,7 +43,11 @@ func loadFeedStreams(t *testing.T, smoke bool) {
 	fs := fleetOf(smoke)
 	ft.maxAckPending = cmp.Or(fs.ackPending, ft.maxAckPending)
 	f := newFeedStreams(t, url, streams, replicas, ft, os.Getenv("TRACEKEEP_LOAD_SETTLE") == "purge")
-	f.aligned = os.Getenv("TRACEKEEP_LOAD_FLUSHES") != "spread"
+	flushes := cmp.Or(os.Getenv("TRACEKEEP_LOAD_FLUSHES"), "aligned")
+	if flushes != "aligned" && flushes != "spread" && flushes != "group" {
+		t.Fatalf("TRACEKEEP_LOAD_FLUSHES is spread or group, or unset")
+	}
+	f.aligned, f.byGroup = flushes == "aligned", flushes == "group"
 	f.groupBytes, f.maxHeld = 128<<20, ft.maxAckPending // logfeed.group_max_bytes's default and the fleet's max_ack_pending
 	ctx := t.Context()
 	f.consume(ctx)
@@ -105,10 +109,11 @@ func loadFeedStreams(t *testing.T, smoke bool) {
 		settle = "purged: " + f.purged.String() + "; " + f.restarted.String()
 	}
 	t.Logf("feed-streams: %d stream(s) of %d replica(s), flushes %s, settled %s, placement %s\n%s", streams, replicas,
-		map[bool]string{true: "aligned", false: "spread"}[f.aligned], settle, f.placement(t), report)
+		flushes, settle, f.placement(t), report)
 }
 
-// streamsReport is the run's stored rate before, during and after the burst: its mean and its lowest ten seconds, and the publishes' outcome.
+// streamsReport is the run's stored rate before, during and after the burst: its mean and its lowest ten seconds,
+// and the publishes' outcome, their p99 in each window and the run's.
 func streamsReport(fs fleetShape, stored []float64, pubs *feedPublishers, start, burstAt time.Time) string {
 	window := func(from, to time.Duration) (mean, lowest float64) {
 		a, b := int(from.Seconds()), min(int(to.Seconds()), len(stored))
@@ -135,16 +140,21 @@ func streamsReport(fs fleetShape, stored []float64, pubs *feedPublishers, start,
 	pm, pl := window(time.Minute, b)
 	bm, bl := window(b, b+fs.burstFor)
 	am, al := window(b+fs.burstFor, time.Duration(len(stored))*time.Second)
-	lat := pubs.latencies(start, start.Add(time.Duration(len(stored))*time.Second))
-	slices.Sort(lat)
-	var p99 time.Duration
-	if len(lat) > 0 {
-		p99 = lat[len(lat)*99/100]
-	}
+	p99 := func(from, to time.Duration) time.Duration {
+		lat := pubs.latencies(start.Add(from), start.Add(to))
+		if len(lat) == 0 {
+			return 0
+		}
 
-	return fmt.Sprintf("| offered entries/s | stored before the burst: mean, lowest 10 s | during it | after it | made | failed | retried | publish p99 |\n"+
-		"| %.0f | %.0f, %.0f | %.0f, %.0f | %.0f, %.0f | %d | %d | %d | %s |",
-		fs.rate()*2, pm, pl, bm, bl, am, al, pubs.made.Load(), pubs.failed.Load(), pubs.retried.Load(), p99.Round(time.Millisecond))
+		return lat[len(lat)*99/100].Round(time.Millisecond)
+	}
+	end := time.Duration(len(stored)) * time.Second
+
+	return fmt.Sprintf("| offered entries/s | stored before the burst: mean, lowest 10 s | during it | after it | made | failed | retried "+
+		"| publish p99: before, during, after the burst; run |\n"+
+		"| %.0f | %.0f, %.0f | %.0f, %.0f | %.0f, %.0f | %d | %d | %d | %s, %s, %s; %s |",
+		fs.rate()*2, pm, pl, bm, bl, am, al, pubs.made.Load(), pubs.failed.Load(), pubs.retried.Load(),
+		p99(time.Minute, b), p99(b, b+fs.burstFor), p99(b+fs.burstFor, end), p99(0, end))
 }
 
 // newFeedStreams creates the feed's streams on url, each of replicas, and a group consumer a group:
