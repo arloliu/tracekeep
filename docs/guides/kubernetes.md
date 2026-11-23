@@ -119,6 +119,7 @@ With `alerts.enabled` and the Prometheus Operator's CRDs, the chart installs a `
 whose alerts each link a section of `docs/guides/runbook.md` (`alerts.runbookURL`); `alerts.gateway.enabled` adds the rules on the gateways' metrics,
 for a Prometheus that scrapes the gateways too. The rules are in `docs/specs/tracekeep/operations.md` §10.4.
 `alerts.gapsFor`, the time `TracekeepGapsGrowing` holds before it fires, must be at least `ingest.flush_interval` and a flush: raise it with F.
+Keep it well under 30 minutes: the rule's declared-loss arm holds for 30 minutes, so a hold of 30 minutes or more never fires a lone declared loss.
 
 ## Checks
 

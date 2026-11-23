@@ -88,7 +88,8 @@ alerts:
   runbookURL: https://github.com/arloliu/tracekeep/blob/main/docs/guides/runbook.md
   backlogBytes: 10737418240
   # TracekeepGapsGrowing's for: at least ingest.flush_interval (F) and a flush, the longest a held batch leaves a hole open,
-  # since ingest's replicas share one consumer and register one capture's records out of order; twice the default F. Raise it with F.
+  # since ingest's replicas share one consumer and register one capture's records out of order; twice the default F. Raise it with F,
+  # but keep it well under 30m: the rule's declared-loss arm holds for 30 minutes, so a hold of 30m or more never fires a lone declared loss.
   gapsFor: 10m
   # The gateway's rules read the producer's tracepub_ metrics, for a Prometheus that scrapes the gateways too.
   gateway:
