@@ -1,6 +1,6 @@
 # Hour flush
 
-Status: active (2026-11-23) — the owner's two decisions of 2026-11-23 (T-72) and ingest's design (T-73); step 3 in this pull request
+Status: active (2026-11-23) — the owner's two decisions of 2026-11-23 (T-72) and ingest's design (T-73); steps 1 and 3 done, steps 2 and 4 waiting for the host
 
 The work behind the owner's two decisions on the ROADMAP's open item *A fleet's flushes align, and their load with them*:
 stop the hour's change from flushing every equipment's earlier hour at once, and explain why spreading the flushes measured worse on a stream a group before spreading is taken up.
@@ -11,9 +11,9 @@ The measurements it cites are the flush-evidence cells of 2026-11-08 (kept outsi
 
 | Step | Work | State |
 |---|---|---|
-| 1 — the log stage holds the hour | the converter's hour trigger and its load switch removed, each equipment keeping its flush times across the hour; `logfeed.md` §15.7 | in-progress |
+| 1 — the log stage holds the hour | the converter's hour trigger and its load switch removed, each equipment keeping its flush times across the hour; `logfeed.md` §15.7 | done #135 |
 | 2 — measure the hold | the before and after cells below, on today's layout, the log stage aligned and dispersed | pending |
-| 3 — ingest holds the hour | a capture's flush time in `Batcher.Due`, its earlier hour registered first, the gap alert's `for:` (`alerts.gapsFor`); `ingest.md` §6.2 | done #PR |
+| 3 — ingest holds the hour | a capture's flush time in `Batcher.Due`, its earlier hour registered first, the gap alert's `for:` (`alerts.gapsFor`); `ingest.md` §6.2 | done #139 |
 | 4 — explain the spread | the bus-only cells of *Spreading* below, with the harness's switch for a phase a group | pending |
 | 5 — decide the spread | the spec and the decision for spreading by group, or none, from step 4 | pending |
 
