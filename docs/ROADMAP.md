@@ -79,11 +79,6 @@ A group stream that cannot answer keeps no role from starting (T-70), the log st
 
 ## Open items
 
-- `TestRecordListingLeaseLostBetweenTransactions`'s `sweep pages` failed once on MariaDB on a loaded disk, its second page deleted after the lease lapsed;
-  its barrier sees the lapse's statement in the process list, not that it waits for the lease row.
-  The cause is not proven (the test efficiency plan's last text, 10803c8).
-- `TestCopiesFromAFollower/mariadb` (`internal/compact`) failed once in CI on 2026-11-19, `Copies` through a follower counting none where one copy was acknowledged,
-  and passed on its rerun; the cause is not diagnosed.
 - The SDK sometimes marks a capture's first S1F3 ordering-uncertain, observed before its predecessor (`producer.md` §4.2);
   tracepack's lookup then does not match it, and the packaging browser test accepts that only with the gap shown.
   Why the first request is observed before the records allocated ahead of it is still open.
