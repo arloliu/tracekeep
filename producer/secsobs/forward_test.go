@@ -89,3 +89,32 @@ func TestRefusedSocketKeepsTheLiveSocket(t *testing.T) {
 		t.Fatalf("a request sent on the live socket is ambiguous after a refused socket")
 	}
 }
+
+// go-secs v2.8.0 times an outbound frame just before its write and reports it once the write returns
+// (hsms/connection_send.go, writeFrame), while the receive goroutine reports an inbound frame as soon as it is read
+// (hsmsss/transport_control.go, observeInbound), so a reply read before its primary's write returns is reported first.
+// The reply then takes the lower seq, and the primary, timed before it, is ordering-uncertain (producer.md §4.2):
+// a lookup that seeks a primary's reply above its seq does not find it.
+func TestReplyReportedBeforeItsPrimary(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t)
+	primary, reply := frame(0), frame(0) // an S1F1 W-bit primary of System Bytes 7, and its S1F2
+	reply[6], reply[7] = 0x01, 2
+	issued := time.Now()
+	read := issued.Add(time.Millisecond)
+	h.obs.wire(hsms.WireEvent{Direction: hsms.WireInbound, Socket: 3, Generation: 1, At: read, Frame: reply})
+	h.obs.wire(hsms.WireEvent{Direction: hsms.WireOutbound, Socket: 3, Generation: 1, At: issued, Frame: primary})
+
+	recs := h.records(2)
+	in, out := recs[0], recs[1]
+	if in.Dir != tracepack.DirEquipmentToHost || out.Dir != tracepack.DirHostToEquipment {
+		t.Fatalf("records in the order %v, %v; want the reply, then the primary", in.Dir, out.Dir)
+	}
+	if in.Seq != 1 || in.Quality.HasAny(tracepack.QualityOrderingUncertain) {
+		t.Errorf("reply: seq %d, quality %v; want seq 1, certain", in.Seq, in.Quality)
+	}
+	if out.Seq != 2 || !out.Quality.HasAny(tracepack.QualityOrderingUncertain) || out.TSUTCNs >= in.TSUTCNs {
+		t.Errorf("primary: seq %d, quality %v, at %d after the reply's %d; want seq 2, ordering-uncertain, timed first",
+			out.Seq, out.Quality, out.TSUTCNs, in.TSUTCNs)
+	}
+}

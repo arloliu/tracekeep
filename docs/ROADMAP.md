@@ -81,9 +81,13 @@ a lost feed server's return, with its storage and wiped, is tested under the log
 
 ## Open items
 
-- The SDK sometimes marks a capture's first S1F3 ordering-uncertain, observed before its predecessor (`producer.md` §4.2);
-  tracepack's lookup then does not match it, and the packaging browser test accepts that only with the gap shown.
-  Why the first request is observed before the records allocated ahead of it is still open.
+- The SDK marks an S1F3 ordering-uncertain when its reply is reported first (`producer.md` §4.2):
+  go-secs v2.8.0 times an outbound frame before its write but reports it once the write returns, and reports an inbound frame as soon as it is read,
+  so a reply read before its request's write returns takes the lower seq, and tracepack's lookup, which seeks a reply above its primary, answers not found with the gap shown.
+  On a local loopback pair it hit about 0.5 % of primaries, at any position; the packaging browser test accepts it only with the gap.
+  The owner chose on 2026-11-23 to ask go-secs to report an inbound frame only after an outbound report pending on its socket;
+  the SDK stays as it is (`TestReplyReportedBeforeItsPrimary` pins its records for that order), and the browser test keeps its tolerance until go-secs does.
+  go-secs's lifecycle transitions, reported after the frames around them, flag records at a connection's teardown too.
 - An hour whose masked segments merge past the reader's metadata budget stays unmergeable (T-45);
   the lasting fix, redaction entries kept outside the pack metadata, is a format change asked of go-secs.
 - Masking's cost at ingest, measured on 2026-10-30 (the measurements are kept outside the repository), leaves these improvements:
