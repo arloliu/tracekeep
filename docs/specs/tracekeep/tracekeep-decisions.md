@@ -1057,3 +1057,16 @@ Holding alone is unmeasured: on an aligned fleet it removes at most one wave an 
 The analysis of 2026-11-23 points to spreading by equipment as the wrong granularity on a stream a group,
 each acknowledgement loading its entry's block and a group's few equipment leaving its blocks to go cold between their flushes, 6.5 times aligned's reads before the burst;
 spreading by group is to be measured.
+
+### T-71 — the traffic streams' replicas, bus.replicas (2026-11-23)
+
+`tracekeep migrate` created the traffic stream, the parking stream and the claim bucket with one replica, the parking stream taking the traffic stream's count,
+and left an existing one as it was: a cluster losing the server that held one of them stopped traffic ingest until the server was back,
+and a stream lost with its server's storage lost its messages.
+The owner chose, on 2026-11-23, **a key of their own, `bus.replicas`**, default 1, so `tracekeep dev` and a single server keep working, and 3 in the Helm chart's values;
+`migrate` creates the three with it and **raises an existing one below it**, the parking stream before the traffic stream so the parking stream never has fewer (`parking.md`),
+the servers copying a raised stream's data to its new replicas after `migrate` returns, which takes a while for a stream holding a backlog;
+it **never lowers one**: a stream or bucket above `bus.replicas` is refused, before any is changed, until the key matches or the operator lowers the stream by hand.
+On a standalone host, whose unit migrates before every start, such a stream refuses every start until then.
+The producer SDK is unchanged: `Preflight` compares the parking stream's replicas with the traffic stream's only.
+Considered and not taken: a default of 3, which a single server cannot place; `migrate` only warning, or refusing, on a stream below the key; and `migrate` lowering a stream to the key, which would drop copies the operator chose to keep.
