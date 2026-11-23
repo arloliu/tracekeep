@@ -86,17 +86,17 @@ the 997 to 32 puts of A2 to A3 is that, a dispersed fleet kept dispersed, and sp
 
 ### Ingest
 
-Holding in ingest is not separable from a capture's own flush time in `Batcher.Due`, so the task stopped there.
+Holding in ingest is not separable from a capture's own flush time in `Batcher.Due`, so the task stopped there; the findings below are of the code before step 3.
 
-- `Batcher.Add` stamps each batch's opening, and `Due` compares each batch's alone.
+- `Batcher.Add` stamps each batch's opening, and `Due` compared each batch's alone.
   With the later-hour clause dropped and nothing more, a capture's earlier hour flushes at its own time,
   but every capture's later-hour batch opens with the hour's first record and is due F after it,
   so the fleet realigns at the hour's start plus F instead of at its start: as many waves, moved.
 - Keeping a capture's flush times needs its batches due together, at its earliest open batch's opening plus F: a capture-level due time.
 - Dropping the clause alone would also widen the false gap:
   a later hour's batch closed by `ingest.batch_max_bytes` or the metadata budget is flushed at once, inside the fetch (`Ingester.stepFlushing`),
-  and registers before the earlier hour's batch, which now waits up to F;
-  that happens at every hour to a capture that fills `ingest.batch_max_bytes` (64 MiB) within F, where today it needs the size reached within one fetch.
+  and registers before the earlier hour's batch, which would then wait up to F;
+  that would happen at every hour to a capture that fills `ingest.batch_max_bytes` (64 MiB) within F, where before step 3 it needed the size reached within one fetch.
 
 Step 3's design, which the owner chose (T-73) and step 3 implements: a capture's batches are due together, at its earliest open batch's opening plus F;
 a batch closed early takes its capture's earlier-hour batches with it; `Due`, `Closed` and the stop's `All` return them ordered by capture and hour (they iterated a map),
@@ -108,9 +108,9 @@ The bound readers rely on holds: no batch waits more than F after its own openin
 - Registering a capture's earlier hour first removes the false gap at its cause within one replica,
   and it touches no transaction or lock: each batch registers in its own transaction, under the same prologue (`.agents/rules/600-invariants.md`).
 - It cannot remove the class: every ingest replica pulls from the one consumer of the stream's incarnation (`bus.Consumer`, no filter),
-  so one capture's records are split across the replicas' batches and their registrations interleave today, whatever the hour.
+  so one capture's records are split across the replicas' batches and their registrations interleave, whatever the hour.
   `gap_observations_total` is an event count by its definition (`operations.md` §10.4);
-  `TracekeepGapsGrowing` compares `open_gaps` with 30 minutes before at a single evaluation, with no `for:`, so a hole open at that instant fires it.
+  before step 3, `TracekeepGapsGrowing` compared `open_gaps` with 30 minutes before at a single evaluation, with no `for:`, so a hole open at that instant fired it.
 - Step 3 takes both (T-73): the ordering, and a `for:` on the alert, the chart's `alerts.gapsFor`, 10 minutes by default, at least F and a flush,
   since the replicas' case does not depend on the hold; F reaches the chart only through `config` or the environment, so the value is set beside it.
   The `for:` delays the rule's declared-loss arm as long.
