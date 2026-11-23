@@ -69,6 +69,8 @@ type Env struct {
 
 	// joined, when not nil, runs once Ingest's consumers joined and its readiness is registered; a test's barrier.
 	joined func()
+	// feedChecked, when not nil, is handed the result of each of ingest's feed checks, the start's and the log stage's retries; a test's barrier.
+	feedChecked func(error)
 	// timed, passSettled, accepts and stepping, when not nil, are the load harness's seams on ingest:
 	// timed on both ingesters, their executor, flusher and coordinator (each one's Timed), the parked consumer's stages named apart;
 	// passSettled the traffic ingester's PassSettled; accepts the executor's Accepts; stepping the parked ingester's Stepping.
@@ -527,11 +529,15 @@ func Ingest(ctx context.Context, e *Env) error {
 func (e *Env) checkFeed(ctx context.Context, stage *logfeed.Stage, gs []*ingest.Ingester) error {
 	traffic, parked := gs[0].Stream.CachedInfo().Config, gs[1].Stream.CachedInfo().Config
 	check := func(ctx context.Context) error {
-		if err := bus.CheckFeedStreams(ctx, e.JS, e.Feed(), traffic, parked); err != nil {
-			return err
+		err := bus.CheckFeedStreams(ctx, e.JS, e.Feed(), traffic, parked)
+		if err == nil {
+			err = bus.ProbeFeedMapping(ctx, e.NC, e.JS, e.Feed())
+		}
+		if e.feedChecked != nil {
+			e.feedChecked(err)
 		}
 
-		return bus.ProbeFeedMapping(ctx, e.NC, e.JS, e.Feed())
+		return err
 	}
 	err := check(ctx)
 	if err != nil && !bus.FeedRefused(err) {

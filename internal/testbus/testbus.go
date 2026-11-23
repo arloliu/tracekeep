@@ -15,8 +15,11 @@ import (
 	"math"
 	"net"
 	"net/url"
+	"os"
 	"slices"
+	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -223,6 +226,58 @@ func StartClusterServers(t testing.TB, n int) []*server.Server {
 	return srvs
 }
 
+// RestartClusterServer starts srvs[i], a server of StartClusterServers the test shut down, again under the options it started with:
+// its name, tag, route and client ports, and its storage, removed first when wipe is set, as a lost server replaced by one of its name.
+// It stores the new server at srvs[i], shut down when t ends, and returns once it accepts connections;
+// it rejoins the cluster after that, and MapFeed's mapping, applied at run time, must be given to it again.
+func RestartClusterServer(t testing.TB, srvs []*server.Server, i int, wipe bool) {
+	t.Helper()
+	v, ok := clusterOpts.Load(srvs[i])
+	if !ok || srvs[i].Running() {
+		t.Fatalf("testbus: restart of %s, which is running or not a cluster server", srvs[i].Name())
+	}
+	opts, _ := v.(server.Options)
+	// The first client port, which the server recorded when it bound it, so a client's URL list names the server again.
+	u, err := url.Parse(srvs[i].ClientURL())
+	if err != nil {
+		t.Fatalf("testbus: %s's client URL: %v", srvs[i].Name(), err)
+	}
+	if opts.Port, err = strconv.Atoi(u.Port()); err != nil {
+		t.Fatalf("testbus: %s's client port: %v", srvs[i].Name(), err)
+	}
+	if wipe {
+		if err := os.RemoveAll(opts.StoreDir); err != nil {
+			t.Fatalf("testbus: wipe %s's storage: %v", srvs[i].Name(), err)
+		}
+	}
+	srvs[i] = startClusterServer(t, opts)
+	if !srvs[i].ReadyForConnections(readyTimeout) {
+		t.Fatalf("testbus: %s not ready within %s after its restart", srvs[i].Name(), readyTimeout)
+	}
+}
+
+// clusterOpts are the options each cluster server started with, as given, by server, for RestartClusterServer.
+var clusterOpts sync.Map
+
+// startClusterServer starts a server of a cluster under opts, kept for its restart, and shuts it down when t ends.
+func startClusterServer(t testing.TB, opts server.Options) *server.Server { //nolint:gocritic // a copy, kept as given
+	t.Helper()
+	given := opts
+	srv, err := server.NewServer(&opts)
+	if err != nil {
+		t.Fatalf("testbus: new server: %v", err)
+	}
+	clusterOpts.Store(srv, given)
+	go srv.Start()
+	t.Cleanup(func() {
+		srv.Shutdown()
+		srv.WaitForShutdown()
+		clusterOpts.Delete(srv)
+	})
+
+	return srv
+}
+
 // clusterAttempts bounds StartCluster's tries: a route port is chosen, released, then bound by its server,
 // so another process may take it meanwhile, which only a fresh set of ports recovers from.
 const clusterAttempts = 3
@@ -255,16 +310,7 @@ func startServers(t testing.TB, n int) ([]*server.Server, error) {
 			Routes:  routes,
 			NoLog:   true, NoSigs: true,
 		}
-		srv, err := server.NewServer(&opts)
-		if err != nil {
-			t.Fatalf("testbus: new server: %v", err)
-		}
-		go srv.Start()
-		t.Cleanup(func() {
-			srv.Shutdown()
-			srv.WaitForShutdown()
-		})
-		srvs[i] = srv
+		srvs[i] = startClusterServer(t, opts)
 	}
 	for i, srv := range srvs {
 		if !srv.ReadyForConnections(readyTimeout) {

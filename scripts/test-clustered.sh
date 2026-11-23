@@ -27,8 +27,12 @@ tests=(
 	TestStageServerLost/mariadb
 	TestIngestStartsWithAGroupStreamLost/sqlite
 	TestIngestStartsWithAGroupStreamLost/mariadb
+	TestIngestRecoversAGroupStreamsServer/sqlite
+	TestIngestRecoversAGroupStreamsServer/mariadb
+	TestIngestRecoversAGroupStreamsReplacement/sqlite
+	TestIngestRecoversAGroupStreamsReplacement/mariadb
 )
-run='^(TestStartClusterReplicates|TestPublishCopy|TestSuppressedPublishConverges|TestTwoVersionsInOneWindow|TestCopiesFromAFollower|TestStageSharesAndTakesOver|TestGateTakeoverWithHeldEntriesAndBacklog|TestGateRetriedPublish|TestStageServerLost|TestIngestStartsWithAGroupStreamLost)$/^(clustered|inline|claim-check|sqlite|mariadb)$/^(clustered|sqlite|mariadb)$'
+run='^(TestStartClusterReplicates|TestPublishCopy|TestSuppressedPublishConverges|TestTwoVersionsInOneWindow|TestCopiesFromAFollower|TestStageSharesAndTakesOver|TestGateTakeoverWithHeldEntriesAndBacklog|TestGateRetriedPublish|TestStageServerLost|TestIngestStartsWithAGroupStreamLost|TestIngestRecoversAGroupStreamsServer|TestIngestRecoversAGroupStreamsReplacement)$/^(clustered|inline|claim-check|sqlite|mariadb)$/^(clustered|sqlite|mariadb)$'
 
 if [ -n "${TRACEKEEP_MARIADB_DSN:-}" ]; then
 	export TRACEKEEP_REQUIRE_MARIADB=1

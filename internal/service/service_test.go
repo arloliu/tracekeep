@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/nats-io/nats-server/v2/server"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 
@@ -255,63 +256,189 @@ func TestIngestNeedsTheMapping(t *testing.T) {
 
 // With a group stream's server lost, ingest starts, its traffic and parked consumers joined,
 // and its log stage converts the groups whose streams answer, checking the feed again meanwhile (logfeed.md §15.4).
-// The traffic and parking streams and the claim bucket take three replicas (bus.replicas), so the server lost holds only the group stream's copy.
 func TestIngestStartsWithAGroupStreamLost(t *testing.T) {
 	t.Parallel()
 	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
-		srvs := testbus.StartClusterServers(t, 3)
-		urls := make([]string, len(srvs))
-		for i, s := range srvs {
-			urls[i] = s.ClientURL()
-		}
-		e := envOn(t, c, strings.Join(urls, ","), func(e *Env) {
-			e.Config.Bus.Replicas = 3
-			l := &e.Config.Logfeed
-			l.Enabled, l.LeaseGroups, l.MaxBytes = true, 3, 64<<20
-			l.ReorderWindow, l.FlushInterval = 100*time.Millisecond, 200*time.Millisecond
-			for _, s := range srvs {
-				if err := testbus.MapFeed(s, l.Prefix, l.LeaseGroups); err != nil {
-					t.Fatal(err)
-				}
-				l.PlacementTags = append(l.PlacementTags, s.Name())
-			}
-		})
-		lost := bus.FeedStreamName(e.Feed(), 1)
-		srvs[1].Shutdown()
-		srvs[1].WaitForShutdown()
-		// The client reconnects and the cluster elects new leaders meanwhile, so the streams ingest opens are awaited first.
-		for _, name := range []string{bus.StreamName(e.Bus(), catalog.RoleTraffic), bus.StreamName(e.Bus(), catalog.RoleParking), busconfig.ClaimStreamName(e.Config.Bus.ClaimBucket)} {
-			var s jetstream.Stream
-			testbus.Retry(t, func(ctx context.Context) (err error) {
-				s, err = e.JS.Stream(ctx, name)
-				return err
-			})
-			testbus.AwaitStream(t, e.JS, s)
-		}
-		// A request just after the loss may go unanswered while the traffic stream's consumers elect their leaders,
-		// failing the start as a pod restarted then would; only a start the feed fails ends the test.
-		for attempt := 1; ; attempt++ {
-			ctx, cancel := context.WithTimeout(t.Context(), 20*time.Second)
-			joined, done := make(chan struct{}), make(chan error, 1)
-			e.joined = func() { close(joined) }
-			go func() { done <- Ingest(ctx, e) }()
-			select {
-			case <-joined:
-				convertsTheLiveGroups(t, e, c)
-				cancel()
-				if err := <-done; err != nil {
-					t.Errorf("ingest stopped = %v", err)
-				}
-
-				return
-			case err := <-done:
-				cancel()
-				if errors.Is(err, bus.ErrFeedUnavailable) || strings.Contains(err.Error(), "feed") || attempt == 3 {
-					t.Fatalf("ingest with %s lost = %v before it joined, want it started", lost, err)
-				}
-			}
+		e, _ := lostGroupEnv(t, c)
+		cancel, done := startIngest(t, e)
+		convertsTheLiveGroups(t, e, c)
+		cancel()
+		if err := <-done; err != nil {
+			t.Errorf("ingest stopped = %v", err)
 		}
 	})
+}
+
+// Ingest started with a group stream's server lost converts that group once the server is back with its storage:
+// the log stage's retried check passes, and no role ends (logfeed.md §15.4, T-70).
+func TestIngestRecoversAGroupStreamsServer(t *testing.T) {
+	t.Parallel()
+	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) { recovers(t, c, false) })
+}
+
+// Ingest started with a group stream's server lost converts that group once the server is replaced under its name with its storage wiped,
+// its streams and their consumers created again, empty (logfeed.md §15.10 *A server's replacement*, T-70).
+func TestIngestRecoversAGroupStreamsReplacement(t *testing.T) {
+	t.Parallel()
+	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) { recovers(t, c, true) })
+}
+
+// recovers starts ingest with group 1's server lost, restarts the server, its storage wiped when wipe is set,
+// and waits for the stage's check to pass, then for new entries of every group, the formerly lost one's included, to be converted,
+// ingest never returning meanwhile; a return during the recovery, a refusal included, fails the test with its error.
+func recovers(t *testing.T, c *catalog.Catalog, wipe bool) {
+	t.Helper()
+	e, srvs := lostGroupEnv(t, c)
+	// A short lease: the stage checks the feed again every third of it, and takes a group given up again after it;
+	// fetches wait less than it, so the memberships renewed before each one never lapse.
+	e.Config.Ingest.Lease, e.Config.Ingest.MaxWait = 6*time.Second, time.Second
+	checks := make(chan error, 1024)
+	e.feedChecked = func(err error) {
+		select {
+		case checks <- err:
+		default:
+		}
+	}
+	cancel, done := startIngest(t, e)
+	defer cancel()
+	if err := <-checks; err == nil || bus.FeedRefused(err) {
+		t.Fatalf("the start's feed check = %v, want a group stream that cannot answer", err)
+	}
+
+	testbus.RestartClusterServer(t, srvs, 1, wipe)
+	l := &e.Config.Logfeed
+	if err := testbus.MapFeed(srvs[1], l.Prefix, l.LeaseGroups); err != nil {
+		t.Fatal(err)
+	}
+	timeout := time.After(2 * time.Minute)
+	for passed := false; !passed; {
+		select {
+		case err := <-checks:
+			passed = err == nil
+		case err := <-done:
+			t.Fatalf("ingest returned %v while the lost server came back, want it running", err)
+		case <-timeout:
+			t.Fatal("the feed's check did not pass within 2 min of the lost server's return")
+		}
+	}
+	convertsEveryGroup(t, e, c, done)
+	cancel()
+	if err := <-done; err != nil {
+		t.Errorf("ingest stopped = %v", err)
+	}
+}
+
+// lostGroupEnv is an environment on three servers whose traffic and parking streams and claim bucket take three replicas (bus.replicas),
+// the feed's three group streams of one replica placed one a server, and the server holding group 1's stream shut down,
+// returned once the streams ingest opens answer again; the lost server holds no copy any other stream needs.
+func lostGroupEnv(t *testing.T, c *catalog.Catalog) (*Env, []*server.Server) {
+	t.Helper()
+	srvs := testbus.StartClusterServers(t, 3)
+	urls := make([]string, len(srvs))
+	for i, s := range srvs {
+		urls[i] = s.ClientURL()
+	}
+	e := envOn(t, c, strings.Join(urls, ","), func(e *Env) {
+		e.Config.Bus.Replicas = 3
+		l := &e.Config.Logfeed
+		l.Enabled, l.LeaseGroups, l.MaxBytes = true, 3, 64<<20
+		l.ReorderWindow, l.FlushInterval = 100*time.Millisecond, 200*time.Millisecond
+		for _, s := range srvs {
+			if err := testbus.MapFeed(s, l.Prefix, l.LeaseGroups); err != nil {
+				t.Fatal(err)
+			}
+			l.PlacementTags = append(l.PlacementTags, s.Name())
+		}
+	})
+	srvs[1].Shutdown()
+	srvs[1].WaitForShutdown()
+	// The client reconnects and the cluster elects new leaders meanwhile, so the streams ingest opens are awaited first.
+	for _, name := range []string{bus.StreamName(e.Bus(), catalog.RoleTraffic), bus.StreamName(e.Bus(), catalog.RoleParking), busconfig.ClaimStreamName(e.Config.Bus.ClaimBucket)} {
+		var s jetstream.Stream
+		testbus.Retry(t, func(ctx context.Context) (err error) {
+			s, err = e.JS.Stream(ctx, name)
+			return err
+		})
+		testbus.AwaitStream(t, e.JS, s)
+	}
+
+	return e, srvs
+}
+
+// startIngest runs Ingest under a context of its own until its consumers joined, and returns the context's cancel and the channel Ingest's return lands on.
+// A request just after the loss may go unanswered while the traffic stream's consumers elect their leaders,
+// failing the start as a pod restarted then would, which starts it again, at most three times; a start the feed fails ends the test.
+func startIngest(t *testing.T, e *Env) (context.CancelFunc, <-chan error) {
+	t.Helper()
+	for attempt := 1; ; attempt++ {
+		ctx, cancel := context.WithCancel(t.Context())
+		joined, done := make(chan struct{}), make(chan error, 1)
+		e.joined = func() { close(joined) }
+		go func() { done <- Ingest(ctx, e) }()
+		select {
+		case <-joined:
+			return cancel, done
+		case err := <-done:
+			cancel()
+			if errors.Is(err, bus.ErrFeedUnavailable) || strings.Contains(fmt.Sprint(err), "feed") || attempt == 3 {
+				t.Fatalf("ingest with %s lost = %v before it joined, want it started", bus.FeedStreamName(e.Feed(), 1), err)
+			}
+		case <-time.After(time.Minute):
+			cancel()
+			t.Fatal("ingest neither joined nor returned within 1 min")
+		}
+	}
+}
+
+// convertsEveryGroup publishes a first entry for new equipment until each group's stream holds one, then two more for each,
+// and waits for each such equipment to become a log capture of 3 entries, failing should ingest return meanwhile.
+func convertsEveryGroup(t *testing.T, e *Env, c *catalog.Catalog, done <-chan error) {
+	t.Helper()
+	entry := `{"v":1,"equipment_id":"R%d","source":"feed-a","tz":"UTC","file":"host.log","offset":%d,"ts":"2026-11-07 08:00:0%d","kind":"unclassified","text":"line"}`
+	publish := func(eq, i int) string {
+		pctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+		defer cancel()
+		a, err := e.JS.Publish(pctx, fmt.Sprintf("tklog.R%d", eq), fmt.Appendf(nil, entry, eq, 100*i, i))
+		if err != nil {
+			t.Fatalf("entry %d of R%d: %v", i, eq, err)
+		}
+
+		return a.Stream
+	}
+	groups := map[string]int{} // a group's stream, by name, to its equipment
+	for eq := 0; len(groups) < e.Config.Logfeed.LeaseGroups; eq++ {
+		if eq == 100 {
+			t.Fatalf("100 equipment's entries landed on %v only, want every group's stream", groups)
+		}
+		if s := publish(eq, 0); groups[s] == 0 {
+			groups[s] = eq + 1
+		}
+	}
+	deadline := time.Now().Add(time.Minute)
+	for s, eq := range groups {
+		eq--
+		publish(eq, 1)
+		publish(eq, 2)
+		key := catalog.LogKey{LogFile: catalog.LogFile{Source: "feed-a", EquipmentID: fmt.Sprintf("R%d", eq), File: "host.log"}, Device: "eqp"}
+		for {
+			cp, ok, err := c.LogCaptureOf(t.Context(), key)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if ok && cp.HasHighestSeq && cp.HighestSeq == 3 {
+				break
+			}
+			select {
+			case err := <-done:
+				t.Fatalf("ingest returned %v before R%d's entries on %s were converted", err, eq, s)
+			default:
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("R%d's capture on %s = %+v, %v after 1 min; want its 3 entries registered", eq, s, cp.Capture, ok)
+			}
+			time.Sleep(50 * time.Millisecond)
+		}
+	}
 }
 
 // convertsTheLiveGroups publishes 3 entries for each of several equipment, those of a lost group's stream unacknowledged,
