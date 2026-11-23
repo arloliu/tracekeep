@@ -1038,6 +1038,7 @@ so the others would have left that replica's share of the reachable groups uncon
 The owner chose instead that **the stage balances the groups as a running replica's does**, the lost group's converter giving up,
 and retries the whole check every third of the lease lifetime until it passes.
 A **refusal**, a stream missing, of other subjects or overlapping another, or a mapping of another count, still fails `ingest`'s start, and found by the retry ends the role;
-any other failure, a stream read unanswered within 5 s or refused as offline, or a probe its group's stream does not answer, is retried.
+any other failure, a stream read unanswered within 5 s or refused as offline, or a probe its group's stream does not answer or whose connection dropped, is retried.
+A replica that never read the feed whole stamps its feed refresh 0 once a read failed, so the stream-unreadable alert fires though every replica started during the outage.
 Considered and not taken: keeping the start refused, the runbook's way out `logfeed.enabled: false`, which stops every group's conversion and takes two rollouts;
 and a membership of the stage's own, so a replica waiting for the check counts in no share, a catalog change for the same outcome.

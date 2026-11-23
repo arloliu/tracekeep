@@ -513,8 +513,10 @@ The feed's consumers take `ingest.ack_wait` and its heartbeat.
 The log stage's preflight, at the `ingest` role's start, checks that the servers' mapping partitions the feed's subjects into G, every group's stream reached (§15.4):
 it publishes 32(G+1) probes under tokens `_tracekeep_probe_<i>`, every one whatever the first reach, so a count even one above G shows, each expecting a last sequence no stream reaches, so the group stream that takes one refuses to store it,
 and a core subscription of its own reads the group the mapping chose;
-a stream read unanswered within 5 s or refused as offline, a probe that group's stream does not answer, and any failure but a refusal are a stream that cannot answer, which the stage retries (T-70);
+a stream read unanswered within 5 s or refused as offline, a probe that group's stream does not answer or whose connection dropped, and any failure but a refusal are a stream that cannot answer, which the stage retries (T-70);
 `tracekeep status`, the metrics and readiness report each group's stream.
+A replica's `tracekeep_ingest_refreshed_timestamp_seconds{source="feed"}` is the last time it read every group stream, and 0 once a read failed with none succeeding,
+so a replica started while a stream cannot answer shows its feed unread to `TracekeepLogFeedStreamUnreadable`.
 
 **Admin**:
 `capture stop <id>` on a log capture records a stop request on its `captures` row, which the converter holding the group's lease reads at its next flush and writes as the stop;
