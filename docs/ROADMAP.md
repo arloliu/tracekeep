@@ -57,7 +57,7 @@ Milestones the owner set after seed v21 §12's (T-52).
 
 ## Active plans
 
-None.
+- [Hour flush](plans/hour-flush.md) — the log stage's hold of an earlier hour (T-72), its measurement, ingest's hold, and spreading's explanation.
 
 Phase 0 is done (#1, #3, #4, #7, #8).
 Phase 1 is done (#9, #11, #13, #14, #16, #17, #18, #19).
@@ -133,16 +133,18 @@ A group stream that cannot answer keeps no role from starting (T-70), the log st
     On a stream a group with acknowledgements, spreading measured worse than aligned flushes
     (publish p99 461 against 134 ms, the bus disk's reads 417 against 144 MB/s), contrary to the one-stream run;
     the owner chose to explain that before spreading is taken up (T-67).
-  - The hour's change aligns them again, since it flushes every equipment's earlier hour at once (`ingest.md` §6.2, `logfeed.md` §15.7).
-    Leaving an earlier hour's batches to the equipment's next flush took the hour's busiest second from 997 to 32 puts,
-    the catalog's commits a second at p99 from 394 to 72 and its row lock waits from 1,318 to 108, with 30 % fewer packs,
-    since the hour's flush no longer flushes the new hour's batch early as well.
+    The explanation, pending its measurement (T-72): an acknowledgement makes the server load its entry's block, and a group's 60-odd equipment flushing at their own phases
+    leave the group's blocks to go cold between their flushes, so each flush reads them again, 6.5 times aligned's reads before the burst;
+    spreading by group keeps one sweep a stream a F and is to be measured.
+  - The hour's change aligned them again, flushing every equipment's earlier hour at once; the log stage no longer does (T-72, `logfeed.md` §15.7),
+    which keeps a fleet's flush times: on an aligned fleet that removes at most one wave an hour, unmeasured.
+    Leaving an earlier hour's batches to the equipment's next flush, with spreading, took the hour's busiest second from 997 to 32 puts,
+    the catalog's commits a second at p99 from 394 to 72 and its row lock waits from 1,318 to 108, with 30 % fewer packs.
+    Ingest still flushes every capture's earlier hour at the change (`ingest.md` §6.2).
   - No reader assumes an earlier hour sooner: every bound already allows a batch to wait F
     (`compact.quiet_period` must exceed `ingest.flush_interval` + `ingest.ack_wait` + `compact.redelivery_slack`, and the log stage's F must be below `ingest.ack_wait`).
-  - To change: the log stage's trigger;
-    ingest's `Batcher.Due`, due F after a batch's opening, where the batches of every capture active across the hour open together at its start,
-    so a capture needs a flush time of its own;
-    and ingest registering a capture's earlier hour first, or the gap alert a `for:`, since a later hour registered first shows the earlier one's tail as a gap for up to F.
+  - Left to change (the plan's step 3): ingest's `Batcher.Due`, a capture's batches due together at its earliest opening plus F, an early-closed batch taking its earlier hours along,
+    and the earlier hour registered first; the gap alert's `for:` is judged with it, since ingest's replicas already register one capture's records out of order.
 - go-secs is asked to export a filtered JSONL writer; until it does, `StartExport` refuses `kind=filtered` (T-48).
 - Configuration retirement waits for the first release that needs it.
 - The veq branch `docs/ve/log-service-decisions` (commit 7b8a019) carries the LS-row amendments and V-35;
