@@ -129,6 +129,55 @@ func TestEnsureReplicas(t *testing.T) {
 	replicas(raised, 3)
 }
 
+// A stream another migrate raised above bus.replicas after Ensure read it is refused, not written back lower:
+// Ensure reads each stream again just before raising it (T-71).
+func TestEnsureReplicasRaisedMeanwhile(t *testing.T) {
+	t.Parallel()
+	ctx := t.Context()
+	_, js := cluster(t)
+	cfg := bus.Config{Stream: "C", ParkedStream: "C_PARKED", SubjectPrefix: "c", ParkPrefix: "cpark", ClaimBucket: "c-claims"}
+	if _, _, err := bus.Ensure(ctx, js, cfg); err != nil {
+		t.Fatal(err)
+	}
+	cfg.Replicas = 2
+	pname := bus.StreamName(cfg, catalog.RoleParking)
+	other := &raisedAfterRead{JetStream: js, t: t, name: pname}
+	if _, _, err := bus.Ensure(ctx, other, cfg); !errors.Is(err, bus.ErrReplicasAbove) {
+		t.Errorf("Ensure to 2 over a stream raised to 3 after its read = %v, want ErrReplicasAbove", err)
+	}
+	s, err := js.Stream(ctx, pname)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r := s.CachedInfo().Config.Replicas; r != 3 {
+		t.Errorf("the parking stream has %d replicas after the refused Ensure, want the other migrate's 3", r)
+	}
+}
+
+// raisedAfterRead is a JetStream whose first read of the stream name returns it as it was, then raises it to 3, as another migrate would.
+type raisedAfterRead struct {
+	jetstream.JetStream
+	t    *testing.T
+	name string
+	done bool
+}
+
+func (r *raisedAfterRead) Stream(ctx context.Context, name string) (jetstream.Stream, error) {
+	s, err := r.JetStream.Stream(ctx, name)
+	if err != nil || name != r.name || r.done {
+		return s, err
+	}
+	r.done = true
+	c := s.CachedInfo().Config
+	c.Replicas = 3
+	testbus.Retry(r.t, func(ctx context.Context) error {
+		_, err := r.UpdateStream(ctx, c)
+		return err
+	})
+
+	return s, nil
+}
+
 // recording is a JetStream that records the streams it creates or updates, the claim bucket's by its stream's name.
 type recording struct {
 	jetstream.JetStream
