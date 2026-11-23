@@ -177,6 +177,36 @@ func TestGapObservationsCounted(t *testing.T) {
 	})
 }
 
+// A later hour's batch closed by the size threshold within a fetch takes its capture's earlier hour with it, registered first:
+// both hours are stored in the one step and no registration sees a hole.
+func TestEarlyClosedHourTakesTheEarlierHourFirst(t *testing.T) {
+	t.Parallel()
+	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
+		r := newReplica(t, c)
+		s := metrics.NewServer()
+		m, err := metrics.NewIngest(s, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		r.g.Metrics, r.g.Flusher.Metrics = m, m
+		capture, start, frame := tracepack.UUID{82}, startRecord(t, now), len(dataRecord(0, 0).Payload)
+		r.g.Batcher.MaxBytes = len(start.Payload) + frame + 1 // the earlier hour's start and seq 1 stay open
+		r.publish(t, inline(t, capture, start, descriptorOf(t, "eqp")), nil)
+		r.publish(t, inline(t, capture, dataRecord(1, now+1), nil), nil)
+		last := uint64(1 + (r.g.Batcher.MaxBytes+frame-1)/frame) // the later hour's records reach the threshold with the last
+		for seq := uint64(2); seq <= last; seq++ {
+			r.publish(t, inline(t, capture, dataRecord(seq, now+int64(time.Hour)+int64(seq)), nil), nil)
+		}
+		r.step(t)
+		if got := regexp.MustCompile(`tracekeep_ingest_gap_observations_total\{equipment_id="T1"\} \S+`).FindString(scrape(t, s)); !strings.HasSuffix(got, " 0") {
+			t.Errorf("%q after the step, want 0", got)
+		}
+		if ks := storedKeys(t, r.st); len(ks) != 2 {
+			t.Errorf("objects %v after the step, want both hours' segments", ks)
+		}
+	})
+}
+
 // An equal copy of a registered seq registers nothing, so gap_observations_total stays where its first registration put it.
 func TestGapObservationsNotCountedForACopy(t *testing.T) {
 	t.Parallel()

@@ -1,7 +1,10 @@
 package ingest
 
 import (
+	"bytes"
+	"cmp"
 	"context"
+	"slices"
 	"time"
 
 	"github.com/arloliu/go-secs/tracepack"
@@ -74,9 +77,20 @@ func redactionEntryBytes(e *tracepack.RedactionEntry) int {
 	return n
 }
 
+// inOrder sorts batches by capture and hour, so the ingester, flushing them one at a time, registers a capture's earlier hour first;
+// the sort is stable, keeping a closed batch before the batch its key opened after it.
+func inOrder(batches []*Batch) []*Batch {
+	slices.SortStableFunc(batches, func(x, y *Batch) int {
+		return cmp.Or(bytes.Compare(x.Key.Capture[:], y.Key.Capture[:]), cmp.Compare(x.Key.Hour, y.Key.Hour))
+	})
+
+	return batches
+}
+
 // Batcher holds the open batches; it is driven by its caller and starts nothing of its own.
 type Batcher struct {
-	// Interval is F: a batch is due this long after its first record arrived.
+	// Interval is F: a capture's batches are due together this long after the first record of its earliest open batch arrived,
+	// so none waits longer than F and an hour's change moves no capture's flush time (ingest.md §6.2).
 	Interval time.Duration
 	// MaxBytes closes a batch, due at once, when a record takes it to this many payload bytes:
 	// its caller flushes it before batching another (ingest.md §6.2), so no fetch is held whole.
@@ -85,7 +99,7 @@ type Batcher struct {
 	// so a segment's metadata stays within the reader's budget (ingest.md §6.2).
 	MaxMetaBytes int
 	batches      map[Key]*Batch
-	// closed holds the batches MaxMetaBytes and MaxBytes closed, due at once.
+	// closed holds the batches MaxMetaBytes and MaxBytes closed, and their captures' batches of an earlier hour, due at once.
 	closed []*Batch
 }
 
@@ -110,7 +124,7 @@ func (b *Batcher) Add(e Entry, now time.Time) {
 	}
 	bt := b.batches[k]
 	if bt != nil && bt.MetaBytes+meta > b.MaxMetaBytes {
-		b.closed = append(b.closed, bt)
+		b.close(bt)
 		bt = nil
 	}
 	if bt == nil {
@@ -121,38 +135,42 @@ func (b *Batcher) Add(e Entry, now time.Time) {
 	bt.Bytes += len(e.D.Record.Record.Payload)
 	bt.MetaBytes += meta
 	if bt.Bytes >= b.MaxBytes {
-		b.closed = append(b.closed, bt)
+		b.close(bt)
 		delete(b.batches, k)
 	}
 }
 
-// Closed removes and returns the batches MaxMetaBytes and MaxBytes closed.
+// Closed removes and returns the batches MaxMetaBytes and MaxBytes closed, with their captures' batches of an earlier hour,
+// ordered by capture and hour.
 func (b *Batcher) Closed() []*Batch {
 	closed := b.closed
 	b.closed = nil
 
-	return closed
+	return inOrder(closed)
 }
 
-// Due removes and returns the batches to flush at now:
-// those closed, those open for the interval, and those of a capture that has records of a later hour.
+// Due removes and returns the batches to flush at now, ordered by capture and hour:
+// those closed, and every batch of a capture whose earliest open batch has been open for the interval.
 func (b *Batcher) Due(now time.Time) []*Batch {
-	latest := map[tracepack.UUID]int64{}
-	for k := range b.batches {
-		latest[k.Capture] = max(latest[k.Capture], k.Hour)
-	}
-	due := b.Closed()
+	earliest := map[tracepack.UUID]time.Time{}
 	for k, bt := range b.batches {
-		if now.Sub(bt.opened) >= b.Interval || k.Hour < latest[k.Capture] {
+		if t, ok := earliest[k.Capture]; !ok || bt.opened.Before(t) {
+			earliest[k.Capture] = bt.opened
+		}
+	}
+	due := b.closed
+	b.closed = nil
+	for k, bt := range b.batches {
+		if now.Sub(earliest[k.Capture]) >= b.Interval {
 			due = append(due, bt)
 			delete(b.batches, k)
 		}
 	}
 
-	return due
+	return inOrder(due)
 }
 
-// All removes and returns every open batch, for a flush at shutdown.
+// All removes and returns every open batch, for a flush at shutdown, ordered by capture and hour.
 func (b *Batcher) All() []*Batch {
 	all := append(make([]*Batch, 0, len(b.closed)+len(b.batches)), b.closed...)
 	b.closed = nil
@@ -161,7 +179,7 @@ func (b *Batcher) All() []*Batch {
 		delete(b.batches, k)
 	}
 
-	return all
+	return inOrder(all)
 }
 
 // Held calls f for every record a batch holds: in-progress acks keep their messages from redelivery
@@ -175,6 +193,18 @@ func (b *Batcher) Held(f func(Entry)) {
 	for _, bt := range b.batches {
 		for _, e := range bt.Entries {
 			f(e)
+		}
+	}
+}
+
+// close makes bt due at once, and with it its capture's open batches of an earlier hour,
+// so a later hour closed early is flushed after its capture's earlier hour, not F before it.
+func (b *Batcher) close(bt *Batch) {
+	b.closed = append(b.closed, bt)
+	for k, o := range b.batches {
+		if k.Capture == bt.Key.Capture && k.Hour < bt.Key.Hour {
+			b.closed = append(b.closed, o)
+			delete(b.batches, k)
 		}
 	}
 }

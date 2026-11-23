@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"log/slog"
+	"math/rand/v2"
 	"os"
 	"path/filepath"
 	"slices"
@@ -326,27 +327,101 @@ func TestHeartbeatHoldsTakenBatches(t *testing.T) {
 	})
 }
 
-// Records of two hours are two batches, and a batch of an earlier hour is due once a later hour's record arrives.
-func TestBatcherHours(t *testing.T) {
+// addRecord batches an empty record of capture at ts, arriving at at.
+func addRecord(b *Batcher, capture tracepack.UUID, ts int64, at time.Time) {
+	b.Add(Entry{D: &Delivery{Raw: Raw{Version: Version{Capture: capture}, TS: ts}}, Msg: &msg{}}, at)
+}
+
+// batchKeys are the keys of bs, in their order.
+func batchKeys(bs []*Batch) []Key {
+	ks := make([]Key, len(bs))
+	for i, b := range bs {
+		ks[i] = b.Key
+	}
+
+	return ks
+}
+
+// Records of two hours are two batches of a capture, due together at its earliest opening plus F:
+// the hour's change makes nothing due, and each capture keeps its own flush time across it.
+func TestBatcherKeepsCadenceAcrossTheHour(t *testing.T) {
+	t.Parallel()
+	const f = time.Minute
+	b := NewBatcher(f, 1<<20)
+	t0, hour := time.Unix(0, now), HourOf(now)
+	one, two := tracepack.UUID{1}, tracepack.UUID{2}
+	addRecord(b, one, now, t0)
+	addRecord(b, two, now, t0.Add(20*time.Second))
+	change := t0.Add(30 * time.Second) // both captures' first records of the next hour
+	addRecord(b, one, now+int64(time.Hour), change)
+	addRecord(b, two, now+int64(time.Hour), change)
+	if due := b.Due(change); len(due) != 0 {
+		t.Fatalf("due at the hour's change %v, want none", batchKeys(due))
+	}
+	if due := b.Due(t0.Add(f)); !slices.Equal(batchKeys(due), []Key{{one, hour}, {one, hour + 1}}) {
+		t.Fatalf("due at capture 1's flush time %v, want both its hours", batchKeys(due))
+	}
+	if due := b.Due(t0.Add(20*time.Second + f)); !slices.Equal(batchKeys(due), []Key{{two, hour}, {two, hour + 1}}) {
+		t.Fatalf("due at capture 2's flush time %v, want both its hours", batchKeys(due))
+	}
+	if due := b.Due(change.Add(f)); len(due) != 0 {
+		t.Errorf("due F after the hour's change %v, want none: no wave follows the hour", batchKeys(due))
+	}
+}
+
+// Due and All return their batches ordered by capture and hour, so the ingester registers a capture's earlier hour first.
+func TestBatcherReturnsCapturesAndHoursInOrder(t *testing.T) {
 	t.Parallel()
 	b := NewBatcher(time.Minute, 1<<20)
+	at, hour := time.Unix(0, now), HourOf(now)
+	want := make([]Key, 0, 8*3)
+	for c := range 8 {
+		for h := range int64(3) {
+			want = append(want, Key{Capture: tracepack.UUID{byte(c + 1)}, Hour: hour + h})
+		}
+	}
+	fill := func() {
+		for i := len(want) - 1; i >= 0; i-- {
+			addRecord(b, want[i].Capture, now+(want[i].Hour-hour)*int64(time.Hour), at)
+		}
+	}
+	fill()
+	if got := batchKeys(b.Due(at.Add(time.Minute))); !slices.Equal(got, want) {
+		t.Errorf("Due returned %v, want %v", got, want)
+	}
+	fill()
+	if got := batchKeys(b.All()); !slices.Equal(got, want) {
+		t.Errorf("All returned %v, want %v", got, want)
+	}
+}
+
+// No batch waits more than F after its own opening, which every reader's bound assumes,
+// and none leaves before its capture's due time, its earliest open batch's opening plus F, whatever hours its records are of.
+func TestBatcherDueWithinF(t *testing.T) {
+	t.Parallel()
+	const f = time.Minute
+	b := NewBatcher(f, 1<<20)
+	rng := rand.New(rand.NewPCG(1, 2)) //nolint:gosec // a reproducible schedule, not a secret
 	at := time.Unix(0, now)
-	add := func(capture tracepack.UUID, ts int64) {
-		d := &Delivery{Raw: Raw{Version: Version{Capture: capture}, TS: ts}}
-		b.Add(Entry{D: d, Msg: &msg{}}, at)
-	}
-	add(tracepack.UUID{1}, now)
-	add(tracepack.UUID{2}, now)
-	if due := b.Due(at); len(due) != 0 {
-		t.Fatalf("%d batches due at once, want none", len(due))
-	}
-	add(tracepack.UUID{1}, now+int64(time.Hour))
-	due := b.Due(at)
-	if len(due) != 1 || due[0].Key != (Key{Capture: tracepack.UUID{1}, Hour: HourOf(now)}) {
-		t.Fatalf("due %+v, want capture 1's earlier hour", due)
-	}
-	if due := b.Due(at.Add(time.Minute)); len(due) != 2 {
-		t.Errorf("%d batches due after the interval, want 2", len(due))
+	for range 2000 {
+		at = at.Add(time.Duration(rng.Int64N(int64(f / 4))))
+		earliest := map[tracepack.UUID]time.Time{}
+		for k, bt := range b.batches {
+			if e, ok := earliest[k.Capture]; !ok || bt.opened.Before(e) {
+				earliest[k.Capture] = bt.opened
+			}
+		}
+		for _, bt := range b.Due(at) {
+			if waited := at.Sub(earliest[bt.Key.Capture]); waited < f {
+				t.Fatalf("%+v due %s after its capture's earliest opening, before F (%s)", bt.Key, waited, f)
+			}
+		}
+		for k, bt := range b.batches {
+			if waited := at.Sub(bt.opened); waited >= f {
+				t.Fatalf("%+v held %s after its opening, F is %s", k, waited, f)
+			}
+		}
+		addRecord(b, tracepack.UUID{byte(rng.IntN(4) + 1)}, now+rng.Int64N(3)*int64(time.Hour), at)
 	}
 }
 
