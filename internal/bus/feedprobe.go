@@ -25,9 +25,10 @@ const probeWait = 2 * time.Second
 // ErrFeedMapping refuses servers whose account mapping does not partition the feed's subjects into exactly its G group streams (logfeed.md §15.4).
 var ErrFeedMapping = errors.New("bus: the servers' mapping does not partition the feed's subjects into its group streams")
 
-// ProbeFeedMapping checks that the servers' mapping routes the feed's subjects to its G group streams, every role's preflight with the feed enabled (logfeed.md §15.4):
+// ProbeFeedMapping checks that the servers' mapping routes the feed's subjects to its G group streams, after CheckFeedStreams before the log stage runs (logfeed.md §15.4):
 // it publishes 32(G+1) probe entries under tokens of its own, refusing a probe no mapping routes,
 // one routed to a subject with no group stream, which a count above G gives, and a run that leaves a group unreached, which a count below G gives.
+// A probe its group's stream does not answer fails it with ErrFeedUnavailable: the streams checked, the stream is down, not missing.
 // Each probe expects a last sequence no stream reaches, so the stream that takes it refuses to store it;
 // its copy to a core subscription of nc tells the group the mapping chose.
 func ProbeFeedMapping(ctx context.Context, nc *nats.Conn, js jetstream.JetStream, f Feed) error {
@@ -57,7 +58,10 @@ func probeFeed(ctx context.Context, nc *nats.Conn, js jetstream.JetStream, f Fee
 		return 0, fmt.Errorf("bus: feed probe: %w", err)
 	}
 	defer func() { _ = sub.Unsubscribe() }()
-	if err := nc.FlushWithContext(ctx); err != nil {
+	if err := nc.FlushWithContext(ctx); unanswered(err) {
+		// The servers did not answer the flush, so no probe went out.
+		return 0, fmt.Errorf("%w: the servers did not answer the probe's subscription: %w", ErrFeedUnavailable, err)
+	} else if err != nil {
 		return 0, fmt.Errorf("bus: feed probe: %w", err)
 	}
 	// The subscription answers a publish no stream takes, never replying, so the copy is read before the publish's answer is awaited.
@@ -75,6 +79,9 @@ func probeFeed(ctx context.Context, nc *nats.Conn, js jetstream.JetStream, f Fee
 		return 0, fmt.Errorf("%w: %s mapped to %s, outside groups 0 to %d", ErrFeedMapping, subject, m.Subject, f.Groups-1)
 	}
 	perr := <-published
+	if unanswered(perr) {
+		return 0, fmt.Errorf("%w: %s mapped to %s: %w", ErrFeedUnavailable, subject, m.Subject, perr)
+	}
 	var api *jetstream.APIError
 	if !errors.As(perr, &api) || api.ErrorCode != jetstream.JSErrCodeStreamWrongLastSequence {
 		return 0, fmt.Errorf("%w: %s mapped to %s reached no group stream: %w", ErrFeedMapping, subject, m.Subject, perr)

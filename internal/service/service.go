@@ -429,8 +429,8 @@ func (e *Env) migrateFeed(ctx context.Context, traffic, parked jetstream.StreamC
 	return e.Catalog.SyncLogGroups(ctx, e.Config.Logfeed.LeaseGroups)
 }
 
-// streams opens the traffic and parking streams and refuses either when it allows direct gets or is not the catalog's incarnation;
-// with the feed enabled, it checks every group stream and probes the servers' mapping of the feed's subjects (logfeed.md §15.4).
+// streams opens the traffic and parking streams and refuses either when it allows direct gets or is not the catalog's incarnation.
+// The feed's streams are the log stage's alone, checked by checkFeed, so a lost group stream never keeps a role from starting (logfeed.md §15.4).
 func (e *Env) streams(ctx context.Context) (map[string]jetstream.Stream, map[string]catalog.Incarnation, error) {
 	ss := map[string]jetstream.Stream{}
 	incs := map[string]catalog.Incarnation{}
@@ -447,14 +447,6 @@ func (e *Env) streams(ctx context.Context) (map[string]jetstream.Stream, map[str
 	}
 	if err := bus.CheckParked(tc, pc); err != nil {
 		return nil, nil, err
-	}
-	if e.Config.Logfeed.Enabled {
-		if err := bus.CheckFeedStreams(ctx, e.JS, e.Feed(), tc, pc); err != nil {
-			return nil, nil, err
-		}
-		if err := bus.ProbeFeedMapping(ctx, e.NC, e.JS, e.Feed()); err != nil {
-			return nil, nil, err
-		}
 	}
 	for role, s := range ss {
 		inc, err := bus.Incarnate(ctx, e.Catalog, role, s)
@@ -479,6 +471,9 @@ func Ingest(ctx context.Context, e *Env) error {
 		return err
 	}
 	stage, err := logStage(e, gs[0])
+	if err == nil && stage != nil {
+		err = e.checkFeed(ctx, stage, gs)
+	}
 	if err != nil {
 		for _, g := range gs {
 			e.leave(g.Replica)
@@ -523,6 +518,29 @@ func Ingest(ctx context.Context, e *Env) error {
 	}
 
 	return run(ctx, e, gs, stage)
+}
+
+// checkFeed checks every group stream and probes the servers' mapping of the feed's subjects before stage runs (logfeed.md §15.4):
+// a refusal (bus.FeedRefused) fails the start; any other failure, a group stream that cannot answer, leaves stage to retry the check while it runs.
+// gs are the traffic and the parked ingester, in that order.
+func (e *Env) checkFeed(ctx context.Context, stage *logfeed.Stage, gs []*ingest.Ingester) error {
+	traffic, parked := gs[0].Stream.CachedInfo().Config, gs[1].Stream.CachedInfo().Config
+	check := func(ctx context.Context) error {
+		if err := bus.CheckFeedStreams(ctx, e.JS, e.Feed(), traffic, parked); err != nil {
+			return err
+		}
+
+		return bus.ProbeFeedMapping(ctx, e.NC, e.JS, e.Feed())
+	}
+	err := check(ctx)
+	if err != nil && !bus.FeedRefused(err) {
+		e.Log.Warn("logfeed: a feed stream cannot answer; the log stage starts and checks the feed again", "error", safetext.Text(err.Error()))
+		stage.Check = check
+
+		return nil
+	}
+
+	return err
 }
 
 // logStage builds the host log feed's stage from the traffic ingester's configurations, keys and store, nil with the feed disabled (logfeed.md §15.4).

@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 
 	"github.com/arloliu/tracekeep/producer/busconfig"
@@ -26,6 +27,31 @@ var ErrFeedOverlap = errors.New("bus: a feed stream overlaps another stream")
 // ErrFeedImmutable refuses an existing feed stream whose storage, retention or compression differs from its specification,
 // which an update cannot change in place: the operator drains it, deletes it and runs migrate again (T-64).
 var ErrFeedImmutable = errors.New("bus: a feed stream's storage, retention or compression differs; drain and delete it, then migrate again")
+
+// ErrFeedUnavailable is a feed check that a group stream did not answer, its server lost or the cluster electing a leader (logfeed.md §15.4):
+// unlike the check's other errors it can pass once the stream is back, so the log stage retries it.
+var ErrFeedUnavailable = errors.New("bus: a feed stream cannot answer")
+
+// FeedRefused reports whether err, from CheckFeedStreams or ProbeFeedMapping, refuses the feed's streams or the servers' mapping, the operator's to correct:
+// a stream missing, of other subjects or overlapping another, or a mapping of another count.
+// Any other error is a stream or the servers not answering, ErrFeedUnavailable among them, which can pass once they are back.
+func FeedRefused(err error) bool {
+	return errors.Is(err, ErrFeedOverlap) || errors.Is(err, ErrFeedMapping) || errors.Is(err, jetstream.ErrStreamNotFound)
+}
+
+// streamOffline is JetStream's error code for a stream whose servers are gone, which nats.go names no constant for.
+const streamOffline jetstream.ErrorCode = 10118
+
+// unanswered reports whether err is a stream's request left unanswered or refused as offline, which a stream back answers.
+func unanswered(err error) bool {
+	var api *jetstream.APIError
+	if errors.As(err, &api) {
+		return api.ErrorCode == streamOffline
+	}
+
+	return errors.Is(err, context.DeadlineExceeded) || errors.Is(err, nats.ErrTimeout) || errors.Is(err, nats.ErrNoResponders) ||
+		errors.Is(err, jetstream.ErrNoStreamResponse)
+}
 
 // Feed is the host log feed's group streams and their consumers as migrate ensures them (logfeed.md §15.4, T-64, T-67).
 type Feed struct {
@@ -144,11 +170,17 @@ func EnsureFeed(ctx context.Context, js jetstream.JetStream, f Feed, previous in
 }
 
 // CheckFeedStreams opens every group's stream and refuses one whose subjects are not its group's or overlap the traffic or parking stream's,
-// as every role does at its start with the feed enabled (logfeed.md §15.4).
+// as the ingest role does before its log stage runs (logfeed.md §15.4);
+// a stream that does not answer within feedStateWait, as one on a server that is down, fails it with ErrFeedUnavailable.
 func CheckFeedStreams(ctx context.Context, js jetstream.JetStream, f Feed, traffic, parked jetstream.StreamConfig) error {
 	for n := range f.Groups {
 		name := FeedStreamName(f, n)
-		s, err := js.Stream(ctx, name)
+		sctx, cancel := context.WithTimeout(ctx, feedStateWait)
+		s, err := js.Stream(sctx, name)
+		cancel()
+		if unanswered(err) {
+			return fmt.Errorf("%w: %s: %w", ErrFeedUnavailable, name, err)
+		}
 		if err != nil {
 			return fmt.Errorf("bus: feed stream %s: %w", name, err)
 		}

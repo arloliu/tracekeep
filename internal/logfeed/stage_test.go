@@ -250,6 +250,44 @@ func TestStageReadinessNamesTheStream(t *testing.T) {
 	})
 }
 
+// A stage whose check found a group stream unable to answer balances the groups as one whose check passed, beside a replica with no check,
+// the two holding every group, and retries the check until it passes; a refusal from the check ends Run (logfeed.md §15.4).
+func TestStageRunsWhileTheCheckFails(t *testing.T) {
+	t.Parallel()
+	catalogtest.Engines(t, func(t *testing.T, c *catalog.Catalog) {
+		ctx := t.Context()
+		e := newStageEnv(t, c, false)
+		var back atomic.Bool
+		var checks atomic.Int32
+		a, b := e.stage("a", time.Hour), e.stage("b", time.Hour)
+		a.Check = func(context.Context) error {
+			checks.Add(1)
+			if back.Load() {
+				return nil
+			}
+
+			return fmt.Errorf("%w: a test stream", bus.ErrFeedUnavailable)
+		}
+		var wg sync.WaitGroup
+		t.Cleanup(wg.Wait)
+		run(ctx, &wg, a)
+		run(ctx, &wg, b)
+		e.eventually("a and b hold every group between them, each its share, started", func() bool {
+			ha, hb := a.Held(), b.Held()
+			return len(ha) == e.feed.Groups/2 && len(hb) == e.feed.Groups/2 && a.Ready(ctx) == nil && b.Ready(ctx) == nil
+		})
+		e.eventually("a retried its check", func() bool { return checks.Load() > 2 })
+		back.Store(true)
+		e.eventually("a's check passed", func() bool { n := checks.Load(); time.Sleep(a.LeaseTTL); return checks.Load() == n })
+
+		r := e.stage("r", time.Hour)
+		r.Check = func(context.Context) error { return fmt.Errorf("%w: a test mapping", bus.ErrFeedMapping) }
+		if err := r.Run(ctx); !errors.Is(err, bus.ErrFeedMapping) {
+			t.Errorf("Run under a refusing check = %v, want ErrFeedMapping", err)
+		}
+	})
+}
+
 // A replica taking a group restores its open captures: a file of it goes idle and stops though no entry of it arrives.
 func TestStageRestoresOpenCaptures(t *testing.T) {
 	t.Parallel()

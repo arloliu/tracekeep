@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -393,9 +394,46 @@ func TestEnsureFeedOffline(t *testing.T) {
 // its read, unanswered, takes its own bound, not the caller's whole deadline (logfeed.md §15.11, T-68).
 func TestFeedStatesServerDown(t *testing.T) {
 	t.Parallel()
+	js, f := serverDown(t)
+	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Second)
+	defer cancel()
+	for _, st := range bus.FeedStates(ctx, js, f) {
+		if down := st.Group == 1; (st.Err != nil) != down {
+			t.Errorf("group %d's stream: %v; want an error only for the stream on the server that is down", st.Group, st.Err)
+		}
+	}
+}
+
+// With a group stream's server down, the stream check and the mapping probe fail with ErrFeedUnavailable, not as a refusal,
+// so the log stage retries them (logfeed.md §15.4).
+func TestFeedChecksServerDown(t *testing.T) {
+	t.Parallel()
+	js, f := serverDown(t)
+	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Second)
+	defer cancel()
+	err := bus.CheckFeedStreams(ctx, js, f, trafficStream, parkedStream)
+	if !errors.Is(err, bus.ErrFeedUnavailable) || !strings.Contains(err.Error(), bus.FeedStreamName(f, 1)) {
+		t.Errorf("CheckFeedStreams = %v, want ErrFeedUnavailable naming group 1's stream", err)
+	}
+	pctx, cancel := context.WithTimeout(t.Context(), 20*time.Second)
+	defer cancel()
+	if err := bus.ProbeFeedMapping(pctx, js.Conn(), js, f); !errors.Is(err, bus.ErrFeedUnavailable) || errors.Is(err, bus.ErrFeedMapping) {
+		t.Errorf("ProbeFeedMapping = %v, want ErrFeedUnavailable alone", err)
+	}
+}
+
+// serverDown is a feed of 3 groups, each stream of one replica on its own server of a three-node cluster mapping the feed's subjects,
+// which both checks pass, with group 1's server then shut down and the other groups' streams answering again.
+func serverDown(t *testing.T) (jetstream.JetStream, bus.Feed) {
+	t.Helper()
 	srvs, js := cluster(t)
 	f := feed(3, 1)
 	f.PlacementTags = []string{"tb-0", "tb-1", "tb-2"}
+	for _, s := range srvs {
+		if err := testbus.MapFeed(s, f.Prefix, f.Groups); err != nil {
+			t.Fatal(err)
+		}
+	}
 	if err := bus.EnsureFeed(t.Context(), js, f, 0, trafficStream, parkedStream); err != nil {
 		t.Fatal(err)
 	}
@@ -405,6 +443,12 @@ func TestFeedStatesServerDown(t *testing.T) {
 			t.Fatal(err)
 		}
 		testbus.AwaitStream(t, js, s)
+	}
+	if err := bus.CheckFeedStreams(t.Context(), js, f, trafficStream, parkedStream); err != nil {
+		t.Fatal(err)
+	}
+	if err := bus.ProbeFeedMapping(t.Context(), js.Conn(), js, f); err != nil {
+		t.Fatal(err)
 	}
 	srvs[1].Shutdown()
 	srvs[1].WaitForShutdown()
@@ -423,13 +467,8 @@ func TestFeedStatesServerDown(t *testing.T) {
 			}
 		}
 	}
-	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Second)
-	defer cancel()
-	for _, st := range bus.FeedStates(ctx, js, f) {
-		if down := st.Group == 1; (st.Err != nil) != down {
-			t.Errorf("group %d's stream: %v; want an error only for the stream on the server that is down", st.Group, st.Err)
-		}
-	}
+
+	return js, f
 }
 
 // unansweredDelete is a JetStream whose deletions go unanswered, as on a cluster just formed, and are counted.
