@@ -142,30 +142,40 @@ tests:
 - name: open gaps growing on a piece of equipment, fresh, two replicas
   interval: 1m
   input_series:
-  - {series: 'tracekeep_ingest_open_gaps{instance="a",equipment_id="T-1"}', values: '1x30 3x10'}
-  - {series: 'tracekeep_ingest_open_gaps{instance="b",equipment_id="T-1"}', values: '1x30 3x10'}
-  - {series: 'tracekeep_ingest_refreshed_timestamp_seconds{instance="a",source="catalog"}', values: '0+60x40'}
+  - {series: 'tracekeep_ingest_open_gaps{instance="a",equipment_id="T-1"}', values: '1x30 3x20'}
+  - {series: 'tracekeep_ingest_open_gaps{instance="b",equipment_id="T-1"}', values: '1x30 3x20'}
+  - {series: 'tracekeep_ingest_refreshed_timestamp_seconds{instance="a",source="catalog"}', values: '0+60x50'}
   alert_rule_test:
   - {eval_time: 20m, alertname: TracekeepGapsGrowing, exp_alerts: []}
-  - eval_time: 35m
+  - {eval_time: 35m, alertname: TracekeepGapsGrowing, exp_alerts: []}
+  - eval_time: 42m
     alertname: TracekeepGapsGrowing
     exp_alerts: [{exp_labels: {severity: warning, equipment_id: T-1}, exp_annotations: {summary: "Equipment T-1: open gaps or declared losses increasing.", runbook_url: "rb#gaps-and-losses"}}]
 - name: open gaps grown but their source stale
   interval: 1m
   input_series:
-  - {series: 'tracekeep_ingest_open_gaps{instance="a",equipment_id="T-1"}', values: '1x30 3x10'}
-  - {series: 'tracekeep_ingest_refreshed_timestamp_seconds{instance="a",source="catalog"}', values: '0x40'}
+  - {series: 'tracekeep_ingest_open_gaps{instance="a",equipment_id="T-1"}', values: '1x30 3x20'}
+  - {series: 'tracekeep_ingest_refreshed_timestamp_seconds{instance="a",source="catalog"}', values: '0x50'}
   alert_rule_test:
-  - {eval_time: 35m, alertname: TracekeepGapsGrowing, exp_alerts: []}
+  - {eval_time: 42m, alertname: TracekeepGapsGrowing, exp_alerts: []}
 - name: open gaps grown in one replica's stale snapshot, flat in another's fresh one
   interval: 1m
   input_series:
-  - {series: 'tracekeep_ingest_open_gaps{instance="a",equipment_id="T-1"}', values: '1x30 3x10'}
-  - {series: 'tracekeep_ingest_refreshed_timestamp_seconds{instance="a",source="catalog"}', values: '0x40'}
-  - {series: 'tracekeep_ingest_open_gaps{instance="b",equipment_id="T-1"}', values: '1x40'}
-  - {series: 'tracekeep_ingest_refreshed_timestamp_seconds{instance="b",source="catalog"}', values: '0+60x40'}
+  - {series: 'tracekeep_ingest_open_gaps{instance="a",equipment_id="T-1"}', values: '1x30 3x20'}
+  - {series: 'tracekeep_ingest_refreshed_timestamp_seconds{instance="a",source="catalog"}', values: '0x50'}
+  - {series: 'tracekeep_ingest_open_gaps{instance="b",equipment_id="T-1"}', values: '1x50'}
+  - {series: 'tracekeep_ingest_refreshed_timestamp_seconds{instance="b",source="catalog"}', values: '0+60x50'}
   alert_rule_test:
-  - {eval_time: 35m, alertname: TracekeepGapsGrowing, exp_alerts: []}
+  - {eval_time: 42m, alertname: TracekeepGapsGrowing, exp_alerts: []}
+- name: a hole open for about a flush interval, as another replica's held batch leaves one, fires nothing
+  interval: 1m
+  input_series:
+  - {series: 'tracekeep_ingest_open_gaps{instance="a",equipment_id="T-1"}', values: '1x30 2x6 1x13'}
+  - {series: 'tracekeep_ingest_refreshed_timestamp_seconds{instance="a",source="catalog"}', values: '0+60x50'}
+  alert_rule_test:
+  - {eval_time: 33m, alertname: TracekeepGapsGrowing, exp_alerts: []}
+  - {eval_time: 37m, alertname: TracekeepGapsGrowing, exp_alerts: []}
+  - {eval_time: 45m, alertname: TracekeepGapsGrowing, exp_alerts: []}
 - name: a connected producer publishing
   interval: 1m
   input_series:
@@ -279,7 +289,8 @@ tests:
   input_series:
   - {series: 'tracekeep_ingest_last_declared_loss_timestamp_seconds{instance="a",equipment_id="T-3"}', values: '_x5 300x40'}
   alert_rule_test:
-  - eval_time: 10m
+  - {eval_time: 10m, alertname: TracekeepGapsGrowing, exp_alerts: []}
+  - eval_time: 16m
     alertname: TracekeepGapsGrowing
     exp_alerts: [{exp_labels: {severity: warning, equipment_id: T-3}, exp_annotations: {summary: "Equipment T-3: open gaps or declared losses increasing.", runbook_url: "rb#gaps-and-losses"}}]
   - {eval_time: 40m, alertname: TracekeepGapsGrowing, exp_alerts: []}

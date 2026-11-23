@@ -46,7 +46,7 @@ The static token for services stays in `<data>/api-token`.
 | `store.s3.endpoint`, `.region`, `.bucket`, `.access_key_id`, `.secret_access_key_ref` | — | `TRACEKEEP_S3_…` | an S3-compatible endpoint (T-34); empty endpoint for AWS; the bucket and both credentials are required, the store taking static credentials only; an `http://` endpoint is accepted, and outside `tracekeep dev` each role warns of it once at start, while an empty one, the provider's default over TLS, is not warned (`650-perf-sec.md`) |
 | `store.presign` | `true` | `TRACEKEEP_STORE_PRESIGN` | readers download by presigned URL (T-33); off for a store whose URLs they cannot use |
 | `store.download_lifetime` | `15m` | `TRACEKEEP_STORE_DOWNLOAD_LIFETIME` | the longest a download URL lives (T-41), at most a day; `compact.delete_delay` must exceed it by more than 4 minutes |
-| `ingest.flush_interval` | `5m` | `TRACEKEEP_INGEST_FLUSH_INTERVAL` | F (T-25): longer makes fewer, larger segments and a later registration; Q must exceed F plus `ack_wait` plus slack |
+| `ingest.flush_interval` | `5m` | `TRACEKEEP_INGEST_FLUSH_INTERVAL` | F (T-25): longer makes fewer, larger segments and a later registration; Q must exceed F plus `ack_wait` plus slack; the chart's `alerts.gapsFor` at least F and a flush |
 | `ingest.ack_wait` | `7m` | `TRACEKEEP_INGEST_ACK_WAIT` | must exceed F plus an upload, and with the redelivery slack stay below Q minus F (T-25); 7 minutes, the plan's middle of that range |
 | `ingest.max_ack_pending` | `50000` | `TRACEKEEP_INGEST_MAX_ACK_PENDING` | above the peak message rate times F plus an upload, or delivery stalls |
 | `ingest.fetch_batch`, `ingest.max_wait` | `500`, `5s` | `TRACEKEEP_INGEST_…` | one fetch's size and wait |

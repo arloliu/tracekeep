@@ -124,6 +124,8 @@ a scope that stays unmerged shows instead in `tracekeep_compact_oldest_unmerged_
 ## gaps-and-losses
 
 **Alert** `TracekeepGapsGrowing`: on a piece of equipment, the holes in its open captures (`tracekeep_ingest_open_gaps`) grew over 30 minutes, or ingest declared a seq of it lost within them (`tracekeep_ingest_last_declared_loss_timestamp_seconds`, `tracekeep_ingest_declared_losses_total`).
+The rule holds for `alerts.gapsFor` (10 minutes by default) before it fires:
+ingest's replicas register one capture's records out of order, so a hole another replica's held batch explains is open for up to F and its flush, and is no fault.
 
 1. `tracekeep status` and the browser's completeness for the equipment show which captures, hours and seqs.
 2. Gaps come from the producer: its drops (`producer-drops`) or a bus it could not reach; check the gateway's metrics for the equipment.
