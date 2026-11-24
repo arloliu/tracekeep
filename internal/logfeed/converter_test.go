@@ -514,8 +514,8 @@ func TestConverterHoldsHandles(t *testing.T) {
 	})
 }
 
-// A phase keeps an equipment's flushes on the wall clock's times congruent to it modulo F, whenever the previous flush ran;
-// without one, a flush is due F after the previous one.
+// A phase keeps an equipment's flushes on the wall clock's times congruent to it modulo F, whenever the previous flush ran:
+// group n of G takes n×F/G, the harness's Phase replaces it, and without either a flush is due F after the previous one.
 func TestNextFlushKeepsThePhase(t *testing.T) {
 	f := 10 * time.Second
 	at := func(s float64) time.Time { return time.Unix(0, int64(s*float64(time.Second))) }
@@ -523,6 +523,13 @@ func TestNextFlushKeepsThePhase(t *testing.T) {
 	if got := c.nextFlush("A", at(1000.5)); !got.Equal(at(1010.5)) {
 		t.Errorf("without a phase: %v, want F later", got)
 	}
+	g := &Converter{Flush: f, Group: 3, Groups: 4}
+	for _, tc := range [][2]float64{{1000.5, 1007.5}, {1007.5, 1017.5}, {1009, 1017.5}} {
+		if got := g.nextFlush("A", at(tc[0])); !got.Equal(at(tc[1])) {
+			t.Errorf("group 3 of 4 at %v: %v, want %v", tc[0], got.Sub(at(1000)), at(tc[1]).Sub(at(1000)))
+		}
+	}
+	c.Group, c.Groups = 3, 4
 	c.Phase = func(id string) time.Duration {
 		if id == "A" {
 			return 3 * time.Second

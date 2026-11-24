@@ -82,8 +82,11 @@ type Converter struct {
 	GroupBytes, MaxHeld int
 	// HorizonHour returns the oldest hour retention keeps.
 	HorizonHour func() int64
-	// Phase, when set, places each equipment's flushes on the wall clock: due at the times congruent to its phase modulo F,
-	// whatever flushed it before, so a fleet's flushes stay spread over F; nil makes a flush due F after the previous one.
+	// Groups is G: each of group n's equipment flushes on the wall clock at the times congruent to n×F/G modulo F,
+	// whatever flushed it before, so the groups' flushes stay spread over F and each group's stream is swept once a F (§15.7, T-74).
+	Groups int
+	// Phase, a test seam for the load harness, replaces the group's phase with an equipment's own;
+	// with neither, a flush is due F after the previous one.
 	Phase   func(equipmentID string) time.Duration
 	Now     func() time.Time
 	Log     *slog.Logger
@@ -693,14 +696,22 @@ func (c *Converter) limits() (maxBytes, maxMeta int) {
 	return maxBytes, maxMeta
 }
 
-// nextFlush is when an equipment's flush is next due after now: F later, or with Phase the next time on its phase.
+// nextFlush is when an equipment's flush is next due after now: the next time on its phase, or without one F later.
 func (c *Converter) nextFlush(equipmentID string, now time.Time) time.Time {
-	if c.Phase == nil || c.Flush <= 0 {
+	var phase time.Duration
+	switch {
+	case c.Flush <= 0:
+		return now.Add(c.Flush)
+	case c.Phase != nil:
+		phase = c.Phase(equipmentID)
+	case c.Groups > 0:
+		phase = c.Flush * time.Duration(c.Group) / time.Duration(c.Groups)
+	default:
 		return now.Add(c.Flush)
 	}
 	f := int64(c.Flush)
 	nowNs := now.UnixNano()
-	next := nowNs - nowNs%f + (int64(c.Phase(equipmentID))%f+f)%f
+	next := nowNs - nowNs%f + (int64(phase)%f+f)%f
 	for next <= nowNs {
 		next += f
 	}
@@ -1028,7 +1039,7 @@ func (c *Converter) clone(l catalog.Lease, n int) *Converter {
 		Lease: l, Group: n, Catalog: c.Catalog, Store: c.Store, KeyPrefix: c.KeyPrefix, WorkDir: c.WorkDir, Writer: c.Writer,
 		Configs: c.Configs, Bindable: c.Bindable, Keys: c.Keys, Devices: c.Devices, Flush: c.Flush, Reorder: c.Reorder, Idle: c.Idle,
 		AckWait: c.AckWait, Pairing: c.Pairing, MaxBatchBytes: c.MaxBatchBytes, MetaBytes: c.MetaBytes, GroupBytes: c.GroupBytes, MaxHeld: c.MaxHeld,
-		HorizonHour: c.HorizonHour, Phase: c.Phase,
+		HorizonHour: c.HorizonHour, Groups: c.Groups, Phase: c.Phase,
 		Now: c.Now, Log: c.Log, Metrics: c.Metrics,
 	}
 }

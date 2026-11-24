@@ -57,7 +57,7 @@ Milestones the owner set after seed v21 §12's (T-52).
 
 ## Active plans
 
-- [Hour flush](plans/hour-flush.md) — the log stage's hold of an earlier hour (T-72), its measurement, ingest's hold, and spreading's explanation.
+None.
 
 Phase 0 is done (#1, #3, #4, #7, #8).
 Phase 1 is done (#9, #11, #13, #14, #16, #17, #18, #19).
@@ -78,6 +78,8 @@ its closed plan's last text, with its probes, the server-loss measurement and th
 A group stream that cannot answer keeps no role from starting (T-70), the log stage alone retrying the feed's check.
 The traffic and parking streams and the claim bucket take `bus.replicas` (T-71), 3 in the Helm chart's values, `migrate` raising and never lowering them;
 a lost feed server's return, with its storage and wiped, is tested under the log stage's real check (T-70).
+The hour flush (T-72, T-73, T-74) is done (#135, #139, #141, #143 and the pull request that phased the log stage by group): an hour's change flushes no earlier hour,
+and the log stage's flushes are phased by lease group; its closed plan's last text, with its load cells, is at 2b26073.
 
 ## Open items
 
@@ -134,10 +136,11 @@ a lost feed server's return, with its storage and wiped, is tested under the log
     On a stream a group with acknowledgements, spreading measured worse than aligned flushes
     (publish p99 461 against 134 ms, the bus disk's reads 417 against 144 MB/s), contrary to the one-stream run;
     the owner chose to explain that before spreading is taken up (T-67).
-    The explanation, measured (T-72, `plans/hour-flush.md`): an acknowledgement makes the server load its entry's block, and a group's 60-odd equipment flushing at their own phases
+    The explanation, measured (T-72): an acknowledgement makes the server load its entry's block, and a group's 60-odd equipment flushing at their own phases
     leave the group's blocks to go cold between their flushes, so each flush reads them again, 7.6 times aligned's reads before the burst;
-    spreading by group keeps one sweep a stream a F and read less than aligned in every window, its publish p99 the lowest (13 / 144 / 34 ms before, in and after the burst, against 18 / 166 / 53);
-    whether to take it up is the owner's.
+    spreading by group keeps one sweep a stream a F and read less than aligned in every window, its publish p99 the lowest (13 / 144 / 34 ms before, in and after the burst, against 18 / 166 / 53).
+    The log stage's flushes are phased by group (T-74, `logfeed.md` §15.7), group n's equipment at n×F/G on the wall clock;
+    on the log stage with the store and the catalog that phase is not measured, nor is spreading ingest's flushes, which are a capture's own.
   - The hour's change aligned them again, flushing every equipment's earlier hour at once; neither the log stage (T-72, `logfeed.md` §15.7) nor ingest (T-73, `ingest.md` §6.2) does any longer,
     which keeps a fleet's flush times: on an aligned fleet the hour's busiest second fell 17 to 30 %, a dispersed fleet stayed dispersed (39 against 757 packs a second).
     Leaving an earlier hour's batches to the equipment's next flush, with spreading, took the hour's busiest second from 997 to 32 puts,
