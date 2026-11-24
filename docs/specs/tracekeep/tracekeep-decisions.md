@@ -669,7 +669,7 @@ Not now, decided again from measurements: batched parking acknowledgements, a de
 Not at all: a cap on `QueryRecords`' window, and a quiet `/auth/me`.
 **A link to the bus or the store without TLS is warned of at start, never refused**, so no installation stops starting.
 **go-secs' share stays out of the phase**: T-45, the format-minor accessor, the filtered writer, tracepack's epoch-hour text;
-the first S1F3's `ordering-uncertain` stays open, its two read hypotheses sent to go-secs.
+the first S1F3's `ordering-uncertain` stays open, its two read hypotheses sent to go-secs (superseded by T-75).
 **SQLite's one write connection** is relieved by shorter write transactions, and an API request's audit write gets a deadline and a wait histogram;
 a priority gate only if measurement still shows a starved write; `synchronous` stays `FULL`, and the audit log stays in the catalog.
 **Performance work is measured first**, before and after, and a finding not worth its change closes with its number.
@@ -1100,3 +1100,32 @@ The owner chose, on 2026-11-24, **to phase the log stage's flushes by lease grou
 group n's equipment flush on the wall clock at n×F/G modulo F, whatever triggered the previous flush, so a lease handover and the group's bound keep the phase,
 and no batch waits more than F.
 Not measured: the phase on the log stage with the store and the catalog, whose cells spread by equipment; ingest keeps its capture's own flush times (T-73), its stream shared by every capture.
+
+### T-75 — a reply reported before its primary stays as recorded; the pilot measures its rate (2026-11-24)
+
+go-secs reports an outbound frame once its write returns and an inbound frame as soon as it is read,
+so a reply read before its request's write returns takes the lower seq, the request is marked `ordering-uncertain`,
+and tracepack's lookup, which seeks a reply above its primary, answers not found with the gap shown.
+go-secs documents that order between the two directions is promised only by the timestamps, which stay causal.
+The owner chose on 2026-11-23 to ask go-secs to hold an inbound report while an outbound one is pending on its socket;
+on 2026-11-24 the owner chose instead **to keep go-secs as it is and settle the case on the recorder side**.
+**The SDK stays as it is** (option B): both records keep their seqs and times, so a person reading the capture sees the true order,
+and a VE generation loses the one pair.
+Sorting by time before seq is allocated (option C) is not taken: it allocates seq outside the callback, so a record lost before its seq would leave no gap (G5-218).
+Reserving the primary's seq at its reply's callback (option A) is not taken now:
+a primary written but never reported would leave its reservation unfilled and fault the capture after 1 s,
+and A covers neither control frames, nor primaries the gateway did not register, nor lifecycle transitions.
+**The rate cannot be estimated outside the gateway.**
+An inversion needs the peer's reply read before the gateway's outbound callback takes its seq,
+so it follows the gateway's post-write tail latency (scheduling, GC, the write and capture locks) against the peer's response time.
+On a loopback pair whose responder answers in tens of µs it measured at most 0.04 % without the SDK and about 0.5 % with it,
+every primary of 400 inverted with a write held 1 ms, and none at one CPU;
+equipment answering in milliseconds should invert only while the gateway stalls, and then in bursts.
+**The pilot measures it**: an SDK counter of the records marked `ordering-uncertain` (an atomic add, no allocation in the callback),
+and an offline scan of the pilot's captures that tells a primary preceded at once by its own reply (same System Bytes, `At` not before the primary's) from other causes.
+At 0.1 % of primaries or below, spread over equipment and time, B is final:
+`producer.md` §4.2 records the residual and the browser test's tolerance stays.
+Above it, or concentrated, the next step is a reader-side match:
+an `ordering-uncertain` primary matches the reply immediately before it with its System Bytes and a time not before its own,
+a change to go-secs's `tracepack-semantics.md` §7.2 the owner decides whether to ask for;
+it covers control frames and unregistered primaries, adds no fault path, and needs both the mark and the times, which a peer cannot forge alone.
