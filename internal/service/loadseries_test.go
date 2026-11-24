@@ -26,7 +26,8 @@ import (
 // The feed-convert mode's resource series, for judging when the fleet's flushes load the store, the catalog and the bus:
 // TRACEKEEP_LOAD_SERIES names a directory that gets series.csv, a row a second (the packs' registration times are the catalog's own);
 // TRACEKEEP_LOAD_S3 (any value) puts the packs in a new bucket of the S3 store TRACEKEEP_S3_ENDPOINT names, as the store tests do;
-// TRACEKEEP_LOAD_PHASE=spread spreads the log stage's flushes over F (logfeed.Converter.Phase).
+// TRACEKEEP_LOAD_PHASE=spread spreads the log stage's flushes over F by equipment, =aligned puts every equipment on one phase;
+// unset keeps the group's phase (logfeed.Converter.Phase).
 const (
 	envSeries = "TRACEKEEP_LOAD_SERIES"
 	envLoadS3 = "TRACEKEEP_LOAD_S3"
@@ -104,8 +105,14 @@ func installSeries(ctx context.Context, t *testing.T, d *Dev) *seriesStore {
 		}
 		d.Env.Store = st
 	}
-	if os.Getenv(envPhase) == "spread" {
+	switch os.Getenv(envPhase) {
+	case "spread":
 		d.Env.logPhase = spreadPhase(d.Env.Config.Logfeed.Flush(d.Env.Config.Ingest.FlushInterval))
+	case "aligned":
+		d.Env.logPhase = func(string) time.Duration { return 0 }
+	case "":
+	default:
+		t.Fatalf("%s=%q: want spread, aligned or unset", envPhase, os.Getenv(envPhase))
 	}
 	s := &seriesStore{ObjectStore: d.Env.Store}
 	d.Env.Store = s

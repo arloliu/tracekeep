@@ -1083,3 +1083,20 @@ each still in its own transaction under the same prologue;
 and **`TracekeepGapsGrowing` gets a `for:` of at least F**, since ingest's replicas share one consumer and already register one capture's records out of order, whatever the hour.
 The chart's `alerts.gapsFor` is 10 minutes, twice the default F, for the flush, the gauges' refresh and the scrape; an operator raising F raises it with F.
 The ordering sorts the batches due at once: 0.2 ms more a pass at 1,500 batches, a pass every F.
+
+### T-74 — the log stage's flushes are phased by lease group (2026-11-24)
+
+T-72 asked why spreading the flushes by equipment measured worse on a stream a group, and whether spreading was the direction at all.
+The hour-flush plan's cells of 2026-11-23, on 32 group streams of one replica, settled it (its last text, with every cell, is at 2b26073):
+spread by equipment, the bus disk read 190 MB/s before the burst against 25 aligned, 7.6 times, as B5 had;
+spread by group, each group's equipment at one phase and the groups' phases even over F, it read 6, 304 and 172 MB/s before, in and after the burst against aligned's 25, 357 and 217,
+with the lowest publish p99 in every window (13, 144 and 34 ms against 18, 166 and 53).
+So the cause is the one the plan proposed: an acknowledgement loads its entry's block, a group's 60-odd equipment interleave in its stream's blocks,
+and phases an equipment's own leave those blocks to go cold between the group's flushes, each flush reading them again; a group's one phase reads them once a F.
+B5's publish p99 gap (461 against 134 ms) did not repeat (115 against 96 and 108 ms aligned), most likely the host's drift late in its queue.
+The same cells measured the hold (T-72): a fleet spread by equipment stayed spread across the hour, its busiest second 39 packs against 757 before;
+an aligned fleet's hour peak fell 17 to 30 %, still 1.5 to 1.8 times an ordinary flush's.
+The owner chose, on 2026-11-24, **to phase the log stage's flushes by lease group** (`logfeed.md` §15.7):
+group n's equipment flush on the wall clock at n×F/G modulo F, whatever triggered the previous flush, so a lease handover and the group's bound keep the phase,
+and no batch waits more than F.
+Not measured: the phase on the log stage with the store and the catalog, whose cells spread by equipment; ingest keeps its capture's own flush times (T-73), its stream shared by every capture.

@@ -1,6 +1,6 @@
 # tracekeep — host log feed
 
-Status: current (2026-11-23) — from P3 as T-60 accepted it, delivered by the host log feed plan (#101–#112)
+Status: current (2026-11-24) — from P3 as T-60 accepted it, delivered by the host log feed plan (#101–#112)
 
 Covers the host log feed: a log pipeline parses the SECS traffic a host program prints to its text log,
 and tracekeep pairs the entries, builds the frames and writes `capture_method = log` captures as they arrive.
@@ -332,8 +332,12 @@ records are written with `SegmentWriter.Append` (fidelity `reconstructed`, `deco
 - **Batches** per (capture, UTC hour of the record), as `ingest.md` §6.2 states;
   but a flush takes **every batch of its equipment**, whatever triggered it (F, `logfeed.flush_interval`, ingest's F, T-25; `ingest.batch_max_bytes`; the metadata budget),
   so the watermark it writes covers everything converted before it, across devices and hours;
-  **an hour's change triggers no flush**, as in ingest (`ingest.md` §6.2): an earlier hour's batches wait for the equipment's next flush, F after its previous one (T-72),
+  **an hour's change triggers no flush**, as in ingest (`ingest.md` §6.2): an earlier hour's batches wait for the equipment's next flush (T-72),
   so each equipment keeps its flush times across the hour and a fleet's flushes do not all fall at the hour's start;
+  **an equipment's flushes are phased by its lease group** (T-74): group n's are due on the wall clock at the times congruent to n×F/G modulo F,
+  the next such time after the previous flush, whatever triggered that one, and the first after the equipment's first entry,
+  so the G groups' flushes spread evenly over F while each group's stream is swept once a F, its acknowledged blocks read once;
+  a phase an equipment's own would leave a group's blocks to go cold between its equipment's flushes and read them again (T-74);
   every reader's bound already allows a batch to wait F (`compact.quiet_period` exceeds F, `api.md` §10.1 *The cursor*);
   an equipment has at most one flush registering at a time;
   generation-0 segments under [STO §3] keys with `flush_interval_ns`, the writer's `PackFacts.DurableRecorder` set ([FMT §5], G5-302).

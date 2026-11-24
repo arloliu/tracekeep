@@ -76,7 +76,7 @@ type Env struct {
 	// passSettled the traffic ingester's PassSettled; accepts the executor's Accepts; stepping the parked ingester's Stepping.
 	timed       func(stage string, took time.Duration)
 	passSettled func(at time.Time, batches []*ingest.Batch, err error)
-	// logPhase, when not nil, is the log stage's flush phase (logfeed.Converter.Phase), the load harness's spread schedule.
+	// logPhase, when not nil, replaces the log stage's group phase (logfeed.Converter.Phase), the load harness's schedules.
 	logPhase func(equipmentID string) time.Duration
 	accepts  func(descriptor []byte) bool
 	stepping func(ctx context.Context)
@@ -592,7 +592,7 @@ func logStage(e *Env, g *ingest.Ingester) (*logfeed.Stage, error) {
 			Devices: logfeed.Devices{Main: l.MainDevice, Rules: rules(l.Devices), Overrides: overrides},
 			Flush:   l.Flush(c.Ingest.FlushInterval), Reorder: l.ReorderWindow, Idle: l.IdlePeriod, AckWait: c.Ingest.AckWait, Pairing: l.PairingWindow,
 			MaxBatchBytes: int(c.Ingest.BatchMaxBytes.Int64()), GroupBytes: int(l.GroupMaxBytes.Int64()), MaxHeld: l.MaxAckPending, HorizonHour: func() int64 { return ingest.HourOf(e.horizon()) }, Now: e.now,
-			Log: e.Log.With("role", "logfeed"), Metrics: m, Phase: e.logPhase,
+			Log: e.Log.With("role", "logfeed"), Metrics: m, Groups: l.LeaseGroups, Phase: e.logPhase,
 		},
 	}, nil
 }
