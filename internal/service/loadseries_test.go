@@ -26,7 +26,8 @@ import (
 // The feed-convert mode's resource series, for judging when the fleet's flushes load the store, the catalog and the bus:
 // TRACEKEEP_LOAD_SERIES names a directory that gets series.csv, a row a second (the packs' registration times are the catalog's own);
 // TRACEKEEP_LOAD_S3 (any value) puts the packs in a new bucket of the S3 store TRACEKEEP_S3_ENDPOINT names, as the store tests do;
-// TRACEKEEP_LOAD_PHASE=spread spreads the log stage's flushes over F by equipment, =aligned puts every equipment on one phase;
+// TRACEKEEP_LOAD_PHASE=spread spreads the log stage's flushes over F by equipment, =aligned puts every equipment on the wall clock's F grid
+// (so a cell started off the grid, at HH:52:30, no longer keeps its ordinary flushes clear of the hour as the cells before T-74 did);
 // unset keeps the group's phase (logfeed.Converter.Phase).
 const (
 	envSeries = "TRACEKEEP_LOAD_SERIES"
