@@ -84,11 +84,14 @@ and the log stage's flushes are phased by lease group; its closed plan's last te
 ## Open items
 
 - The SDK marks an S1F3 ordering-uncertain when its reply is reported first (`producer.md` §4.2):
-  go-secs v2.8.0 times an outbound frame before its write but reports it once the write returns, and reports an inbound frame as soon as it is read,
+  go-secs times an outbound frame before its write but reports it once the write returns, and reports an inbound frame as soon as it is read,
   so a reply read before its request's write returns takes the lower seq, and tracepack's lookup, which seeks a reply above its primary, answers not found with the gap shown.
-  On a local loopback pair it hit about 0.5 % of primaries, at any position; the packaging browser test accepts it only with the gap.
-  The owner chose on 2026-11-23 to ask go-secs to report an inbound frame only after an outbound report pending on its socket;
-  the SDK stays as it is (`TestReplyReportedBeforeItsPrimary` pins its records for that order), and the browser test keeps its tolerance until go-secs does.
+  The owner chose on 2026-11-24 to keep go-secs and the SDK as they are and to measure the rate in the pilot (T-75, superseding the 2026-11-23 choice to ask go-secs):
+  on a loopback pair it was at most 0.04 % without the SDK and about 0.5 % with it, and it follows the gateway's post-write stalls against the peer's response time, so loopback does not predict it.
+  To do: an SDK counter of the records marked `ordering-uncertain`, and an offline scan of the pilot's captures that tells a primary preceded at once by its own reply from other causes.
+  At 0.1 % or below, spread out, the residual goes into `producer.md` §4.2 and the browser test's tolerance stays;
+  above it, a reader-side match in tracepack's lookup is the next step, asked of go-secs if the owner decides to.
+  `TestReplyReportedBeforeItsPrimary` pins the SDK's records for that order.
   go-secs's lifecycle transitions, reported after the frames around them, flag records at a connection's teardown too.
 - An hour whose masked segments merge past the reader's metadata budget stays unmergeable (T-45);
   the lasting fix, redaction entries kept outside the pack metadata, is a format change asked of go-secs.
