@@ -78,7 +78,7 @@ its closed plan's last text, with its probes, the server-loss measurement and th
 A group stream that cannot answer keeps no role from starting (T-70), the log stage alone retrying the feed's check.
 The traffic and parking streams and the claim bucket take `bus.replicas` (T-71), 3 in the Helm chart's values, `migrate` raising and never lowering them;
 a lost feed server's return, with its storage and wiped, is tested under the log stage's real check (T-70).
-The hour flush (T-72, T-73, T-74) is done (#135, #139, #141, #143 and the pull request that phased the log stage by group): an hour's change flushes no earlier hour,
+The hour flush (T-72, T-73, T-74) is done (#135, #139, #141, #143, #144): an hour's change flushes no earlier hour,
 and the log stage's flushes are phased by lease group; its closed plan's last text, with its load cells, is at 2b26073.
 
 ## Open items

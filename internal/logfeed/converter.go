@@ -716,7 +716,8 @@ func (c *Converter) nextFlush(equipmentID string, now time.Time) time.Time {
 		next += f
 	}
 
-	return time.Unix(0, next)
+	// From now, so the due time keeps now's monotonic reading: a step of the wall clock delays no flush past F.
+	return now.Add(time.Duration(next - nowNs))
 }
 
 // full reports eq's batches holding a limit's worth, which makes its flush due.

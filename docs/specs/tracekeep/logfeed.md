@@ -438,7 +438,7 @@ the traffic stream shared the server and the disk, and these runs do not tell it
 A stream a group splits the lock, not the loads: measured on the same host on 2026-11-08 (`docs/ROADMAP.md` *Open items*, T-67),
 a stream a group of one replica carried the fleet without the dip at every flush, its lowest ten seconds 22,305 entries a second and its publish p99 134 ms, against 5,623 and 712 ms on one stream;
 three replicas carried about a third of the fleet on one stream and 85 % on a stream a group, the latter at about three times the CPU, network and writes.
-Spreading the equipment's flushes over F would spread the reloads, and whether it would lessen them is unmeasured.
+Spreading the flushes by equipment multiplied the reloads on a stream a group; spreading them by group read less than aligned flushes, and the log stage's flushes are so phased (T-74, §15.7).
 **A server lost**, measured on one host on 2026-11-10 (`git show 41a448c:docs/plans/feed-stream-per-group.md`, T-68):
 three servers, the 32 group streams of one replica placed round-robin by tags, and Vector 0.61 publishing the fleet's rate to all three,
 its retries unbounded and backing off at most 3 s, its buffer a 20 GiB disk buffer blocking when full, its concurrency 256 or adaptive;

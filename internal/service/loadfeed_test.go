@@ -430,7 +430,7 @@ type feed struct {
 	streams   []jetstream.Stream
 	consumers []jetstream.Consumer
 	groups    []*feedGroup
-	// aligned makes an equipment's flush due F after its first entry and each flush, as the log stage's are, not spread over F by its phase;
+	// aligned makes an equipment's flush due F after its first entry and each flush, as the log stage's were before T-74, not spread over F by its phase;
 	// byGroup, when not aligned, phases every equipment of a group alike, the groups spread evenly over F;
 	// groupBytes and maxHeld bound each group as the log stage's bound does (logfeed.md §15.7): past groupBytes of batched messages,
 	// or holding more than half of maxHeld, its largest equipment flushes first; zero bounds nothing.
