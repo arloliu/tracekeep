@@ -523,7 +523,7 @@ func TestNextFlushKeepsThePhase(t *testing.T) {
 	if got := c.nextFlush("A", at(1000.5)); !got.Equal(at(1010.5)) {
 		t.Errorf("without a phase: %v, want F later", got)
 	}
-	g := &Converter{Flush: f, Group: 3, Groups: 4}
+	g := (&Converter{Flush: f, Groups: 4}).clone(catalog.Lease{}, 3) // a group's converter keeps G
 	for _, tc := range [][2]float64{{1000.5, 1007.5}, {1007.5, 1017.5}, {1009, 1017.5}} {
 		if got := g.nextFlush("A", at(tc[0])); !got.Equal(at(tc[1])) {
 			t.Errorf("group 3 of 4 at %v: %v, want %v", tc[0], got.Sub(at(1000)), at(tc[1]).Sub(at(1000)))
@@ -551,7 +551,7 @@ func TestNextFlushKeepsThePhase(t *testing.T) {
 	}
 }
 
-// An hour's change flushes nothing: both hours' batches wait for the equipment's next flush, F after its first entry,
+// An hour's change flushes nothing: both hours' batches wait for the equipment's next flush, here F after its first entry (no group phase),
 // so a fleet's flushes keep their times across the hour instead of all flushing at its start (logfeed.md §15.7).
 func TestConverterKeepsItsCadenceAcrossTheHour(t *testing.T) {
 	t.Parallel()

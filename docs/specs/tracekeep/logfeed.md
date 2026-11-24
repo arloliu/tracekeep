@@ -432,7 +432,7 @@ At the fleet's steady rate the stream's inbound loop waits on that lock about a 
 Once every F, about a million entries held since the previous F are acknowledged within a minute,
 and loading their messages reloads the store's blocks no longer cached, under the lock, the disk reading up to about 660 MB/s;
 the inbound loop is then blocked about 90% of the time, and the stream stores 5,000 to 8,000 publishes a second instead of 24,750 for about a minute, catching up after it.
-Inferred, not measured: these are the light equipment's entries, which the group's bound rarely flushes early, their flushes due F after their previous ones (§15.7) from a common start, so falling within the same minute.
+Inferred, not measured: these are the light equipment's entries, which the group's bound rarely flushes early, their flushes then due F after their previous ones from a common start (before T-74), so falling within the same minute.
 The server used about 1.5 of its 16 cores, a quarter of them the garbage collector's, so its cores in all were not the ceiling;
 the traffic stream shared the server and the disk, and these runs do not tell its part apart, neither in the reads nor in the work serialized on one core.
 A stream a group splits the lock, not the loads: measured on the same host on 2026-11-08 (`docs/ROADMAP.md` *Open items*, T-67),
